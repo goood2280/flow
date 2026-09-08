@@ -25,6 +25,9 @@ def test_reformatize_expression_format_and_hash():
     assert "ROOT_LOTS = LOT123*" in expr
     assert "TABLE = et" in expr
     assert "REFORMATTER = true" in expr
+    assert "SELECT root_lot_id, wafer_id, step_id, pgm, shot_count, VTH_N, VTH_P" in expr
+    assert "AGG = MEDIAN" in expr
+    assert ", value" not in expr
 
     h1 = reformatize._reformatize_expression_hash("PRODA", ["VTH_P", "VTH_N"], filters, "median")
     h2 = reformatize._reformatize_expression_hash("PRODA", ["VTH_N", "VTH_P"], filters, "median")

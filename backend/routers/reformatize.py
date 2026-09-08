@@ -2348,6 +2348,8 @@ def _format_reformatize_expression(
     clean_product = str(product or "").strip().upper()
     clean_items = sorted(str(it).strip() for it in (items or []) if str(it).strip())
     clean_agg = str(agg or "").strip().lower()
+    if clean_agg in {"raw", "shot raw", "shot_raw"}:
+        clean_agg = ""
 
     lines = [
         "Q1",
@@ -2360,7 +2362,12 @@ def _format_reformatize_expression(
     else:
         lines.append("ITEMS = ALL")
 
-    sql_parts = ["SELECT root_lot_id, wafer_id, tkout_time, value"]
+    if clean_items:
+        fixed_columns = (["root_lot_id", "wafer_id", "step_id", "pgm", "shot_count"]
+                         if clean_agg else ["root_lot_id", "wafer_id", "tkout_time"])
+        sql_parts = [f"SELECT {', '.join([*fixed_columns, *clean_items])}"]
+    else:
+        sql_parts = ["SELECT *"]
     where_parts = []
     if norm_filters.get("date_from"):
         where_parts.append(f"tkout_time >= '{norm_filters['date_from']}'")
@@ -2393,7 +2400,7 @@ def _format_reformatize_expression(
         lines.append(f"FILTER = shot_count | operator=in | values={norm_filters['point_cnt_filter']}")
 
     if clean_agg:
-        lines.append(f"# AGG = {clean_agg.upper()}")
+        lines.append(f"AGG = {clean_agg.upper()}")
 
     return "\n".join(lines)
 

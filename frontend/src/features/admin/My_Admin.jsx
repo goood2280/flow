@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, Component } from "react";
+import { PermissionGroupRow, DownloadHistoryRow } from "./AdminExpandableRows";
 import Loading from "../../components/Loading";
 import { PageHeader, TabStrip, Button, Banner, Pill, statusPalette, chartPalette } from "../../components/UXKit";
 import { toast } from "../../components/Toast";
@@ -562,28 +563,17 @@ export default function My_Admin({user}){
           </div>
           {!pgEdit&&(_arr(permGroups).length===0
             ?<div style={{fontSize:13,color:"var(--text-secondary)"}}>권한 그룹 없음 — "＋ 새 그룹" 으로 만들고 권한과 멤버를 지정하세요</div>
-            :<table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+            :<div style={{overflowX:"auto"}}><table style={{width:"100%",minWidth:760,tableLayout:"fixed",borderCollapse:"collapse",fontSize:14}}>
+              <colgroup><col style={{width:"18%"}}/><col style={{width:100}}/><col/><col style={{width:90}}/><col style={{width:250}}/></colgroup>
               <thead><tr>
-                {["그룹","기본 부서","권한","직접 멤버",""].map((h,i)=><th key={i} style={{textAlign:"left",padding:"7px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:13,color:"var(--text-secondary)"}}>{h}</th>)}
+                {["그룹","기본 부서","권한","직접 멤버",""].map((h,i)=><th key={i} style={{textAlign:"left",padding:"7px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:13,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{h}</th>)}
               </tr></thead>
-              <tbody>{_arr(permGroups).map(g=>(
-                <tr key={g.name}>
-                  <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontWeight:700}}>{g.name}</td>
-                  <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:13}}>{_arr(g.departments).length?g.departments.join(", "):<span style={{color:"var(--text-secondary)"}}>(없음)</span>}</td>
-                  <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:13}}>
-                    {_arr(g.tabs).length?_arr(g.tabs).map(t=>_tabLabel(t.split(":")[0])+(t.includes(":")?`:${t.split(":")[1]}`:"")).join(", "):"(권한 없음)"}
-                  </td>
-                  <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:13}}>
-                    {_arr(g.members).length?g.members.join(", "):<span style={{color:"var(--text-secondary)"}}>(없음)</span>}
-                    <span style={{color:"var(--text-secondary)"}}>{` — ${_arr(g.members).length}명`}</span>
-                  </td>
-                  <td style={{padding:"6px 10px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap",textAlign:"right"}}>
-                    <span onClick={()=>setPgEdit({orig:g.name,name:g.name,tabs:[..._arr(g.tabs)],members:[..._arr(g.members)],departments:[..._arr(g.departments)]})} style={{color:"var(--info,#3b82f6)",cursor:"pointer",fontSize:14,marginRight:12}}>편집</span>
-                    <span onClick={()=>deletePermGroup(g.name)} style={{color:"var(--bad,#ef4444)",cursor:"pointer",fontSize:14}}>삭제</span>
-                  </td>
-                </tr>))}
+              <tbody>{_arr(permGroups).map(g=><PermissionGroupRow key={g.name} group={g}
+                permissionLabel={_arr(g.tabs).length?_arr(g.tabs).map(t=>_tabLabel(t.split(":")[0])+(t.includes(":")?`:${t.split(":")[1]}`:"")).join(", "):"(권한 없음)"}
+                onEdit={()=>setPgEdit({orig:g.name,name:g.name,tabs:[..._arr(g.tabs)],members:[..._arr(g.members)],departments:[..._arr(g.departments)]})}
+                onDelete={()=>deletePermGroup(g.name)}/>)}
               </tbody>
-            </table>)}
+            </table></div>)}
           {pgEdit&&<div style={{display:"grid",gap:12,maxWidth:640}}>
             <label style={{display:"flex",alignItems:"center",gap:10,fontSize:14}}>
               <span style={{color:"var(--text-secondary)",width:70}}>그룹 이름</span>
@@ -851,22 +841,12 @@ export default function My_Admin({user}){
           <span style={{fontSize:13,color:"var(--text-secondary)"}}>{combinedDownloads.length.toLocaleString()}건</span>
         </div>
         <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>
-        <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
+        <table style={{width:"100%",minWidth:1180,tableLayout:"fixed",borderCollapse:"collapse",fontSize:14}}>
+          <colgroup>{[190,190,110,null,130,140,70,90].map((width,i)=><col key={i} style={width?{width}:undefined}/>)}</colgroup>
           <thead><tr>{["시간","구분","사용자","대상","상세","컬럼","행","크기"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
           <tbody>
             {combinedDownloads.length===0&&<tr><td colSpan={8} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>다운로드 이력 없음</td></tr>}
-            {combinedDownloads.map((d,i)=><tr key={i}>
-              <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>{String(d.timestamp||"").slice(0,19).replace("T"," ")}</td>
-              <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)"}}>
-                <Pill tone={d.sourceTone}>{d.source}</Pill>
-              </td>
-              <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)"}}>{d.username}</td>
-              <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{d.target}</td>
-              <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",fontSize:14,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis"}} title={d.detail||""}>{d.detail||"-"}</td>
-              <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontSize:14,maxWidth:140,overflow:"hidden",textOverflow:"ellipsis",color:"var(--text-secondary)"}} title={d.aux||""}>{d.aux||"-"}</td>
-              <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)"}}>{d.rows}</td>
-              <td style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{d.size}</td>
-            </tr>)}
+            {combinedDownloads.map((d,i)=><DownloadHistoryRow key={`${d.timestamp}-${d.username}-${d.source}-${d.target}-${i}`} download={d}/>)}
           </tbody></table></div></div>}
 
       {/* Monitor (admin only) — v8.8.27: BE psutil 필드명에 맞춰 재매핑.
@@ -1331,20 +1311,20 @@ function ActiveUserBarChart({data,period}){
   const axisMax=Math.max(2,Math.ceil(maxValue/2)*2);
   const middle=axisMax/2;
   const label=(key)=>period==="daily"
-    ? String(key).slice(5).replace("-",".")
+    ? String(key).slice(2).replaceAll("-",".")
     : String(key).replace("-",".");
   const periodLabel=period==="daily"?"일":"월";
-  return(<div style={{display:"grid",gridTemplateColumns:"38px minmax(0,1fr)",gap:8}}>
+  return(<div style={{display:"grid",gridTemplateColumns:"38px minmax(0,1fr)",gap:8,minWidth:0}}>
     <div aria-hidden="true" style={{height:250,display:"flex",flexDirection:"column",justifyContent:"space-between",alignItems:"flex-end",padding:"20px 0 28px",boxSizing:"border-box",fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace"}}>
       <span>{axisMax}</span><span>{middle}</span><span>0</span>
     </div>
     <div style={{overflowX:"auto",paddingBottom:2}}>
-      <div style={{height:250,minWidth:period==="daily"?780:660,position:"relative",borderBottom:"1px solid var(--border)"}}>
+      <div style={{height:250,minWidth:period==="daily"?Math.max(780,rows.length*68):Math.max(660,rows.length*72),position:"relative",borderBottom:"1px solid var(--border)"}}>
         <div role="img" aria-label={`${periodLabel}별 활성 사용자 수 막대 차트`} style={{position:"absolute",inset:"20px 0 28px 0",display:"flex",alignItems:"flex-end",gap:period==="daily"?5:12,padding:"0 6px",boxSizing:"border-box"}}>
           {[0,50,100].map(top=><div key={top} aria-hidden="true" style={{position:"absolute",left:0,right:0,top:top+"%",borderTop:"1px dashed var(--border)",opacity:top===100?0:0.75}}/>)}
           {rows.map(row=>{
             const pct=row.value?Math.max(2,100*row.value/axisMax):0;
-            return <div key={row.key} title={`${row.key} · 활성 사용자 ${row.value}명`} aria-label={`${row.key}, 활성 사용자 ${row.value}명`} style={{height:"100%",flex:"1 0 18px",minWidth:period==="daily"?18:38,position:"relative"}}>
+            return <div key={row.key} title={`${row.key} · 활성 사용자 ${row.value}명`} aria-label={`${row.key}, 활성 사용자 ${row.value}명`} style={{height:"100%",flex:period==="daily"?"0 0 62px":"1 0 38px",minWidth:period==="daily"?62:38,position:"relative"}}>
               {row.value>0&&<span style={{position:"absolute",left:"50%",bottom:`calc(${pct}% + 4px)`,transform:"translateX(-50%)",fontSize:12,fontWeight:700,color:"var(--text-primary)"}}>{row.value}</span>}
               <div style={{position:"absolute",left:"50%",bottom:0,transform:"translateX(-50%)",width:"min(100%, 34px)",height:pct+"%",minHeight:row.value?4:0,borderRadius:"5px 5px 1px 1px",background:"var(--accent)",opacity:0.86,transition:"height .25s ease"}}/>
               <span style={{position:"absolute",left:"50%",top:"calc(100% + 7px)",transform:"translateX(-50%)",fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",whiteSpace:"nowrap"}}>{label(row.key)}</span>
@@ -1359,8 +1339,8 @@ function ActiveUserBarChart({data,period}){
 }
 
 function ActivityDashboardPanel(){
-  const [days,setDays]=useState(7);
-  const [userPeriod,setUserPeriod]=useState("daily");
+  const [days,setDays]=useState(0);
+  const [userPeriod,setUserPeriod]=useState("monthly");
   const [summary,setSummary]=useState(null);
   const [features,setFeatures]=useState(null);
   const [err,setErr]=useState("");
@@ -1383,19 +1363,19 @@ function ActivityDashboardPanel(){
   const maxAct=summary?Math.max(0,...Object.values(_obj(summary.by_action))):0;
   const maxDay=summary?Math.max(0,...Object.values(_obj(summary.by_day))):0;
   const activeUserData=userPeriod==="daily"?summary?.active_users_by_day:summary?.active_users_by_month;
-  return(<div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-    <div style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:12}}>
+  return(<div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:16,minWidth:0}}>
+    <div style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
       <span style={{fontSize:14,fontWeight:700}}>활동 대시보드</span>
-      <span style={{fontSize:14,color:"var(--text-secondary)"}}>최근</span>
-      {[1,7,30,90].map(d=>(<span key={d} onClick={()=>setDays(d)} style={{cursor:"pointer",fontSize:14,padding:"3px 10px",borderRadius:6,background:days===d?"var(--accent-glow)":"transparent",color:days===d?"var(--accent)":"var(--text-secondary)",fontWeight:days===d?700:500,border:"1px solid "+(days===d?"var(--accent)":"var(--border)")}}>{d}일</span>))}
-      {summary&&<span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:"auto"}}>총 {summary.total}건 · 기능 {features?.feature_count||0}개</span>}
+      <span style={{fontSize:14,color:"var(--text-secondary)"}}>조회 기간</span>
+      {[{days:0,label:"전체"},{days:1,label:"1일"},{days:7,label:"7일"},{days:30,label:"30일"},{days:90,label:"90일"}].map(option=>(<span key={option.days} onClick={()=>setDays(option.days)} style={{cursor:"pointer",fontSize:14,padding:"3px 10px",borderRadius:6,background:days===option.days?"var(--accent-glow)":"transparent",color:days===option.days?"var(--accent)":"var(--text-secondary)",fontWeight:days===option.days?700:500,border:"1px solid "+(days===option.days?"var(--accent)":"var(--border)")}}>{option.label}</span>))}
+      {summary&&<span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:"auto"}}>{days===0&&summary.activity_start&&summary.activity_end&&`보존 기록 ${summary.activity_start} ~ ${summary.activity_end} · `}총 {summary.total}건 · 기능 {features?.feature_count||0}개</span>}
       {err&&<span style={{fontSize:14,color:BAD.fg}}>{err}</span>}
     </div>
-    <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+    <div style={{gridColumn:"1 / -1",minWidth:0,background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
         <div>
           <div style={{fontSize:15,fontWeight:800}}>활성 사용자 수</div>
-          <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:3}}>기간 내 한 번 이상 활동한 고유 사용자 · {userPeriod==="daily"?"최근 30일":"최근 12개월"}</div>
+          <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:3}}>기간 내 한 번 이상 활동한 고유 사용자 · {days===0?"보존 중인 전체 기록":userPeriod==="daily"?"최근 30일":"최근 12개월"}</div>
         </div>
         <div style={{marginLeft:"auto",display:"flex",padding:3,borderRadius:7,background:"var(--bg-tertiary)",border:"1px solid var(--border)"}}>
           {[["daily","일별"],["monthly","월별"]].map(([key,text])=><button key={key} type="button" aria-pressed={userPeriod===key} onClick={()=>setUserPeriod(key)} style={{border:0,borderRadius:5,padding:"5px 13px",cursor:"pointer",fontSize:13,fontWeight:700,background:userPeriod===key?"var(--bg-secondary)":"transparent",color:userPeriod===key?"var(--accent)":"var(--text-secondary)",boxShadow:userPeriod===key?"0 1px 3px rgba(15,23,42,.12)":"none"}}>{text}</button>)}
@@ -1415,7 +1395,9 @@ function ActivityDashboardPanel(){
     </div>
     <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>일자별</div>
-      {summary?_entries(summary.by_day).map(([d,v])=>barItem(d,v,maxDay,OK.fg)):<span style={{color:"var(--text-secondary)",fontSize:14}}>로딩…</span>}
+      <div style={{maxHeight:420,overflowY:"auto"}}>
+        {summary?_entries(summary.by_day).map(([d,v])=>barItem(d,v,maxDay,OK.fg)):<span style={{color:"var(--text-secondary)",fontSize:14}}>로딩…</span>}
+      </div>
     </div>
     <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>기능별 활성 현황</div>

@@ -37,6 +37,8 @@ _SAMPLER_WAKE = threading.Event()
 # eid 로 병합한다. 파일은 append-only(다중 서버 동시 기록 안전)이며 주기적으로
 # 최근 N 줄만 남기고 정리한다.
 _FILE_LOCK = threading.Lock()
+_TAIL_READ_LOCK = threading.Lock()
+_TAIL_READ_CACHE: dict[str, Any] = {}
 _SHARED_MAX_LINES = 4000      # 정리 시 남길 최근 줄 수
 _SHARED_TRIM_EVERY = 200      # 이 횟수마다 파일 크기 확인/정리
 _append_count = 0
@@ -294,24 +296,35 @@ def _trim_shared_locked(path) -> None:
 
 
 def _read_shared_tail(max_lines: int) -> list[dict[str, Any]]:
+    """Reuse parsed log rows across the dashboard's event/progress reducers.
+
+    Size and nanosecond mtime invalidate on append, trim, or replacement. Keep
+    only the requested tail in memory, including when a shared log grows large.
+    Internal rows are read-only; get_events copies only the selected public rows.
+    """
     path = _shared_log_path()
-    if path is None or not path.exists():
+    if path is None:
         return []
-    out: list[dict[str, Any]] = []
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        for raw in lines[-max_lines:]:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                out.append(json.loads(raw))
-            except Exception:
-                continue
+        with _TAIL_READ_LOCK:
+            stat = path.stat()
+            signature = (str(path), stat.st_mtime_ns, stat.st_size, stat.st_ino, max_lines)
+            if _TAIL_READ_CACHE.get("signature") == signature:
+                return _TAIL_READ_CACHE["rows"]
+            with open(path, "r", encoding="utf-8") as f:
+                lines = deque(f, maxlen=max(1, max_lines))
+            out = []
+            for raw in lines:
+                try:
+                    row = json.loads(raw)
+                    if isinstance(row, dict):
+                        out.append(row)
+                except (ValueError, TypeError):
+                    continue
+            _TAIL_READ_CACHE.update(signature=signature, rows=out)
+            return out
     except Exception:
         return []
-    return out
 
 
 def record(
@@ -451,7 +464,7 @@ def get_events(limit: int = 100, category: str = "") -> list[dict[str, Any]]:
     if category:
         items = [e for e in items if e.get("category") == category]
     items.sort(key=lambda e: e.get("ts", 0), reverse=True)
-    return _fair_by_origin(items, limit)
+    return copy.deepcopy(_fair_by_origin(items, limit))
 
 
 # ── 전체 캐시 진행률 ──────────────────────────────────────────────────────

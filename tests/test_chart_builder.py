@@ -891,6 +891,92 @@ def test_chart_builder_et_reformatter_uses_download_engine(tmp_path, monkeypatch
     assert "ITEMS = VTH_INDEX" in history[0]["definition_code"]
 
 
+def test_chart_builder_runs_et_download_expression_and_preserves_aggregation(tmp_path, monkeypatch):
+    from routers import reformatize
+
+    captured = {}
+
+    def fake_run(req, user):
+        captured.update(items=req.items, agg=req.agg, date_from=req.date_from, date_to=req.date_to)
+        return {
+            "rows": [{
+                "root_lot_id": "A", "wafer_id": "1", "step_id": "1000",
+                "pgm": "1(4pt)", "shot_count": 4, "VTH_INDEX": 2.5,
+            }],
+            "columns": ["root_lot_id", "wafer_id", "step_id", "pgm", "shot_count", "VTH_INDEX"],
+            "index_columns": ["root_lot_id", "wafer_id", "step_id", "pgm"],
+            "total_rows": 1, "vehicle_csv": "PRODA.csv", "rule_errors": [],
+        }
+
+    monkeypatch.setattr(reformatize, "run", fake_run)
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "engineer", "role": "user"})
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
+
+    expression = reformatize._format_reformatize_expression(
+        "PRODA", ["VTH_INDEX"], {"date_from": "2026-08-01", "date_to": "2026-08-31"}, "median",
+    )
+    parsed = parse_chart_builder_definition(expression)
+    result = filebrowser.chart_builder_run(filebrowser.ChartBuilderRunReq(
+        sources=[filebrowser.ChartBuilderSourceReq(**parsed["sources"][0])],
+        chart=parsed["chart"], save_history=False,
+    ), object())
+
+    assert captured == {
+        "items": ["VTH_INDEX"], "agg": "median",
+        "date_from": "2026-08-01", "date_to": "2026-08-31",
+    }
+    assert result["joined"]["rows"][0]["VTH_INDEX"] == 2.5
+    assert parsed["sources"][0]["reformatter_agg"] == "median"
+
+
+def test_chart_builder_repairs_legacy_et_download_value_projection(monkeypatch):
+    from routers import reformatize
+
+    monkeypatch.setattr(reformatize, "run", lambda req, user: {
+        "rows": [{"root_lot_id": "A", "wafer_id": "1", "tkout_time": "2026-08-01", "VTH_INDEX": 2.5}],
+        "columns": ["root_lot_id", "wafer_id", "tkout_time", "VTH_INDEX"],
+        "index_columns": ["root_lot_id", "wafer_id", "tkout_time"],
+        "total_rows": 1, "vehicle_csv": "PRODA.csv", "rule_errors": [],
+    })
+
+    source = filebrowser.ChartBuilderSourceReq(
+        id="et", root="ET", product="PRODA", apply_reformatter=True,
+        reformatter_items="VTH_INDEX",
+        sql="SELECT root_lot_id, wafer_id, tkout_time, value",
+    )
+    frame, display_sql, warnings, _meta = filebrowser._chart_builder_reformatter_frame(
+        source, max_rows=100, user={"username": "engineer"},
+    )
+
+    assert frame.to_dicts() == [{
+        "root_lot_id": "A", "wafer_id": "1", "tkout_time": "2026-08-01", "VTH_INDEX": 2.5,
+    }]
+    assert display_sql == "SELECT root_lot_id, wafer_id, tkout_time, VTH_INDEX"
+    assert warnings == []
+
+
+def test_chart_builder_repairs_legacy_et_download_all_items_projection(monkeypatch):
+    from routers import reformatize
+
+    monkeypatch.setattr(reformatize, "run", lambda req, user: {
+        "rows": [{"root_lot_id": "A", "wafer_id": "1", "tkout_time": "2026-08-01", "IDX_A": 1.0, "IDX_B": 2.0}],
+        "columns": ["root_lot_id", "wafer_id", "tkout_time", "IDX_A", "IDX_B"],
+        "index_columns": ["IDX_A", "IDX_B"],
+        "total_rows": 1, "vehicle_csv": "PRODA.csv", "rule_errors": [],
+    })
+    source = filebrowser.ChartBuilderSourceReq(
+        id="et", root="ET", product="PRODA", apply_reformatter=True,
+        reformatter_items="", sql="SELECT root_lot_id, wafer_id, tkout_time, value",
+    )
+
+    frame, display_sql, _warnings, _meta = filebrowser._chart_builder_reformatter_frame(
+        source, max_rows=100, user={"username": "engineer"},
+    )
+
+    assert frame.columns == ["root_lot_id", "wafer_id", "tkout_time", "IDX_A", "IDX_B"]
+    assert display_sql == "SELECT root_lot_id, wafer_id, tkout_time, IDX_A, IDX_B"
+
+
 def test_chart_builder_split_table_schema_search_uses_virtual_source(tmp_path, monkeypatch):
     source = tmp_path / "split.parquet"
     pl.DataFrame({
@@ -947,6 +1033,34 @@ def test_chart_builder_parse_reformatize_expression():
     assert "tkout_time WITHIN 7 DAYS THEN #2563eb" in parsed["chart"]["color_rules"][0]
 
 
+def test_chart_builder_parse_aggregated_reformatize_expression_uses_pgm_axis():
+    parsed = parse_chart_builder_definition("""
+    PRODUCT = VEHICLE_B
+    ITEMS = BV_D1
+    AGG = MEDIAN
+    """)
+
+    assert parsed["sources"][0]["reformatter_agg"] == "median"
+    assert parsed["chart"]["x"] == "pgm"
+    assert parsed["chart"]["y"] == "BV_D1"
+
+
+def test_chart_builder_restores_legacy_commented_reformatize_aggregation():
+    parsed = parse_chart_builder_definition("""
+    Q1
+    TABLE = et
+    PRODUCT = VEHICLE_B
+    REFORMATTER = true
+    ITEMS = BV_D1
+    SQL = SELECT root_lot_id, wafer_id, tkout_time, value
+    # 이 일반 주석은 계속 무시한다
+    # AGG = MEDIAN
+    """)
+
+    assert parsed["sources"][0]["reformatter_agg"] == "median"
+    assert "AGG = MEDIAN" in parsed["canonical_code"]
+
+
 def test_chart_builder_parse_reformatize_key_and_query_field(tmp_path, monkeypatch):
     from routers import reformatize
     h_file = tmp_path / "reformatize_history.jsonl"
@@ -987,5 +1101,3 @@ def test_chart_builder_parse_reformatize_key_and_query_field(tmp_path, monkeypat
     assert src_q["product"] == "PRODA"
     assert src_q["apply_reformatter"] is True
     assert "VTH_N" in src_q["reformatter_items"]
-
-

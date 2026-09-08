@@ -157,6 +157,7 @@ class ChartBuilderSourceReq(BaseModel):
     select_cols: str = ""
     apply_reformatter: bool = False
     reformatter_items: str = ""
+    reformatter_agg: str = ""
     runtime_recent_days: int = 0
     runtime_date_column: str = "tkout_time"
     runtime_root_lot_ids: list[str] = []

@@ -263,6 +263,7 @@ function definitionFromForm(sources,joins,maxRows,chart={}){
     if(source.apply_reformatter){
       lines.push("REFORMATTER = true");
       if(text(source.reformatter_items).trim())lines.push(`ITEMS = ${text(source.reformatter_items).trim()}`);
+      if(text(source.reformatter_agg).trim())lines.push(`AGG = ${text(source.reformatter_agg).trim().toUpperCase()}`);
     }
     cleanDerivedColumns(source.derived_columns).forEach(row=>lines.push(`DERIVE = ${row.name} | columns=${row.columns.join(",")} | separator=${row.separator}`));
     cleanRuntimeFilters(source.runtime_filters).forEach(row=>lines.push(`FILTER = ${row.column} | operator=${row.operator} | values=${row.values.join(",")}`));
@@ -776,6 +777,7 @@ function QueryCard({source,index,roots,autocompleteSource,onChange,onRemove,onCl
         ET 다운로드 Reformatter 적용 (REAL / ADDP)
       </label>
       {source.apply_reformatter&&<>
+        <div style={{fontSize:12,color:"var(--text-secondary)",marginTop:8}}>ET 집계: {text(source.reformatter_agg).trim().toUpperCase()||"RAW"}</div>
         <label style={{display:"block",fontSize:12,color:"var(--text-secondary)",marginTop:8}}>계산 Item alias
           <input list={`chart-reformatter-items-${index}`} value={source.reformatter_items||""} onChange={e=>set("reformatter_items",e.target.value)} placeholder="VTH_INDEX, ET_VALUE_2" style={{...input,marginTop:4,fontFamily:"monospace"}}/>
           <datalist id={`chart-reformatter-items-${index}`}>{reformatterItems.map(item=><option key={item.alias} value={item.alias}>{item.category?.toUpperCase()}</option>)}</datalist>

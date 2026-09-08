@@ -1,0 +1,40 @@
+import assert from "node:assert/strict";
+import { createLatestRequests } from "../src/lib/latestRequests.js";
+
+const calls = [];
+const loader = createLatestRequests((url, options) => new Promise((resolve, reject) => {
+  calls.push({ url, options, resolve, reject });
+}));
+const shown = [];
+let done = 0;
+const handlers = { success: value => shown.push(value), done: () => done++ };
+const old = loader.load("product", "/a", handlers);
+assert.equal(loader.load("product", "/a", handlers), old, "same pending URL is shared");
+await Promise.resolve();
+const current = loader.load("product", "/b", handlers);
+await Promise.resolve();
+assert.equal(calls[0].options.signal.aborted, true);
+calls[1].resolve("B");
+await current;
+calls[0].resolve("A"); // server ignores abort and answers late
+await old;
+assert.deepEqual(shown, ["B"]);
+assert.equal(done, 1, "stale completion cannot clear the current loading state");
+const cancelled = loader.load("events", "/events", handlers);
+await Promise.resolve();
+loader.cancel();
+calls[2].resolve("unmounted");
+await cancelled;
+assert.deepEqual(shown, ["B"]);
+let errors = 0;
+const failed = loader.load("events", "/events", { error: () => errors++ });
+await Promise.resolve();
+calls[3].reject(new Error("offline"));
+await failed;
+assert.equal(errors, 1);
+const retry = loader.load("events", "/events", handlers);
+await Promise.resolve();
+calls[4].resolve("recovered");
+await retry;
+assert.deepEqual(shown, ["B", "recovered"]);
+console.log("latest request deduplication, stale responses, cleanup and retry: passed");

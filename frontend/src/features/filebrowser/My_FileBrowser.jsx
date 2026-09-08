@@ -957,7 +957,7 @@ export default function My_FileBrowser({
   const editVirtRef=useRef(null);
   const readVirtRef=useRef(null);
   const pendingFindScrollRef=useRef(null);
-  const restoringSqlHistoryRef=useRef(false);
+  const restoringSqlHistoryRef=useRef("");
   const findInputRef=useRef(null);
   const findHitsRef=useRef(0);
   // 행 단위 액션은 매 렌더 새로 만들어지는 함수라, memo 된 행에 그대로 내리면 memo 가 깨진다.
@@ -1816,6 +1816,33 @@ export default function My_FileBrowser({
     setSelectedCols(parsed.selectedColumns);
     setSortSpec(null);
   };
+  const restoreSqlHistoryForm=entry=>{
+    const historySql=String(entry?.sql||"").trim();
+    if(!historySql)throw new Error("불러올 SQL 식이 없습니다.");
+    const historyScope=String(entry?.scope||"").trim().toLowerCase();
+    const nextRoot=String(entry?.root||"");
+    const nextProduct=String(entry?.product||"");
+    const nextFile=String(entry?.file||"");
+    if(!["db_product","rootpq","base"].includes(historyScope))throw new Error("SQL 이력의 조회 대상을 확인할 수 없습니다.");
+
+    cancelActiveViewRequest();
+    viewSeqRef.current+=1;
+    setLoading(false);setSampleLoading(false);
+    setBaseRaw(null);setIsBaseEditing(false);
+    // DB root 변경 뒤 products effect가 이전 제품의 기본 조회를 실행하며 SQL을
+    // 지우지 않도록 복원 대상 root를 남긴다. 같은 root라 effect가 안 뜬 경우에는
+    // 이후 다른 root effect가 불일치를 확인하고 이 값을 버린다.
+    restoringSqlHistoryRef.current=historyScope==="db_product"?nextRoot:"";
+    setTab("data");setShowGuide(false);setShowSqlHistory(true);setData(null);setError("");
+    setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSqlFromInput(historySql);
+    if(historyScope==="db_product"){
+      setScope("DB");setMode("hive");setSelRoot(nextRoot);setSelProd(nextProduct);setSelRootPq("");setSelBaseFile("");
+    }else if(historyScope==="rootpq"){
+      setScope("DB");setMode("rootpq");setSelRoot("");setSelProd("");setSelRootPq(nextFile);setSelBaseFile("");
+    }else{
+      setScope("Base");setMode("base");setSelRoot("");setSelProd("");setSelRootPq("");setSelBaseFile(nextFile);
+    }
+  };
   useEffect(()=>{
     if(embedded)return;
     const historyId=historyIdFromLocation(/^fb_sql_exec_[0-9a-f]{12}$/i);
@@ -1825,23 +1852,20 @@ export default function My_FileBrowser({
       if(!alive)return;
       const entry=d.history?.[0];
       if(!entry)throw new Error("공유된 SQL 이력을 찾지 못했습니다.");
-      restoringSqlHistoryRef.current=true;
-      setTab("data");setShowGuide(false);setShowSqlHistory(true);setData(null);setError("");
-      setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSqlFromInput(entry.sql||"");
-      if(entry.scope==="db_product"){
-        setScope("DB");setMode("hive");setSelRoot(entry.root||"");setSelProd(entry.product||"");setSelRootPq("");setSelBaseFile("");
-      }else if(entry.scope==="rootpq"){
-        setScope("DB");setMode("rootpq");setSelRoot("");setSelProd("");setSelRootPq(entry.file||"");setSelBaseFile("");restoringSqlHistoryRef.current=false;
-      }else{
-        setScope("Base");setMode("base");setSelRoot("");setSelProd("");setSelRootPq("");setSelBaseFile(entry.file||"");restoringSqlHistoryRef.current=false;
-      }
+      restoreSqlHistoryForm(entry);
       toast.ok(`[${historyId}] 공유 SQL과 대상을 불러왔습니다. 실행 버튼을 눌러 조회하세요.`);
-    }).catch(e=>{if(alive){restoringSqlHistoryRef.current=false;setError(e.message||String(e));}});
+    }).catch(e=>{if(alive){restoringSqlHistoryRef.current="";setError(e.message||String(e));}});
     return()=>{alive=false;};
   },[embedded]);
   const copySqlHistoryLink=async entry=>{
     try{await copyHistoryShareLink("/filebrowser",entry?.history_id);toast.ok("SQL 이력 공유 링크를 복사했습니다.");}
     catch(_error){toast.error("브라우저에서 공유 링크를 복사하지 못했습니다.");}
+  };
+  const loadSqlHistoryForm=entry=>{
+    try{
+      restoreSqlHistoryForm(entry);
+      toast.ok(`[${entry?.history_id||"SQL 이력"}] SQL 식과 조회 대상을 폼에 불러왔습니다. 실행 버튼을 눌러 조회하세요.`);
+    }catch(error){toast.warn(error?.message||"SQL 이력을 불러오지 못했습니다.");}
   };
 
   const cancelActiveViewRequest=()=>{
@@ -1904,8 +1928,10 @@ export default function My_FileBrowser({
       // v8.8.32: 교차 선택 — 이미 제품이 선택된 상태에서 다른 DB 루트를 클릭하면
       //   그 DB 에 같은 제품이 있을 경우 자동으로 view 를 갱신. UX: DB 를 바꿔도
       //   제품 클릭을 다시 안 해도 됨.
+      const restoringRoot=restoringSqlHistoryRef.current;
+      restoringSqlHistoryRef.current="";
       if(selProd){
-        if(restoringSqlHistoryRef.current){restoringSqlHistoryRef.current=false;return;}
+        if(restoringRoot&&restoringRoot===selRoot)return;
         const match=(d.products||[]).find(p=>p.name===selProd);
         if(match){
           setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);
@@ -2053,11 +2079,12 @@ export default function My_FileBrowser({
       // Base JSON/md files have no SQL surface — silently ignore. Tabular
       // parquet/csv re-load with the SQL param applied server-side.
       if(baseRaw)return; // json/md 는 SQL 적용 불가 — baseRaw 상태로 판단
+      const{seq,signal,queryId}=nextViewRequest();
       setLoading(true);setError("");
       // full=true 와 동일 — SQL 이 비어도 sample 행을 보여줘야 하므로 meta_only 꺼둠.
       const url=API+"/base-file-view"+qs(withAccess({file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),reuse_history_id:reuseHistoryId||"",
-        select_cols:activeSelectedCols.length?activeSelectedCols.join(","):"",...sortParams(activeSort),...aggregateParams(activeAggregate)}));
-      sf(url).then(d=>{setSelectedCols(activeSelectedCols.length?selectedColsFromResponse(d,activeSelectedCols):[]);setData(d);if(!d.kind)syncBaseEditState(d);markSqlHistoryReused(reuseHistoryId);setLoading(false);}).catch(e=>{setError(e.message||String(e));setLoading(false);});
+        query_session:viewSessionRef.current,query_id:queryId,select_cols:activeSelectedCols.length?activeSelectedCols.join(","):"",...sortParams(activeSort),...aggregateParams(activeAggregate)}));
+      sf(url,{signal}).then(d=>{if(seq!==viewSeqRef.current)return;setSelectedCols(activeSelectedCols.length?selectedColsFromResponse(d,activeSelectedCols):[]);setData(d);if(!d.kind)syncBaseEditState(d);markSqlHistoryReused(reuseHistoryId);setLoading(false);}).catch(e=>{if(seq!==viewSeqRef.current||isViewAbort(e))return;setError(e.message||String(e));setLoading(false);});
     }
     else if(selRoot&&selProd)loadHiveView(selRoot,selProd,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate,reuseHistoryId});
   };
@@ -3165,6 +3192,7 @@ export default function My_FileBrowser({
                 <div style={{display:"flex",alignItems:"center",gap:7,minWidth:0,fontSize:11,whiteSpace:"nowrap"}}>
                   <code style={{overflow:"hidden",textOverflow:"ellipsis",color:h.ok?"var(--text-primary)":FB_BAD.fg,fontFamily:"monospace"}} title={detail}>{detail}</code>
                   <button type="button" onClick={()=>copySqlHistoryLink(h)} style={{marginLeft:"auto",flexShrink:0,border:"1px solid var(--border)",borderRadius:4,background:"var(--bg-secondary)",color:"var(--text-primary)",padding:"2px 6px",fontSize:10,cursor:"pointer"}}>공유 링크</button>
+                  <button type="button" onClick={()=>loadSqlHistoryForm(h)} title="이 SQL 식을 위 입력 폼에 채웁니다" style={{flexShrink:0,border:"1px solid var(--accent)",borderRadius:4,background:"var(--accent)",color:"#fff",padding:"2px 6px",fontSize:10,fontWeight:700,cursor:"pointer"}}>폼 불러오기</button>
                 </div>
               </div>;
             })}

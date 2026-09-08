@@ -20,7 +20,7 @@ QUERY_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 FIELD_RE = re.compile(
-    r"^\s*(table|db|root|product|sql|query|select_cols?|columns?|reformatter|apply_reformatter|reformatter_items?|items"
+    r"^\s*(table|db|root|product|sql|query|select_cols?|columns?|reformatter|apply_reformatter|reformatter_items?|items|reformatter_agg|agg"
     r"|recent_days?|recent|days|date_column|date_col|time_column|time_col"
     r"|root_lots?|root_lot_ids?|wafers?|wafer_ids?"
     r"|key|reformatize_key|rh_key|et_key|expression"
@@ -61,6 +61,8 @@ FIELD_ALIASES = {
     "items": "reformatter_items",
     "reformatter_item": "reformatter_items",
     "reformatter_items": "reformatter_items",
+    "reformatter_agg": "reformatter_agg",
+    "agg": "reformatter_agg",
     "key": "reformatize_key",
     "reformatize_key": "reformatize_key",
     "rh_key": "reformatize_key",
@@ -113,6 +115,11 @@ FILTER_OPERATORS = {"in", "not_in", "equals", "not_equals", "contains", "not_con
 
 class ChartBuilderDefinitionError(ValueError):
     """Raised when a definition cannot be converted into a safe run request."""
+
+
+def _normalize_reformatter_agg(value: Any) -> str:
+    normalized = str(value or "").strip().casefold()
+    return "" if normalized in {"", "raw", "shot raw", "shot_raw"} else normalized
 
 
 def _clean_query_id(value: Any, fallback: str = "") -> str:
@@ -213,6 +220,15 @@ def _assign_field(source: dict[str, Any], name: str, value: str, *, append_sql: 
         return
     if field == "apply_reformatter":
         source[field] = cleaned.casefold() in {"1", "true", "yes", "y", "on", "사용", "적용"}
+        return
+    if field == "reformatter_agg":
+        normalized = _normalize_reformatter_agg(cleaned)
+        if not normalized:
+            source[field] = ""
+            return
+        if normalized not in {"max", "min", "median", "avg", "std", "p90", "p10"}:
+            raise ChartBuilderDefinitionError(f"지원하지 않는 ET 집계 방식입니다: {cleaned}")
+        source[field] = normalized
         return
     if field == "runtime_recent_days":
         match = RECENT_DAYS_RE.match(cleaned)
@@ -360,6 +376,7 @@ def _apply_reformatize_entry_to_source(source: dict[str, Any], entry: dict[str, 
     if entry.get("product"):
         source["product"] = str(entry["product"]).strip()
     source["apply_reformatter"] = True
+    source["reformatter_agg"] = _normalize_reformatter_agg(entry.get("agg"))
     items = entry.get("items") or []
     if items:
         source["reformatter_items"] = ", ".join(str(it) for it in items if str(it).strip())
@@ -384,7 +401,13 @@ def _apply_reformatize_entry_to_source(source: dict[str, Any], entry: dict[str, 
         if val:
             rf.append({"column": filter_col, "operator": "in", "values": [s.strip() for s in val.split(",") if s.strip()]})
 
-    sql_parts = ["SELECT root_lot_id, wafer_id, tkout_time, value"]
+    selected_items = [str(item).strip() for item in items if str(item).strip()]
+    if selected_items:
+        fixed = (["root_lot_id", "wafer_id", "step_id", "pgm", "shot_count"]
+                 if source["reformatter_agg"] else ["root_lot_id", "wafer_id", "tkout_time"])
+        sql_parts = [f"SELECT {', '.join([*fixed, *selected_items])}"]
+    else:
+        sql_parts = ["SELECT *"]
     wheres = []
     if filters.get("date_from"):
         wheres.append(f"tkout_time >= '{filters['date_from']}'")
@@ -415,27 +438,28 @@ def reformatize_key_to_chart_builder_code(history_id: str) -> str | None:
     entry = _lookup_reformatize_history(history_id)
     if not entry:
         return None
-    expr = str(entry.get("expression") or "").strip()
-    if not expr:
-        from routers.reformatize import _format_reformatize_expression
-        expr = _format_reformatize_expression(
-            entry.get("product") or "",
-            entry.get("items") or [],
-            entry.get("filters") or {},
-            entry.get("agg") or "",
-        )
+    # Structured history fields are authoritative. Regenerating also upgrades
+    # entries saved before the ChartBuilder projection/AGG contract was fixed.
+    from routers.reformatize import _format_reformatize_expression
+    expr = _format_reformatize_expression(
+        entry.get("product") or "",
+        entry.get("items") or [],
+        entry.get("filters") or {},
+        entry.get("agg") or "",
+    )
     if "CHART" not in expr.upper():
         items = entry.get("items") or []
-        first_item = items[0] if items else "value"
+        first_item = items[0] if items else ""
         days = int((entry.get("filters") or {}).get("days") or 0)
         chart_lines = [
             "",
             "CHART",
             "TYPE = scatter",
-            "X = tkout_time",
-            f"Y = {first_item}",
+            f"X = {'pgm' if _normalize_reformatter_agg(entry.get('agg')) else 'tkout_time'}",
             "COLOR = custom",
         ]
+        if first_item:
+            chart_lines.insert(4, f"Y = {first_item}")
         if days > 0:
             color_days = min(7, days)
             chart_lines.append(f"COLOR_RULE = tkout_time WITHIN {color_days} DAYS THEN #2563eb")
@@ -473,16 +497,17 @@ def reformatize_expression_to_chart_builder_code(raw: str) -> str:
         parsed["agg"],
     )
     items = parsed.get("items") or []
-    first_item = items[0] if items else "value"
+    first_item = items[0] if items else ""
     days = int(parsed.get("filters", {}).get("days") or 0)
     chart_lines = [
         "",
         "CHART",
         "TYPE = scatter",
-        "X = tkout_time",
-        f"Y = {first_item}",
+        f"X = {'pgm' if _normalize_reformatter_agg(parsed.get('agg')) else 'tkout_time'}",
         "COLOR = custom",
     ]
+    if first_item:
+        chart_lines.insert(4, f"Y = {first_item}")
     if days > 0:
         color_days = min(7, days)
         chart_lines.append(f"COLOR_RULE = tkout_time WITHIN {color_days} DAYS THEN #2563eb")
@@ -530,6 +555,11 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
                 current["sql"] += "\n"
             continue
         if stripped.startswith("#"):
+            # ET 다운로드가 예전에 생성한 유일한 의미 있는 주석 형태다.
+            # 일반 주석은 계속 무시하되 구형 코드를 붙여넣으면 집계를 복원한다.
+            legacy_agg = re.fullmatch(r"#\s*AGG\s*[:=]\s*(.+)", stripped, re.IGNORECASE)
+            if legacy_agg and current is not None:
+                _assign_field(current, "agg", legacy_agg.group(1))
             continue
 
         max_match = MAX_ROWS_RE.match(stripped)
@@ -573,7 +603,7 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
             query_id = _clean_query_id(query_match.group(1) or query_match.group(2), f"q{len(sources) + 1}")
             current = {
                 "id": query_id, "root": "", "product": "", "sql": "", "select_cols": "",
-                "apply_reformatter": False, "reformatter_items": "",
+                "apply_reformatter": False, "reformatter_items": "", "reformatter_agg": "",
                 "runtime_recent_days": 0, "runtime_date_column": "",
                 "runtime_root_lot_ids": [], "runtime_wafer_ids": [], "runtime_lot_wafer_pairs": [],
                 "derived_columns": [], "runtime_filters": [],
@@ -665,7 +695,7 @@ def _source_dict(source: Any) -> dict[str, Any]:
     return {
         key: getattr(source, key, "")
         for key in (
-            "id", "root", "product", "sql", "select_cols", "apply_reformatter", "reformatter_items",
+            "id", "root", "product", "sql", "select_cols", "apply_reformatter", "reformatter_items", "reformatter_agg",
             "runtime_recent_days", "runtime_date_column",
             "runtime_root_lot_ids", "runtime_wafer_ids", "runtime_lot_wafer_pairs",
             "derived_columns", "runtime_filters",
@@ -852,6 +882,9 @@ def format_chart_builder_definition(
             reformatter_items = str(source.get("reformatter_items") or "").strip()
             if reformatter_items:
                 lines.append(f"ITEMS = {reformatter_items}")
+            reformatter_agg = str(source.get("reformatter_agg") or "").strip().casefold()
+            if reformatter_agg:
+                lines.append(f"AGG = {reformatter_agg.upper()}")
         for derived in source.get("derived_columns") or []:
             if not isinstance(derived, dict):
                 continue

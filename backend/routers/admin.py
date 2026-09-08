@@ -1766,28 +1766,29 @@ def my_page_admin(request: Request):
 
 # ── v8.8.14: Activity dashboard — 누가 / 어떤 기능을 / 얼마나 썼는지 ──
 @router.get("/activity/summary")
-def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
-    """최근 N 일 activity.jsonl 을 집계.
+def activity_summary(days: int = Query(0), _admin=Depends(require_admin)):
+    """activity.jsonl 을 집계. ``days=0`` 이면 보존 중인 전체 기록을 조회한다.
     반환:
       - total: 총 이벤트 수
       - by_user: { username: count } (top 20)
       - by_action: { action: count } (top 30)
       - by_tab:    { tab: count }
       - by_day:    { "YYYY-MM-DD": count }
-      - active_users_by_day:   최근 30일의 일별 순 사용자 수
-      - active_users_by_month: 최근 12개월의 월별 순 사용자 수
+      - active_users_by_day: 전체 보존 기간(기간 필터 시 최근 30일)의 일별 순 사용자 수
+      - active_users_by_month: 전체 보존 기간(기간 필터 시 최근 12개월)의 월별 순 사용자 수
       - recent:    최근 3000건 (내림차순)
     """
     import datetime as _dt, collections
     try:
-        days = max(1, min(90, int(days)))
+        days = max(0, min(3650, int(days)))
     except Exception:
-        days = 7
+        days = 0
     # limit=0 → 전체 로드. 기본 limit(200)이면 최근 200건만 필터 대상이라, 바쁜 서버에서
     # 그 200건이 전부 오늘치가 되어 1/7/30일 을 늘려도 '오늘 것만' 보이던 버그. jsonl_read 는
     # 어차피 전체 파일을 읽어 모든 줄을 파싱한 뒤 슬라이스하므로 limit=0 이어도 추가 비용 없음.
     rows = list(jsonl_read(ACTIVITY_LOG, limit=0) or [])
-    cutoff = _dt.datetime.now() - _dt.timedelta(days=days)
+    now = _dt.datetime.now()
+    cutoff_date = now.date() - _dt.timedelta(days=days - 1) if days else None
     by_user = collections.Counter()
     by_action = collections.Counter()
     by_tab = collections.Counter()
@@ -1796,9 +1797,7 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
     active_users_by_month: dict[str, set[str]] = collections.defaultdict(set)
     filtered: list = []
     unattributed_count = 0
-    now = _dt.datetime.now()
-    active_day_start = now.date() - _dt.timedelta(days=29)
-    active_month_start_index = now.year * 12 + now.month - 12
+    parsed_rows: list[tuple[dict, _dt.datetime]] = []
     for r in rows:
         ts = (r.get("timestamp") or r.get("time") or "").strip()
         try:
@@ -1807,17 +1806,33 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
                 dt = dt.replace(tzinfo=None)
         except Exception:
             continue
-        # 활동 사용자 차트는 요약 기간과 독립적으로 최근 30일/12개월을 고정 제공한다.
-        # 그래야 대시보드의 1·7·30·90일 이벤트 필터를 바꿔도 월별 차트가 한 달짜리로
-        # 축소되지 않는다. 인증되지 않은 시스템 기록은 사용자 수에서 제외한다.
+        parsed_rows.append((r, dt))
+
+    activity_start = min((dt.date() for _, dt in parsed_rows), default=None)
+    activity_end = max((dt.date() for _, dt in parsed_rows), default=None)
+    # 전체 조회에서는 보존 중인 첫 날짜부터 활성 사용자 차트를 구성한다. 기간 조회는
+    # 기존 계약대로 최근 30일/12개월을 고정 제공해 선택 버튼을 바꿔도 차트가 축소되지 않는다.
+    active_day_start = activity_start if not days and activity_start else now.date() - _dt.timedelta(days=29)
+    active_day_end = activity_end if not days and activity_end else now.date()
+    if not days and activity_start:
+        active_month_start_index = activity_start.year * 12 + activity_start.month - 1
+    else:
+        active_month_start_index = now.year * 12 + now.month - 12
+    active_month_end_index = (
+        activity_end.year * 12 + activity_end.month - 1
+        if not days and activity_end
+        else now.year * 12 + now.month - 1
+    )
+
+    for r, dt in parsed_rows:
         username = str(r.get("username") or r.get("actor") or "").strip()
         is_authenticated_user = bool(username and username.lower() != "anonymous")
-        if is_authenticated_user and active_day_start <= dt.date() <= now.date():
+        if is_authenticated_user and active_day_start <= dt.date() <= active_day_end:
             active_users_by_day[dt.strftime("%Y-%m-%d")].add(username)
         month_index = dt.year * 12 + dt.month - 1
-        if is_authenticated_user and active_month_start_index <= month_index <= (now.year * 12 + now.month - 1):
+        if is_authenticated_user and active_month_start_index <= month_index <= active_month_end_index:
             active_users_by_month[dt.strftime("%Y-%m")].add(username)
-        if dt < cutoff:
+        if cutoff_date is not None and dt.date() < cutoff_date:
             continue
         # `/api/*` 인증 미들웨어가 도입된 현재 요청은 반드시 실제 username 을 가진다.
         # anonymous 는 인증 전 시기의 기록 또는 Request 없이 라우트를 직접 호출했던
@@ -1835,16 +1850,20 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
         by_day[dt.strftime("%Y-%m-%d")] += 1
     filtered.sort(key=lambda r: r.get("timestamp") or r.get("time") or "", reverse=True)
     daily_user_counts = {}
-    for offset in range(30):
+    active_day_count = (active_day_end - active_day_start).days + 1
+    for offset in range(active_day_count):
         key = (active_day_start + _dt.timedelta(days=offset)).strftime("%Y-%m-%d")
         daily_user_counts[key] = len(active_users_by_day.get(key, set()))
     monthly_user_counts = {}
-    for offset in range(12):
+    active_month_count = active_month_end_index - active_month_start_index + 1
+    for offset in range(active_month_count):
         index = active_month_start_index + offset
         key = f"{index // 12:04d}-{index % 12 + 1:02d}"
         monthly_user_counts[key] = len(active_users_by_month.get(key, set()))
     return {
         "window_days": days,
+        "activity_start": activity_start.isoformat() if activity_start else None,
+        "activity_end": activity_end.isoformat() if activity_end else None,
         "total": len(filtered),
         "unattributed_count": unattributed_count,
         "by_user": dict(by_user.most_common(20)),
@@ -1864,19 +1883,19 @@ def activity_summary(days: int = Query(7), _admin=Depends(require_admin)):
 
 
 @router.get("/activity/features")
-def activity_features(days: int = Query(30), _admin=Depends(require_admin)):
+def activity_features(days: int = Query(0), _admin=Depends(require_admin)):
     """`action` prefix 단위로 기능 사용 현황. 각 기능(=action prefix)의 first_seen /
     last_seen / users(사용한 유저 집합) / count 를 반환. admin 이 "어떤 기능이 활성화
     되어 있는지" 한눈에 파악하는 용도.
     """
     import datetime as _dt, collections
     try:
-        days = max(1, min(365, int(days)))
+        days = max(0, min(3650, int(days)))
     except Exception:
-        days = 30
+        days = 0
     # limit=0 → 전체 로드 (기본 200 이면 최근 200건만 집계되어 오래된 날짜가 빠짐).
     rows = list(jsonl_read(ACTIVITY_LOG, limit=0) or [])
-    cutoff = _dt.datetime.now() - _dt.timedelta(days=days)
+    cutoff_date = _dt.datetime.now().date() - _dt.timedelta(days=days - 1) if days else None
     features: dict = {}
     unattributed_count = 0
     for r in rows:
@@ -1887,7 +1906,7 @@ def activity_features(days: int = Query(30), _admin=Depends(require_admin)):
                 dt = dt.replace(tzinfo=None)
         except Exception:
             continue
-        if dt < cutoff:
+        if cutoff_date is not None and dt.date() < cutoff_date:
             continue
         username = str(r.get("username") or r.get("actor") or "").strip()
         if not username or username.lower() == "anonymous":

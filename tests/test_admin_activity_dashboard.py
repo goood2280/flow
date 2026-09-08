@@ -54,7 +54,7 @@ def test_activity_features_excludes_unattributed_events(monkeypatch):
 
 
 def test_activity_summary_returns_up_to_3000_recent_events(monkeypatch, tmp_path):
-    now = dt.datetime.now().replace(microsecond=0)
+    now = dt.datetime.combine(dt.date.today(), dt.time(12, 0))
     rows = [
         {
             "timestamp": (now - dt.timedelta(seconds=index)).isoformat(),
@@ -72,3 +72,56 @@ def test_activity_summary_returns_up_to_3000_recent_events(monkeypatch, tmp_path
     assert len(result["recent"]) == 3000
     assert result["recent"][0]["timestamp"] == rows[0]["timestamp"]
     assert result["recent"][-1]["timestamp"] == rows[2999]["timestamp"]
+
+
+def test_activity_summary_uses_exact_calendar_day_window(monkeypatch, tmp_path):
+    today = dt.date.today()
+    rows = [
+        {"timestamp": dt.datetime.combine(today - dt.timedelta(days=6), dt.time.min).isoformat(), "username": "alice", "action": "nav:home", "tab": "home"},
+        {"timestamp": dt.datetime.combine(today - dt.timedelta(days=7), dt.time.max).isoformat(), "username": "bob", "action": "nav:home", "tab": "home"},
+    ]
+    monkeypatch.setattr(admin, "jsonl_read", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(admin, "ACTIVITY_LOG", tmp_path / "activity.jsonl")
+
+    result = admin.activity_summary(days=7, _admin={"role": "admin"})
+
+    assert result["total"] == 1
+    assert result["by_day"] == {(today - dt.timedelta(days=6)).isoformat(): 1}
+
+
+def test_activity_summary_days_zero_includes_the_entire_preserved_history(monkeypatch, tmp_path):
+    now = dt.datetime.now().replace(microsecond=0)
+    first = now - dt.timedelta(days=400)
+    rows = [
+        {"timestamp": first.isoformat(), "username": "alice", "action": "nav:home", "tab": "home"},
+        {"timestamp": now.isoformat(), "username": "bob", "action": "nav:admin", "tab": "admin"},
+    ]
+    monkeypatch.setattr(admin, "jsonl_read", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(admin, "ACTIVITY_LOG", tmp_path / "activity.jsonl")
+
+    result = admin.activity_summary(days=0, _admin={"role": "admin"})
+
+    assert result["window_days"] == 0
+    assert result["activity_start"] == first.date().isoformat()
+    assert result["activity_end"] == now.date().isoformat()
+    assert result["total"] == 2
+    assert result["by_day"] == {
+        first.date().isoformat(): 1,
+        now.date().isoformat(): 1,
+    }
+    assert len(result["active_users_by_day"]) == 401
+    assert len(result["active_users_by_month"]) > 12
+
+
+def test_activity_features_days_zero_includes_old_records(monkeypatch):
+    now = dt.datetime.now().replace(microsecond=0)
+    rows = [
+        {"timestamp": (now - dt.timedelta(days=500)).isoformat(), "username": "alice", "action": "inform:view", "tab": "inform"},
+        {"timestamp": now.isoformat(), "username": "bob", "action": "nav:admin", "tab": "admin"},
+    ]
+    monkeypatch.setattr(admin, "jsonl_read", lambda *args, **kwargs: rows)
+
+    result = admin.activity_features(days=0, _admin={"role": "admin"})
+
+    assert result["window_days"] == 0
+    assert {item["feature"] for item in result["features"]} == {"inform", "nav"}

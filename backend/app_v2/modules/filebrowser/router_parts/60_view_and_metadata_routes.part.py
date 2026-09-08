@@ -1440,9 +1440,13 @@ def _chart_builder_reformatter_frame(
         if m_to:
             date_to = m_to.group(1)
 
+    reformatter_agg = str(source.reformatter_agg or "").strip().casefold()
+    if reformatter_agg in {"raw", "shot raw", "shot_raw"}:
+        reformatter_agg = ""
     reformat_request = et_reformatize.RunReq(
         product=source.product,
         items=requested_items,
+        agg=reformatter_agg,
         offset=0,
         limit=request_limit,
         days=max(0, min(3650, int(source.runtime_recent_days or 0))),
@@ -1458,17 +1462,44 @@ def _chart_builder_reformatter_frame(
     reformatted = et_reformatize.run(reformat_request, user=user)
     rows = reformatted.get("rows") if isinstance(reformatted.get("rows"), list) else []
     columns = [str(column) for column in (reformatted.get("columns") or [])]
+    projection_items = requested_items or [str(column) for column in (reformatted.get("index_columns") or [])]
     df = pl.DataFrame(rows) if rows else pl.DataFrame(schema={column: pl.String for column in columns})
     runtime_warnings: list[str] = []
     df = _chart_builder_filter_frame(df, source, str(source.id or "query"), runtime_warnings)
+    display_sql = str(source.sql or "")
+    select_body = _split_ai_sql_select_body(display_sql) if re.match(r"^\s*SELECT\b", display_sql, re.I) else None
+    if select_body:
+        raw_columns, raw_where = select_body
+        clauses = [clause.strip() for clause in re.split(r"\s+AND\s+", raw_where, flags=re.I) if clause.strip()]
+        remaining = [
+            clause for clause in clauses
+            if not re.fullmatch(r"tkout_time\s*(?:>=|<=)\s*['\"]?[0-9]{4}-[0-9]{2}-[0-9]{2}['\"]?", clause, re.I)
+        ]
+        if len(remaining) != len(clauses):
+            # These predicates already ran in ET 다운로드 before aggregation.
+            display_sql = f"SELECT {raw_columns}" + (f" WHERE {' AND '.join(remaining)}" if remaining else "")
+    legacy_where, legacy_selected = _parse_ai_sql_select_prefix(display_sql, None)
+    if legacy_selected:
+        column_lookup = {column.casefold(): column for column in columns}
+        missing = [column for column in legacy_selected if column.casefold() not in column_lookup]
+        # ET 다운로드가 예전에 만든 호환 코드는 wide 결과에 없는 generic
+        # ``value``(집계 시 ``tkout_time``도)를 SELECT했다. 이미 복사된 코드도
+        # 실행되도록 그 projection만 실제 reformatter alias로 교체한다.
+        if missing and {column.casefold() for column in missing} <= {"value", "tkout_time"}:
+            selected = [column_lookup[column.casefold()] for column in legacy_selected if column.casefold() in column_lookup]
+            selected.extend(column_lookup[item.casefold()] for item in projection_items
+                            if item.casefold() in column_lookup and column_lookup[item.casefold()] not in selected)
+            display_sql = f"SELECT {', '.join(selected) if selected else '*'}"
+            if legacy_where:
+                display_sql += f" WHERE {legacy_where}"
     where_sql, selected_text, sort_spec = _merge_display_sql_into_args(
-        source.sql, source.select_cols, {}, columns
+        display_sql, source.select_cols, {}, columns
     )
     normalized = _validate_where_expression(where_sql, columns)
     active_sort, _ = _resolve_view_sort_spec(sort_spec, columns)
     view = _run_view(
         df,
-        source.sql,
+        display_sql,
         source.select_cols,
         rows=request_limit,
         page_size=request_limit,
@@ -1489,6 +1520,7 @@ def _chart_builder_reformatter_frame(
     meta = {
         "vehicle_csv": reformatted.get("vehicle_csv") or "",
         "reformatter_items": requested_items,
+        "reformatter_agg": reformatter_agg,
         "index_columns": reformatted.get("index_columns") or [],
         "selected_text": ",".join(selected),
         "total_rows": int(view.get("total_rows") or shown.height),

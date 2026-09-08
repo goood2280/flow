@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { toast } from "../../components/Toast";
 import usePolling from "../../hooks/usePolling";
 import { postJson, qs, sf } from "../../lib/api";
+import { createLatestRequests } from "../../lib/latestRequests";
 import { isAdmin } from "../../lib/permissions";
 import { Filter, TabStrip } from "../../components/UXKit";
 import { PageGearButton } from "../../components/PageGear";
@@ -613,6 +614,8 @@ function CachingScheduleBoard({ jobs, queues, scanQueue, canManage, onCancelTask
 }
 
 export default function My_RamCache({ user }) {
+  const [requests] = useState(() => createLatestRequests(sf));
+  useEffect(() => () => requests.cancel(), [requests]);
   // 이 페이지의 관리 기능(수동 스캔·예산·이벤트 로그)은 백엔드가 전부
   // splittable page manager 권한으로 막고 있다. 프런트도 같은 판정을 써야
   // "보이는데 403" 이 안 난다 — 판정값은 overview 응답의 can_manage 가 정본이고,
@@ -724,52 +727,57 @@ export default function My_RamCache({ user }) {
 
   const loadOverview = useCallback(() => {
     setOverviewLoading(true);
-    sf(API + "/ram-cache/overview")
-      .then(d => {
+    requests.load("overview", API + "/ram-cache/overview", {
+      success: d => {
         setOverview(d);
         if (typeof d.can_manage === "boolean") setCanManage(d.can_manage);
         setSelProd(prev => prev || (d.products?.[0]?.product || ""));
-      })
-      .catch(e => toast.error("캐시 현황 로드 실패: " + (e?.message || e)))
-      .finally(() => setOverviewLoading(false));
-    sf(API + "/memory/overview")
-      .then(d => setMemOverview(d))
-      .catch(() => setMemOverview(null));
+      },
+      error: e => toast.error("캐시 현황 로드 실패: " + (e?.message || e)),
+      done: () => setOverviewLoading(false),
+    });
+    requests.load("memory", API + "/memory/overview", {
+      success: setMemOverview,
+      error: () => setMemOverview(null),
+    });
   }, []);
 
   const loadPriority = useCallback((prod) => {
     if (!prod) return;
-    sf(API + "/ram-cache/priority-lots" + qs({ product: prod }))
-      .then(d => setPriorityLots(d.lots || []))
-      .catch(() => setPriorityLots([]));
+    requests.load("priority", API + "/ram-cache/priority-lots" + qs({ product: prod }), {
+      success: d => setPriorityLots(d.lots || []),
+      error: () => setPriorityLots([]),
+    });
   }, []);
 
   const loadLotStatus = useCallback((prod) => {
     if (!prod) return;
-    sf(API + "/ram-cache/lot-status" + qs({ product: prod }))
-      .then(d => { setLotStatuses(d.statuses || {}); setLatestMainStep(d.latest_main_step || null); setLotStatusSkipped(d.skipped_reason || ""); })
-      .catch(() => { setLotStatuses({}); setLatestMainStep(null); setLotStatusSkipped(""); });
+    requests.load("lot-status", API + "/ram-cache/lot-status" + qs({ product: prod }), {
+      success: d => { setLotStatuses(d.statuses || {}); setLatestMainStep(d.latest_main_step || null); setLotStatusSkipped(d.skipped_reason || ""); },
+      error: () => { setLotStatuses({}); setLatestMainStep(null); setLotStatusSkipped(""); },
+    });
   }, []);
 
   const loadContents = useCallback((prod) => {
     if (!prod) return;
     setContentsLoading(true);
-    sf(API + "/ram-cache/contents" + qs({ product: prod }))
-      .then(d => setContents(d))
-      .catch(() => setContents(null))
-      .finally(() => setContentsLoading(false));
+    requests.load("contents", API + "/ram-cache/contents" + qs({ product: prod }), {
+      success: setContents,
+      error: () => setContents(null),
+      done: () => setContentsLoading(false),
+    });
   }, []);
 
   const loadBudgets = useCallback((prod) => {
-    sf(API + "/ram-cache/product-budgets")
-      .then(d => {
+    requests.load("budgets", API + "/ram-cache/product-budgets" + qs({ product: prod }), {
+      success: d => {
         setBudgets(d);
         const pb = (d.products || {})[prod];
         setBudgetDraft(pb ? String(pb.max_roots) : "");
         setBudgetDraftDev(pb ? String(pb.max_roots_dev ?? "") : "");
         setStepThresholdDraft(pb ? String(pb.step_threshold ?? "") : "");
-      })
-      .catch(() => {});
+      },
+    });
   }, []);
 
   // 관리자 중단 — 지금 캐싱 중인 제품만 끊고 다음 제품으로 넘긴다. 부분 산출은
@@ -812,32 +820,35 @@ export default function My_RamCache({ user }) {
       .catch(() => {});
   }, []);
   const loadCacheEventLog = useCallback((cat) => {
-    sf(API + "/cache-event-log" + qs({ category: cat }))
-      .then(d => {
+    return requests.load("events", API + "/cache-event-log" + qs({ category: cat }), {
+      success: d => {
         setCacheEventLog(d.events || []); setPeakRam(d.peak_ram || null);
         setCacheJobs(d.jobs || []); setCacheQueues(d.queues || null);
         setScanQueue(d.scan_queue || null); setCacheProgress(d.progress || null);
         setProductStatus(d.product_status || null); setCacheMilestones(d.milestones || []);
-      })
-      .then(() => setCacheLoadError(""))
+        setCacheLoadError("");
+      },
       // 실패해도 마지막으로 받은 값을 지우지 않는다. 예전에는 전부 null 로
       // 비워서 서버 재시작 같은 한 번의 실패로 화면이 통째로 텅 비었고, 그게
       // "캐시가 안 돌고 있다"로 오해됐다. 대신 갱신 실패만 위에 알린다.
-      .catch(e => setCacheLoadError(e?.message || "갱신 실패"))
+      error: e => setCacheLoadError(e?.message || "갱신 실패"),
       // 성공이든 실패든 tick 을 올린다 — 아래 폴링 effect 가 이 값으로 다음
       // 주기를 건다. 예전에는 성공 시 새로 만들어지는 cacheJobs 배열이 유일한
       // 재실행 트리거라, 한 번만 실패해도 폴링이 영영 멈췄다(화면 정지).
-      .finally(() => setPollTick(t => t + 1));
+      done: () => setPollTick(t => t + 1),
+    });
   }, []);
   const loadTiming = useCallback((hours, scope) => {
-    sf(API + "/search-timings" + qs({ hours, limit: 200, origin: scope === "all" ? "" : "__self__" }))
-      .then(setTiming)
-      .catch(() => setTiming(null));
+    requests.load("timing", API + "/search-timings" + qs({ hours, limit: 200, origin: scope === "all" ? "" : "__self__" }), {
+      success: setTiming,
+      error: () => setTiming(null),
+    });
   }, []);
   const reloadRootLotCacheStatus = useCallback((prod) => {
-    return sf(API + "/root-lot-cache/status" + qs({ product: prod }))
-      .then(d => setRootLotCacheStatus(d))
-      .catch(() => setRootLotCacheStatus(null));
+    return requests.load("root-status", API + "/root-lot-cache/status" + qs({ product: prod }), {
+      success: setRootLotCacheStatus,
+      error: () => setRootLotCacheStatus(null),
+    });
   }, []);
 
   useEffect(() => { loadOverview(); }, [loadOverview]);
@@ -847,9 +858,10 @@ export default function My_RamCache({ user }) {
     loadCacheEventLog("");
   }, [canManage, loadQueryWorkers, loadCacheEventLog]);
   useEffect(() => {
-    if (!canManage) return;
+    if (!canManage || mainTab !== "speed_config") return;
     loadTiming(timingHours, timingScope);
-  }, [canManage, timingHours, timingScope, loadTiming]);
+    return () => requests.cancel(["timing"]);
+  }, [canManage, mainTab, timingHours, timingScope, loadTiming]);
   // 캐시 작업 진행 폴링 — 수동 스캔뿐 아니라 **예약/자동 캐싱**도 같은 화면에
   // 실시간으로 보이게 한다. 실행 중인 작업이 있으면 2.5초, 없으면 15초 간격.
   // (수동 스캔 중에는 startScanAndPoll 의 인터벌이 담당하므로 중복 폴링 생략)
@@ -860,15 +872,21 @@ export default function My_RamCache({ user }) {
   // 어긋나면 화면이 그대로 굳어 아무것도 갱신되지 않았다.
   useEffect(() => {
     if (!canManage || unifiedScanBusy) return;
-    const busyJob = (cacheJobs || []).some(job => job.status === "running");
+    const busyJob = productStatus?.artifact_status_pending || (cacheJobs || []).some(job => job.status === "running");
     const timer = setTimeout(() => loadCacheEventLog(cacheEventLogFilter), busyJob ? 2500 : 15000);
     return () => clearTimeout(timer);
-  }, [canManage, unifiedScanBusy, cacheJobs, cacheEventLogFilter, loadCacheEventLog, pollTick]);
+  }, [canManage, unifiedScanBusy, cacheJobs, productStatus?.artifact_status_pending, cacheEventLogFilter, loadCacheEventLog, pollTick]);
   useEffect(() => {
     // Product-detail endpoints can scan/cache root metadata.  The jobs and
     // speed tabs need only the lightweight overview, so do not make the hidden
     // product panel generate cache work on every product selection/poll.
     if (!selProd || mainTab !== "products") return;
+    setPriorityLots([]);
+    setContents(null);
+    setLotStatuses({});
+    setLatestMainStep(null);
+    setLotStatusSkipped("");
+    setRootLotCacheStatus(null);
     loadPriority(selProd);
     loadContents(selProd);
     loadBudgets(selProd);
@@ -879,7 +897,10 @@ export default function My_RamCache({ user }) {
         reloadRootLotCacheStatus(selProd);
       }
     }, 750);
-    return () => clearTimeout(t);
+    return () => {
+      clearTimeout(t);
+      requests.cancel(["priority", "contents", "budgets", "lot-status", "root-status"]);
+    };
   }, [selProd, mainTab, canManage, loadPriority, loadLotStatus, loadContents, loadBudgets, reloadRootLotCacheStatus]);
 
   // 통합 스캔/전체 셋업 공용 — 시작 요청 후 진행 로그를 실시간 폴링한다.
