@@ -36,6 +36,7 @@ const LIGHT_COLORS = { red: "#dc2626", orange: "#f97316", gray: "#9ca3af", yello
                        purple: "#7c3aed", dim: "#cbd5e1" };
 const LIGHT_RANK = { red: 0, orange: 1, gray: 2, yellow: 3, purple: 4, green: 5, dim: 6 };
 const RED_EDGE = "#991b1b";   // shot 확대의 빨간불 테두리 (진한 빨강)
+
 // 결과 화면에서 무엇을 볼지 — 대상 TEG(S/L) / MAIN 내부 TEG / 둘 다 (기본)
 const VIEW_ALL = "all", VIEW_TARGET = "target", VIEW_MAIN = "main";
 const VIEW_OPTS = [
@@ -634,14 +635,14 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const teg = res.teg;
   const { summary } = teg;
   // 신호등은 백엔드 판정(row.light)을 그대로 쓴다. Teg_location에 있는 항목만
-  // S/L TEG이며, 없는 module은 MAIN 정보 누락으로 분리한다.
+  // S/L TEG이며, 확장 매칭 후 없는 module은 MAIN 내부 TEG로 분류한다.
   const mainInfoMissingRows = useMemo(() => teg.rows.filter(r =>
     r.teg_kind === "main_info_missing" && !r.ref_teg), [teg.rows]);
   const slRows = useMemo(() => teg.rows.filter(r =>
     r.teg_kind !== "main_info_missing"), [teg.rows]);
   const bad = useMemo(() => slRows.filter(r => r.light === "red"), [slRows]);
   const extended = useMemo(() => teg.rows.filter(r => r.status === "extended"), [teg.rows]);
-  // MAIN 내부 TEG(정답지 미등록) 신호등 목록 — 자기 MAIN die 안·경계면 노란불,
+  // MAIN 내부 TEG(정답지에 없는 추론 행) 신호등 목록 — 자기 MAIN die 안·경계면 노란불,
   // 다른 die·die 밖이면 빨간불. 대상 TEG 판정과 같은 형식 (빨강 → 노랑 → 회색 순)
   const mainChecklist = useMemo(() => {
     const out = [];
@@ -1361,7 +1362,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             <>
               <LightSummary items={[
                 { light: "red", label: "확인 필요", n: mainChecklist.filter(it => it.light === "red").length,
-                  title: "purpose 값이 있는 구간의 TEG, 다른 MAIN die 안·경계 또는 자기 MAIN die 밖" },
+                  title: "purpose가 빈 값·TEG가 아닌 MAIN과 겹치는 TEG, 다른 MAIN die 안·경계 또는 자기 MAIN die 밖" },
                 { light: "orange", label: "MAIN 정보없음", n: mainChecklist.filter(it => it.light === "orange").length,
                   title: "MAIN 크기·위치 정보가 없어 눈으로 확인 필요" },
                 { light: "yellow", label: "MAIN die 안", n: mainChecklist.filter(it => it.light === "yellow").length,
@@ -1763,10 +1764,10 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               정답지에 있는 TEG 는 ΔX·ΔY 가 2 를 넘거나 die 안에 깊이 들어가면 빨간불이고,
               둘 다면 사유에 둘 다 적습니다. <b>die 경계에서 허용오차 안쪽/바깥쪽</b>(⚙️ 설정
               die_tol, ebeam raw 단위)은 노란불 '경계 근처' 입니다.
-              정답지 정보가 없는 <b>MAINxx</b> TEG 는 Purpose가 비어 있고 자기 MAIN 안에
+              정답지 정보가 없는 <b>MAINxx</b> TEG 는 Purpose가 비어 있거나 TEG이고 자기 MAIN 안에
               전부 들어오면 노란불, 자기 MAIN 경계를 넘거나 다른 MAIN을 침범하면 빨간불입니다.
-              Main_chip_info의 purpose에 <b>값이 하나라도 있으면</b>
-              위치와 관계없이 빨간불입니다 (기본 TEG 사이즈 기준).
+              Main_chip_info의 purpose가 비어 있거나 <b>TEG</b>이면 배치를 허용하고,
+              그 외 purpose의 MAIN 영역과 TEG가 겹치면 빨간불입니다 (기본 TEG 사이즈 기준).
               {res.shot.checked ? (
                 <>
                   {res.shot.cell_source === "image" && <> die 영역 = ⚙️ 설정에 붙여넣은 <b>그림에서 인식한 사각형</b> ({res.shot.image_count ?? 0}개).</>}
@@ -2063,10 +2064,10 @@ function ExtensionMacroSettings({ canEdit, onSaved }) {
   );
 }
 
-export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
+export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false, initialText = "" }) {
   // 원문은 비제어(uncontrolled) — 수만 줄 붙여넣기 시 키 입력/paste 마다
   // 페이지 전체가 리렌더되던 버벅임 제거. 값은 ref 로만 추적, 검사 시점에 읽는다.
-  const textRef = useRef("");
+  const textRef = useRef(initialText || "");
   const lastTextRef = useRef("");                  // 마지막 검사 원문 (이름 재지정 무효화 판단)
   const lastRefreshRef = useRef(refreshKey);        // config 저장 뒤 현재 원문 자동 재검사
   const inspectRequestRef = useRef({ id: 0, controller: null });
@@ -2150,6 +2151,14 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
   useEffect(() => () => inspectRequestRef.current.controller?.abort(), []);
 
   useEffect(() => {
+    if (initialText && initialText !== lastTextRef.current) {
+      textRef.current = initialText;
+      run(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialText]);
+
+  useEffect(() => {
     if (lastRefreshRef.current === refreshKey) return;
     lastRefreshRef.current = refreshKey;
     if (textRef.current.trim()) run(flat);
@@ -2219,7 +2228,7 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false }) {
               설비 화면의 레시피 원문(#wafer-map / &lt;SITES&gt; / #teg-map 포함)을 그대로 붙여넣고
               검사를 누르세요.
             </div>
-            <Textarea defaultValue={textRef.current} onChange={e => { textRef.current = e.target.value; }} rows={10}
+            <Textarea key={initialText || "default"} defaultValue={textRef.current} onChange={e => { textRef.current = e.target.value; }} rows={10}
               placeholder={"1 #wafer-map ...\n2 !\n3 --ttt--\n..."}
               style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }} />
             <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>

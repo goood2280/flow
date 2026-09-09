@@ -118,7 +118,6 @@ FLOWI_EXCLUDE_FILES = {
     'backend/core/flowi_file_docs.py',
     'backend/core/flowi_gate.py',
     'backend/core/flowi_multisource.py',
-    'backend/core/flowi_progress.py',
     'backend/core/flowi_workflow_catalog.py',
     'backend/core/flowi_workflow_defaults.json',
     'backend/core/home_memory.py',

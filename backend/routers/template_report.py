@@ -47,7 +47,8 @@ from core.report_variables import (
     substitute,
     validate_bindings,
 )
-from core.utils import load_json, save_json, safe_filename
+from core.audit import record as _audit
+from core.utils import jsonl_append, load_json, save_json, safe_filename
 
 
 router = APIRouter(prefix="/api/template-report", tags=["template-report"])
@@ -1926,6 +1927,21 @@ def export_pptx(req: ExportReq, user=Depends(current_user)):
     )
     stamp = dt.datetime.now().strftime("%Y%m%d")
     filename = safe_filename(f"{template.get('name') or 'template_report'}_{stamp}.pptx")
+    username = user.get("username") or "anonymous"
+    jsonl_append(PATHS.download_log, {
+        "source": "template_report",
+        "username": username,
+        "product": str(template.get("name") or req.template_id or ""),
+        "filename": filename,
+        "sql": f"template={req.template_id} format=pptx",
+        "rows": 0,
+        "cols": 0,
+        "size_mb": round(len(payload) / 1e6, 2),
+        "format": "pptx",
+    })
+    _audit(username, "template-report:export-pptx",
+           detail=f"template={req.template_id} filename={filename} size_mb={round(len(payload) / 1e6, 2)}",
+           tab="template-report")
     return Response(
         content=payload,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -1945,8 +1961,24 @@ def export_images(req: ExportReq, _user=Depends(current_user)):
             token = labels.get(key) or f"chart_{position}"
             archive.writestr(f"slide_{page_index + 1:02d}_chart_{position}_{token}.png", decoded[key])
     filename = safe_filename(f"{template.get('name') or 'template_report'}_chart_images.zip")
+    username = _user.get("username") or "anonymous"
+    payload = out.getvalue()
+    jsonl_append(PATHS.download_log, {
+        "source": "template_report",
+        "username": username,
+        "product": str(template.get("name") or req.template_id or ""),
+        "filename": filename,
+        "sql": f"template={req.template_id} format=zip",
+        "rows": 0,
+        "cols": len(decoded),
+        "size_mb": round(len(payload) / 1e6, 2),
+        "format": "zip",
+    })
+    _audit(username, "template-report:export-images",
+           detail=f"template={req.template_id} charts={len(decoded)} filename={filename} size_mb={round(len(payload) / 1e6, 2)}",
+           tab="template-report")
     return Response(
-        content=out.getvalue(),
+        content=payload,
         media_type="application/zip",
         headers={"Content-Disposition": _download_header(filename)},
     )

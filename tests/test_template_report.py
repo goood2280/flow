@@ -8,7 +8,8 @@ from PIL import Image
 from pptx import Presentation
 from fastapi import HTTPException
 
-from core.utils import jsonl_append
+from core.utils import jsonl_append, jsonl_read
+from core.paths import PATHS
 from routers import filebrowser, template_report
 
 
@@ -330,6 +331,9 @@ def test_template_pptx_is_wide_and_places_chart_image(tmp_path, monkeypatch):
     )
 
     response = template_report.export_pptx(request, {"username": "viewer", "role": "user"})
+    assert jsonl_read(PATHS.download_log)[-1]["username"] == "viewer"
+    assert jsonl_read(PATHS.activity_log)[-1]["username"] == "viewer"
+    assert jsonl_read(PATHS.activity_log)[-1]["action"] == "template-report:export-pptx"
     deck = Presentation(io.BytesIO(response.body))
 
     assert response.media_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -479,6 +483,9 @@ def test_template_image_export_contains_individual_pngs(tmp_path, monkeypatch):
     )
 
     response = template_report.export_images(request, {"username": "viewer", "role": "user"})
+    assert jsonl_read(PATHS.download_log)[-1]["username"] == "viewer"
+    assert jsonl_read(PATHS.activity_log)[-1]["username"] == "viewer"
+    assert jsonl_read(PATHS.activity_log)[-1]["action"] == "template-report:export-images"
     with zipfile.ZipFile(io.BytesIO(response.body)) as archive:
         names = archive.namelist()
         assert names == ["slide_01_chart_1_chart_demo_001.png"]

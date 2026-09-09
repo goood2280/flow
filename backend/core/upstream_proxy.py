@@ -58,6 +58,7 @@ _PROXY_PATHS_DEFAULT = (
 # LLM credential/profile이 없을 수 있고, 실행 이력과 breaker 상태도 운영에
 # 모여야 한다. 이 POST들은 세션 토큰과 JSON body를 그대로 한 홉 전달한다.
 _AI_PROXY_PATHS_DEFAULT = (
+    "/api/home-agent/orchestrate",
     "/api/filebrowser/sql/llm/draft",
     "/api/filebrowser/settings/llm/draft",
     "/api/filebrowser/chart-builder/assistant",

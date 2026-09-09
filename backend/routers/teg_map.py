@@ -187,6 +187,7 @@ class ProductCreateReq(BaseModel):
     text: str
     vehicle: str
     node_path: str
+    product_code: str = ""
     tegs: list[ProductTegReq]
     main_chip: ProductMainChipReq | None = None
 
@@ -194,6 +195,7 @@ class ProductCreateReq(BaseModel):
 class ProductIdentityReq(BaseModel):
     vehicle: str
     node_path: str
+    product_code: str = ""
 
 
 @router.post("/product-preview")
@@ -215,6 +217,7 @@ def product_create(req: ProductCreateReq, user=Depends(_require_teg_user)):
             req.main_chip.model_dump() if req.main_chip else None,
             user.get("username", ""),
             req.node_path,
+            product_code=req.product_code,
         )
     except (TypeError, ValueError) as e:
         raise HTTPException(400, str(e))
@@ -237,7 +240,7 @@ def product_geometry_get(vehicle: str, user=Depends(_require_teg_user)):
 @router.put("/products/{vehicle}/geometry")
 def product_geometry_update(vehicle: str, req: ProductPreviewReq,
                             user=Depends(_require_teg_user)):
-    """기존 제품의 Item/X/Y와 해당 Chip_Radius 행을 함께 갱신한다."""
+    """저장된 Item/X/Y 표를 YMS Photomap 서식으로 붙여넣어 교체한다."""
     _require_product_access(user, vehicle)
     try:
         out = _tm.update_product_from_table(
@@ -261,13 +264,14 @@ def product_identity_update(vehicle: str, req: ProductIdentityReq,
     try:
         out = _tm.update_product_identity(
             vehicle, req.vehicle, req.node_path, user.get("username", ""),
+            product_code=req.product_code,
         )
     except (TypeError, ValueError) as e:
         raise HTTPException(400, str(e))
     from core.audit import record_user as _audit_user
     _audit_user(user.get("username", ""), "teg-map:product-identity-update",
                 detail=(f"vehicle={out['previous_vehicle']}->{out['vehicle']};"
-                        f"node={out['node_path']}"), tab="teg")
+                        f"node={out['node_path']};code={out.get('product_code', '')}"), tab="teg")
     return out
 
 
@@ -285,6 +289,7 @@ class NodeAccessRuleReq(BaseModel):
 
 class ProductAccessReq(BaseModel):
     product_nodes: dict[str, str] = {}
+    product_codes: dict[str, str] = {}
     node_access: dict[str, NodeAccessRuleReq] = {}
 
 
@@ -296,6 +301,7 @@ def product_access_get(_admin=Depends(require_admin)):
     cfg = _tm.load_cfg()
     return {"ok": True, "products": _tm.product_catalog(),
             "product_nodes": cfg.get("product_nodes") or {},
+            "product_codes": cfg.get("product_codes") or {},
             "node_access": cfg.get("node_access") or {},
             "users": sorted(set(users), key=str.casefold)}
 
@@ -304,6 +310,7 @@ def product_access_get(_admin=Depends(require_admin)):
 def product_access_put(req: ProductAccessReq, admin=Depends(require_admin)):
     cfg = _tm.save_cfg({
         "product_nodes": req.product_nodes,
+        "product_codes": req.product_codes,
         "node_access": {root: rule.model_dump() for root, rule in req.node_access.items()},
     })
     from core.audit import record_user as _audit_user
@@ -311,6 +318,7 @@ def product_access_put(req: ProductAccessReq, admin=Depends(require_admin)):
                 detail=f"products={len(req.product_nodes)};roots={len(req.node_access)}", tab="teg")
     return {"ok": True, "products": _tm.product_catalog(),
             "product_nodes": cfg.get("product_nodes") or {},
+            "product_codes": cfg.get("product_codes") or {},
             "node_access": cfg.get("node_access") or {}}
 
 
@@ -612,3 +620,28 @@ def _image_shapes(vehicle: str) -> dict:
 def image_shapes(vehicle: str = Query(...), user=Depends(current_user)):
     _require_product_access(user, vehicle)
     return _image_shapes(vehicle)
+
+
+@router.get("/mapfile-traffic")
+def mapfile_traffic_get(vehicle: str = Query(...), force: bool = False,
+                        user=Depends(current_user)):
+    """DB mapfile 폴더 내 제품코드* 파일들의 신호등 검증 현황 조회."""
+    _require_product_access(user, vehicle)
+    from core import mapfile_traffic
+    return mapfile_traffic.inspect_mapfiles_for_product(vehicle, force=bool(force))
+
+
+@router.get("/mapfile-traffic/content")
+def mapfile_traffic_content_get(filename: str = Query(...), user=Depends(current_user)):
+    """Mapfile 검증 탭에서 열어보기 위한 mapfile 텍스트 원문 조회."""
+    from core import mapfile_traffic
+    try:
+        content = mapfile_traffic.read_mapfile_text(filename)
+        return {"ok": True, "filename": filename, "content": content}
+    except FileNotFoundError:
+        raise HTTPException(404, f"파일을 찾을 수 없습니다: {filename}")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, f"파일 읽기 오류: {exc}")
+

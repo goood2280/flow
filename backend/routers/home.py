@@ -209,6 +209,20 @@ def home_alerts(request: Request, limit: int = 50):
                 else:
                     target_search = ""
                     action_label = "확인하기"
+            elif event == "teg_mapfile_abnormal":
+                category = "TEG_CHECK"
+                priority_group = "critical"
+                badge = "Critical"
+                tone = "danger"
+                target_tab = "teg"
+                target_search = str(payload.get("target_search") or "")
+                if not target_search:
+                    target_search = "?" + urlencode({
+                        "vehicle": payload.get("vehicle") or prod,
+                        "view": "traffic",
+                        "filename": payload.get("filename") or "",
+                    })
+                action_label = "TEG Mapfile에서 확인"
             elif event in ("tracker_step_reached", "lot_step_threshold_reached"):
                 category = "랏관리" if event == "lot_step_threshold_reached" else "알림/이상"
                 priority_group = "notice"

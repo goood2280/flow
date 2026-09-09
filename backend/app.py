@@ -164,6 +164,15 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/core/auto_report_history.py",
     "backend/routers/auto_report.py",
     "backend/routers/dcop.py",
+    "backend/routers/lot_location.py",
+    "backend/routers/data_chat.py",
+    "backend/core/data_chat.py",
+    "backend/core/data_chat_teg.py",
+    "backend/core/data_chat_split.py",
+    "backend/core/file_transaction.py",
+    "backend/core/mapfile_traffic.py",
+    "backend/core/mapfile_alerts.py",
+    "backend/core/mapfile_traffic_scheduler.py",
 )
 
 

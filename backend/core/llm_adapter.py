@@ -70,6 +70,14 @@ _EXECUTION_PRINCIPAL: contextvars.ContextVar[Dict[str, Any] | None] = contextvar
     "flow_llm_execution_principal",
     default=None,
 )
+_EXECUTION_PATH = contextvars.ContextVar("flow_llm_execution_path", default="")
+_DATA_TASK_PATHS = (
+    "/api/home-agent/orchestrate", "/api/llm/flowi/chat",
+    "/api/filebrowser/chart-builder/assistant", "/api/filebrowser/sql/llm/draft",
+    "/api/filebrowser/chart-builder/run", "/api/filebrowser/view",
+    "/api/filebrowser/root-parquet-view", "/api/filebrowser/download",
+    "/api/llm/test", "/api/llm/flowi/verify",
+)
 
 ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
 _DOTENV_FILE = PATHS.app_root / ".env"
@@ -95,7 +103,7 @@ _DEFAULT: Dict[str, Any] = {
 
 
 @contextmanager
-def request_execution_scope(user: Dict[str, Any] | None):
+def request_execution_scope(user: Dict[str, Any] | None, path: str = ""):
     """Bind the authenticated request principal for all nested LLM calls.
 
     The HTTP auth middleware owns this scope. Calls outside an authenticated
@@ -104,9 +112,11 @@ def request_execution_scope(user: Dict[str, Any] | None):
     """
     principal = dict(user) if isinstance(user, dict) else None
     token = _EXECUTION_PRINCIPAL.set(principal)
+    path_token = _EXECUTION_PATH.set(path)
     try:
         yield
     finally:
+        _EXECUTION_PATH.reset(path_token)
         _EXECUTION_PRINCIPAL.reset(token)
 
 
@@ -119,6 +129,7 @@ def execution_policy_snapshot() -> Dict[str, Any]:
         "admin_only": _POC_ADMIN_ONLY,
         "request_admin": is_admin,
         "error_explanation_enabled": _ERROR_EXPLANATION_ENABLED,
+        "allowed_tasks": ["splittable", "location", "chart", "sql", "extract"],
         **llm_usage.snapshot(),
     }
 
@@ -126,6 +137,9 @@ def execution_policy_snapshot() -> Dict[str, Any]:
 def _execution_denial() -> str:
     if _POC_ADMIN_ONLY and not execution_policy_snapshot()["request_admin"]:
         return "llm execution is admin-only during POC"
+    path = _EXECUTION_PATH.get()
+    if path and not any(path.startswith(prefix) if prefix.endswith("/") else path == prefix or path == prefix + "/stream" for prefix in _DATA_TASK_PATHS):
+        return "llm execution is limited to data search, location, chart, SQL and extraction tasks"
     return ""
 
 # --- LLM health circuit breaker -------------------------------------------
@@ -331,7 +345,7 @@ def _profile_is_playground_connected(profile: Dict[str, Any], *, active: bool = 
     has_connection = bool(url or str(profile.get("admin_token") or "").strip())
     if active and provider == "playground":
         return enabled or has_connection
-    if provider == "playground":
+    if provider in {"playground", "gemma4"}:
         return enabled or has_connection
     if "playground" in url or system_name == "playground" or auth_mode == "dep_ticket":
         return enabled or has_connection
@@ -385,7 +399,7 @@ def _blocked_external_config(cfg: Dict[str, Any], reason: str) -> Dict[str, Any]
     return out
 
 
-_ALLOWED_PROVIDERS = {"generic", "openai", "openai_compatible", "local", "playground", "vertex_gemini"}
+_ALLOWED_PROVIDERS = {"generic", "openai", "openai_compatible", "local", "playground", "gemma4", "vertex_gemini"}
 
 
 def _normalize_runtime_config(raw: Dict[str, Any]) -> Dict[str, Any]:
@@ -404,7 +418,7 @@ def _normalize_runtime_config(raw: Dict[str, Any]) -> Dict[str, Any]:
     merged["provider"] = provider
     auth_mode = str(merged.get("auth_mode") or "").strip().lower()
     if not auth_mode:
-        if provider == "playground":
+        if provider in {"playground", "gemma4"}:
             auth_mode = "dep_ticket"
         elif provider == "local":
             auth_mode = "none"
@@ -418,6 +432,8 @@ def _normalize_runtime_config(raw: Dict[str, Any]) -> Dict[str, Any]:
     merged["system_name"] = str(merged.get("system_name") or "").strip()
     if provider == "playground" and not merged["system_name"]:
         merged["system_name"] = "playground"
+    if provider == "gemma4":
+        merged.update(model="Gemma4-260430", auth_mode="dep_ticket", format="openai")
     if provider in {"local", "openai_compatible", "playground"} and not merged["model"]:
         merged["model"] = "gpt-oss-120b"
     if provider == "vertex_gemini" and not merged["model"]:
@@ -449,7 +465,7 @@ def _is_connected_internal_ai_config(cfg: Dict[str, Any]) -> bool:
     if not bool(cfg.get("enabled")) or not str(cfg.get("api_url") or "").strip():
         return False
     provider = str(cfg.get("provider") or "").strip().lower()
-    if provider not in {"generic", "openai_compatible", "local", "playground"}:
+    if provider not in {"generic", "openai_compatible", "local", "playground", "gemma4"}:
         return False
     return not _is_external_ai_config(cfg)
 
@@ -658,7 +674,10 @@ def _raw_config() -> Dict[str, Any]:
 def is_available() -> bool:
     """활성 + URL 이 있어야 available.  실제 요청은 complete() 에서만 수행."""
     cfg = _raw_config()
-    return bool(cfg.get("enabled")) and bool(cfg.get("api_url"))
+    ready = bool(cfg.get("enabled")) and bool(cfg.get("api_url"))
+    if cfg.get("provider") == "gemma4":
+        ready = ready and bool(cfg.get("admin_token")) and bool(cfg.get("system_name"))
+    return ready
 
 
 def get_config(*, redact: bool = True) -> Dict[str, Any]:
@@ -1024,10 +1043,10 @@ def _build_request_headers(cfg: Dict[str, Any], *,
         if google_token:
             _set_header(headers, "Authorization", f"Bearer {google_token}")
 
-    if str(cfg.get("provider") or "").strip().lower() == "playground":
+    if str(cfg.get("provider") or "").strip().lower() in {"playground", "gemma4"}:
         _set_header(headers, "Send-System-Name", cfg.get("system_name") or "playground")
-        _set_header(headers, "User-Id", cfg.get("user_id") or "")
-        _set_header(headers, "User-Type", cfg.get("user_type") or "")
+        _set_header(headers, "User-Id", cfg.get("user_id") or (_EXECUTION_PRINCIPAL.get() or {}).get("username") or "")
+        _set_header(headers, "User-Type", cfg.get("user_type") or (_EXECUTION_PRINCIPAL.get() or {}).get("role") or "")
         _set_header(headers, "Prompt-Msg-Id", prompt_id)
         _set_header(headers, "Completion-Msg-Id", completion_id)
     return headers
@@ -1041,7 +1060,7 @@ def _build_request_body(cfg: Dict[str, Any], prompt: str,
     model = cfg.get("model") or ""
     mode = str(cfg.get("mode") or "").strip()
     body: Dict[str, Any] = dict(cfg.get("extra_body") or {})
-    if provider == "playground":
+    if provider in {"playground", "gemma4"}:
         body.setdefault("temperature", 0.5)
         body.setdefault("stream", False)
     elif provider == "generic" and mode and "mode" not in body:
@@ -1072,6 +1091,8 @@ def _build_request_body(cfg: Dict[str, Any], prompt: str,
         # Only trusted internal callers pass these overrides. This is used for
         # OpenAI-compatible native tools and response_format capabilities.
         body.update(request_overrides)
+    if provider == "gemma4":
+        body["stream"] = False  # This adapter consumes JSON, not an SSE body.
     return body
 
 
@@ -1163,6 +1184,9 @@ def _redact_error_text(text: Any) -> str:
     out = str(text or "")
     if not out:
         return ""
+    for secret in (_raw_config().get("admin_token"),):
+        if secret:
+            out = out.replace(str(secret), "<redacted>")
     out = re.sub(r"Bearer\s+[A-Za-z0-9._~+/=-]{12,}", "Bearer <redacted>", out, flags=re.I)
     out = re.sub(r"ya29\.[A-Za-z0-9._~+/=-]+", "ya29.<redacted>", out)
     out = re.sub(r"sk-[A-Za-z0-9._~+/=-]{12,}", "sk-<redacted>", out)
@@ -1249,6 +1273,9 @@ def _complete_impl(prompt: str, *, system: Optional[str] = None,
     if not cfg.get("enabled"):
         return {"ok": False, "text": "", "error": "llm disabled",
                 "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm disabled")}
+    if cfg.get("provider") == "gemma4" and not all(cfg.get(k) for k in ("api_url", "admin_token", "system_name")):
+        return {"ok": False, "text": "", "error": "Gemma4 credentials required: api_base_url, credential_key, Send-System-Name",
+                "meta": {**_call_summary(cfg, error="missing credentials"), "invoked": False}}
     if not probe and not should_attempt_llm():
         # Breaker open: a recent live call failed or timed out.  Fail fast so one
         # chat turn doesn't stack several slow timeouts.  An explicit verify probe

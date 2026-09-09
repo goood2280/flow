@@ -682,6 +682,12 @@ def _send_plan_mismatch_mail(product: str, items: list[dict], targets: list[str]
 
 
 def _notify_plan_actual_mismatches_once(product: str, mismatches: list[dict], actor: str = "flow") -> int:
+    from core.file_transaction import file_transaction
+    with file_transaction(_plan_history_path(product)):
+        return _notify_plan_actual_mismatches_locked(product, mismatches, actor)
+
+
+def _notify_plan_actual_mismatches_locked(product: str, mismatches: list[dict], actor: str = "flow") -> int:
     if not mismatches:
         return 0
     try:

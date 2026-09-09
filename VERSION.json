@@ -1,7 +1,107 @@
 {
-  "version": "10.4.234",
+  "version": "10.4.244",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.244",
+      "date": "2026-09-10",
+      "tag": "feat",
+      "title": "업무 메뉴에 랏 현위치 확인 탭 신설 및 엑셀 복붙 기반 WIP 위치 조회·CSV 다운로드 기능 추가",
+      "changes": [
+        "[업무/랏현위치] 복수 LOT의 웨이퍼별 현재 공정 위치(step_id, step_desc) 일괄 확인 부재 → IBM Carbon 스타일 랏현위치확인 탭 신설, SpreadsheetPasteGrid 기반 입력 스프레드시트 및 결과 스프레드시트 뷰어 구현, WIP 캐시 1행 매핑 및 표 복사(TSV)·BOM CSV 다운로드 제공."
+      ]
+    },
+    {
+      "version": "10.4.243",
+      "date": "2026-09-09",
+      "tag": "chore",
+      "title": "Mapfile 신호등 UI 타이틀 및 안내 설명 간소화",
+      "changes": [
+        "[TEG위치조회] Mapfile 신호등 화면 상단 제목 및 설명 텍스트가 번잡함 → 타이틀에서 제품명 접미사 제거, 대상 폴더(DB/mapfile) 및 불필요한 안내 문구 제거하여 UI 간소화."
+      ]
+    },
+    {
+      "version": "10.4.242",
+      "date": "2026-09-09",
+      "tag": "feat",
+      "title": "Mapfile 신호등 S/L·Main 분리 표시 및 파일탐색기 mapfile 숨김",
+      "changes": [
+        "[TEG위치조회] Mapfile 검증 결과에서 S/L과 Main 상태가 혼재되어 식별이 어렵고 파일탐색기에 mapfile 폴더가 노출됨 → S/L 및 Main 신호등 독립 집계 및 상세보기 아코디언 구현, 파일탐색기 기본 숨김 목록에 mapfile 추가, B/mapfile 더미 파일 검증 연동."
+      ]
+    },
+    {
+      "version": "10.4.241",
+      "date": "2026-09-09",
+      "tag": "feat",
+      "title": "홈 대화형 데이터 작업 및 기능 API 결과 연속 편집",
+      "changes": [
+        "[홈챗] 안내·모델 상태·코드 입력이 대화 공간을 차지함 → 도구 중심 첫 화면 → 메시지 영역과 하단 입력창으로 단순화하고 사용자별 세션 대화 복원 적용.",
+        "[기능 연결] 차트 코드와 SplitTable 단일 조회에 한정됨 → 기능 호출 경로 부재 → 랏관리·대시보드 읽기 API를 명시적 허용 목록으로 연결하고 표·차트를 대화 안에 표시.",
+        "[연속 작업] 후속 질문에서 조회 조건·차트 결과가 사라짐 → 활성 결과 맥락 미보존 → 제품·랏·차트 선택을 이어받고 글꼴 등 표시 수정은 동일 데이터로 즉시 반영."
+      ]
+    },
+    {
+      "version": "10.4.240",
+      "date": "2026-09-09",
+      "tag": "feat",
+      "title": "TEG 위치조회 제품코드 연동 및 Mapfile 신호등 검증 소탭 추가",
+      "changes": [
+        "[TEG위치조회] 제품코드 연결 관리 부재 및 다중 Mapfile 사전 검증 어려움 → TEG 위치조회 관리자 그리드/제품생성에 제품코드 항목 추가 및 DB mapfile 폴더 파일 변경 시그니처 감지 1회 검증 캐싱, 일 2회 스케줄러, Mapfile 신호등 소탭 및 검증탭 연동 구현."
+      ]
+    },
+    {
+      "version": "10.4.239",
+      "date": "2026-09-09",
+      "tag": "feat",
+      "title": "스플릿테이블 MASK_ 적용 공정정보 및 Vehicle_matching 연동",
+      "changes": [
+        "[스플릿테이블] MASK_ 항목 적용 공정정보 미표출 → matchKindOf 미등록 및 Vehicle_matching 연동 부재로 행 숨김 처리 → MASK_ 접두사에서 step_desc 추출 후 Vehicle_matching 제품별 step_id·module 연결 및 미매칭 시 설명 유지, 룰북 모달·내보내기 연동."
+      ]
+    },
+    {
+      "version": "10.4.238",
+      "date": "2026-09-09",
+      "tag": "fix",
+      "title": "SplitTable INLINE 적용공정정보 누락 수정",
+      "changes": [
+        "[SplitTable] INLINE 적용공정정보에서 step_id 누락 → Vehicle_matching 설명이 없는 측정 행 제외 및 item_id만 조회 → inline_matching 제품별 step_id를 보존하고 item_desc 별칭으로도 연결, 설명 없으면 빈칸 유지.",
+        "[SplitTable] VM 공정정보 확인 → 밑줄이 포함된 step_desc와 item_id 조합 및 제품별 매칭 검증 필요 → step_id·step_desc·module 연결 회귀 테스트 추가."
+      ]
+    },
+    {
+      "version": "10.4.237",
+      "date": "2026-09-09",
+      "tag": "fix",
+      "title": "TEG 샷 이탈 및 MAIN 분류·purpose 신호등 판정 수정",
+      "changes": [
+        "[TEG 위치조회] 샷 밖 TEG가 정상색으로 표시 → 웨이퍼 가장자리만 검사 → TEG 사각형의 샷 경계 이탈도 빨간색으로 판정.",
+        "[Mapfile 검증] 미등록 module이 MAIN 내부에서도 정보없음으로 분류 → 확장매크로 이후 MAIN 분류 누락 → 확장 대조 후 남은 행을 좌표 기반 MAIN TEG로 검사.",
+        "[MAIN purpose] TEG 용도까지 배치 금지 오탐 → 비어 있지 않은 모든 purpose를 금지 → 빈 값·TEG는 허용하고 다른 purpose 영역과 실제 겹칠 때 빨간색 및 근거 표시."
+      ]
+    },
+    {
+      "version": "10.4.236",
+      "date": "2026-09-09",
+      "tag": "feat",
+      "title": "관리자 데이터 챗·Gemma4 선택과 SplitTable 안정화",
+      "changes": [
+        "Gemma4-260430 별도 credential 프로필, 관리자 전용 접근 및 공유 sliding-window 분당 30회 제한. 번역·오류 설명 등 비데이터 작업 LLM 호출 차단.",
+        "홈 데이터 챗에서 현재 차트의 축 글꼴·Q별 기간·root lot 변경, 제품 약칭 해석, 실제 SplitTable 및 랏 위치 조회 지원. 모호한 조건은 확인하고 실행 결과를 표로 제공.",
+        "적용공정정보 선택 시 매칭 없는 SplitTable 항목 제외. pivot은 두 번 실패 후 운영 서버에서 실행하고 실제 캐시 준비 상태 확인.",
+        "다운로드·사용자 활동 전체 보존 및 관리자 페이지 분할 조회 변경 포함."
+      ]
+    },
+    {
+      "version": "10.4.235",
+      "date": "2026-09-09",
+      "tag": "fix",
+      "title": "다운로드·활동 기록 전체 보존 및 관리자 페이지 조회",
+      "changes": [
+        "[기록 보존] 오래된 활동·다운로드 기록 삭제 → 파일 크기와 기본 행 수 상한 → 감사 로그 자동 삭제를 해제하고 기존 기록을 계속 누적 보존.",
+        "[관리자 조회] 최근 일부 기록만 조회·검색 가능 → 고정 조회 건수와 화면 필터 → 전체 이력 서버 필터 및 100건 단위 페이지 조회, 전체 사용자 목록과 전체 기간 이벤트 조회 적용.",
+        "[다운로드 감사] 반복 ET 다운로드와 일부 내보내기 활동 누락 → 첫 전송만 기록하거나 감사 호출 부재 → 실제 요청 사용자 기준 매 전송 기록 및 내보내기 다운로드·활동 기록 보완."
+      ]
+    },
     {
       "version": "10.4.234",
       "date": "2026-09-08",

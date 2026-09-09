@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import createPlotlyComponent from "react-plotly.js/factory";
-import Plotly from "../lib/plotlyCustom";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { chartBoxFor, chartLayoutKind, useElementWidth } from "../lib/chartLayout";
 import { sortCategoryValues } from "../lib/boxStats";
 import { chartPalette, buildSeriesColors } from "./UXKit";
 
-// partial bundle 로 컴포넌트를 만든다 (lib/plotlyCustom.js 참조).
-const Plot = createPlotlyComponent(Plotly);
+// Load the chart engine only when there is a chart, without suspending the page.
+const PlotlyRenderer = lazy(() => import("./PlotlyRenderer"));
+function Plot(props) {
+  return <Suspense fallback={<div role="status" style={{ height: props.layout?.height, display: "grid", placeItems: "center", color: "var(--text-secondary)" }}>차트 로딩...</div>}>
+    <PlotlyRenderer {...props} />
+  </Suspense>;
+}
 
 const SERIES = chartPalette.series || ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#f59e0b", "#0891b2"];
 const MISSING_COLOR = "#9ca3af";
@@ -458,8 +461,8 @@ export function FlowPlotlyChart({
           // 키 자체를 빼야 한다.
           ...(radial ? {} : {
             xaxis: {
-              title: { text: axisXLabel, font: { size: axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
-              tickfont: { size: tickFontSize, color: fg },
+              title: { text: axisXLabel, font: { size: Number(cfg?.x_font_size||chart?.x_font_size)||axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
+              tickfont: { size: Number(cfg?.x_font_size||chart?.x_font_size)||tickFontSize, color: fg },
               ...(valueAxisIsX ? { type: yScale, ...yAxisRange } : xAxisRange),
               showticklabels: !hideXTicks,
               // 상자는 범주축에 균등 배치 — 그래야 아래 통계표 열과 자리가 맞는다.
@@ -477,8 +480,8 @@ export function FlowPlotlyChart({
               automargin: true,
             },
             yaxis: {
-              title: { text: axisYLabel, font: { size: axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
-              tickfont: { size: tickFontSize, color: fg },
+              title: { text: axisYLabel, font: { size: Number(cfg?.y_font_size||chart?.y_font_size)||axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
+              tickfont: { size: Number(cfg?.y_font_size||chart?.y_font_size)||tickFontSize, color: fg },
               ...(!valueAxisIsX ? { type: yScale, ...yAxisRange } : xAxisRange),
               showgrid: showGrid,
               gridcolor: grid,

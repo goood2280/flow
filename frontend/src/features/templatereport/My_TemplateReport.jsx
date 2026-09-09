@@ -5,7 +5,6 @@ import { chartPalette } from "../../components/UXKit";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows, spreadsheetTextFromRows } from "../../components/SpreadsheetPasteGrid";
 import PageGear from "../../components/PageGear";
 import { toast } from "../../components/Toast";
-import Plotly from "../../lib/plotlyCustom";
 import { computeBoxStats } from "../../lib/boxStats";
 import { chartColorMap, chartColorValue, parseChartColorRules } from "../../lib/chartColorRules";
 import { chartColorListRules, parseChartColorList } from "../../lib/chartColorList";
@@ -719,6 +718,7 @@ export default function My_TemplateReport({user}){
         const host=document.querySelector(`[data-report-chart-key="${chart.key}"]`),plot=host?.querySelector(".js-plotly-plot");
         if(!plot)continue;
         const captureWidth=clamp(Number(chart.chart_width)||DEFAULT_CHART_WIDTH,320,2400),captureHeight=clamp(Number(chart.chart_height)||DEFAULT_CHART_HEIGHT,240,1600);
+        const {default:Plotly}=await import("../../lib/plotlyCustom");
         const dataUrl=await Plotly.toImage(plot,{format:"png",width:captureWidth,height:captureHeight,scale:PPTX_CHART_CAPTURE_SCALE});
         captured.push({key:chart.key,page_index:chart.page_index,position:chart.position,chart_id:chart.chart_id,data_url:dataUrl});
       }

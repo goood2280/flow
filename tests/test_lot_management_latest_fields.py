@@ -173,6 +173,11 @@ def test_canonical_lot_progress_qty_matches_exact_lot_id_not_root_lot(tmp_path, 
 
     assert summaries["LOT.1"]["wafer_count"] == 2
     assert summaries["LOT.1"]["wafer_ids"] == ["1", "2"]
+    roots = lot_progress_cache.canonical_lot_progress_summaries(
+        ["LOT.1"], product="PROD_A", match_root=True,
+    )
+    assert roots["LOT.1"]["wafer_ids"] == ["3"]
+    assert roots["LOT.1"]["rows"][0]["lot_id"] == "SIBLING.1"
 
 
 def test_lot_management_required_columns_and_cache_overlay(monkeypatch):

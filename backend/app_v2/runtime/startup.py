@@ -111,6 +111,7 @@ def start_background_services(logger) -> None:
         ("backup scheduler", "core.backup", "start_scheduler"),
         ("valve watch scheduler", "core.valve_watch", "start_scheduler"),
         ("product dedup scheduler", "scheduler", "start_scheduler"),
+        ("mapfile traffic scheduler", "core.mapfile_traffic_scheduler", "start_scheduler"),
         ("S3 ingest scheduler", "routers.s3_ingest", "start_scheduler"),
         ("dashboard chart scheduler", "routers.dashboard", "start_chart_scheduler"),
     ]

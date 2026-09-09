@@ -728,14 +728,23 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
 
 
 @router.get("/download-history")
-def download_history(request: Request, username: str = Query(""), limit: int = Query(100)):
+def download_history(request: Request, username: str = "", limit: int = 100,
+                     offset: int = 0, q: str = "", source: str = ""):
     """v8.8.33 보안: admin 이면 전체, 일반 유저는 본인만."""
     from core.auth import current_user
+    from core.utils import jsonl_page
     me = current_user(request)
     if me.get("role") != "admin":
         username = me.get("username") or ""
-    f = (lambda e: e.get("username") == username) if username else None
-    return {"logs": jsonl_read(DL_LOG, limit, f)}
+    query = q.strip().lower()
+    def matches(entry):
+        if (me.get("role") != "admin" or username) and entry.get("username") != username:
+            return False
+        if source and (entry.get("source") or "filebrowser") != source:
+            return False
+        return not query or query in " ".join(str(entry.get(key) or "") for key in
+            ("username", "product", "sql", "filename", "select_cols")).lower()
+    return jsonl_page(DL_LOG, limit, offset, matches)
 
 
 class BaseDeleteReq(BaseModel):

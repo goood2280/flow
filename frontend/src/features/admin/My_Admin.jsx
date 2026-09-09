@@ -202,6 +202,18 @@ function ResourceSparkline({label,rows,metric,color,hours}){
 }
 
 const FARM_ANIM=`@keyframes fabFarm{0%{transform:translateX(0)}50%{transform:translateX(10px)}100%{transform:translateX(0)}}`;
+const HISTORY_PAGE_SIZE=100;
+
+function HistoryPager({offset=0,limit=HISTORY_PAGE_SIZE,total=0,hasMore=false,loading=false,onPage}){
+  const safeTotal=Math.max(0,Number(total)||0);
+  const start=safeTotal?Math.min(offset+1,safeTotal):0;
+  const end=Math.min(offset+limit,safeTotal);
+  return <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:8,marginTop:10,flexWrap:"wrap"}}>
+    <span style={{fontSize:13,color:"var(--text-secondary)",marginRight:4}}>{start.toLocaleString()}–{end.toLocaleString()} / 총 {safeTotal.toLocaleString()}건</span>
+    <Button variant="subtle" disabled={loading||offset<=0} onClick={()=>onPage(Math.max(0,offset-limit))}>이전</Button>
+    <Button variant="subtle" disabled={loading||!hasMore} onClick={()=>onPage(offset+limit)}>다음</Button>
+  </div>;
+}
 
 // v9.4.x: 워커 분산 패널 — 개발서버 신호등 · 역할 설정 · 원격 기동 (docs/WORKER_DISPATCH.md).
 // 8초 폴링으로 heartbeat 를 확인해 신호등을 자동 갱신한다. "켜기"는 shared
@@ -313,6 +325,14 @@ export default function My_Admin({user}){
   // v8.7.1: Admin Activity Log 필터
   const[logUsers,setLogUsers]=useState([]);
   const[logFilter,setLogFilter]=useState({username:"",action:"",tab:""});
+  const[logOffset,setLogOffset]=useState(0);
+  const[logPage,setLogPage]=useState({total:0,offset:0,limit:HISTORY_PAGE_SIZE,has_more:false});
+  const[logLoading,setLogLoading]=useState(false);const[logError,setLogError]=useState("");
+  const logRequestRef=useRef(0);
+  const[dlOffset,setDlOffset]=useState(0);
+  const[dlPage,setDlPage]=useState({total:0,offset:0,limit:HISTORY_PAGE_SIZE,has_more:false});
+  const[dlLoading,setDlLoading]=useState(false);const[dlError,setDlError]=useState("");
+  const dlRequestRef=useRef(0);
 
   const[inquiry,setInquiry]=useState("");
   const sendInquiry=()=>{
@@ -325,28 +345,31 @@ export default function My_Admin({user}){
     if(isAdmin){
       sf("/api/admin/users").then(d=>setUsers(d.users||[])).catch(()=>{});
       sf("/api/admin/perm-groups").then(d=>setPermGroups(d.groups||[])).catch(()=>{});
-      reloadLogs();
       sf("/api/admin/logs/users").then(d=>setLogUsers(d.users||[])).catch(()=>{});
-    } else {
-      // User: load own logs and downloads
-      sf("/api/admin/logs?limit=200&username="+(user?.username||"")).then(d=>setLogs(d.logs||[])).catch(()=>{});
-      loadDl();
     }
   };
-  // v8.7.1: Admin log 필터 적용 재로딩
-  const reloadLogs=()=>{
-    const q=new URLSearchParams({limit:"500"});
-    if(logFilter.username)q.set("username",logFilter.username);
+  // 서버가 필터를 전체 이력에 적용한 뒤 최신순 페이지를 반환한다.
+  const reloadLogs=(offset=logOffset)=>{
+    const requestId=++logRequestRef.current;
+    const q=new URLSearchParams({limit:String(HISTORY_PAGE_SIZE),offset:String(offset)});
+    const username=isAdmin?logFilter.username:(user?.username||"");
+    if(username)q.set("username",username);
     if(logFilter.action)q.set("action",logFilter.action);
     if(logFilter.tab)q.set("tab",logFilter.tab);
-    sf("/api/admin/logs?"+q.toString()).then(d=>setLogs(d.logs||[])).catch(()=>{});
+    setLogLoading(true);setLogError("");
+    return sf("/api/admin/logs?"+q.toString()).then(d=>{
+      if(requestId!==logRequestRef.current)return;
+      setLogs(d.logs||[]);
+      setLogPage({total:Number(d.total)||0,offset:Number(d.offset)||0,limit:Number(d.limit)||HISTORY_PAGE_SIZE,has_more:!!d.has_more});
+    }).catch(e=>{if(requestId===logRequestRef.current)setLogError(e.message||"로그를 불러오지 못했습니다.");})
+      .finally(()=>{if(requestId===logRequestRef.current)setLogLoading(false);});
   };
   useEffect(()=>{load();},[]);
   useEffect(()=>{
-    if(!isAdmin||tab!=="logs")return;
+    if(tab!=="logs")return;
     const timer=setTimeout(reloadLogs,250);
-    return()=>clearTimeout(timer);
-  },[logFilter.username,logFilter.action,logFilter.tab,tab]);
+    return()=>{clearTimeout(timer);logRequestRef.current++;};
+  },[logFilter.username,logFilter.action,logFilter.tab,logOffset,tab,isAdmin,user?.username]);
   // v8.2.0: Bell dismiss / external read → re-load this tab's notif list immediately
   useEffect(()=>{
     const onRefresh=()=>load();
@@ -354,10 +377,25 @@ export default function My_Admin({user}){
     return()=>window.removeEventListener("hol:notif-refresh",onRefresh);
   },[user]);
 
-  const loadDl=()=>{
-    const url=isAdmin?"/api/filebrowser/download-history":"/api/filebrowser/download-history?username="+(user?.username||"");
-    return sf(url).then(d=>setDlHistory(d.logs||[])).catch(()=>setDlHistory([]));
+  const loadDl=(offset=dlOffset)=>{
+    const requestId=++dlRequestRef.current;
+    const q=new URLSearchParams({limit:String(HISTORY_PAGE_SIZE),offset:String(offset)});
+    if(!isAdmin&&user?.username)q.set("username",user.username);
+    if(dlFilter.q)q.set("q",dlFilter.q);
+    if(dlFilter.source)q.set("source",dlFilter.source);
+    setDlLoading(true);setDlError("");
+    return sf("/api/filebrowser/download-history?"+q.toString()).then(d=>{
+      if(requestId!==dlRequestRef.current)return;
+      setDlHistory(d.logs||[]);
+      setDlPage({total:Number(d.total)||0,offset:Number(d.offset)||0,limit:Number(d.limit)||HISTORY_PAGE_SIZE,has_more:!!d.has_more});
+    }).catch(e=>{if(requestId===dlRequestRef.current){setDlHistory([]);setDlError(e.message||"다운로드 이력을 불러오지 못했습니다.");}})
+      .finally(()=>{if(requestId===dlRequestRef.current)setDlLoading(false);});
   };
+  useEffect(()=>{
+    if(tab!=="downloads")return;
+    const timer=setTimeout(loadDl,250);
+    return()=>{clearTimeout(timer);dlRequestRef.current++;};
+  },[dlFilter.q,dlFilter.source,dlOffset,tab,isAdmin,user?.username]);
   const loadQa=()=>{if(!isAdmin)return;sf("/api/admin/qa/report").then(d=>{setQaReport(d.report||{runs:[]});}).catch(e=>setQaMsg(e.message));};
   const loadSys=()=>{sf("/api/monitor/system").then(setSys).catch(()=>{});
     sf(`/api/monitor/resource-log?limit=${RESOURCE_LOG_LIMIT}`).then(d=>setResLog(d.logs||[])).catch(()=>{});
@@ -467,9 +505,8 @@ export default function My_Admin({user}){
   const approvedUsers=_arr(users).filter(u=>u?.status==="approved").length;
   const pendingUsers=_arr(users).filter(u=>u?.status==="pending").length;
   // v9.1.x: downloads.jsonl 의 source 필드로 구분 표시 (없으면 파일 다운로드).
-  const DL_SOURCES={filebrowser:{label:"파일 다운로드",tone:"accent"},reformatize:{label:"ET 다운로드",tone:"info"},reformatize_test:{label:"ET 테스트",tone:"warn"},splittable:{label:"SplitTable 다운로드",tone:"violet"},auto_report:{label:"Auto report",tone:"ok"}};
-  const combinedDownloads=[
-    ..._arr(dlHistory).map((d)=>{
+  const DL_SOURCES={filebrowser:{label:"파일 다운로드",tone:"accent"},reformatize:{label:"ET 다운로드",tone:"info"},reformatize_test:{label:"ET 테스트",tone:"warn"},splittable:{label:"SplitTable 다운로드",tone:"violet"},auto_report:{label:"Auto report",tone:"ok"},template_report:{label:"Template Report",tone:"info"},catalog:{label:"매칭 테이블",tone:"neutral"}};
+  const combinedDownloads=_arr(dlHistory).map((d)=>{
       const src=DL_SOURCES[d.source]||DL_SOURCES.filebrowser;
       return{
         timestamp:d.timestamp||"",
@@ -482,10 +519,7 @@ export default function My_Admin({user}){
         rows:d.rows?.toLocaleString?.()||d.rows||"-",
         size:d.size_mb?`${d.size_mb}MB`:"-",
       };
-    }),
-  ].sort((a,b)=>String(b.timestamp||"").localeCompare(String(a.timestamp||"")))
-   .filter(d=>(!dlFilter.source||d.source===dlFilter.source)
-     &&(!dlFilter.q||`${d.username} ${d.target} ${d.detail}`.toLowerCase().includes(dlFilter.q.toLowerCase())));
+    });
   const resourceChartHours=resWindow==="7d"?168:24;
   return(
     <div style={{padding:"24px 32px",background:"var(--bg-primary)",minHeight:"calc(100vh - 52px)",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif"}}>
@@ -504,7 +538,6 @@ export default function My_Admin({user}){
         active={tab}
         onChange={(k)=>{
           setTab(k);
-          try{ if(k==="downloads")loadDl(); }catch(e){console.warn("[admin tab] downloads loader threw",e);}
           try{ if(k==="monitor")loadSys(); }catch(e){console.warn("[admin tab] monitor loader threw",e);}
           try{ if(k==="qa")loadQa(); }catch(e){console.warn("[admin tab] qa loader threw",e);}
         }}
@@ -788,23 +821,25 @@ export default function My_Admin({user}){
       {tab==="logs"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
         {isAdmin&&<div style={{display:"flex",gap:10,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}>
           <span style={{fontSize:14,fontWeight:700,color:"var(--accent)"}}>📋 Admin Activity Log</span>
-          <input value={logFilter.username} onChange={e=>setLogFilter({...logFilter,username:e.target.value})}
+          <input value={logFilter.username} onChange={e=>{setLogOffset(0);setLogFilter({...logFilter,username:e.target.value});}}
             list="admin-log-user-suggestions" placeholder="사용자 검색 (전체는 비움)"
             style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,minWidth:200}}/>
           <datalist id="admin-log-user-suggestions">{_arr(logUsers).map(u=><option key={u.username} value={u.username}>{u.count}건</option>)}</datalist>
           <input placeholder="action 필터 (예: inform, login)" value={logFilter.action}
-            onChange={e=>setLogFilter({...logFilter,action:e.target.value})}
+            onChange={e=>{setLogOffset(0);setLogFilter({...logFilter,action:e.target.value});}}
             style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,width:200}}/>
           <input placeholder="tab 필터 (inform/calendar/...)" value={logFilter.tab}
-            onChange={e=>setLogFilter({...logFilter,tab:e.target.value})}
+            onChange={e=>{setLogOffset(0);setLogFilter({...logFilter,tab:e.target.value});}}
             style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,width:170}}/>
           {(logFilter.username||logFilter.action||logFilter.tab)&&
-            <button onClick={()=>setLogFilter({username:"",action:"",tab:""})}
+            <button onClick={()=>{setLogOffset(0);setLogFilter({username:"",action:"",tab:""});}}
               style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:BAD.fg,fontSize:14,cursor:"pointer"}}>× 초기화</button>}
-          <button onClick={reloadLogs}
+          <button onClick={()=>reloadLogs(logOffset)} disabled={logLoading}
             style={{padding:"6px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:WHITE,fontSize:14,fontWeight:600,cursor:"pointer"}}>↻ 새로고침</button>
-          <span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:"auto"}}>{_arr(logs).length}건</span>
+          <span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:"auto"}}>총 {logPage.total.toLocaleString()}건</span>
         </div>}
+        {logError&&<Banner tone="danger" style={{marginBottom:10}}>{logError}</Banner>}
+        {logLoading&&<div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:8}}>로그를 불러오는 중…</div>}
         <div style={{maxHeight:540,overflowY:"auto",border:"1px solid var(--border)",borderRadius:6}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
             <thead style={{position:"sticky",top:0,background:"var(--bg-tertiary)",zIndex:1}}>
@@ -813,11 +848,11 @@ export default function My_Admin({user}){
               </tr>
             </thead>
             <tbody>
-              {_arr(logs).length===0&&<tr><td colSpan={5} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>로그 없음</td></tr>}
-              {[..._arr(logs)].reverse().map((l,i)=>(
+              {!logLoading&&_arr(logs).length===0&&<tr><td colSpan={5} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>로그 없음</td></tr>}
+              {_arr(logs).map((l,i)=>(
                 <tr key={i} style={{borderBottom:"1px solid var(--border)"}}>
-                  <td style={{padding:"6px 12px",fontFamily:"monospace",fontSize:14,color:"var(--accent)",whiteSpace:"nowrap"}}>{l.timestamp?.slice(0,19)?.replace("T"," ")}</td>
-                  <td style={{padding:"6px 12px",fontWeight:600}}>{l.username||"-"}</td>
+                  <td style={{padding:"6px 12px",fontFamily:"monospace",fontSize:14,color:"var(--accent)",whiteSpace:"nowrap"}}>{String(l.timestamp||l.time||"").slice(0,19).replace("T"," ")}</td>
+                  <td style={{padding:"6px 12px",fontWeight:600}}>{l.username||l.actor||"-"}</td>
                   <td style={{padding:"6px 12px",fontSize:14,color:"var(--text-secondary)"}}>{l.tab?<span style={{padding:"2px 8px",borderRadius:999,background:"var(--bg-hover)",fontSize:14}}>{l.tab}</span>:"-"}</td>
                   <td style={{padding:"6px 12px",fontFamily:"monospace",fontSize:14}}>{l.action||"-"}</td>
                   <td style={{padding:"6px 12px",fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",maxWidth:420,overflow:"hidden",textOverflow:"ellipsis"}} title={l.detail||""}>{l.detail||""}</td>
@@ -825,29 +860,34 @@ export default function My_Admin({user}){
             </tbody>
           </table>
         </div>
+        <HistoryPager offset={logPage.offset} limit={logPage.limit} total={logPage.total} hasMore={logPage.has_more} loading={logLoading} onPage={setLogOffset}/>
       </div>}
 
       {/* Downloads — v9.1.x: 구분(파일 다운로드/리포마타이즈) + 사용자·대상 검색 필터 */}
       {tab==="downloads"&&<div>
         <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10,flexWrap:"wrap"}}>
-          <select value={dlFilter.source} onChange={e=>setDlFilter(f=>({...f,source:e.target.value}))}
+          <select value={dlFilter.source} onChange={e=>{setDlOffset(0);setDlFilter(f=>({...f,source:e.target.value}));}}
             style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}>
             <option value="">전체 구분</option>
-            {Object.values(DL_SOURCES).map(s=><option key={s.label} value={s.label}>{s.label}</option>)}
+            {Object.entries(DL_SOURCES).map(([key,s])=><option key={key} value={key}>{s.label}</option>)}
           </select>
-          <input value={dlFilter.q} onChange={e=>setDlFilter(f=>({...f,q:e.target.value}))}
+          <input value={dlFilter.q} onChange={e=>{setDlOffset(0);setDlFilter(f=>({...f,q:e.target.value}));}}
             placeholder="사용자·대상·상세 검색"
             style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,minWidth:220}}/>
-          <span style={{fontSize:13,color:"var(--text-secondary)"}}>{combinedDownloads.length.toLocaleString()}건</span>
+          <span style={{fontSize:13,color:"var(--text-secondary)"}}>총 {dlPage.total.toLocaleString()}건</span>
         </div>
+        {dlError&&<Banner tone="danger" style={{marginBottom:10}}>{dlError}</Banner>}
+        {dlLoading&&<div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:8}}>다운로드 이력을 불러오는 중…</div>}
         <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>
         <table style={{width:"100%",minWidth:1180,tableLayout:"fixed",borderCollapse:"collapse",fontSize:14}}>
           <colgroup>{[190,190,110,null,130,140,70,90].map((width,i)=><col key={i} style={width?{width}:undefined}/>)}</colgroup>
           <thead><tr>{["시간","구분","사용자","대상","상세","컬럼","행","크기"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
           <tbody>
-            {combinedDownloads.length===0&&<tr><td colSpan={8} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>다운로드 이력 없음</td></tr>}
+            {!dlLoading&&combinedDownloads.length===0&&<tr><td colSpan={8} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>다운로드 이력 없음</td></tr>}
             {combinedDownloads.map((d,i)=><DownloadHistoryRow key={`${d.timestamp}-${d.username}-${d.source}-${d.target}-${i}`} download={d}/>)}
-          </tbody></table></div></div>}
+          </tbody></table></div>
+        <HistoryPager offset={dlPage.offset} limit={dlPage.limit} total={dlPage.total} hasMore={dlPage.has_more} loading={dlLoading} onPage={setDlOffset}/>
+      </div>}
 
       {/* Monitor (admin only) — v8.8.27: BE psutil 필드명에 맞춰 재매핑.
            구 FE: sys.cpu_pct/mem_pct/disk_pct/mem_used/mem_total/disk_used/disk_total
@@ -973,7 +1013,7 @@ export default function My_Admin({user}){
 // v9.0.3: 메시지 기능은 "문의함" 용어로 정리.
 const PAGE_IDS=[
   ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","스플릿 테이블"],["lotmanage","랏 관리"],
-  ["lotrequest","랏 배정/요청"],
+  ["lotrequest","랏 배정/요청"],["lotlocation","랏 현위치 확인"],
   ["tracker","ET 추적"],["inform","인폼 로그"],["meeting","회의관리"],["calendar","변경점 관리"],
   ["tablemap","테이블 맵"],
   ["groups","그룹"],["messages","문의함"],["diagnosis","에이전트"],
@@ -1344,12 +1384,36 @@ function ActivityDashboardPanel(){
   const [summary,setSummary]=useState(null);
   const [features,setFeatures]=useState(null);
   const [err,setErr]=useState("");
+  const [eventUsername,setEventUsername]=useState("");
+  const [eventOffset,setEventOffset]=useState(0);
+  const [eventRows,setEventRows]=useState([]);
+  const [eventPage,setEventPage]=useState({total:0,offset:0,limit:HISTORY_PAGE_SIZE,has_more:false});
+  const [eventLoading,setEventLoading]=useState(false);
+  const [eventError,setEventError]=useState("");
+  const eventRequestRef=useRef(0);
+  const summaryRequestRef=useRef(0);
   const reload=()=>{
+    const requestId=++summaryRequestRef.current;
     setErr("");
-    sf("/api/admin/activity/summary?days="+days).then(setSummary).catch(e=>setErr("요약 로드 오류: "+e.message));
-    sf("/api/admin/activity/features?days="+days).then(setFeatures).catch(()=>{});
+    sf("/api/admin/activity/summary?include_recent=false&days="+days).then(d=>{if(requestId===summaryRequestRef.current)setSummary(d);}).catch(e=>{if(requestId===summaryRequestRef.current)setErr("요약 로드 오류: "+e.message);});
+    sf("/api/admin/activity/features?days="+days).then(d=>{if(requestId===summaryRequestRef.current)setFeatures(d);}).catch(()=>{});
   };
-  useEffect(()=>{reload();},[days]);
+  useEffect(()=>{reload();return()=>{summaryRequestRef.current++;};},[days]);
+  useEffect(()=>{
+    const requestId=++eventRequestRef.current;
+    const q=new URLSearchParams({limit:String(HISTORY_PAGE_SIZE),offset:String(eventOffset),days:String(days)});
+    if(eventUsername)q.set("username",eventUsername);
+    setEventLoading(true);setEventError("");
+    const timer=setTimeout(()=>{
+      sf("/api/admin/logs?"+q.toString()).then(d=>{
+        if(requestId!==eventRequestRef.current)return;
+        setEventRows(d.logs||[]);
+        setEventPage({total:Number(d.total)||0,offset:Number(d.offset)||0,limit:Number(d.limit)||HISTORY_PAGE_SIZE,has_more:!!d.has_more});
+      }).catch(e=>{if(requestId===eventRequestRef.current)setEventError(e.message||"이벤트를 불러오지 못했습니다.");})
+        .finally(()=>{if(requestId===eventRequestRef.current)setEventLoading(false);});
+    },250);
+    return()=>{clearTimeout(timer);eventRequestRef.current++;};
+  },[days,eventUsername,eventOffset]);
   // 라벨 칸을 고정폭으로 못박아 바 시작점을 정렬한다. minWidth 만 주면 라벨이
   // 길어질 때(액션명) 칸이 늘어나 행마다 바 왼쪽이 어긋난다 — 넘치면 ellipsis + title.
   const barItem=(label,val,max,color,labelW=120)=>(<div key={String(label)} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
@@ -1367,7 +1431,7 @@ function ActivityDashboardPanel(){
     <div style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
       <span style={{fontSize:14,fontWeight:700}}>활동 대시보드</span>
       <span style={{fontSize:14,color:"var(--text-secondary)"}}>조회 기간</span>
-      {[{days:0,label:"전체"},{days:1,label:"1일"},{days:7,label:"7일"},{days:30,label:"30일"},{days:90,label:"90일"}].map(option=>(<span key={option.days} onClick={()=>setDays(option.days)} style={{cursor:"pointer",fontSize:14,padding:"3px 10px",borderRadius:6,background:days===option.days?"var(--accent-glow)":"transparent",color:days===option.days?"var(--accent)":"var(--text-secondary)",fontWeight:days===option.days?700:500,border:"1px solid "+(days===option.days?"var(--accent)":"var(--border)")}}>{option.label}</span>))}
+      {[{days:0,label:"전체"},{days:1,label:"1일"},{days:7,label:"7일"},{days:30,label:"30일"},{days:90,label:"90일"}].map(option=>(<span key={option.days} onClick={()=>{setEventOffset(0);setDays(option.days);}} style={{cursor:"pointer",fontSize:14,padding:"3px 10px",borderRadius:6,background:days===option.days?"var(--accent-glow)":"transparent",color:days===option.days?"var(--accent)":"var(--text-secondary)",fontWeight:days===option.days?700:500,border:"1px solid "+(days===option.days?"var(--accent)":"var(--border)")}}>{option.label}</span>))}
       {summary&&<span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:"auto"}}>{days===0&&summary.activity_start&&summary.activity_end&&`보존 기록 ${summary.activity_start} ~ ${summary.activity_end} · `}총 {summary.total}건 · 기능 {features?.feature_count||0}개</span>}
       {err&&<span style={{fontSize:14,color:BAD.fg}}>{err}</span>}
     </div>
@@ -1420,19 +1484,28 @@ function ActivityDashboardPanel(){
     {/* SplitTable 검색 타이밍·RAM 캐시 항목 패널은 캐시 관리 페이지(My_RamCache)로 이전됐다
         — 측정(히트/미스 속도)과 튜닝(쿼리 코어·검색 슬롯)이 같은 화면에 있어야 해서. */}
     <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
-      <div style={{display:"flex",alignItems:"baseline",gap:10,marginBottom:10,flexWrap:"wrap"}}>
-        <div style={{fontSize:14,fontWeight:700}}>최근 이벤트 (최대 3000건)</div>
+      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
+        <div style={{fontSize:14,fontWeight:700}}>이벤트 이력</div>
+        <input value={eventUsername} onChange={e=>{setEventOffset(0);setEventUsername(e.target.value);}} placeholder="사용자 필터 (전체는 비움)"
+          style={{padding:"5px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,minWidth:190}}/>
         <div style={{fontSize:13,color:"var(--text-secondary)",fontFamily:"monospace"}}>
           저장 위치: {summary?.activity_storage?.relative_path||"flow-data/logs/activity.jsonl"}
-          {summary?.activity_storage&&` · ${(Number(summary.activity_storage.size_bytes||0)/1024/1024).toFixed(1)} / ${(Number(summary.activity_storage.max_bytes||0)/1024/1024).toFixed(0)} MB`}
+          {summary?.activity_storage&&<> · {(Number(summary.activity_storage.size_bytes||0)/1024/1024).toFixed(1)} MB / {summary.activity_storage.max_bytes==null?"전체 보존":`${(Number(summary.activity_storage.max_bytes)/1024/1024).toFixed(0)} MB`}</>}
         </div>
+        <span style={{fontSize:13,color:"var(--text-secondary)",marginLeft:"auto"}}>총 {eventPage.total.toLocaleString()}건</span>
       </div>
+      {eventError&&<Banner tone="danger" style={{marginBottom:10}}>{eventError}</Banner>}
+      {eventLoading&&<div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:8}}>이벤트를 불러오는 중…</div>}
       <div style={{maxHeight:400,overflowY:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
           <thead><tr>{["시각","유저","action","tab","detail"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>{h}</th>)}</tr></thead>
-          <tbody>{_arr(summary?.recent).map((r,i)=>(<tr key={i}><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.timestamp||r.time||"").replace("T"," ").slice(0,16)}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontWeight:600}}>{r.username||r.actor}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{r.action}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{r.tab||""}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",maxWidth:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.detail}>{r.detail}</td></tr>))}</tbody>
+          <tbody>
+            {!eventLoading&&!eventRows.length&&<tr><td colSpan={5} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>이벤트 없음</td></tr>}
+            {eventRows.map((r,i)=>(<tr key={`${r.timestamp||r.time}-${r.username||r.actor}-${r.action}-${i}`}><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.timestamp||r.time||"").replace("T"," ").slice(0,16)}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontWeight:600}}>{r.username||r.actor||"-"}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{r.action}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{r.tab||""}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",maxWidth:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.detail}>{r.detail}</td></tr>))}
+          </tbody>
         </table>
       </div>
+      <HistoryPager offset={eventPage.offset} limit={eventPage.limit} total={eventPage.total} hasMore={eventPage.has_more} loading={eventLoading} onPage={setEventOffset}/>
     </div>
   </div>);
 }

@@ -277,7 +277,7 @@ function definitionFromForm(sources,joins,maxRows,chart={}){
   if((joins||[]).length)lines.push("");
   if(chart&&Object.keys(chart).length){
     lines.push("CHART");
-    [["type","TYPE"],["title","TITLE"],["x","X"],["y","Y"],["x_label","X_LABEL"],["y_label","Y_LABEL"],["color","COLOR"],["trellis","TRELLIS"],["trend_grain","TREND_GRAIN"],["aggregation","AGGREGATION"],["map_y","MAP_Y"],["map_scope","MAP_SCOPE"],["map_target","MAP_TARGET"],["pie_basis","PIE_BASIS"],["fit","FIT"],["point_size","POINT_SIZE"],["marker_opacity","MARKER_OPACITY"],["line_width","LINE_WIDTH"],["x_min","X_MIN"],["x_max","X_MAX"],["y_min","Y_MIN"],["y_max","Y_MAX"],["y_scale","Y_SCALE"],["legend_position","LEGEND_POSITION"],["spec_low","SPEC_LOW"],["spec_high","SPEC_HIGH"],["box_points","BOX_POINTS"],["wafer_palette","WAFER_PALETTE"],["wafer_mode","WAFER_MODE"],["wafer_spec_low","WAFER_SPEC_LOW"],["wafer_spec_high","WAFER_SPEC_HIGH"],["wafer_low","WAFER_LOW"],["wafer_center","WAFER_CENTER"],["wafer_high","WAFER_HIGH"],["width","WIDTH"],["height","HEIGHT"]].forEach(([key,label])=>{
+    [["x_font_size","X_FONT_SIZE"],["y_font_size","Y_FONT_SIZE"],["type","TYPE"],["title","TITLE"],["x","X"],["y","Y"],["x_label","X_LABEL"],["y_label","Y_LABEL"],["color","COLOR"],["trellis","TRELLIS"],["trend_grain","TREND_GRAIN"],["aggregation","AGGREGATION"],["map_y","MAP_Y"],["map_scope","MAP_SCOPE"],["map_target","MAP_TARGET"],["pie_basis","PIE_BASIS"],["fit","FIT"],["point_size","POINT_SIZE"],["marker_opacity","MARKER_OPACITY"],["line_width","LINE_WIDTH"],["x_min","X_MIN"],["x_max","X_MAX"],["y_min","Y_MIN"],["y_max","Y_MAX"],["y_scale","Y_SCALE"],["legend_position","LEGEND_POSITION"],["spec_low","SPEC_LOW"],["spec_high","SPEC_HIGH"],["box_points","BOX_POINTS"],["wafer_palette","WAFER_PALETTE"],["wafer_mode","WAFER_MODE"],["wafer_spec_low","WAFER_SPEC_LOW"],["wafer_spec_high","WAFER_SPEC_HIGH"],["wafer_low","WAFER_LOW"],["wafer_center","WAFER_CENTER"],["wafer_high","WAFER_HIGH"],["width","WIDTH"],["height","HEIGHT"]].forEach(([key,label])=>{
       if(text(chart[key]).trim())lines.push(`${label} = ${text(chart[key]).trim()}`);
     });
     (chart.color_rules||[]).forEach(rule=>{if(text(rule).trim())lines.push(`COLOR_RULE = ${text(rule).trim()}`);});
@@ -1020,6 +1020,7 @@ export default function My_ChartBuilder({user}){
   const[chartTitle,setChartTitle]=useState("");
   const[xAxisLabel,setXAxisLabel]=useState("");
   const[yAxisLabel,setYAxisLabel]=useState("");
+  const[axisFonts,setAxisFonts]=useState({x_font_size:14,y_font_size:14});
   const[pointSize,setPointSize]=useState("9");
   const[markerOpacity,setMarkerOpacity]=useState("0.82");
   const[lineWidth,setLineWidth]=useState("2.3");
@@ -1147,6 +1148,7 @@ export default function My_ChartBuilder({user}){
     return{...resolved,runtime_recent_days:days,runtime_date_column:days?(text(resolved.runtime_date_column).trim()||DEFAULT_DATE_COLUMN):"",runtime_root_lot_ids:roots,runtime_wafer_ids:wafers,runtime_lot_wafer_pairs:pairs,derived_columns:cleanDerivedColumns(resolved.derived_columns),runtime_filters:cleanRuntimeFilters(resolved.runtime_filters)};
   };
   const currentChartConfig=()=>({
+    ...axisFonts,
     type:chartType,
     title:text(chartTitle).trim(),
     x:xCol,
@@ -1211,6 +1213,7 @@ export default function My_ChartBuilder({user}){
     setMapYCol(hasConfig?text(config.map_y):"");setMapScope(hasConfig&&config.map_scope?text(config.map_scope):"root_wafer");setMapTarget(hasConfig?text(config.map_target):"");
     setPieBasis(hasConfig&&config.pie_basis?text(config.pie_basis):"count");
     setCorrFitMode(hasConfig&&config.fit?text(config.fit):"linear");setRadiusFitMode(hasConfig&&config.fit?text(config.fit):"cubic");
+    setAxisFonts({x_font_size:Number(config?.x_font_size)||14,y_font_size:Number(config?.y_font_size)||14});
     setPointSize(hasConfig&&config.point_size?text(config.point_size):"9");setMarkerOpacity(hasConfig&&config.marker_opacity!=null?text(config.marker_opacity):"0.82");setLineWidth(hasConfig&&config.line_width?text(config.line_width):"2.3");
     setXMin(hasConfig&&config.x_min!=null?text(config.x_min):"");setXMax(hasConfig&&config.x_max!=null?text(config.x_max):"");
     setYMin(hasConfig&&config.y_min!=null?text(config.y_min):"");setYMax(hasConfig&&config.y_max!=null?text(config.y_max):"");setYScale(hasConfig&&config.y_scale?text(config.y_scale):"linear");
@@ -1328,7 +1331,7 @@ export default function My_ChartBuilder({user}){
       setAssistantPrompt("");
       if(plan.requires_rerun){
         await run(parsed,{saveHistory:false});
-        toast.ok(`${plan.message} JOIN 결과도 다시 조회했습니다.`);
+        toast.ok(`${plan.message} 데이터 조건을 다시 조회했습니다.`);
       }else{
         toast.ok(plan.message||"차트 설정을 바꿨습니다.");
       }
@@ -1656,6 +1659,7 @@ export default function My_ChartBuilder({user}){
     const decorate=point=>({...point,spec_low:specLowCol?point?.[specLowCol]:point?.spec_low,spec_high:specHighCol?point?.[specHighCol]:point?.spec_high});
     return{
       ...chart,
+      ...axisFonts,
       title:text(chartTitle).trim()||chart.title,
       x_label:text(xAxisLabel).trim()||chart.x_label,
       y_label:text(yAxisLabel).trim()||chart.y_label,
@@ -1665,8 +1669,18 @@ export default function My_ChartBuilder({user}){
       legend_position:legendPosition,box_points:boxPoints,show_legend:showLegend,
       wafer_mode:waferRenderMode,wafer_spec_low:text(waferSpecLow).trim(),wafer_spec_high:text(waferSpecHigh).trim(),
     };
-  },[chart,chartTitle,xAxisLabel,yAxisLabel,pointSize,markerOpacity,lineWidth,xMin,xMax,yMin,yMax,yScale,showGrid,legendPosition,boxPoints,showLegend,specLowCol,specHighCol,waferRenderMode,waferSpecLow,waferSpecHigh]);
+  },[chart,axisFonts,chartTitle,xAxisLabel,yAxisLabel,pointSize,markerOpacity,lineWidth,xMin,xMax,yMin,yMax,yScale,showGrid,legendPosition,boxPoints,showLegend,specLowCol,specHighCol,waferRenderMode,waferSpecLow,waferSpecHigh]);
   const isPie=chartType==="pie"||chartType==="donut";
+  const chatChartConfigKey=user?.role==="admin"?JSON.stringify(currentChartConfig()):"";
+  const chatColumnsKey=JSON.stringify(columns);
+  useEffect(()=>{
+    if(user?.role!=="admin")return;
+    try{
+      const definition_code=definitionFromForm(sources.map(source=>requestSource(source,colorListPreview.rows)),sources.length>1?joins:[],maxRows,JSON.parse(chatChartConfigKey));
+      sessionStorage.setItem(`flow:chat:chart:${user?.username||""}`,JSON.stringify({definition_code,columns:JSON.parse(chatColumnsKey)}));
+    }catch{}
+  },[user?.role,user?.username,sources,joins,maxRows,chatChartConfigKey,colorListPreview.rows,chatColumnsKey]);
+
   // 상자별 통계는 그림과 같은 묶음(색 계열 × x 값)에서 낸다 — 표와 그림이 어긋나면 안 된다.
   const boxBuckets=useMemo(()=>chartType==="box"&&Array.isArray(displayChart?.points)?boxBucketsFromPoints(displayChart.points,colorCol):[],[chartType,displayChart,colorCol]);
   const boxStatsOn=chartType==="box"&&showBoxStats&&!displayChart?.error&&!trellisCol&&boxBuckets.length>0;
@@ -1716,7 +1730,7 @@ export default function My_ChartBuilder({user}){
       </div>
       {assistantReply&&<div style={{marginTop:9,padding:"8px 10px",borderRadius:7,border:`1px solid ${assistantReply.ok===false?"var(--danger-line)":"var(--border)"}`,background:"var(--bg-primary)",fontSize:12,lineHeight:1.55,color:assistantReply.ok===false?"var(--danger)":"var(--text-primary)"}}>
         <b>어시스트</b> · {assistantReply.message}
-        {assistantReply.requires_rerun&&<span style={{marginLeft:7,color:"var(--accent)",fontWeight:800}}>JOIN 변경 · 자동 재조회</span>}
+        {assistantReply.requires_rerun&&<span style={{marginLeft:7,color:"var(--accent)",fontWeight:800}}>데이터 조건 변경 · 자동 재조회</span>}
         {!!assistantReply.warnings?.length&&<div style={{marginTop:3,color:"var(--warn)"}}>{assistantReply.warnings.join(" · ")}</div>}
       </div>}
     </section>}

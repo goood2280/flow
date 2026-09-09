@@ -44,10 +44,18 @@ class PlanReq(BaseModel):
     root_lot_id: str = ""
     # 선택 입력 — 왜 바꿨는지. 비워 두는 게 기본이고, 남기면 이력에 그대로 붙는다.
     reason: str = ""
+    expected_plans: dict | None = None
+    operation_id: str = ""
 
 
 @router.post("/plan")
 def save_plan(req: PlanReq, request: Request = None):
+    from core.file_transaction import file_transaction
+    with file_transaction(_plan_history_path(req.product)):
+        return _save_plan_locked(req, request)
+
+
+def _save_plan_locked(req: PlanReq, request: Request = None):
     if request is not None:
         try:
             me = current_user(request)
@@ -67,6 +75,17 @@ def save_plan(req: PlanReq, request: Request = None):
 
     pf = _plan_history_path(req.product)
     data = _load_plan_data(req.product)
+    operations = data.setdefault("operations", {})
+    if req.operation_id and req.operation_id in operations:
+        previous = operations[req.operation_id]
+        if previous.get("user") != req.username or previous.get("plans") != req.plans:
+            raise HTTPException(409, "이미 사용된 요청 ID입니다.")
+        return {"ok": True, "saved": len(req.plans), "rejected": [], "already_applied": True}
+    if req.expected_plans is not None:
+        if set(req.expected_plans) != set(req.plans) or any(
+            data["plans"].get(key) != expected for key, expected in req.expected_plans.items()
+        ):
+            raise HTTPException(409, "미리보기 이후 계획이 변경되었습니다. 다시 조회하고 승인해 주세요.")
     data.setdefault("history", [])
     now = datetime.datetime.now().isoformat()
     changed_entries = []
@@ -107,6 +126,8 @@ def save_plan(req: PlanReq, request: Request = None):
         new_history.append(entry)
         changed_entries.append((ck, old, val))
     data["history"] = data["history"][-1000:]
+    if req.operation_id:
+        operations[req.operation_id] = {"user": req.username, "plans": req.plans, "time": now}
     save_json(pf, data)
     _archive_plan_history(req.product, new_history, prior_history)
     _invalidate_plan_risk_cache(req.product)
@@ -228,6 +249,12 @@ class PlanDeleteReq(BaseModel):
 
 @router.post("/plan/delete")
 def delete_plan(req: PlanDeleteReq, request: Request = None):
+    from core.file_transaction import file_transaction
+    with file_transaction(_plan_history_path(req.product)):
+        return _delete_plan_locked(req, request)
+
+
+def _delete_plan_locked(req: PlanDeleteReq, request: Request = None):
     if request is not None:
         try:
             me = current_user(request)
@@ -368,7 +395,8 @@ def download_history_csv(product: str = Query(...), root_lot_id: str = Query("")
                          user: str = Query(""), action: str = Query(""),
                          column: str = Query(""), wafer_id: str = Query(""),
                          q: str = Query(""), since: str = Query(""),
-                         until: str = Query(""), has_reason: bool = Query(False)):
+                         until: str = Query(""), has_reason: bool = Query(False),
+                         request: Request = None):
     """Admin: 화면과 같은 필터가 걸린 전체 이력을 CSV 로. 인자가 없으면 전량."""
     if (not any(p.exists() for p in _plan_alias_paths(product))
             and not _plan_history_log_path(product).exists()):
@@ -392,7 +420,13 @@ def download_history_csv(product: str = Query(...), root_lot_id: str = Query("")
                    lot, wf, col, h.get("old", ""), h.get("new", ""),
                    h.get("reason", ""), h.get("prev_user", ""), h.get("batch", "")]
 
-    return csv_response(csv_writer_bytes(header, _rows()), f"{product}_history.csv")
+    payload = csv_writer_bytes(header, _rows())
+    me = current_user(request) if request is not None else {}
+    username = me.get("username") or "anonymous"
+    filename = f"{product}_history.csv"
+    _log_split_table_download(username, product, root_lot_id, "", "history", "history-csv",
+                              len(hist), len(header), len(payload), [])
+    return csv_response(payload, filename)
 
 
 def _log_split_table_download(username: str, product: str, root_lot_id: str,
@@ -413,6 +447,11 @@ def _log_split_table_download(username: str, product: str, root_lot_id: str,
             "select_cols": ",".join(sel[:8]) + ("…" if len(sel) > 8 else ""),
             "size_mb": round((size_bytes or 0) / 1e6, 2),
         })
+        from core.audit import record_user as _audit_user
+        _audit_user(username or "anonymous", "splittable:download",
+                    detail=f"product={product} root_lot_id={root_lot_id or 'all'} format={fmt} "
+                           f"rows={int(rows or 0)} cols={int(cols or 0)} size_mb={round((size_bytes or 0) / 1e6, 2)}",
+                    tab="splittable")
     except Exception:
         pass
 
@@ -1778,7 +1817,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
 
 
 @router.get("/plans-csv")
-def export_plans_csv(product: str = Query(...)):
+def export_plans_csv(product: str = Query(...), request: Request = None):
     if not any(p.exists() for p in _plan_alias_paths(product)):
         raise HTTPException(404, "No plans")
     plans = _load_plan_data(product).get("plans", {})
@@ -1796,4 +1835,9 @@ def export_plans_csv(product: str = Query(...)):
             yield [lot, wf, col, info.get("value", ""),
                    info.get("user", ""), info.get("updated", "")]
 
-    return csv_response(csv_writer_bytes(header, _rows()), f"{product}_plans.csv")
+    payload = csv_writer_bytes(header, _rows())
+    me = current_user(request) if request is not None else {}
+    username = me.get("username") or "anonymous"
+    _log_split_table_download(username, product, "", "", "plans", "plans-csv",
+                              len(plans), len(header), len(payload), [])
+    return csv_response(payload, f"{product}_plans.csv")

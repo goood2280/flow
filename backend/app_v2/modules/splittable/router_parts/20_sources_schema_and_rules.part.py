@@ -2252,6 +2252,7 @@ def _split_step_order_context(product: str) -> dict:
             ("KNOB", _build_knob_meta),
             ("INLINE", _build_inline_meta),
             ("VM", _build_vm_meta),
+            ("MASK", _build_mask_meta),
         ):
             _register_step_order_meta(
                 param_rank, param_step, meta_builder(product) or {}, pref, seq_rank,
@@ -2505,15 +2506,15 @@ def _build_inline_meta(product: str = "") -> dict:
             continue
         iid = (r.get(im.get("item_id_col", "item_id")) or "").strip()
         sid = (r.get(im.get("step_id_col", "step_id")) or "").strip()
-        if product and sid.casefold() not in sid_to_desc:
-            continue
+        # INLINE 제품 귀속과 step_id는 inline_matching이 원천이다.
+        # Vehicle_matching에 설명이 없어도 측정 step 자체를 버리지 않는다.
         process_id = (r.get(im.get("process_id_col", "process_id")) or "").strip()
         desc = (r.get(im.get("item_desc_col", "item_desc")) or "").strip()
         matching_table = (r.get(im.get("matching_table_col", "matching_table")) or "").strip()
         func_step = (r.get("function_step") or "").strip() or sid_to_desc.get(sid.casefold(), "")
         if not iid or not sid:
             continue
-        grouped.setdefault(iid, []).append({
+        item = {
             "step_id": sid,
             "process_id": process_id,
             "item_id": iid,
@@ -2522,13 +2523,17 @@ def _build_inline_meta(product: str = "") -> dict:
             "function_step": func_step,
             "step_desc": func_step,
             "module": "",
-        })
+        }
+        # Wide 테이블은 item_desc를 항목명으로 쓰기도 한다. 동일 설명의
+        # 여러 item_id/step_id도 누락 없이 묶고 기존 item_id 조회를 유지한다.
+        for key in _dedup_list([iid, desc]):
+            grouped.setdefault(key, []).append(item)
     out: dict[str, dict] = {}
     for iid, items in grouped.items():
         dedup = []
         seen = set()
         for item in items:
-            key = (item.get("function_step", ""), item.get("step_id", ""), item.get("item_desc", ""), item.get("matching_table", ""))
+            key = (item.get("item_id", ""), item.get("function_step", ""), item.get("step_id", ""), item.get("item_desc", ""), item.get("matching_table", ""))
             if key in seen:
                 continue
             seen.add(key)
@@ -2540,7 +2545,7 @@ def _build_inline_meta(product: str = "") -> dict:
         matching_tables = _dedup_list([x.get("matching_table", "") for x in dedup if x.get("matching_table")])
         modules = _dedup_list([x.get("module", "") for x in dedup if x.get("module")])
         out[iid] = {
-            "item_id": iid,
+            "item_id": dedup[0]["item_id"],
             "item_desc": item_desc,
             "modules": modules,
             "module": modules[0] if len(modules) == 1 else "",
@@ -2626,6 +2631,110 @@ def _build_vm_meta(product: str = "") -> dict:
     return out
 
 
+def _build_mask_meta(product: str = "") -> dict:
+    """MASK_ prefix 항목 매칭 메타. MASK_ 뒤가 step_desc이며 Vehicle_matching.csv에서 step_id와 module을 연결한다."""
+    base = _base_root()
+    step_map = _product_step_map_by_desc(product, base)
+
+    cols = _mltable_schema_columns(product, "MASK")
+    candidates: set[str] = set()
+    for col in cols:
+        candidates.add(str(col).strip())
+    for steps in step_map.values():
+        for s in steps:
+            sd = str(s.get("step_desc") or "").strip()
+            if sd:
+                candidates.add(f"MASK_{sd}")
+                candidates.add(sd)
+
+    out: dict[str, dict] = {}
+
+    def _lookup_steps(tail_str: str) -> tuple[list[dict], str]:
+        clean = _re.sub(r"_split$", "", tail_str, flags=_re.I).strip()
+        key = _step_desc_match_key(clean)
+        for cand_k in (key, key.replace("_", " "), key.replace(" ", "_")):
+            if cand_k in step_map and step_map[cand_k]:
+                matched_desc = next((str(x.get("step_desc") or "").strip() for x in step_map[cand_k] if str(x.get("step_desc") or "").strip()), "") or clean
+                return step_map[cand_k], matched_desc
+        norm_clean = _re.sub(r"[_\s]+", " ", clean).strip().casefold()
+        for k, v in step_map.items():
+            if _re.sub(r"[_\s]+", " ", str(k)).strip().casefold() == norm_clean:
+                matched_desc = next((str(x.get("step_desc") or "").strip() for x in v if str(x.get("step_desc") or "").strip()), "") or clean
+                return v, matched_desc
+        return [], clean
+
+    for cand in candidates:
+        if not cand:
+            continue
+        if cand.upper().startswith("MASK_"):
+            full = cand
+            tail = _re.sub(r"^MASK_", "", cand, flags=_re.I).strip()
+        else:
+            full = f"MASK_{cand}"
+            tail = cand
+        clean_tail = _re.sub(r"_split$", "", tail, flags=_re.I).strip()
+        if not clean_tail:
+            continue
+
+        matched_steps, step_desc_val = _lookup_steps(clean_tail)
+        step_ids = _dedup_list([str(x.get("step_id") or "").strip() for x in matched_steps if str(x.get("step_id") or "").strip()])
+        modules = _dedup_list([str(x.get("module") or "").strip() for x in matched_steps if str(x.get("module") or "").strip()])
+
+        groups = []
+        if matched_steps:
+            for x in matched_steps:
+                sid = str(x.get("step_id") or "").strip()
+                mod = str(x.get("module") or "").strip()
+                desc = str(x.get("step_desc") or "").strip() or step_desc_val
+                groups.append({
+                    "step_desc": desc,
+                    "step_id": sid,
+                    "step_ids": [sid] if sid else [],
+                    "module": mod,
+                    "modules": [mod] if mod else [],
+                    "function_step": desc,
+                })
+        else:
+            groups.append({
+                "step_desc": step_desc_val,
+                "step_id": "",
+                "step_ids": [],
+                "module": "",
+                "modules": [],
+                "function_step": step_desc_val,
+            })
+
+        entry = {
+            "feature_name": full,
+            "step_desc": step_desc_val,
+            "step_id": step_ids[0] if len(step_ids) == 1 else "",
+            "step_ids": step_ids,
+            "function_step": step_desc_val,
+            "function_steps": [step_desc_val],
+            "module": modules[0] if len(modules) == 1 else "",
+            "modules": modules,
+            "groups": groups,
+            "label": step_desc_val,
+            "sub": "/".join(step_ids) if step_ids else step_desc_val,
+        }
+
+        for alias in _dedup_list([
+            full,
+            tail,
+            clean_tail,
+            f"MASK_{clean_tail}",
+            f"{clean_tail}_Split",
+            f"MASK_{clean_tail}_Split",
+            clean_tail.replace(" ", "_"),
+            clean_tail.replace("_", " "),
+            f"MASK_{clean_tail.replace(' ', '_')}",
+            f"MASK_{clean_tail.replace('_', ' ')}",
+        ]):
+            out[alias] = entry
+
+    return out
+
+
 # ── 적용 공정 정보(step label) 표기 ──────────────────────────────────────
 #   화면의 "적용 공정 정보" 체크박스와 같은 규약을 서버에서 재현한다.
 #     KNOB        → rule_order 별 step_id (서로 다른 step_desc 조건만 `&`)
@@ -2641,6 +2750,8 @@ def _step_label_match_kind(param: str) -> str:
         return "inline_matching"
     if u.startswith("VM_") or u == "VM":
         return "vm_matching"
+    if u.startswith("MASK_") or u == "MASK":
+        return "mask_matching"
     return ""
 
 
@@ -2738,8 +2849,13 @@ def _step_label_item_lines(meta: dict) -> list[str]:
 
 
 def _step_label_metas(product: str) -> dict:
-    out = {"knob": {}, "inline": {}, "vm": {}}
-    for key, fn in (("knob", _build_knob_meta), ("inline", _build_inline_meta), ("vm", _build_vm_meta)):
+    out = {"knob": {}, "inline": {}, "vm": {}, "mask": {}}
+    for key, fn in (
+        ("knob", _build_knob_meta),
+        ("inline", _build_inline_meta),
+        ("vm", _build_vm_meta),
+        ("mask", _build_mask_meta),
+    ):
         try:
             meta = fn(product)
             out[key] = meta if isinstance(meta, dict) else {}
@@ -2757,6 +2873,8 @@ def _step_label_lines_for_param(param: str, metas: dict, exclude_not_null: bool 
         return kind, _step_label_knob_lines((meta or {}).get("groups") or [], exclude_not_null)
     if kind == "inline_matching":
         return kind, _step_label_item_lines(_step_label_meta_lookup(metas.get("inline") or {}, param, "INLINE"))
+    if kind == "mask_matching":
+        return kind, _step_label_item_lines(_step_label_meta_lookup(metas.get("mask") or {}, param, "MASK"))
     return kind, _step_label_item_lines(_step_label_meta_lookup(metas.get("vm") or {}, param, "VM"))
 
 
@@ -2800,14 +2918,17 @@ def _step_process_columns_for_param(param: str, metas: dict,
                     ids.append(sid)
         return {"step_id": "\n".join(ids), "step_desc": "\n".join(descs)}
 
-    meta_key = "inline" if kind == "inline_matching" else "vm"
-    prefix = "INLINE" if kind == "inline_matching" else "VM"
+    meta_key = "inline" if kind == "inline_matching" else ("mask" if kind == "mask_matching" else "vm")
+    prefix = "INLINE" if kind == "inline_matching" else ("MASK" if kind == "mask_matching" else "VM")
     meta = _step_label_meta_lookup(metas.get(meta_key) or {}, param, prefix)
     ids: list[str] = []
     descs: list[str] = []
     seen_ids: set[str] = set()
     seen_descs: set[str] = set()
     fallback_desc = str((meta or {}).get("step_desc") or (meta or {}).get("function_step") or "").strip()
+    if not fallback_desc and kind == "mask_matching":
+        fallback_desc = _re.sub(r"^MASK_", "", str(param or "").strip(), flags=_re.I).strip()
+        fallback_desc = _re.sub(r"_split$", "", fallback_desc, flags=_re.I).strip()
     for group in ((meta or {}).get("groups") or []):
         if not isinstance(group, dict):
             continue
@@ -2914,6 +3035,9 @@ def _virtual_columns_for_prefix(product: str, prefix: str,
         elif pref == "VM":
             for key in (_build_vm_meta(product) or {}).keys():
                 _push(key, "VM")
+        elif pref == "MASK":
+            for key in (_build_mask_meta(product) or {}).keys():
+                _push(key, "MASK")
     except Exception:
         return out
     return out
@@ -2929,6 +3053,12 @@ def inline_meta(product: str = Query("")):
 def vm_meta(product: str = Query("")):
     """v8.7.5/v8.8.7: VM_ prefix 항목 매칭 메타. product 필터 추가."""
     return {"items": _build_vm_meta(product)}
+
+
+@router.get("/mask-meta")
+def mask_meta(product: str = Query("")):
+    """MASK_ prefix 항목 매칭 메타. MASK_ 뒤가 step_desc이며 Vehicle_matching.csv에서 step_id와 module을 연결한다."""
+    return {"items": _build_mask_meta(product)}
 
 
 @router.post("/infer-step-mapping")

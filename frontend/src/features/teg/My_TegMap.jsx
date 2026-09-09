@@ -24,6 +24,7 @@ import ZoomPanSvg from "../../components/ZoomPanSvg";
 import { Button, Card, EmptyState, LinkBtn, Pill, Select, TabStrip } from "../../components/UXKit";
 import TegCheck from "./TegCheck";
 import TegGenerate from "./TegGenerate";
+import TegMapfileTraffic from "./TegMapfileTraffic";
 import My_FileBrowser from "../filebrowser/My_FileBrowser";
 
 const API = "/api/teg-map";
@@ -905,15 +906,28 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
   // 자체로 판정: 전부 안=연파랑, 걸치거나 밖=연노랑.
   const edgeMm = mmMode ? (geo.wafer_edge_mm || 0) : 0;
   const fullChipMode = Array.isArray(fullChipDies);
+  const tegOutsideShot = (s0, t) => {
+    const box = tegBox(t) || { w: 0, h: 0 };
+    const { x: x0, y: y0 } = waferTegCartesianPosition(s0, t);
+    const halfW = Math.abs(Number(geo.shot_w_mm) || 0) / 2;
+    const halfH = Math.abs(Number(geo.shot_h_mm) || 0) / 2;
+    if (halfW <= 0 || halfH <= 0) return false;
+    const shotX = Number(s0.mm_x), shotY = -Number(s0.mm_y);
+    if (![x0, y0, halfW, halfH, shotX, shotY].every(Number.isFinite)) return false;
+    return x0 < shotX - halfW - FULL_SHOT_EDGE_EPS
+      || x0 + box.w > shotX + halfW + FULL_SHOT_EDGE_EPS
+      || y0 < shotY - halfH - FULL_SHOT_EDGE_EPS
+      || y0 + box.h > shotY + halfH + FULL_SHOT_EDGE_EPS;
+  };
   const shotEdgeCrossed = (s0) => {
-    if (!edgeMm || !tegList.length) return null;
+    if (!tegList.length) return null;
     for (const t of tegList) {
       const box = tegBox(t) || { w: 0, h: 0 };
       const anchor = waferTegCartesianPosition(s0, t);
       const x0 = anchor.x, y0 = anchor.y;
       const x1 = x0 + box.w, y1 = y0 + box.h;
       const maxD = Math.hypot(Math.max(Math.abs(x0), Math.abs(x1)), Math.max(Math.abs(y0), Math.abs(y1)));
-      if (maxD > edgeMm) return true;
+      if (tegOutsideShot(s0, t) || (edgeMm && maxD > edgeMm)) return true;
     }
     return false;
   };
@@ -986,6 +1000,7 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
         const measured = shotValues instanceof Map ? shotValues.get(key) : null;
         if (hideUnmeasured && !measured) return null;
         const isSel = selectedShot && selectedShot.x === s0.x && selectedShot.y === s0.y;
+        const shotTegOutside = mmMode && tegList.some(t => tegOutsideShot(s0, t));
         const crossed = mmMode ? shotEdgeCrossed(s0) : null;
         const selfCrossed = mmMode && crossed === null ? shotSelfCrossed(s0) : null;
         // full shot 격자로 만들어 낸 자리 — TEG 판정색(초록/빨강)은 그대로 쓰되,
@@ -1008,7 +1023,9 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
         const title = (mmMode
           ? `shot (${s0.x}, ${s0.y})\nwafer 위치: (${fmt(s0.mm_x)}, ${fmt(-s0.mm_y)}) mm\nshot 내부 ebeam 원점: (0, 0)\nradius: ${fmt(s0.radius)} mm`
             + (crossed !== null
-              ? (crossed ? `\n⚠ TEG 가 최외곽 ${fmt(edgeMm, 0)}mm 라인에 걸림` : `\n✓ TEG 전체가 최외곽 ${fmt(edgeMm, 0)}mm 안`)
+              ? (crossed
+                ? (shotTegOutside ? `\n⚠ TEG 가 shot 경계를 벗어남` : `\n⚠ TEG 가 최외곽 ${fmt(edgeMm, 0)}mm 라인에 걸림`)
+                : `\n✓ TEG 전체가 최외곽 ${fmt(edgeMm, 0)}mm 안`)
               : selfCrossed !== null
                 ? (selfCrossed ? `\nshot 영역이 최외곽 ${fmt(edgeMm, 0)}mm 에 걸치거나 밖` : `\nshot 전체가 최외곽 ${fmt(edgeMm, 0)}mm 안`)
                 : "")
@@ -1595,7 +1612,7 @@ function ReferenceFiles({ user, canEdit, onSaved }) {
 }
 
 
-const PRODUCT_NODE_ADMIN_COLUMNS = ["current_product", "product_name", "node_path"];
+const PRODUCT_NODE_ADMIN_COLUMNS = ["current_product", "product_name", "node_path", "product_code"];
 const NODE_ACCESS_ADMIN_COLUMNS = ["root_node", "users", "departments"];
 
 function splitAccessValues(value) {
@@ -1615,11 +1632,15 @@ function ProductAccessAdmin({ onSaved }) {
       const result = await sf(`${API}/product-access`);
       setKnownUsers(result.users || []);
       setOriginalProducts(Object.fromEntries((result.products || []).map(item => [item.vehicle, {
-        product_name: item.vehicle, node_path: item.node_path === "미분류" ? "" : item.node_path,
+        product_name: item.vehicle,
+        node_path: item.node_path === "미분류" ? "" : item.node_path,
+        product_code: item.product_code || (result.product_codes || {})[item.vehicle] || "",
       }])));
       setProductRows(normalizeSpreadsheetRows((result.products || []).map(item => ({
-        current_product: item.vehicle, product_name: item.vehicle,
+        current_product: item.vehicle,
+        product_name: item.vehicle,
         node_path: item.node_path === "미분류" ? "" : item.node_path,
+        product_code: item.product_code || (result.product_codes || {})[item.vehicle] || "",
       })), PRODUCT_NODE_ADMIN_COLUMNS));
       setAccessRows(normalizeSpreadsheetRows(Object.entries(result.node_access || {}).map(([root, rule]) => ({
         root_node: root,
@@ -1634,14 +1655,19 @@ function ProductAccessAdmin({ onSaved }) {
     setBusy(true); setError("");
     try {
       const identityRows = productRows.filter(row => String(row.current_product || "").trim());
+      const product_codes = {};
       for (const row of identityRows) {
         const currentProduct = String(row.current_product).trim();
         const productName = String(row.product_name || "").trim();
         const nodePath = String(row.node_path || "").trim();
+        const productCode = String(row.product_code || "").trim();
+        if (productName) {
+          product_codes[productName] = productCode;
+        }
         const original = originalProducts[currentProduct] || {};
-        if (productName !== original.product_name || nodePath !== original.node_path) {
+        if (productName !== original.product_name || nodePath !== original.node_path || productCode !== original.product_code) {
           await putJson(`${API}/products/${encodeURIComponent(currentProduct)}/identity`, {
-            vehicle: productName, node_path: nodePath,
+            vehicle: productName, node_path: nodePath, product_code: productCode,
           });
         }
       }
@@ -1650,8 +1676,8 @@ function ProductAccessAdmin({ onSaved }) {
         .map(row => [String(row.root_node).trim(), {
           users: splitAccessValues(row.users), departments: splitAccessValues(row.departments),
         }]));
-      await putJson(`${API}/product-access`, { product_nodes: {}, node_access });
-      toast.ok("제품명·분류와 접근 권한을 저장했습니다");
+      await putJson(`${API}/product-access`, { product_nodes: {}, product_codes, node_access });
+      toast.ok("제품명·분류·제품코드와 접근 권한을 저장했습니다");
       await load();
       if (onSaved) await onSaved();
     } catch (e) { setError(String(e.message || e)); setBusy(false); }
@@ -1659,13 +1685,14 @@ function ProductAccessAdmin({ onSaved }) {
   return <div style={{ display: "grid", gap: 12 }}>
     <Card title="제품 노드 · 관리자" right={<Pill tone="warn">SSO 부서 연동 준비</Pill>}>
       <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6, marginBottom: 9 }}>
-        기존 제품명은 변경 대상을 찾는 키이므로 그대로 두고, 변경 제품명과 제품 분류를 수정합니다.
+        기존 제품명은 변경 대상을 찾는 키이므로 그대로 두고, 변경 제품명과 제품 분류, 제품코드를 수정합니다.
         예: <b>2나노 / 2나노A</b>로 저장하면 선택 화면에는 <b>2나노 / 2나노A / 제품명</b>으로 표시됩니다.
+        제품코드는 DB mapfile 폴더 내 <code>제품코드*</code> 파일 자동 검증(Mapfile 신호등)에 매칭됩니다.
         제품명 변경은 Chip_Radius·Teg_location·Main_chip_info·제품 설정에도 함께 반영됩니다.
       </div>
       <SpreadsheetPasteGrid columns={PRODUCT_NODE_ADMIN_COLUMNS} rows={productRows} onChange={setProductRows}
-        columnLabels={{ current_product: "기존 제품명", product_name: "변경 제품명", node_path: "제품 분류" }}
-        ariaLabel="제품별 이름과 분류" minRows={10} maxRows={1000} maxHeight={365} />
+        columnLabels={{ current_product: "기존 제품명", product_name: "변경 제품명", node_path: "제품 분류", product_code: "제품코드" }}
+        ariaLabel="제품별 이름과 분류, 제품코드" minRows={10} maxRows={1000} maxHeight={365} />
     </Card>
     <Card title="최상위 노드 접근 권한 · 관리자">
       <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6, marginBottom: 9 }}>
@@ -1929,6 +1956,7 @@ function ProductCreateModal({ open, onClose, onCreated }) {
   const [productRows, setProductRows] = useState(() => normalizeSpreadsheetRows([], PRODUCT_INFO_COLUMNS));
   const [preview, setPreview] = useState(null);
   const [vehicle, setVehicle] = useState("");
+  const [productCode, setProductCode] = useState("");
   const [nodePath, setNodePath] = useState("");
   const [tegRows, setTegRows] = useState(() => normalizeSpreadsheetRows([], TEG_LOCATION_COLUMNS));
   const [mainChip, setMainChip] = useState({ chip_name: "", chipsize_x: "", chipsize_y: "" });
@@ -1936,7 +1964,7 @@ function ProductCreateModal({ open, onClose, onCreated }) {
   const [error, setError] = useState("");
   useEffect(() => {
     if (!open) return;
-    setStep(1); setProductRows(normalizeSpreadsheetRows([], PRODUCT_INFO_COLUMNS)); setPreview(null); setVehicle(""); setNodePath("");
+    setStep(1); setProductRows(normalizeSpreadsheetRows([], PRODUCT_INFO_COLUMNS)); setPreview(null); setVehicle(""); setProductCode(""); setNodePath("");
     setTegRows(normalizeSpreadsheetRows([], TEG_LOCATION_COLUMNS));
     setMainChip({ chip_name: "", chipsize_x: "", chipsize_y: "" });
     setBusy(false); setError("");
@@ -1965,7 +1993,7 @@ function ProductCreateModal({ open, onClose, onCreated }) {
     setBusy(true); setError("");
     try {
       const result = await postJson(`${API}/products`, {
-        text, vehicle, node_path: nodePath, tegs: tegPayload,
+        text, vehicle, node_path: nodePath, product_code: productCode, tegs: tegPayload,
         main_chip: preview?.one_by_one ? mainChip : null,
       });
       toast.ok(`${result.vehicle} 제품 생성됨 · Chip_Radius ${result.shot_count} shots`);
@@ -2002,8 +2030,12 @@ function ProductCreateModal({ open, onClose, onCreated }) {
         <label style={{ fontSize: 12, fontWeight: 700, marginTop: 3 }}>제품명 (vehicle)</label>
         <input aria-label="제품명" value={vehicle} onChange={e => setVehicle(e.target.value)}
           placeholder="예: VH_PRODUCT_A" style={{ ...inputStyle, width: "100%" }} />
+        <label style={{ fontSize: 12, fontWeight: 700, marginTop: 3 }}>제품코드 (DB mapfile 매칭용, 선택)</label>
+        <input aria-label="제품코드" value={productCode} onChange={e => setProductCode(e.target.value)}
+          placeholder="예: PA100 (mapfile 폴더 내 PA100* 파일 자동 검증)" style={{ ...inputStyle, width: "100%" }} />
         <div style={{ fontSize: 11, color: "var(--muted)" }}>
           제품은 `{nodePath || "제품 분류"} / {vehicle || "제품명"}` 구조로 저장되며 접근 권한은 첫 분류 노드를 기준으로 적용됩니다.
+          제품코드는 DB mapfile 폴더 내 <code>제품코드*</code> 파일 감지 및 신호등 검증에 사용됩니다.
         </div>
       </section>
       {error && <div style={{ color: "var(--danger)", fontSize: 12 }}>{error}</div>}
@@ -2231,6 +2263,7 @@ function ProductGeometryModal({ open, vehicle, onClose, onSaved }) {
 }
 
 export default function My_TegMap({ user }) {
+  const [entryQuery] = useState(() => new URLSearchParams(window.location.search));
   const [vehicles, setVehicles] = useState(null);   // null=로딩, []=없음
   const [productCatalog, setProductCatalog] = useState([]);
   const [vehicle, setVehicle] = useState("");
@@ -2244,12 +2277,18 @@ export default function My_TegMap({ user }) {
   const [fullChip, setFullChip] = useState(false);   // 최외곽 안의 grid/dev_grid die 전체 표시
   const [imgUrl, setImgUrl] = useState(null);
   const [imgShapes, setImgShapes] = useState(null); // /image/shapes 응답 (그림 격자 + 개발 격자)
-  const [view, setView] = useState("map");   // map=위치 조회 | check=TEG Mapfile 체크
+  const [view, setView] = useState(() => entryQuery.get("view") === "traffic" ? "traffic" : "map");
+  const [initialMapCheckText, setInitialMapCheckText] = useState("");
   const [productOpen, setProductOpen] = useState(false);
   const [geometryOpen, setGeometryOpen] = useState(false);
   // 같은 vehicle 의 config/기준 파일이 바뀌어도 자식의 vehicle prop 은 그대로다.
   // 명시적 revision 으로 Mapfile 생성 응답을 무효화한다.
   const [referenceRevision, setReferenceRevision] = useState(0);
+
+  const handleOpenCheckFromTraffic = (content) => {
+    setInitialMapCheckText(content);
+    setView("check");
+  };
 
   const canEdit = user?.role === "admin" || (user?.page_manager || []).includes("teg");
   const isAdmin = user?.role === "admin";
@@ -2284,7 +2323,7 @@ export default function My_TegMap({ user }) {
     }
     return [...groups.entries()];
   }, [productCatalog]);
-  useEffect(() => { loadVehicles(); }, []);
+  useEffect(() => { loadVehicles(entryQuery.get("vehicle") || ""); }, []);
 
   const loadMap = useCallback(async (requestedVehicle = vehicle) => {
     const target = typeof requestedVehicle === "string" ? requestedVehicle : vehicle;
@@ -2491,13 +2530,15 @@ export default function My_TegMap({ user }) {
       <TabStrip active={view} onChange={setView}
         items={[{ k: "map", l: "위치 조회" }, { k: "check", l: "Mapfile 검증" },
                 { k: "gen", l: "Mapfile 좌표 생성" },
+                { k: "traffic", l: "Mapfile 신호등" },
                 ...(isAdmin ? [
                   { k: "access", l: "제품 권한 · 관리자" },
                   { k: "inline", l: "Inline map setting · 관리자" },
                 ] : [])]} />
 
-      {view === "check" && <TegCheck vehicle={vehicle} refreshKey={referenceRevision} canEdit={canEdit} />}
+      {view === "check" && <TegCheck vehicle={vehicle} refreshKey={referenceRevision} canEdit={canEdit} initialText={initialMapCheckText} />}
       {view === "gen" && <TegGenerate vehicle={vehicle} refreshKey={referenceRevision} />}
+      {view === "traffic" && <TegMapfileTraffic vehicle={vehicle} initialFilename={entryQuery.get("filename") || ""} onOpenCheck={handleOpenCheckFromTraffic} />}
       {view === "access" && isAdmin && <ProductAccessAdmin onSaved={loadVehicles} />}
       {view === "inline" && isAdmin &&
         <InlineMapSetting data={data} vehicle={vehicle} onVehicleChange={setVehicle} />}

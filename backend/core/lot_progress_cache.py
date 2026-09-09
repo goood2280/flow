@@ -1698,6 +1698,7 @@ def canonical_lot_progress_summaries(
     *,
     product: str = "",
     limit: int = 500,
+    match_root: bool = False,
 ) -> dict[str, dict]:
     """Return LOT summaries from the canonical dashboard WIP parquet.
 
@@ -1705,6 +1706,8 @@ def canonical_lot_progress_summaries(
     that need to display the same current LOT/step must use this function
     instead of the scanner-internal ``lot_wf_current.json`` cache; the two
     caches have different owners and refresh schedules.
+    ``match_root`` is explicit for root-lot requests; the default continues
+    to match only FAB lot IDs so sibling lots never leak into FAB results.
     """
     from core.latest_lot_cache_format import FORMAT_COLUMN, FORMAT_VERSION, normalize_product
 
@@ -1742,7 +1745,7 @@ def canonical_lot_progress_summaries(
             return empty
 
         lot_key = (
-            pl.col("lot_id").cast(pl.Utf8, strict=False).fill_null("")
+            pl.col("root_lot_id" if match_root else "lot_id").cast(pl.Utf8, strict=False).fill_null("")
             .str.strip_chars().str.to_uppercase()
         )
         # Lot Management stores the current FAB lot_id, not root_lot_id.
@@ -1777,7 +1780,7 @@ def canonical_lot_progress_summaries(
         # tkout_time is the actual per-wafer move time and must decide the
         # displayed current step.
         row["update_time"] = _safe_text(row.get("tkout_time") or row.get("update_time"))
-        lot_key_value = _norm_key(row.get("lot_id"))
+        lot_key_value = _norm_key(row.get("root_lot_id" if match_root else "lot_id"))
         if lot_key_value in rows_by_key and len(rows_by_key[lot_key_value]) < max(1, min(int(limit), 500)):
             rows_by_key[lot_key_value].append(row)
 

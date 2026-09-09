@@ -105,6 +105,8 @@ export function canAccessTab(user, userTabs, tabKey) {
   // Template Report는 저장된 ChartBuilder 코드를 재사용한다. 기존 차트생성
   // 권한 사용자가 관리자 권한 재저장 없이 바로 이용할 수 있게 승계한다.
   if (tabKey === "templatereport" && (granted.includes("chartbuilder") || granted.includes("dashboard") || granted.includes("filebrowser"))) return true;
+  // 랏 현위치 확인은 WIP 공정 위치 확인 화면으로, 기존 랏관리/스플릿테이블/대시보드/랏요청 권한 사용자가 바로 이용할 수 있게 승계한다.
+  if (tabKey === "lotlocation" && (granted.includes("lotlocation") || granted.includes("lotmanage") || granted.includes("splittable") || granted.includes("dashboard") || granted.includes("lotrequest"))) return true;
   return granted.includes(tabKey);
 }
 

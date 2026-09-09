@@ -148,7 +148,7 @@ def _cache_build_emit(product: str, event: str, *, ok: bool = True, detail: dict
 
 
 def _enqueue_pivot_cache_build(product: str, reason: str = "", *, immediate: bool = False,
-                               local_only: bool = False) -> bool:
+                               local_only: bool = False, allow_local_fallback: bool = True) -> bool:
     """Rebuild the product's pre-pivoted root_lot cache in a daemon thread.
     Single-flight per product with a cooldown so view-triggered rebuilds cannot
     stampede; the daily 03:00 scheduler remains the full sweep.
@@ -275,7 +275,7 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "", *, immediate: boo
                     _local_build,
                     label=f"pivot:{canonical}",
                     local_idle_only=not immediate,
-                    local_fallback=True,
+                    local_fallback=allow_local_fallback,
                     durable=not immediate,
                     priority="normal" if immediate else "maintenance",
                     dedupe_key=f"pivot:{canonical}",

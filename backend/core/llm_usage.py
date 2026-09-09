@@ -1,7 +1,7 @@
-"""Shared daily provider-attempt budget for the administrator LLM POC."""
+"""Shared sliding-window budget: at most 30 provider attempts per 60 seconds."""
 from contextlib import contextmanager
-from datetime import datetime, timedelta, timezone
 import json
+import math
 import os
 import threading
 import time
@@ -10,34 +10,33 @@ from core.paths import PATHS
 from core.utils import save_json
 
 _LOCK = threading.Lock()
-_KST = timezone(timedelta(hours=9))
+WINDOW_SECONDS = 60
 
 
 def _path():
-    return PATHS.data_root / "llm" / "daily_usage.json"
+    return PATHS.data_root / "llm" / "minute_usage.json"
 
 
-def daily_limit():
+def minute_limit():
     try:
-        return max(0, min(30, int(os.environ.get("FLOW_LLM_DAILY_CALL_LIMIT", "30"))))
+        return max(0, min(30, int(os.environ.get("FLOW_LLM_MINUTE_CALL_LIMIT", "30"))))
     except ValueError:
         return 30
 
 
-def _today():
-    return datetime.now(_KST).date().isoformat()
-
-
-def _read(path, today):
+def _read(path, now):
     try:
         raw = json.loads(path.read_text("utf-8"))
     except FileNotFoundError:
-        return {"date": today, "used": 0}
-    # Corruption must not silently reset an exhausted daily allowance.
-    if not isinstance(raw, dict) or not isinstance(raw.get("used"), int) or raw["used"] < 0:
-        raise ValueError("invalid LLM usage counter")
-    datetime.strptime(str(raw.get("date", "")), "%Y-%m-%d")
-    return raw if raw["date"] >= today else {"date": today, "used": 0}
+        return []
+    attempts = raw.get("attempts") if isinstance(raw, dict) else None
+    if not isinstance(attempts, list) or any(
+        isinstance(t, bool) or not isinstance(t, (float, int)) or not math.isfinite(t) or t < 0
+        for t in attempts
+    ):
+        raise ValueError("invalid LLM sliding-window counter")
+    # Future timestamps remain reserved when a host clock moves backwards.
+    return sorted(t for t in attempts if t > now - WINDOW_SECONDS)
 
 
 @contextmanager
@@ -74,29 +73,31 @@ def _store_lock(path):
 
 
 def snapshot():
-    limit = daily_limit()
+    limit = minute_limit()
     try:
-        state = _read(_path(), _today())
-        return {"daily_call_limit": limit, "daily_calls_used": state["used"],
-                "daily_calls_remaining": max(0, limit - state["used"]), "daily_reset_timezone": "Asia/Seoul"}
+        now = time.time()
+        attempts = _read(_path(), now)
+        retry = max(1, math.ceil(attempts[0] + WINDOW_SECONDS - now)) if attempts and len(attempts) >= limit else 0
+        return {"minute_call_limit": limit, "minute_calls_used": len(attempts),
+                "minute_calls_remaining": max(0, limit - len(attempts)),
+                "window_seconds": WINDOW_SECONDS, "retry_after_s": retry}
     except Exception:
-        return {"daily_call_limit": limit, "daily_calls_used": None,
-                "daily_calls_remaining": 0, "daily_reset_timezone": "Asia/Seoul", "usage_unavailable": True}
+        return {"minute_call_limit": limit, "minute_calls_used": None,
+                "minute_calls_remaining": 0, "window_seconds": WINDOW_SECONDS,
+                "usage_unavailable": True}
 
 
 def reserve_attempt():
-    """Count each outgoing attempt, including retries and uncertain failures.
-
-    Reserve before sending; a crash after reservation costs one slot rather
-    than allowing a restart or another worker to overspend the shared account.
-    """
+    """Reserve before every outgoing attempt, shared across hosts and retries."""
     try:
         path = _path()
         with _store_lock(path):
-            state = _read(path, _today())
-            if state["used"] >= daily_limit():
-                return "llm daily call limit reached (resets at midnight Asia/Seoul)"
-            save_json(path, {"date": state["date"], "used": state["used"] + 1})
+            now = time.time()
+            attempts = _read(path, now)
+            if len(attempts) >= minute_limit():
+                retry = max(1, math.ceil(attempts[0] + WINDOW_SECONDS - now)) if attempts else WINDOW_SECONDS
+                return f"llm minute call limit reached; retry after {retry}s"
+            save_json(path, {"attempts": [*attempts, now]})
         return ""
     except Exception:
         return "llm usage counter unavailable; no provider call was sent"

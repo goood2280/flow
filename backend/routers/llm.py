@@ -118,6 +118,7 @@ def status(request: Request):
         "native_capabilities": llm_adapter.native_capability_snapshot(),
         "policy": llm_adapter.execution_policy_snapshot(),
         "admin": is_admin,
+        "health": llm_adapter.health_snapshot() if is_admin else {},
     }
 
 

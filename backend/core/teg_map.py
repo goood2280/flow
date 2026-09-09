@@ -216,6 +216,8 @@ DEFAULT_CFG = {
     # 제품 계층: {vehicle: "2나노 / 2나노A"}. 신규 제품은 Product Info CSV에도
     # 같은 경로를 저장하고, 이 맵은 기존 Chip_Radius 전용 제품의 분류를 보완한다.
     "product_nodes": {},
+    # 제품코드: {vehicle: "제품코드"}. DB mapfile 폴더 내 제품코드* 파일 자동 검증 매칭.
+    "product_codes": {},
     # 최상위 노드 접근 규칙. 키가 없으면 기존 호환을 위해 공개, 키가 있으면
     # users/departments 중 하나와 일치해야 한다. admin은 항상 전체 접근한다.
     "node_access": {},
@@ -921,6 +923,18 @@ def _clean_product_nodes(raw: Any) -> dict[str, str]:
     return out
 
 
+def _clean_product_codes(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, str] = {}
+    for vehicle, code in list(raw.items())[:10000]:
+        name = str(vehicle or "").strip()[:200]
+        c = str(code or "").strip()[:100]
+        if name and c:
+            out[name] = c
+    return out
+
+
 def _clean_access_values(raw: Any) -> list[str]:
     values = raw if isinstance(raw, (list, tuple, set)) else str(raw or "").split(",")
     out: list[str] = []
@@ -1043,6 +1057,7 @@ def load_cfg() -> dict:
     out["check"] = _clean_check(cfg.get("check"))
     out["check_targets"] = _clean_check_targets(cfg.get("check_targets"))
     out["product_nodes"] = _clean_product_nodes(cfg.get("product_nodes"))
+    out["product_codes"] = _clean_product_codes(cfg.get("product_codes"))
     out["node_access"] = _clean_node_access(cfg.get("node_access"))
     return out
 
@@ -1141,6 +1156,19 @@ def save_cfg(patch: dict) -> dict:
                 else:
                     merged.pop(key, None)
             cur["product_nodes"] = merged
+        if "product_codes" in patch:
+            merged = dict(cur.get("product_codes") or {})
+            incoming = patch["product_codes"] if isinstance(patch["product_codes"], dict) else {}
+            for vehicle, code in incoming.items():
+                key = str(vehicle or "").strip()[:200]
+                if not key:
+                    continue
+                clean_code = str(code or "").strip()[:100]
+                if clean_code:
+                    merged[key] = clean_code
+                else:
+                    merged.pop(key, None)
+            cur["product_codes"] = merged
         if "node_access" in patch:
             # 이 설정은 전체 교체다. 행을 지우면 해당 최상위 노드는 다시 공개된다.
             cur["node_access"] = _clean_node_access(patch["node_access"])
@@ -1187,7 +1215,7 @@ def normalize_main_purpose(value: Any) -> str:
 
 def is_main_purpose_warning(value: Any) -> bool:
     """MAIN purpose가 지정돼 TEG를 배치하면 안 되는 구간인지."""
-    return bool(normalize_main_purpose(value))
+    return normalize_main_purpose(value) not in ("", "TEG")
 
 
 def main_purpose_for(vehicle: str, name: str, purposes: dict | None = None) -> str:
@@ -1989,7 +2017,7 @@ def load_main_chip_purposes():
     """MAIN purpose 표 → ({vehicle: {chip_name: purpose}}, 경로).
 
     ``purpose``는 선택 열이다. 기존 파일처럼 열이 없으면 빈 표를 돌려 기존 판정에
-    영향을 주지 않는다. 값이 있는 모든 purpose의 배치 금지 판정은
+    영향을 주지 않는다. 빈 값과 TEG를 제외한 purpose의 배치 금지 판정은
     is_main_purpose_warning에서 담당한다.
     """
     cfg = load_cfg()
@@ -2519,6 +2547,8 @@ def _build_product_catalog(cfg: dict) -> list[dict[str, str]]:
     """Build the catalog from source files. Call through :func:`product_catalog`."""
     configured = {str(k).casefold(): clean_node_path(v)
                   for k, v in (cfg.get("product_nodes") or {}).items()}
+    product_codes = {str(k).casefold(): str(v or "").strip()
+                     for k, v in (cfg.get("product_codes") or {}).items()}
     product_info = _catalog_product_info(cfg)
     names = {str(vehicle).casefold(): str(vehicle) for vehicle in _catalog_fallback_vehicles(cfg)}
     # Product Info is primary in load_layout too, including its original casing.
@@ -2527,10 +2557,12 @@ def _build_product_catalog(cfg: dict) -> list[dict[str, str]]:
     for key, vehicle in names.items():
         node_path = configured.get(key) or product_info.get(key, {}).get("node_path") or "미분류"
         root_node = node_path.split(" / ", 1)[0]
+        code = product_codes.get(key) or str(product_info.get(key, {}).get("product_code") or "").strip()
         rows.append({
             "vehicle": str(vehicle),
             "node_path": node_path,
             "root_node": root_node,
+            "product_code": code,
             "full_path": f"{node_path} / {vehicle}",
         })
     return sorted(rows, key=lambda row: (row["node_path"].casefold(), row["vehicle"].casefold()))
@@ -3222,7 +3254,7 @@ def _restore_file_bytes(path: Path, content: bytes | None) -> None:
 
 
 def update_product_identity(current_vehicle: str, vehicle: str, node_path: str,
-                            username: str) -> dict:
+                            username: str, product_code: str | None = None) -> dict:
     """제품명/분류를 모든 TEG 기준 파일과 제품별 설정에 함께 반영한다.
 
     vehicle은 여러 CSV와 JSON의 조인 키다. 한 파일만 바꾸면 위치 조회나 Mapfile
@@ -3345,6 +3377,19 @@ def update_product_identity(current_vehicle: str, vehicle: str, node_path: str,
             if rename and target_key is not None:
                 node_patch[target_key] = ""
 
+            code_patch: dict[str, Any] = {}
+            if product_code is not None:
+                clean_code = str(product_code or "").strip()
+                code_patch[new_vehicle] = clean_code
+                target_key = _casefold_mapping_key(cfg.get("product_codes") or {}, old_vehicle)
+                if rename and target_key is not None and target_key != new_vehicle:
+                    code_patch[target_key] = ""
+            elif rename:
+                target_key = _casefold_mapping_key(cfg.get("product_codes") or {}, old_vehicle)
+                if target_key is not None:
+                    code_patch[target_key] = ""
+                    code_patch[new_vehicle] = (cfg.get("product_codes") or {})[target_key]
+
             check = cfg.get("check") or _clean_check({})
             products = dict(check.get("products") or {})
             target_key = _casefold_mapping_key(products, old_vehicle)
@@ -3353,6 +3398,8 @@ def update_product_identity(current_vehicle: str, vehicle: str, node_path: str,
                 check = {**check, "products": products}
 
             patch: dict[str, Any] = {"product_nodes": node_patch}
+            if code_patch:
+                patch["product_codes"] = code_patch
             if vehicle_patch:
                 patch["vehicles"] = vehicle_patch
             if target_patch:
@@ -3388,10 +3435,13 @@ def update_product_identity(current_vehicle: str, vehicle: str, node_path: str,
                 logger.error("TEG 제품 식별자 롤백 실패 path=%s error=%s", path, restore_error)
         raise
 
+    final_code = (product_code if product_code is not None
+                  else (cfg.get("product_codes") or {}).get(old_vehicle) or "")
     return {
         "ok": True, "changed": rename or current.get("node_path") != clean_path,
         "previous_vehicle": old_vehicle, "vehicle": new_vehicle,
-        "node_path": clean_path, "files": files,
+        "node_path": clean_path, "product_code": str(final_code).strip(),
+        "files": files,
         "inline_tables_updated": changed_inline,
         "inline_matching_updated": changed_inline_matching,
     }
@@ -3399,7 +3449,7 @@ def update_product_identity(current_vehicle: str, vehicle: str, node_path: str,
 
 def create_product_from_table(text: str, vehicle: str, tegs: list[dict[str, Any]],
                               main_chip: dict[str, Any] | None, username: str,
-                              node_path: str = "") -> dict:
+                              node_path: str = "", product_code: str = "") -> dict:
     """제품 geometry를 등록하고 Teg_location/Main_chip_info를 아래로 append한다."""
     veh = str(vehicle or "").strip()[:200]
     if not veh:
@@ -3473,12 +3523,18 @@ def create_product_from_table(text: str, vehicle: str, tegs: list[dict[str, Any]
             veh, info, clean_path, username, note, raw_text=text,
         )
         display = preview["display"]
-        save_cfg({"vehicles": {veh: {**DEFAULT_VEHICLE_CFG, **display}},
-                  "product_nodes": {veh: clean_path}})
+        cfg_patch: dict[str, Any] = {
+            "vehicles": {veh: {**DEFAULT_VEHICLE_CFG, **display}},
+            "product_nodes": {veh: clean_path},
+        }
+        if product_code:
+            cfg_patch["product_codes"] = {veh: str(product_code).strip()}
+        save_cfg(cfg_patch)
     return {
         "ok": True, "vehicle": veh, "values": info,
         "shot_count": preview["shot_count"], "one_by_one": preview["one_by_one"],
         "display": display, "node_path": clean_path,
+        "product_code": str(product_code).strip(),
         "files": {"product_info": product_result, "chip_radius": radius_result,
                   "teg_location": teg_result,
                   "main_chip_info": main_result},

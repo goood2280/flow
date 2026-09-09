@@ -433,10 +433,10 @@ def _track_filebrowser_sql_execution(scope: str):
         return wrapped
     return decorate
 
-# confidential/credential/teg_location은 DB root 아래의 예약 폴더다. FileBrowser에서는
+# confidential/credential/teg_location/mapfile은 DB root 아래의 예약 폴더다. FileBrowser에서는
 # 관리자에게도 노출하지 않고 각 도메인 API 또는 S3 동기화 설정으로만 접근한다.
-_FILEBROWSER_ALWAYS_HIDDEN_DIRS = {"cache", "confidential", "credential", "teg_location"}
-_FILEBROWSER_BLOCKED_ACCESS_DIRS = {"confidential", "credential", "teg_location"}
+_FILEBROWSER_ALWAYS_HIDDEN_DIRS = {"cache", "confidential", "credential", "teg_location", "mapfile"}
+_FILEBROWSER_BLOCKED_ACCESS_DIRS = {"confidential", "credential", "teg_location", "mapfile"}
 _RAW_DB_DISPLAY_RE = re.compile(r"^1\.RAWDATA_DB(?:_(.+))?$", re.IGNORECASE)
 
 

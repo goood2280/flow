@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import BrandLogo from "../../components/BrandLogo";
 import { isAdmin as isAdminUser, visibleTabsFor } from "../../lib/permissions";
 import HomeAlertsSection from "./HomeAlertsSection";
+import HomeDataChat from "./HomeDataChat";
+import { preloadPage } from "../../app/pageManifest";
 
 const CARD_DESC = {
   filebrowser: "DB와 Files 데이터 조회",
@@ -12,6 +14,7 @@ const CARD_DESC = {
   templatereport: "Template Report 작성",
   autoreport: "자동 리포트 생성과 이력",
   lotrequest: "Lot 배정과 요청 관리",
+  lotlocation: "Lot·Wafer 현위치 및 공정 확인",
   inform: "공정 인폼 기록과 조회",
   meeting: "회의와 안건 관리",
   calendar: "일정과 변경점 관리",
@@ -146,6 +149,8 @@ function FeatureCard({ tab, favorite, onFavorite, onOpen }) {
         title={description}
         aria-label={`${tab.label}: ${description}`}
         onClick={() => onOpen(tab.key)}
+        onMouseEnter={() => preloadPage(tab.key)}
+        onFocus={() => preloadPage(tab.key)}
       >
         <span className="home-feature-card__topline">
           <span className="home-feature-card__icon" aria-hidden="true">
@@ -216,6 +221,7 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
         </div>
         <HomeAlertsSection onNavigate={open} user={user} />
       </section>
+      {admin && <HomeDataChat user={user} onNavigate={open} />}
       {orderedCards.length ? (
         <div className="home-feature-grid">
           {orderedCards.map((tab) => (

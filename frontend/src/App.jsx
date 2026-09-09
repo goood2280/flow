@@ -1,11 +1,11 @@
-import { Suspense, useState, useEffect, useRef, Component } from "react";
+import { Suspense, memo, useState, useEffect, useRef, Component } from "react";
 import My_Login from "./pages/My_Login";
 import ComingSoon from "./components/ComingSoon";
 import Loading from "./components/Loading";
 import Modal from "./components/Modal";
 import BrandLogo from "./components/BrandLogo";
 import { ToastHost, toast } from "./components/Toast";
-import { PAGE_BY_KEY, PAGE_MAP, buildNavGroups } from "./app/pageManifest";
+import { PAGE_BY_KEY, PAGE_MAP, buildNavGroups, preloadPage } from "./app/pageManifest";
 import { useFlowShell } from "./app/useFlowShell";
 import { sf, postJson } from "./lib/api";
 
@@ -143,6 +143,8 @@ function NavGroup({ group, activeKey, onNavigate }) {
         type="button"
         className={"flow-nav-trigger" + (active ? " is-active" : "")}
         onClick={() => onNavigate(item.key)}
+        onMouseEnter={() => preloadPage(item.key)}
+        onFocus={() => preloadPage(item.key)}
       >
         {item.label}
       </button>
@@ -168,6 +170,8 @@ function NavGroup({ group, activeKey, onNavigate }) {
               type="button"
               className={"flow-nav-menu-item" + (item.key === activeKey ? " is-active" : "")}
               onClick={() => { setOpen(false); onNavigate(item.key); }}
+              onMouseEnter={() => preloadPage(item.key)}
+              onFocus={() => preloadPage(item.key)}
             >
               <span>{item.label}</span>
               {(item.badge || item.status === "beta") && <span className="flow-nav-badge">{item.badge || "BETA"}</span>}
@@ -575,6 +579,18 @@ function PwModal({ user, onClose }) {
   );
 }
 
+// Shell polling and profile UI must not re-render large tables/charts.
+const ActivePage = memo(function ActivePage({ tab, user, visibleTabs, nav, label }) {
+  const Page = PAGE_MAP[tab];
+  return Page ? (
+    <ErrorBoundary key={tab}>
+      <Suspense fallback={<PageLoadingFallback tab={tab} />}>
+        <Page onNavigate={nav} user={user} visibleTabs={visibleTabs} />
+      </Suspense>
+    </ErrorBoundary>
+  ) : <ComingSoon name={label || tab} />;
+});
+
 export default function App() {
   const {
     user,
@@ -596,7 +612,6 @@ export default function App() {
   if (!authReady) return <Loading text="세션 확인..." />;
   if (!user) return <My_Login onLogin={handleLogin} />;
 
-  const Page = PAGE_MAP[tab];
   const pageDefinition = PAGE_BY_KEY[tab];
   const navGroups = buildNavGroups(visibleTabs);
 
@@ -624,14 +639,7 @@ export default function App() {
         data-page-key={tab}
         data-page-layout={pageDefinition?.layout || "standard"}
       >
-        {Page ? (
-          <ErrorBoundary key={tab}>
-            <Suspense fallback={<PageLoadingFallback tab={tab} />}>
-              {/* visibleTabs: 홈 카드가 nav 와 똑같은 권한 목록을 쓰도록 그대로 넘긴다. */}
-              <Page onNavigate={nav} user={user} visibleTabs={visibleTabs} />
-            </Suspense>
-          </ErrorBoundary>
-        ) : <ComingSoon name={tabInfo?.label || tab} />}
+        <ActivePage tab={tab} user={user} visibleTabs={visibleTabs} nav={nav} label={tabInfo?.label} />
       </div>
       {showPw && <PwModal user={user} onClose={()=>setShowPw(false)} />}
       <ToastHost />

@@ -911,8 +911,8 @@ def save_json(path: Path, data, indent: int = None):
 # N 회 append 마다 한 번만 확인한다(로그 보존 정확도보다 디스크 안정성이 목적).
 # 공유 스토리지(사내 flow-data)에 몇 달치가 쌓이면 파일 하나가 수백 MB 가 되고,
 # 그 파일을 tail 하는 관리자 화면이 통째로 읽어 메모리까지 먹는다. 캐시 이벤트
-# 로그(4천 줄)·검색 타이밍 로그(5만 줄)는 이미 각자 상한이 있었는데, 활동/리소스/
-# 다운로드 이력만 상한이 없었다.
+# 로그(4천 줄)·검색 타이밍 로그(5만 줄)는 각자 상한을 적용한다.
+# 사용자 활동/다운로드 감사 이력은 이 상한에서 제외하고 전체 보존한다.
 JSONL_MAX_LINES_DEFAULT = 200_000
 _JSONL_TRIM_CHECK_EVERY = 500
 _JSONL_APPEND_COUNTS: dict[str, int] = {}
@@ -925,6 +925,11 @@ def jsonl_append(path: Path, entry: dict, add_timestamp: bool = True,
     """Append one JSON entry as a line. `max_lines` 를 넘으면 주기적으로 잘라낸다.
 
     `max_lines=None`(또는 0)이면 자르지 않는다 — 보존이 계약인 로그용 탈출구."""
+    # All writers share this invariant, including older download call sites.
+    from core.paths import PATHS
+    if Path(path) in (PATHS.activity_log, PATHS.download_log):
+        max_lines = None
+        max_bytes = None
     if add_timestamp and "timestamp" not in entry:
         entry = {**entry, "timestamp": datetime.datetime.now().isoformat()}
     with _locked_append_file(path) as f:
@@ -956,22 +961,70 @@ def append_text_line(path: Path, text: str) -> None:
         f.write(str(text) + "\n")
 
 
+def jsonl_iter(path: Path):
+    """Stream complete JSON objects; tolerate damaged/partial legacy lines."""
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8", errors="replace") as stream:
+        for line in stream:
+            try:
+                entry = json.loads(line)
+                if isinstance(entry, dict):
+                    yield entry
+            except (ValueError, TypeError):
+                continue
+
+
+def jsonl_page(path: Path, limit: int = 100, offset: int = 0, filter_fn=None):
+    """Newest appended records first, with filtering before pagination.
+
+    Two streaming passes keep memory bounded by page size even for old pages.
+    The initial file size freezes the append-only snapshot for both passes.
+    """
+    limit = max(1, min(500, int(limit)))
+    offset = max(0, int(offset))
+    logs = []
+    total = 0
+    if path.exists():
+        with path.open("rb") as stream:
+            stream.seek(0, 2)
+            end = stream.tell()
+
+            def entries():
+                stream.seek(0)
+                while stream.tell() < end:
+                    line = stream.readline(end - stream.tell())
+                    try:
+                        entry = json.loads(line)
+                        if isinstance(entry, dict) and (filter_fn is None or filter_fn(entry)):
+                            yield entry
+                    except (ValueError, TypeError):
+                        continue
+
+            total = sum(1 for _ in entries())
+            start = max(0, total - offset - limit)
+            stop = max(0, total - offset)
+            for index, entry in enumerate(entries()):
+                if index >= stop:
+                    break
+                if index >= start:
+                    logs.append(entry)
+    logs.reverse()
+    return {"logs": logs, "total": total, "offset": offset, "limit": limit,
+            "has_more": offset + len(logs) < total}
+
+
 def jsonl_read(path: Path, limit: int = 200, filter_fn=None):
     """Read JSONL, return last `limit` entries that pass `filter_fn`."""
-    logs = []
-    if not path.exists():
-        return logs
-    for line in path.read_text("utf-8").strip().split("\n"):
-        if not line:
-            continue
+    from collections import deque
+    logs = deque(maxlen=limit) if limit > 0 else []
+    for entry in jsonl_iter(path):
         try:
-            e = json.loads(line)
-            if filter_fn and not filter_fn(e):
-                continue
-            logs.append(e)
+            if filter_fn is None or filter_fn(entry):
+                logs.append(entry)
         except Exception:
-            pass
-    return logs[-limit:] if limit > 0 else logs
+            continue
+    return list(logs)
 
 
 def jsonl_trim(path: Path, max_lines: int):

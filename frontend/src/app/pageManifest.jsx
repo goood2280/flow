@@ -20,6 +20,7 @@ const definitions = [
   { key: "templatereport", label: "Template Report", icon: "🖼️", group: "work", layout: "workflow", helpId: "templatereport", defaultEnabled: true, load: () => import("../pages/My_TemplateReport") },
   { key: "autoreport", label: "Auto report", icon: "📑", group: "work", layout: "workflow", helpId: "autoreport", defaultEnabled: true, load: () => import("../pages/My_AutoReport") },
   { key: "lotrequest", label: "랏 배정/요청", icon: "📨", group: "work", layout: "workboard", helpId: "lotrequest", defaultEnabled: true, load: () => import("../pages/My_LotRequest") },
+  { key: "lotlocation", label: "랏 현위치 확인", icon: "📍", group: "work", layout: "workflow", helpId: "lotlocation", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_LotLocation") },
   { key: "inform", label: "인폼 로그", icon: "📢", group: "work", layout: "workboard", helpId: "inform", defaultEnabled: false, subtabs: [{ key: "inform", label: "인폼" }, { key: "matrix", label: "매트릭스" }, { key: "audit", label: "로그" }], load: () => import("../pages/My_Inform") },
   { key: "meeting", label: "회의관리", icon: "🗓", group: "work", layout: "workboard", helpId: "meeting", defaultEnabled: false, load: () => import("../pages/My_Meeting") },
   { key: "calendar", label: "변경점 관리", icon: "📅", group: "work", layout: "workboard", helpId: "calendar", defaultEnabled: false, load: () => import("../pages/My_Calendar") },
@@ -37,13 +38,25 @@ const definitions = [
   { key: "knowledge", label: "지식", icon: "📚", group: "agent", layout: "workboard", helpId: "knowledge", navigation: false, defaultEnabled: false, load: () => import("../pages/My_Knowledge") },
 ];
 
-export const PAGE_MANIFEST = definitions.map((definition) => ({
-  ...definition,
-  component: lazy(definition.load),
-}));
+export const PAGE_MANIFEST = definitions.map((definition) => {
+  let pending;
+  const load = () => {
+    if (!pending) pending = definition.load().catch((error) => {
+      pending = null;
+      throw error;
+    });
+    return pending;
+  };
+  return { ...definition, load, component: lazy(load) };
+});
 
 export const PAGE_BY_KEY = Object.fromEntries(PAGE_MANIFEST.map((page) => [page.key, page]));
 export const PAGE_MAP = Object.fromEntries(PAGE_MANIFEST.map((page) => [page.key, page.component]));
+
+// Only load code for an intended destination; never mount pages or fetch their data.
+export function preloadPage(key) {
+  PAGE_BY_KEY[key]?.load().catch(() => {});
+}
 
 export const TABS = PAGE_MANIFEST
   .filter((page) => page.navigation !== false)

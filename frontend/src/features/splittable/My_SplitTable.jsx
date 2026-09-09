@@ -265,7 +265,7 @@ const stepItemLines=(meta)=>{
 // 이 행이 적용공정정보 모드에서 보여줄 줄 목록. 빈 배열이면 표시 대상이 없다.
 const matchStepLines=(kind,meta,{excludeNotNull=false}={})=>{
   if(kind==="knob_ppid")return knobStepLines(meta?.groups||[],{excludeNotNull});
-  if(kind==="inline_matching"||kind==="vm_matching")return stepItemLines(meta||{});
+  if(kind==="inline_matching"||kind==="vm_matching"||kind==="mask_matching")return stepItemLines(meta||{});
   return [];
 };
 // 적용 공정 정보는 항목명을 덮어쓰지 않고 별도 step_id / step_desc 열로 보인다.
@@ -301,6 +301,7 @@ const matchProcessColumns=(kind,meta,{excludeNotNull=false}={})=>{
     else push(g?.step_id,groupDesc);
   });
   if(!ids.length)(Array.isArray(meta?.step_ids)?meta.step_ids:[]).forEach(sid=>push(sid,fallbackDesc));
+  if(!descs.length && fallbackDesc) push("", fallbackDesc);
   return {step_id:ids.join("\n"),step_desc:descs.join("\n")};
 };
 // Vehicle_matching.csv 의 module 열이 유일한 원천이다. 그 열이 없으면 KNOB/VM 도
@@ -1116,6 +1117,17 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       .then(d=>{if(active)setInlineMetaSt(d.items||{});}).catch(()=>{if(active)setInlineMetaSt({});});
     return()=>{active=false;controller.abort();};
   },[selProd]);
+  // MASK meta — MASK_<step_desc> row 의 step_desc, step_id, module 매칭 용.
+  const[maskMetaSt,setMaskMetaSt]=useState({});
+  useEffect(()=>{
+    if(!selProd){setMaskMetaSt({});return;}
+    let active=true;
+    const controller=new AbortController();
+    setMaskMetaSt({});
+    sf(API+"/mask-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""),{signal:controller.signal})
+      .then(d=>{if(active)setMaskMetaSt(d.items||{});}).catch(()=>{if(active)setMaskMetaSt({});});
+    return()=>{active=false;controller.abort();};
+  },[selProd]);
   // 상단 purpose도 표의 wafer TAG_purpose와 같은 값을 사용한다.
   const waferPurposeLabel=(()=>{
     const row=(data?.rows||[]).find(item=>isDefaultPurposeTag(item?._param));
@@ -1130,6 +1142,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const knobMetaLookup=useMemo(()=>buildNormalizedLookup(knobMeta),[knobMeta]);
   const vmMetaLookup=useMemo(()=>buildNormalizedLookup(vmMeta),[vmMeta]);
   const inlineMetaLookup=useMemo(()=>buildNormalizedLookup(inlineMetaSt),[inlineMetaSt]);
+  const maskMetaLookup=useMemo(()=>buildNormalizedLookup(maskMetaSt),[maskMetaSt]);
   const categoryColorLookup=useMemo(()=>buildNormalizedLookup(categoryColors),[categoryColors]);
   const metaLookup=(metaMap, normalizedLookup, param, prefix)=>{
     if(!param||!metaMap) return null;
@@ -1144,18 +1157,45 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const knobLookup=(param)=>metaLookup(knobMeta,knobMetaLookup,param,"KNOB");
   const vmLookup=(param)=>metaLookup(vmMeta,vmMetaLookup,param,"VM");
   const inlineLookup=(param)=>metaLookup(inlineMetaSt,inlineMetaLookup,param,"INLINE");
+  const maskLookup=(param)=>{
+    if(!param)return null;
+    let clean=String(param||"").trim();
+    clean=clean.replace(/_split$/i,"");
+    const found=metaLookup(maskMetaSt,maskMetaLookup,clean,"MASK")||metaLookup(maskMetaSt,maskMetaLookup,param,"MASK");
+    if(found)return found;
+    const tail=clean.replace(/^MASK_/i,"").trim();
+    if(!tail)return null;
+    return {
+      param:clean,
+      prefix:"MASK",
+      step_desc:tail,
+      step_id:"",
+      module:"",
+      modules:[],
+      groups:[{
+        rule_order:"R1",
+        step_desc:tail,
+        step_id:"",
+        module:"",
+      }],
+      step_ids:[],
+      source:"mask_fallback"
+    };
+  };
   // 항목명 prefix → 매칭 종류. 적용공정 표기/모달/행 숨김이 같은 판정을 쓴다.
   const matchKindOf=(param)=>{
     const u=String(param||"").trim().toUpperCase();
     if(u.startsWith("KNOB_")||u==="KNOB")return "knob_ppid";
     if(u.startsWith("INLINE_")||u==="INLINE")return "inline_matching";
     if(u.startsWith("VM_")||u==="VM")return "vm_matching";
+    if(u.startsWith("MASK_")||u==="MASK")return "mask_matching";
     return null;
   };
   const matchMetaFor=(kind,param)=>(
     kind==="knob_ppid"?knobLookup(param)
     :kind==="inline_matching"?inlineLookup(param)
     :kind==="vm_matching"?vmLookup(param)
+    :kind==="mask_matching"?maskLookup(param)
     :null
   );
   const resolveSplitDisplayName = (param, rawVal) => {
@@ -1372,11 +1412,13 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     if (rbMatchKind === "knob_ppid") return knobLookup(p) || null;
     if (rbMatchKind === "inline_matching") return inlineLookup(p) || null;
     if (rbMatchKind === "vm_matching") return vmLookup(p) || null;
+    if (rbMatchKind === "mask_matching") return maskLookup(p) || null;
     return null;
   })();
   const rbMatchTitle = rbMatchKind === "knob_ppid" ? "KNOB"
     : rbMatchKind === "inline_matching" ? "INLINE"
     : rbMatchKind === "vm_matching" ? "VM"
+    : rbMatchKind === "mask_matching" ? "MASK"
     : "";
   // fab_lot_id 후보도 fetch (lot-candidates 엔드포인트 사용)
   // v9.0.2: fabLotId 입력값도 서버 prefix 로 전송 — 초기 500개 밖의 fab_lot_id 도 검색 가능.
@@ -1955,16 +1997,29 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const deletePlan=(ck)=>{if(!confirm("Delete?"))return;sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:[ck],username:user?.username||""})}).then(loadView);};
   // 적용 공정 정보가 켜져 있으면 스냅샷에도 별도 step_id / step_desc 열을 싣는다.
   // 매칭이 없는 행도 원래 항목과 값을 보존하고 두 공정 칸만 비운다.
+  const hasAppliedProcess=row=>{
+    if(!showParamMeta)return true;
+    if(String(row?._param||"").startsWith("TAG_"))return true;
+    const kind=matchKindOf(row?._param);
+    if(!kind)return false;
+    const columns=matchProcessColumns(kind,matchMetaFor(kind,row?._param),{excludeNotNull:excludeNotNullStepMeta});
+    return Boolean(String(columns.step_id||"").trim()||String(columns.step_desc||"").trim());
+  };
   const applyStepLabelsForSnapshot=(rows)=>{
     if(!showParamMeta)return rows;
-    return (rows||[]).map(row=>{
+    return (rows||[]).filter(hasAppliedProcess).map(row=>{
       const kind=matchKindOf(row?._param);
+      const meta=kind?matchMetaFor(kind,row?._param):null;
+      const mod=kind?matchModuleOf(meta):"";
       const columns=kind
-        ?matchProcessColumns(kind,matchMetaFor(kind,row?._param),{excludeNotNull:excludeNotNullStepMeta})
-        :{step_id:"",step_desc:""};
+        ?{...matchProcessColumns(kind,meta,{excludeNotNull:excludeNotNullStepMeta}),module:mod}
+        :{step_id:"",step_desc:"",module:""};
       // 적용 공정은 인폼 서버가 나중에 메타 CSV를 다시 읽어 복원하지 않도록
       // 현재 화면에서 확정한 두 열을 스냅샷 행에 그대로 싣는다.
-      return {...row,_process_columns:columns,_applied_process:{kind:kind||"",...columns}};
+      // 매칭되지 않은 행은 원본 SplitTable 행으로는 보존하되, 별도 적용 공정
+      // 목록에는 만들지 않는다. (빈 라벨이 인폼에 따로 노출되는 것을 방지)
+      const hasProcess=Boolean(String(columns.step_id||"").trim()||String(columns.step_desc||"").trim());
+      return {...row,_process_columns:columns,...(hasProcess?{_applied_process:{kind:kind||"",...columns}}:{})};
     });
   };
   const currentRowsForInformSnapshot=()=>{
@@ -2031,7 +2086,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       step_progress:(data.step_progress&&typeof data.step_progress==="object")?data.step_progress:{},
       wafer_keys:Array.isArray(data.wafer_keys)?data.wafer_keys:[],
       step_labels:!!showParamMeta,
-      applied_processes:showParamMeta?rows.filter(r=>r?._applied_process).map(r=>({
+      applied_processes:showParamMeta?rows.filter(r=>{
+        const process=r?._applied_process||{};
+        return String(process.step_id||"").trim()||String(process.step_desc||"").trim();
+      }).map(r=>({
         parameter:String(r?._param||""),
         kind:String(r?._applied_process?.kind||""),
         step_id:String(r?._applied_process?.step_id||""),
@@ -3043,7 +3101,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           : data.rows;
         const isTagRow=(row)=>String(row?._param||"").toUpperCase().startsWith("TAG_")||Object.values(row?._cells||{}).some(c=>c?.is_custom_tag===true);
         // purpose tag는 thead(root_lot_id와 lot_id 사이)에 별도 행으로 표출되므로 본문에서 제외한다.
-        const viewRows = diffRows.filter(r => !isDefaultPurposeTag(r?._param));
+        const viewRows = diffRows.filter(r => !isDefaultPurposeTag(r?._param)&&hasAppliedProcess(r));
         // 점진 렌더: 한도까지만 그린다. slice(0,N) 이므로 행 인덱스(선택/paste)는 그대로 유효.
         const displayRows=rowRenderLimit<viewRows.length?viewRows.slice(0,rowRenderLimit):viewRows;
         // module 묶음 열. KNOB/VM 은 Vehicle_matching 의 module 열이 원천이고,
@@ -3639,7 +3697,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             const rowMatchKind=matchKindOf(rowParam);
             const matchTitle = rowMatchKind==="knob_ppid"?"KNOB 매칭 규칙"
               :rowMatchKind==="inline_matching"?"INLINE 매칭 규칙"
-              :rowMatchKind==="vm_matching"?"VM 매칭 규칙":"";
+              :rowMatchKind==="vm_matching"?"VM 매칭 규칙"
+              :rowMatchKind==="mask_matching"?"MASK 매칭 규칙":"";
             const rowKnobStepTitle = rowMatchKind==="knob_ppid"
               ? knobStepSummaryText(rowKnob?.groups||[],{excludeNotNull:excludeNotNullStepMeta})
               : "";
@@ -4487,6 +4546,31 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                       <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:4}}>
                         {g.function_step && <span style={{color:"rgba(196,181,253,0.95)",fontWeight:700,fontFamily:"monospace"}}>{g.function_step}</span>}
                         <span style={{color:"var(--text-secondary)",fontSize:14}}>{String(vm.feature || rbMatchParam)}</span>
+                      </div>
+                      {(() => {const sids=Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:[]);return sids.length?(
+                        <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                          {sids.map((sid)=> <span key={sid} style={{padding:"0 6px",borderRadius:3,background:"rgba(96,165,250,0.15)",color:"#60a5fa",border:"1px solid rgba(96,165,250,0.5)",fontWeight:700,fontSize:14}}>{sid}</span>)}
+                        </div>
+                      ) : <span style={{color:"var(--text-secondary)",fontSize:14}}>step_id 없음</span>;})()}
+                    </div>
+                  ))}
+                </div>
+              );})()}
+              {rbMatchKind === "mask_matching" && (()=>{const mm=rbMatchData;const groups=Array.isArray(mm?.groups)?mm.groups:[];return(
+                <div style={{display:"grid",gap:8}}>
+                  <div style={{padding:"7px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:14}}>
+                    step_desc: {String(mm?.step_desc || rbMatchParam || "").replace(/^MASK_/i,"").replace(/_split$/i,"") || "-"}
+                    {String(mm?.module || "").trim() ? ` · module: ${mm.module}` : ""}
+                    {String(mm?.step_id || "").trim() ? ` · step_id: ${mm.step_id}` : ""}
+                  </div>
+                  {groups.length===0 ? (
+                    <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>매칭 규칙이 없습니다.</div>
+                  ) : groups.map((g, gi) => (
+                    <div key={`${rbMatchParam}-${gi}`} style={{padding:"8px 10px",borderRadius:6,border:"1px solid rgba(59,130,246,0.35)",background:"var(--bg-card)"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:4}}>
+                        {g.step_desc && <span style={{color:"rgba(59,130,246,0.95)",fontWeight:700,fontFamily:"monospace"}}>{g.step_desc}</span>}
+                        {g.module && <span style={{padding:"1px 6px",borderRadius:4,background:"rgba(59,130,246,0.12)",color:"var(--accent)",fontSize:12,fontWeight:700}}>{g.module}</span>}
+                        <span style={{color:"var(--text-secondary)",fontSize:14}}>{String(mm?.param || rbMatchParam)}</span>
                       </div>
                       {(() => {const sids=Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:[]);return sids.length?(
                         <div style={{display:"flex",flexWrap:"wrap",gap:4}}>

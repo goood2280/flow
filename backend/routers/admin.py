@@ -19,7 +19,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from core.paths import PATHS
-from core.utils import jsonl_read, load_json, save_json
+from core.utils import jsonl_read, jsonl_iter, jsonl_page, load_json, save_json
 from core.notify import (
     send_notify, get_notifications, mark_all_read, send_to_admins,
     dismiss_notification, dismiss_by_ids, mark_read_by_ids,
@@ -139,12 +139,23 @@ LLM_PROVIDER_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "format": "openai", "extra_body": {}, "timeout_s": 60,
     },
 }
+LLM_PROVIDER_DEFAULTS["gemma4"] = {
+    **LLM_PROVIDER_DEFAULTS["playground"], "provider": "gemma4",
+    "model": "Gemma4-260430", "system_name": "",
+    "extra_body": {"temperature": 0.2, "stream": False},
+}
 LLM_ALLOWED_PROVIDERS = set(LLM_PROVIDER_DEFAULTS)
 
 # Named LLM presets — surfaced via GET /api/admin/llm/presets so the UI can
 # offer a one-click base configuration. These contain NO secrets (no api_url,
 # no admin_token). Admin still fills in the endpoint and credential.
 LLM_NAMED_PRESETS: List[Dict[str, Any]] = [
+    {
+        "key": "gemma4_internal", "label": "Gemma4 (사내)",
+        "description": "Gemma4-260430 · 관리자 전용 · 최근 60초 공용 30회. URL·credential key·Send-System-Name을 별도로 저장합니다.",
+        "provider": "gemma4", "model": "Gemma4-260430", "auth_mode": "dep_ticket",
+        "format": "openai", "timeout_s": 60, "is_default": False,
+    },
     {
         "key": "gpt_oss_120b_internal",
         "label": "GPT OSS 120B (사내)",
@@ -320,6 +331,8 @@ def _normalize_llm_profile(raw: Any = None, provider_hint: str = "") -> Dict[str
         if key in raw:
             out[key] = raw.get(key)
     out["provider"] = provider
+    if provider == "gemma4":
+        out.update(model="Gemma4-260430", auth_mode="dep_ticket", format="openai")
     for key in ("api_url", "model", "mode", "admin_token", "auth_mode", "system_name", "user_id", "user_type", "format"):
         out[key] = str(out.get(key) or "").strip()
     if not out["mode"]:
@@ -370,6 +383,11 @@ def _llm_profiles_from_admin(adm: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 def _llm_active_from_admin(adm: Dict[str, Any]) -> Dict[str, Any]:
     raw = adm.get("llm") if isinstance(adm.get("llm"), dict) else {}
     return _normalize_llm_profile(raw, raw.get("provider") if isinstance(raw, dict) else "generic")
+
+
+def _public_llm_profile(profile: dict) -> dict:
+    return {**profile, "admin_token": "****" if profile.get("admin_token") else "",
+            "headers": {k: "****" if v else "" for k, v in (profile.get("headers") or {}).items()}}
 
 
 class ApproveReq(BaseModel):
@@ -1147,7 +1165,7 @@ def write_log(entry: LogEntry, request: Request):
 
 
 @router.get("/logs")
-def get_logs(request: Request, limit: int = 200, username: str = "", action: str = "", tab: str = ""):
+def get_logs(request: Request, limit: int = 100, username: str = "", action: str = "", tab: str = "", offset: int = 0, days: int = 0):
     """v8.4.6: 전체 로그 열람은 admin. 본인 로그는 누구나.
     v8.7.1: action/tab 키워드 부분일치 필터 추가 (admin activity log UI 용)."""
     me = current_user(request)
@@ -1157,9 +1175,12 @@ def get_logs(request: Request, limit: int = 200, username: str = "", action: str
     user_query = (username or "").strip().lower()
     act = (action or "").strip().lower()
     tbf = (tab or "").strip().lower()
+    cutoff = (dt.date.today() - dt.timedelta(days=min(days, 3650) - 1)).isoformat() if days > 0 else ""
 
     def _filt(e):
-        event_username = str(e.get("username") or "")
+        event_username = str(e.get("username") or e.get("actor") or "")
+        if cutoff and str(e.get("timestamp") or e.get("time") or "")[:10] < cutoff:
+            return False
         if user_query:
             if is_admin and user_query not in event_username.lower():
                 return False
@@ -1171,16 +1192,16 @@ def get_logs(request: Request, limit: int = 200, username: str = "", action: str
             return False
         return True
 
-    return {"logs": jsonl_read(ACTIVITY_LOG, limit, _filt)}
+    return jsonl_page(ACTIVITY_LOG, limit, offset, _filt)
 
 
 @router.get("/logs/users")
 def get_log_users(_admin=Depends(require_admin)):
     """Admin activity log 유저 드롭다운용: 활동 로그에 등장한 distinct username."""
-    entries = jsonl_read(ACTIVITY_LOG, limit=5000)
+    entries = jsonl_iter(ACTIVITY_LOG)
     seen = {}
     for e in entries:
-        u = e.get("username") or ""
+        u = e.get("username") or e.get("actor") or ""
         if not u:
             continue
         s = seen.setdefault(u, {"username": u, "count": 0, "last": ""})
@@ -1194,8 +1215,8 @@ def get_log_users(_admin=Depends(require_admin)):
 
 # ── Download History ──
 @router.get("/download-history")
-def download_history(limit: int = Query(200), _admin=Depends(require_admin)):
-    return {"logs": jsonl_read(DL_LOG, limit)}
+def download_history(limit: int = 100, offset: int = 0, _admin=Depends(require_admin)):
+    return jsonl_page(DL_LOG, limit, offset)
 
 
 # ── Global Settings (v8.1.5) ──
@@ -1252,8 +1273,8 @@ def get_settings(request: Request):
             merged["share_base_url"] = str(adm.get("share_base_url") or "")
         # v8.7.7: LLM 설정도 admin 에게만 노출 (unredacted — 편집을 위해).
         try:
-            merged["llm"] = _llm_active_from_admin(adm)
-            merged["llm_profiles"] = _llm_profiles_from_admin(adm)
+            merged["llm"] = _public_llm_profile(_llm_active_from_admin(adm))
+            merged["llm_profiles"] = {k:_public_llm_profile(v) for k,v in _llm_profiles_from_admin(adm).items()}
             merged["llm_profile_defaults"] = {
                 p: _llm_defaults(p) for p in sorted(LLM_ALLOWED_PROVIDERS)
             }
@@ -1321,6 +1342,9 @@ class LLMCfgReq(BaseModel):
     # v8.7.7: 사내 LLM API 선택적 어댑터 설정.  전부 optional — 저장된 값과 병합.
     enabled: Optional[bool] = None
     api_url: Optional[str] = None
+    api_base_url: Optional[str] = None
+    credential_key: Optional[str] = None
+    send_system_name: Optional[str] = None
     model: Optional[str] = None
     mode: Optional[str] = None
     admin_token: Optional[str] = None
@@ -1548,6 +1572,9 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
 
     # v8.7.7: 사내 LLM 어댑터 설정 저장 (옵션 기능).
     if llm_in is not None:
+        for alias, key in (("api_base_url", "api_url"), ("credential_key", "admin_token"), ("send_system_name", "system_name")):
+            if llm_in.get(alias) is not None:
+                llm_in[key] = llm_in[alias]
         current = _load_admin_settings()
         current_llm = current.get("llm") if isinstance(current.get("llm"), dict) else {}
         requested_provider = _llm_provider(llm_in.get("provider") or current_llm.get("provider"))
@@ -1561,12 +1588,17 @@ def save_settings(req: SettingsSaveReq, request: Request, _admin=Depends(require
             if llm_in.get(k) is not None
         }
         incoming["provider"] = requested_provider
+        if incoming.get("admin_token") == "****":
+            incoming.pop("admin_token")
         llm_cur = _normalize_llm_profile({**base, **incoming}, requested_provider)
         profiles = _llm_profiles_from_admin(current)
         profiles[requested_provider] = llm_cur
         current["llm_profiles"] = profiles
         current["llm"] = llm_cur
         _save_admin_settings(current)
+        from core import llm_adapter
+        llm_adapter.reset_llm_health()
+        llm_adapter.reset_native_capabilities()
 
     # v9.0.6: Flow-i home LLM defaults — admin only, read by routers/llm.py at runtime.
     if flowi_defaults_in is not None:
@@ -1635,7 +1667,7 @@ def admin_llm_presets(_admin=Depends(require_admin)):
     return {
         "presets": LLM_NAMED_PRESETS,
         "default_key": next((p["key"] for p in LLM_NAMED_PRESETS if p.get("is_default")), ""),
-        "saved_profiles": _llm_profiles_from_admin(_load_admin_settings()),
+        "saved_profiles": {k:_public_llm_profile(v) for k,v in _llm_profiles_from_admin(_load_admin_settings()).items()},
     }
 
 
@@ -1766,7 +1798,7 @@ def my_page_admin(request: Request):
 
 # ── v8.8.14: Activity dashboard — 누가 / 어떤 기능을 / 얼마나 썼는지 ──
 @router.get("/activity/summary")
-def activity_summary(days: int = Query(0), _admin=Depends(require_admin)):
+def activity_summary(days: int = Query(0), _admin=Depends(require_admin), include_recent: bool = True):
     """activity.jsonl 을 집계. ``days=0`` 이면 보존 중인 전체 기록을 조회한다.
     반환:
       - total: 총 이벤트 수
@@ -1872,7 +1904,7 @@ def activity_summary(days: int = Query(0), _admin=Depends(require_admin)):
         "by_day": dict(sorted(by_day.items())),
         "active_users_by_day": daily_user_counts,
         "active_users_by_month": monthly_user_counts,
-        "recent": filtered[:3000],
+        "recent": filtered[:3000] if include_recent else [],
         "activity_storage": {
             "path": str(ACTIVITY_LOG),
             "relative_path": "flow-data/logs/activity.jsonl",

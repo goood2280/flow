@@ -12,6 +12,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     openai_compatible:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"openai_compatible",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
     local:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"local",auth_mode:"none",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
     generic:{enabled:false,api_url:"",model:"",mode:"fast",admin_token:"",provider:"generic",auth_mode:"bearer",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:20},
+    gemma4:{enabled:false,api_url:"",model:"Gemma4-260430",mode:"fast",admin_token:"",provider:"gemma4",auth_mode:"dep_ticket",system_name:"",user_id:"",user_type:"",format:"openai",timeout_s:60},
     playground:{enabled:false,api_url:"",model:"gpt-oss-120b",mode:"fast",admin_token:"",provider:"playground",auth_mode:"dep_ticket",system_name:"playground",user_id:"",user_type:"",format:"openai",timeout_s:60},
   };
   const PROVIDERS=Object.keys(FALLBACK_LLM_DEFAULTS);
@@ -25,7 +26,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
   const[busy,setBusy]=useState(false);
   const[testBusy,setTestBusy]=useState(false);
   const[testPrompt,setTestPrompt]=useState("연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.");
-  const[policy,setPolicy]=useState({mode:"poc",admin_only:true,error_explanation_enabled:false,daily_call_limit:30});
+  const[policy,setPolicy]=useState({mode:"poc",admin_only:true,error_explanation_enabled:false,minute_call_limit:30});
   const[showToken,setShowToken]=useState(false);
   const cleanProvider=(provider)=>{
     const p=(provider||"generic").toString().trim();
@@ -98,13 +99,9 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     const p=presets.find(x=>x?.key===key);
     if(!p)return;
     setPresetKey(key);
-    patch({
-      provider:p.provider||"generic",
-      model:p.model||"",
-      format:p.format||"openai",
-      auth_mode:p.auth_mode||"bearer",
-      timeout_s:Number(p.timeout_s)||20,
-    });
+    setProfiles(current=>({...current,[cfg.provider]:cfg}));
+    const saved=profiles[p.provider]||{};
+    setCfg(normalizeWithDefaults({...saved,provider:p.provider,model:p.model,format:p.format,auth_mode:p.auth_mode,timeout_s:p.timeout_s},p.provider));
     setMsg(`프리셋 적용: ${p.label||key} — api_url 과 token 은 직접 입력하세요.`);
   };
   const patch=(next)=>setCfg(c=>{
@@ -151,7 +148,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
   const test=()=>{
     if(readOnly)return;
     setTestBusy(true);setMsg("");
-    sf("/api/llm/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:testPrompt||"연결 확인",probe_capabilities:true})})
+    sf("/api/llm/test",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt:testPrompt||"연결 확인",probe_capabilities:false})})
       .then(d=>{
         if(d?.ok===false){setMsg("테스트 실패: "+(d.error||"unknown"));return;}
         const probe=d?.capability_probe;
@@ -166,7 +163,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
   const L={fontSize:14,color:"var(--text-secondary)",marginBottom:4,marginTop:10,fontWeight:600};
   const I={width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none",boxSizing:"border-box"};
   const provider=cleanProvider(cfg.provider);
-  const isPlayground=provider==="playground";
+  const isPlayground=["playground","gemma4"].includes(provider);
   const isLocal=provider==="local";
   const showMode=provider==="generic";
   const authMode=cfg.auth_mode||providerDefaults(provider).auth_mode||"bearer";
@@ -177,8 +174,8 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     ...(authMode==="dep_ticket"&&cfg.admin_token?{"x-dep-ticket":"<credential_key>"}:{}),
     ...(isPlayground?{
       "Send-System-Name":cfg.system_name||"playground",
-      "User-Id":cfg.user_id||"(입력 필요)",
-      "User-Type":cfg.user_type||"(입력 필요)",
+      "User-Id":cfg.user_id||"<로그인 사용자>",
+      "User-Type":cfg.user_type||"admin",
       "Prompt-Msg-Id":"<uuid4>",
       "Completion-Msg-Id":"<uuid4>",
     }:{}),
@@ -202,17 +199,17 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     body:previewBody,
     access:policy.admin_only?"POC admin only":"configured access policy",
     error_explanation:policy.error_explanation_enabled?"enabled":"disabled",
-    daily_call_limit:policy.daily_call_limit,
+    minute_call_limit:policy.minute_call_limit,
   };
   return(<div className="llm-cfg-panel" style={{background:"transparent",border:"0",padding:0,maxWidth:"none",opacity:readOnly?0.58:1,pointerEvents:readOnly?"none":"auto"}}>
     <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Flowi LLM 설정</div>
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.6}}>
-      POC 동안 LLM 실행은 관리자 요청에만 허용됩니다. 런타임 오류 해석에는 LLM을 사용하지 않습니다. 연결 정보가 없는 provider는 계속 비활성 상태입니다.
+      POC 동안 LLM 실행은 관리자 요청에만 허용됩니다. 번역·런타임 오류 해석에는 LLM을 사용하지 않습니다. 데이터 검색·랏 위치·차트·SQL·추출에만 사용합니다. 연결 정보가 없는 provider는 계속 비활성 상태입니다.
     </div>
     <div style={{padding:"8px 10px",marginBottom:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:13,color:"var(--text-secondary)"}}>
-      정책 · 관리자 전용 · 오류 해석 꺼짐 · 일일 공용 한도 {policy.daily_call_limit ?? 30}회
-      {policy.daily_calls_used!=null&&` · 오늘 ${policy.daily_calls_used}회 사용 / ${policy.daily_calls_remaining}회 남음`}
-      {" · 한국시간 자정 초기화 · 연결 확인·재시도도 횟수에 포함"}
+      정책 · 관리자 전용 · 오류 해석 꺼짐 · 최근 60초 공용 한도 {policy.minute_call_limit ?? 30}회
+      {policy.minute_calls_used!=null&&` · 최근 60초 ${policy.minute_calls_used}회 사용 / ${policy.minute_calls_remaining}회 남음`}
+      {" · Sliding Window · 연결 확인·재시도도 횟수에 포함"}
     </div>
     <label style={{display:"flex",alignItems:"center",gap:6,fontSize:14,marginBottom:6}}>
       <input type="checkbox" checked={!!cfg.enabled} onChange={e=>patch({enabled:e.target.checked})}/>
@@ -253,11 +250,12 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
           <option value="openai_compatible">OpenAI 호환 API</option>
           <option value="local">사내 Local LLM</option>
           <option value="generic">Custom Generic</option>
-          <option value="playground">사내 Playground API</option>
+          <option value="playground">GPT OSS 120B (사내 Playground)</option>
+          <option value="gemma4">Gemma4-260430 (사내)</option>
         </select>
       </div>
       <div>
-        <div style={L}>API URL</div>
+        <div style={L}>API Base URL (호출 URL)</div>
         <input value={cfg.api_url} onChange={e=>patch({api_url:e.target.value})} placeholder={isLocal?"http://llm.internal/v1":"https://llm.internal/v1/chat/completions"} style={I}/>
       </div>
     </div>

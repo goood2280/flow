@@ -1565,6 +1565,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
                 main_light_cells_by_name.setdefault(
                     _tm.normalize_chip_name(cell["name"]), []).append(cell)
 
+    inferred_main_rows = []
     rows = []
     summary = {"match": 0, "warning": 0, "mismatch": 0, "extended": 0, "missing": 0,
                "total": len(tegs), "chip_overlap": 0, "die_in": 0, "die_near": 0,
@@ -1693,6 +1694,14 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
                 summary["shot_partial"] += 1
         main_group = main_membership(
             main_cells, mm_x, mm_y, tw, th, die_tol_mm, main_index)
+        # 모든 확장 매칭 후 미등록 행은 MAIN 내부 TEG로 검사한다.
+        if ref is not None and ref_teg is None:
+            inferred_main_rows.append({**t, "_inferred_group": main_group or "MAIN 판정 불가",
+                                       "_inferred_xy": (nx, ny), "_inferred_size": (tw, th)})
+            summary["total"] -= 1
+            if cmp_["status"] in summary:
+                summary[cmp_["status"]] -= 1
+            continue
         # Teg_location에 등록된 S/L TEG만 스크라이브/die 침범을 판정한다.
         # PCHK/PRBCHK는 Mapfile 좌표계의 원점이므로 die 검증 대상에서 제외한다.
         is_pchk_anchor = bool(
@@ -1777,11 +1786,12 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         main_chips = {}
     main_group_meta: dict[str, dict] = {}
     main_groups_map: dict[str, list[dict]] = {}
+    main_purpose_hits: dict[str, list[str]] = {}
     main_group_names: dict[str, set[str]] = {}
     main_group_auto_counts: dict[str, int] = {}
     main_group_next_suffix: dict[str, dict[str, int]] = {}
-    for t in tegs_all:
-        group = main_group_name(t)
+    for t in [*tegs_all, *inferred_main_rows]:
+        group = t.get("_inferred_group") or main_group_name(t)
         if not group:
             continue
         meta = main_group_meta.get(group)
@@ -1795,8 +1805,8 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
             main_group_meta[group] = meta
         purpose = meta["purpose"]
         purpose_warning = meta["purpose_warning"]
-        detail = _main_detail(t, group)
-        nx, ny = _main_xy(t, detail or group)
+        detail = t["name"] if "_inferred_group" in t else _main_detail(t, group)
+        nx, ny = t["_inferred_xy"] if "_inferred_xy" in t else _main_xy(t, detail or group)
         entry = main_groups_map.setdefault(group, [])
         names = main_group_names.setdefault(group, set())
         suffixes = main_group_next_suffix.setdefault(group, {})
@@ -1816,7 +1826,7 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         # 칩 격자 모드면 내부 TEG 도 칩(die) 겹침 검사 — 일반 행과 동일 규약
         # (기본 TEG 크기 사용 — MAIN 내부 TEG 는 정답지에 없어 크기 정보가 없음)
         mm_x, mm_y = nx * scale, ny * scale
-        dw, dh = default_teg_w, default_teg_h
+        dw, dh = t.get("_inferred_size", (default_teg_w, default_teg_h))
         overlap = None
         if shot.get("checked"):
             overlap = _overlaps_chip(die_cells, mm_x, mm_y, dw, dh,
@@ -1824,19 +1834,35 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
         # 신호등 — MAIN 내부 TEG 는 정답지에 없으므로 '자기 MAIN die 안인가'로 본다.
         # 블록 자체 행(auto: 이름 토큰 없음)은 die 좌하단 앵커라 판정 대상이 아니다.
         light, light_reason = ("gray", "")
-        if not auto and purpose_warning:
-            light, light_reason = "red", f"purpose {_tm.normalize_main_purpose(purpose)} — TEG 배치 금지"
-        elif not auto:
+        forbidden = []
+        if not auto:
             light, light_reason = main_die_light(
-                main_light_cells, group, mm_x, mm_y, dw, dh, die_tol_mm,
+                main_light_cells, group.split(", ")[0] if "_inferred_group" in t else group,
+                mm_x, mm_y, dw, dh, die_tol_mm,
                 main_light_index, main_light_cells_by_name)
+            _, touched = _die_relation(
+                _rect_candidates(main_cells, main_index, mm_x, mm_y, dw, dh, die_tol_mm),
+                mm_x, mm_y, dw, dh, tol=die_tol_mm)
+            forbidden = [c for c in touched if _tm.is_main_purpose_warning(
+                _tm.main_purpose_for(veh, c.get("name", ""), main_purposes))]
+            for forbidden_name in dict.fromkeys(c["name"] for c in forbidden):
+                main_purpose_hits.setdefault(forbidden_name, []).append(detail)
+            if forbidden:
+                values = list(dict.fromkeys(_tm.normalize_main_purpose(
+                    _tm.main_purpose_for(veh, c["name"], main_purposes)) for c in forbidden))
+                light, light_reason = "red", f"purpose {', '.join(values)} — TEG 배치 금지"
+            if shot.get("shot_w_mm") and shot.get("shot_h_mm"):
+                relation = shot_relation(shot["shot_w_mm"], shot["shot_h_mm"], mm_x, mm_y, dw, dh)
+                if relation != SHOT_IN:
+                    reason = "shot 완전 이탈" if relation == SHOT_OUT else "shot 경계 벗어남"
+                    light, light_reason = "red", reason + (" + " + light_reason if light_reason else "")
         entry.append({"teg": detail, "main_group": group,
                       "x": _num(nx), "y": _num(ny), "chip_overlap": overlap,
                       "mm_x": round(mm_x, 4), "mm_y": round(mm_y, 4),
                       "teg_w": round(dw, 4), "teg_h": round(dh, 4),
                       "light": None if auto else light,
                       "light_reason": "" if auto else light_reason,
-                      "purpose_forbidden": bool(not auto and purpose_warning),
+                      "purpose_forbidden": bool(forbidden),
                       "_auto": auto})
     # 자동 이름이 그룹에 하나뿐이면 `_1` 을 떼고 그룹 이름 그대로 쓴다 —
     # 넘버링은 구분이 필요한 2 개 이상일 때만 의미가 있다.
@@ -1928,15 +1954,14 @@ def inspect(vehicle: str, text: str, flat: str | None = None,
                                 "orange": sum(1 for e in items if e.get("light") == "orange"),
                                 "yellow": sum(1 for e in items if e.get("light") == "yellow")}
             main_groups.append(group_row)
-            forbidden_tegs = [e["teg"] for e in items if e.get("purpose_forbidden")]
-            if forbidden_tegs:
-                main_purpose_warnings.append({
-                    "group": g,
-                    "purpose": _tm.normalize_main_purpose(meta["purpose"]),
-                    "reason": "Main_chip_info.csv purpose 값이 있어 TEG 배치 금지",
-                    "teg_count": len(forbidden_tegs),
-                    "tegs": forbidden_tegs,
-                })
+    for group, forbidden_tegs in sorted(main_purpose_hits.items()):
+        main_purpose_warnings.append({
+            "group": group,
+            "purpose": _tm.normalize_main_purpose(_tm.main_purpose_for(veh, group, main_purposes)),
+            "reason": "Main_chip_info.csv purpose 값이 있어 TEG 배치 금지",
+            "teg_count": len(forbidden_tegs),
+            "tegs": forbidden_tegs,
+        })
 
     return {
         "ok": True,

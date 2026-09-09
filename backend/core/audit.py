@@ -20,11 +20,11 @@ from core.paths import PATHS
 from core.utils import jsonl_append
 
 ACTIVITY_LOG = PATHS.activity_log
-ACTIVITY_LOG_MAX_BYTES = 100 * 1024 * 1024
+ACTIVITY_LOG_MAX_BYTES = None  # Audit history is retained without automatic deletion.
 
 
 def append_activity(entry: dict) -> None:
-    """Append activity and retain every complete record until the log reaches 100MB."""
+    """Append activity without a record-count or byte-size retention cap."""
     jsonl_append(
         ACTIVITY_LOG,
         entry,

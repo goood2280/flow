@@ -1,8 +1,9 @@
-import { startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { TABS } from "../config";
 import { logActivity, postJson, sf } from "../lib/api";
 import { canAccessTab, visibleTabsFor } from "../lib/permissions";
+import { preloadPage } from "./pageManifest";
 
 const TAB_KEYS = new Set(TABS.map((item) => item.key));
 const REMOVED_TAB_KEYS = new Set(["aihub", "sqlworkspace"]);
@@ -171,6 +172,7 @@ export function useFlowShell() {
     if (!user) return;
     const openTab = (tabKey, search = "", push = false) => {
       if (!tabKey || (!canAccess(tabKey) && tabKey !== "admin")) return;
+      preloadPage(tabKey);
       startTransition(() => setTab(tabKey));
       if (push) {
         const nextUrl = `/${tabKey}${search || ""}`;
@@ -252,6 +254,7 @@ export function useFlowShell() {
   const nav = useCallback(
     (tabKey, search = "") => {
       if (!canAccess(tabKey) && tabKey !== "admin") return;
+      preloadPage(tabKey);
       startTransition(() => setTab(tabKey));
       const nextUrl = `/${tabKey}${search || ""}`;
       if (window.location.pathname + window.location.search !== nextUrl) {
@@ -268,6 +271,8 @@ export function useFlowShell() {
     setUserTabs(nextUser.role === "admin" ? "__all__" : (nextUser.tabs || ""));
   }, []);
 
+  const visibleTabs = useMemo(() => visibleTabsFor(user, userTabs), [user, userTabs]);
+
   return {
     user,
     tab,
@@ -277,7 +282,7 @@ export function useFlowShell() {
     notifs,
     showPw,
     setShowPw,
-    visibleTabs: visibleTabsFor(user, userTabs),
+    visibleTabs,
     tabInfo: TABS.find((item) => item.key === tab),
     handleLogin,
     handleLogout,

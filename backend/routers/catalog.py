@@ -9,7 +9,7 @@ All read/write happens here so admin UI has one tab for "data artifacts".
 import json
 import logging
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
@@ -25,7 +25,9 @@ from core.domain import (
 )
 from core import s3_sync as _s3
 from core import product_config as _pc
-from core.auth import require_page_manager
+from core.auth import current_user, require_page_manager
+from core.audit import record as _audit
+from core.utils import jsonl_append
 
 logger = logging.getLogger("flow.catalog")
 router = APIRouter(prefix="/api/catalog", tags=["catalog"])
@@ -139,13 +141,27 @@ def matching_save(req: MatchSave, _perm=Depends(require_page_manager("splittable
 
 
 @router.get("/matching/download")
-def matching_download(name: str = Query(...)):
+def matching_download(name: str = Query(...), request: Request = None):
     meta = MATCHING_TABLES.get(name)
     if not meta:
         raise HTTPException(404)
     fp = _match_dir() / meta["file"]
     if not fp.exists():
         raise HTTPException(404, "file not found")
+    user = current_user(request) if request is not None else {}
+    username = user.get("username") or "anonymous"
+    jsonl_append(PATHS.download_log, {
+        "source": "catalog",
+        "username": username,
+        "product": "",
+        "filename": meta["file"],
+        "sql": f"matching={name}",
+        "size_mb": round(fp.stat().st_size / 1e6, 2),
+        "rows": 0,
+        "cols": 0,
+    })
+    _audit(username, "catalog:matching-download",
+           detail=f"filename={meta['file']}", tab="catalog")
     return FileResponse(str(fp), filename=meta["file"], media_type="text/csv")
 
 

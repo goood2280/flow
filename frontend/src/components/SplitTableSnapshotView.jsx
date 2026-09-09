@@ -28,9 +28,9 @@ export function splitParamDisplayName(name, rawParam) {
   const raw = String(name ?? "").trim();
   if (!raw) return "";
   const source = String(rawParam ?? "").trim() || raw;
-  const isKnob = /^KNOB_/i.test(source) || /^KNOB_/i.test(raw);
+  const stripSplit = /^(?:KNOB|MASK)_/i.test(source) || /^(?:KNOB|MASK)_/i.test(raw);
   let out = raw.replace(/^[A-Za-z]+_/, "");
-  if (isKnob) out = out.replace(/_Split$/i, "");
+  if (stripSplit) out = out.replace(/_Split$/i, "");
   return out.trim() || raw;
 }
 

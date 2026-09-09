@@ -25,3 +25,17 @@ def isolate_activity_log(monkeypatch, tmp_path):
     monkeypatch.setattr(PATHS, "activity_log", test_log)
     monkeypatch.setattr(audit, "ACTIVITY_LOG", test_log)
     monkeypatch.setattr(admin, "ACTIVITY_LOG", test_log)
+
+
+@pytest.fixture(autouse=True)
+def isolate_download_log(monkeypatch, tmp_path):
+    """Export tests must never append to operator-owned download history."""
+    import sys
+    from core.paths import PATHS
+
+    test_log = tmp_path / "downloads.jsonl"
+    monkeypatch.setattr(PATHS, "download_log", test_log)
+    for name in ("routers.admin", "routers.filebrowser", "routers.reformatize"):
+        module = sys.modules.get(name)
+        if module is not None and hasattr(module, "DL_LOG"):
+            monkeypatch.setattr(module, "DL_LOG", test_log)

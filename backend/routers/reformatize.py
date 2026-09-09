@@ -2112,7 +2112,7 @@ def download_queue_status(user=Depends(current_user)):
 
 @router.get("/download/file")
 def download_file(job_id: str = Query(...), user=Depends(current_user)):
-    """완료된 작업의 CSV 파일 전송 — 첫 전송 때 downloads.jsonl 에 기록."""
+    """완료된 작업의 CSV 파일 전송 — 매 전송을 downloads.jsonl 에 기록."""
     from core import download_queue
     from fastapi.responses import StreamingResponse
 
@@ -2129,7 +2129,6 @@ def download_file(job_id: str = Query(...), user=Depends(current_user)):
     if not result.get("path") or not path.is_file():
         raise HTTPException(410, "결과 파일이 만료되었습니다 — 다시 조회해 주세요")
 
-    already = download_queue.fetched_once(job_id)
     meta = result.get("meta") or {}
     username = job.get("username", "")
     fname = safe_filename(str(result.get("filename") or "download.csv"))
@@ -2147,13 +2146,12 @@ def download_file(job_id: str = Query(...), user=Depends(current_user)):
         finally:
             try:
                 download_queue.mark_fetched(job_id, sent)
-                if not already:
-                    filters = Filters(**(meta.get("filters") or {}))
-                    _record_download(username, str(meta.get("product") or ""), filters,
-                                     list(meta.get("items") or []), str(meta.get("agg") or ""),
-                                     str(meta.get("vehicle_csv") or ""),
-                                     int(result.get("rows") or 0), int(result.get("cols") or 0),
-                                     int(meta.get("raw_rows") or 0), sent)
+                filters = Filters(**(meta.get("filters") or {}))
+                _record_download(str(user.get("username") or username), str(meta.get("product") or ""), filters,
+                                 list(meta.get("items") or []), str(meta.get("agg") or ""),
+                                 str(meta.get("vehicle_csv") or ""),
+                                 int(result.get("rows") or 0), int(result.get("cols") or 0),
+                                 int(meta.get("raw_rows") or 0), sent)
             except Exception:
                 logger.exception("reformatize: 다운로드 이력 기록 실패")
 
@@ -2296,6 +2294,11 @@ def test_download(req: TestReq, admin=Depends(require_admin)):
             "select_cols": ", ".join(f"{i.alias}={i.addp_form}" for i in req.items if str(i.alias or "").strip()),
             "size_mb": round(sent_bytes / 1e6, 2),
         })
+        from core.audit import record_user as _audit_user
+        _audit_user(admin.get("username") or "anonymous", "reformatize:test-download",
+                    detail=f"product={req.product} rows={out.height} cols={out.width} "
+                           f"size_mb={round(sent_bytes / 1e6, 2)}",
+                    tab="reformatize")
 
     return _csv_stream_response(
         out,

@@ -59,7 +59,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Non-API work has no authenticated principal and therefore fails closed.
         from core import llm_adapter
 
-        with llm_adapter.request_execution_scope(user):
+        with llm_adapter.request_execution_scope(user, path=path):
             response = await call_next(request)
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")

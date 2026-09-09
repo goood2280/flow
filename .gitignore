@@ -46,3 +46,13 @@ extract_report.json
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local scratch and QA artifacts
+.codex-pptx-qa/
+.vite/
+B/
+outputs/
+frontend/chat-qa.html
+frontend/qa-flow-e2e.html
+frontend/pnpm-lock.yaml
+frontend/scripts/test-page-loading.mjs

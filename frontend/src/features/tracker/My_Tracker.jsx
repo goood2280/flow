@@ -1319,10 +1319,9 @@ function IssueMailGroups({ issue, canEdit, onSaved }) {
 }
 
 /* ─── Issue Form ─── */
-function IssueForm({ onSubmit, onClose, user, roleNames }) {
+function IssueForm({ onSubmit, onClose, user, roleNames, cats = [] }) {
   const [title, setTitle] = useState(""); const [desc, setDesc] = useState("");
   const [lots, setLots] = useState([]); const [links, setLinks] = useState([""]);
-  const [cats, setCats] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const submitLockRef = useRef(false);
@@ -1331,7 +1330,6 @@ function IssueForm({ onSubmit, onClose, user, roleNames }) {
       ? crypto.randomUUID()
       : `tracker-${Date.now()}-${Math.random().toString(36).slice(2)}`,
   );
-  useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "#E25822" } : c))).catch(() => { }); }, []);
   // v9.5.13: 우선순위/카테고리/그룹 가시성 선택 제거 — ET 추적탭 이슈는 ET(source=et) 카테고리로 자동 등록.
   const etCategory = (() => {
     const list = Array.isArray(cats) ? cats : [];
@@ -1393,10 +1391,8 @@ const GANTT_CELL_W = 26;
 // v9.5.84: 이슈명이 잘려서 안 보인다는 피드백 — 이슈 칸을 220 → 420 으로 넓혔다.
 const GANTT_LABEL_W = 420;
 
-function GanttChart({ issues, onIssueClick }) {
+function GanttChart({ issues, onIssueClick, cats = [] }) {
   // v8.1.5: look up category color from stored list; fall back to hash for orphan categories
-  const [cats, setCats] = useState([]);
-  useEffect(() => { sf(API + "/categories").then(d => setCats((d.categories || []).map(c => typeof c === "string" ? { name: c, color: "" } : c))).catch(() => { }); }, []);
   const hashColor = (name) => { let h = 0; for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0; return `hsl(${Math.abs(h) % 360}, 58%, 58%)`; };
   const catColor = (name) => { if (!name) return "var(--muted)"; const c = cats.find(x => x.name === name); return (c && c.color) || hashColor(name); };
   const now = new Date(); const [month, setMonth] = useState(now.getMonth()); const [year, setYear] = useState(now.getFullYear());
@@ -1664,8 +1660,8 @@ export default function My_Tracker({ user }) {
 
       {/* Main */}
       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
-        {creating && <IssueForm onSubmit={create} onClose={() => setCreating(false)} user={user} roleNames={roleNames} />}
-        {viewTab === "gantt" ? <GanttChart issues={issues} onIssueClick={(id) => { loadDetail(id); setViewTab("list"); }} />
+        {creating && <IssueForm onSubmit={create} onClose={() => setCreating(false)} user={user} roleNames={roleNames} cats={cats} />}
+        {viewTab === "gantt" ? <GanttChart issues={issues} cats={cats} onIssueClick={(id) => { loadDetail(id); setViewTab("list"); }} />
           : selected ? (<Card padding={0}>
             <section style={connectedPanelSection}>
             {/* Header */}

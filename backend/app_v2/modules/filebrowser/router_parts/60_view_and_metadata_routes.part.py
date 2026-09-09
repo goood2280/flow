@@ -1625,7 +1625,7 @@ _CHART_ASSISTANT_TYPES = {
 }
 _CHART_ASSISTANT_FIELDS = {
     "type", "x", "y", "color", "trellis", "width", "height", "highlight", "show_legend",
-    "color_rules", "color_else", "x_min", "x_max", "y_min", "y_max", "y_scale",
+    "x_font_size", "y_font_size", "color_rules", "color_else", "x_min", "x_max", "y_min", "y_max", "y_scale",
 }
 _CHART_ASSISTANT_JOIN_FIELDS = {"left", "right", "left_on", "right_on", "how"}
 _CHART_ASSISTANT_JOIN_HOWS = {"left", "inner", "full", "semi", "anti"}
@@ -1676,11 +1676,45 @@ def _chart_assistant_deterministic_operations(
         match = re.search(rf"(?:{joined})\s*(?:를|을|은|는|=|:)?\s*(\d{{3,4}})\s*(?:px|픽셀)?", prompt, re.IGNORECASE)
         return int(match.group(1)) if match else None
 
+    font_context = bool(re.search(r"font|폰트|글씨|글꼴|글자", folded))
+    if font_context:
+        for axis in ("x", "y"):
+            if not re.search(rf"{axis}\s*(?:축|axis)", folded):
+                continue
+            size = re.search(r"(?:사이즈|크기|size|폰트|font)\s*(?:를|을|:|=)?\s*(\d{1,2})(?!\d)", folded)
+            if not size:
+                size = re.search(r"(?<![a-z0-9])(\d{1,2})\s*(?:px|pt|로|으로)", folded)
+            base = int(chart.get(f"{axis}_font_size") or 14)
+            grow = any(word in folded for word in ("키워", "늘려", "크게", "확대"))
+            shrink = any(word in folded for word in ("줄여", "작게", "축소"))
+            if size or grow or shrink:
+                set_chart(f"{axis}_font_size", int(size.group(1)) if size else base + (2 if grow else -2))
+
+    sources = current.get("sources") or []
+    day = re.search(r"(?<![\w])(\d{1,4})\s*(?:일|days?)", folded)
+    date_column = re.search(r"\b(tkout_time|tkin_time|[a-z_][a-z0-9_]*(?:_time|_date))\b", folded)
+    root_context = bool(re.search(r"root[ _-]*lot|루트\s*랏|루트\s*롯", folded))
+    if day or root_context:
+        query_match = re.search(r"\bq(\d+)\b", folded)
+        target = [i for i, source in enumerate(sources) if str(source.get("id") or "").lower() == "q" + query_match.group(1)] if query_match else list(range(len(sources)))
+        if len(target) != 1:
+            raise HTTPException(400, "수정할 Query를 지정해 주세요. 예: Q1의 tkout_time 기준 30일")
+        index = target[0]
+        if day:
+            operations.append({"scope":"source", "index":index, "field":"runtime_recent_days", "value":int(day.group(1))})
+            operations.append({"scope":"source", "index":index, "field":"runtime_date_column", "value":date_column.group(1) if date_column else sources[index].get("runtime_date_column") or "tkout_time"})
+        if root_context:
+            lots = re.findall(r"(?<![A-Za-z0-9_])([A-Za-z]{2,}[0-9][A-Za-z0-9]*(?:\.\d+)?)(?![A-Za-z0-9_])", prompt)
+            if lots:
+                operations.append({"scope":"source", "index":index, "field":"runtime_root_lot_ids", "value":[lots[-1].upper()]})
+            elif not day:
+                raise HTTPException(400, "변경할 root lot 값을 알려 주세요.")
+
     width = explicit_size(("width", "넓이", "가로"))
     height = explicit_size(("height", "높이", "세로"))
     grow = any(word in folded for word in ("키워", "늘려", "크게", "확대"))
     shrink = any(word in folded for word in ("줄여", "작게", "축소"))
-    size_context = any(word in folded for word in ("차트", "그래프", "width", "height", "넓이", "높이", "가로", "세로"))
+    size_context = not font_context and any(word in folded for word in ("차트", "그래프", "width", "height", "넓이", "높이", "가로", "세로"))
     if width is not None:
         set_chart("width", width)
     elif size_context and (grow or shrink) and any(word in folded for word in ("width", "넓이", "가로")):
@@ -1806,8 +1840,8 @@ def _chart_assistant_llm_operations(
         system = """You edit an existing Flow ChartBuilder definition by returning a minimal patch.
 Never rewrite unrelated settings and never invent a column, query id, or join.
 Allowed operations:
-- {scope:'chart', field:type|x|y|color|trellis|width|height|highlight|show_legend|color_rules|color_else|y_scale, value:any}
-- {scope:'join', index:zero-based integer, field:left|right|left_on|right_on|how, value:any}
+- {scope:'chart', field:type|x|y|color|trellis|width|height|x_font_size|y_font_size|highlight|show_legend|color_rules|color_else|y_scale, value:any}
+- {scope:'source', index:zero-based integer, field:runtime_recent_days|runtime_date_column|runtime_root_lot_ids, value:any}\n- {scope:'join', index:zero-based integer, field:left|right|left_on|right_on|how, value:any}
 If the request is ambiguous, return no operations and ask one short clarification in message.
 For a solid color set chart color='custom', color_rules=[], and color_else to the requested CSS color.
 For lot/wafer coloring, use direct root_lot_id/wafer_id equality in color_rules without CAST.
@@ -1889,6 +1923,12 @@ def _chart_assistant_apply_operations(
                         continue
                 else:
                     value = ""
+            elif field in {"x_font_size", "y_font_size"}:
+                try:
+                    value = max(8, min(48, int(value)))
+                except (TypeError, ValueError):
+                    warnings.append("축 글꼴 크기는 8~48 숫자로 입력해 주세요.")
+                    continue
             elif field == "width":
                 try:
                     value = max(320, min(2400, int(float(value))))
@@ -1930,6 +1970,44 @@ def _chart_assistant_apply_operations(
             if old != value:
                 updated["chart"][field] = value
                 applied.append({"scope": "chart", "field": field, "from": old, "to": value})
+            continue
+
+        if scope == "source" and field in {"runtime_recent_days", "runtime_date_column", "runtime_root_lot_ids"}:
+            try:
+                index = int(raw.get("index", -1))
+                if index < 0 or index >= len(sources):
+                    raise ValueError("Query index")
+                if field == "runtime_recent_days":
+                    value = int(value)
+                    if not 1 <= value <= 3650:
+                        raise ValueError("1~3650일")
+                elif field == "runtime_date_column":
+                    value = str(value or "").strip()
+                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+                        raise ValueError("date column")
+                else:
+                    if not isinstance(value, list) or not value or len(value) > 200:
+                        raise ValueError("root lots")
+                    value = [str(v).strip() for v in value]
+                    if not all(re.fullmatch(r"[A-Za-z0-9_.-]+", v) for v in value):
+                        raise ValueError("root lot identifier")
+                old = sources[index].get(field)
+                if old != value:
+                    sources[index][field] = value
+                    if field == "runtime_root_lot_ids":
+                        sql = str(sources[index].get("sql") or "")
+                        parts = re.split(r"\bWHERE\b", sql, maxsplit=1, flags=re.I)
+                        if len(parts) == 2:
+                            predicate = "root_lot_id IN (" + ", ".join("'"+lot+"'" for lot in value) + ")"
+                            parts[1] = re.sub(r"(?<![A-Za-z0-9_])root_lot_id\s*(?:=\s*'[^']*'|IN\s*\([^()]*\))", predicate, parts[1], flags=re.I)
+                            sources[index]["sql"] = parts[0] + "WHERE" + parts[1]
+                        for runtime_filter in sources[index].get("runtime_filters") or []:
+                            if str(runtime_filter.get("column") or "").lower() == "root_lot_id":
+                                runtime_filter.update(operator="in",values=value)
+                    applied.append({"scope":"source", "index":index,"field":field,"from":old,"to":value})
+                    requires_rerun = True
+            except (ValueError, TypeError):
+                warnings.append(f"Query 변경값을 확인해 주세요: {field}")
             continue
 
         if scope == "join" and field in _CHART_ASSISTANT_JOIN_FIELDS:

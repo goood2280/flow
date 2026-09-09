@@ -345,18 +345,52 @@ def test_vm_process_info_uses_unique_vehicle_steps_for_selected_product(monkeypa
     assert meta["SHARED_ITEM_1"]["groups"][0]["step_ids"] == ["A100"]
 
 
-def test_inline_process_info_excludes_steps_outside_vehicle_product(monkeypatch, tmp_path):
+def test_inline_process_info_keeps_steps_without_vehicle_description(monkeypatch, tmp_path):
     from routers import splittable
 
     (tmp_path / "Vehicle_matching.csv").write_text(
         "product,step_id,step_desc\nproda,A100,ETCH\nprodb,B100,ETCH\n", encoding="utf-8",
     )
     (tmp_path / "inline_matching.csv").write_text(
-        "product,step_id,item_id\nproda,A100,ITEM\nproda,B100,ITEM\n", encoding="utf-8",
+        "product,step_id,item_id,item_desc\nproda,A100,ITEM,CD\nproda,A200,ITEM2,CD\n"
+        "proda,A300,ITEM3,NO_DESC\nprodb,B100,ITEM,CD\n", encoding="utf-8",
     )
     monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
     monkeypatch.setattr(splittable, "_sch", lambda kind: {})
-    assert splittable._build_inline_meta("ML_TABLE_PRODA")["ITEM"]["step_ids"] == ["A100"]
+    meta = splittable._build_inline_meta("ML_TABLE_PRODA")
+    assert meta["ITEM"]["step_ids"] == ["A100"]
+    assert meta["CD"]["step_ids"] == ["A100", "A200"]
+    assert meta["CD"]["groups"][1]["step_desc"] == ""
+    assert meta["NO_DESC"]["step_ids"] == ["A300"]
+    assert splittable._step_process_columns_for_param("INLINE_NO_DESC", {"inline": meta}) == {
+        "step_id": "A300", "step_desc": "",
+    }
+    assert splittable._step_label_lines_for_param("INLINE_NO_DESC", {"inline": meta}) == (
+        "inline_matching", ["A300 | ITEM3"],
+    )
+    assert splittable._step_process_columns_for_param("INLINE_CD", {"inline": meta}) == {
+        "step_id": "A100\nA200", "step_desc": "ETCH",
+    }
+
+
+def test_vm_process_info_preserves_underscores_and_vehicle_module(monkeypatch, tmp_path):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc,module\nproda,A100,GATE_ETCH,GATE\n"
+        "prodb,B100,GATE_ETCH,OTHER\n", encoding="utf-8",
+    )
+    (tmp_path / "vm_matching.csv").write_text(
+        "step_desc,item_id\nGATE_ETCH,ITEM_1\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    meta = splittable._build_vm_meta("ML_TABLE_PRODA")
+    assert meta["GATE_ETCH_ITEM_1"]["module"] == "GATE"
+    assert meta["GATE_ETCH_ITEM_1"]["item_id"] == "ITEM_1"
+    assert splittable._step_process_columns_for_param("VM_GATE_ETCH_ITEM_1", {"vm": meta}) == {
+        "step_id": "A100", "step_desc": "GATE_ETCH",
+    }
 
 
 def test_knob_virtual_columns_emit_one_row_per_rulebook_feature(monkeypatch):
@@ -574,3 +608,66 @@ def test_inform_split_check_keeps_process_prefix_columns():
     assert result["st_view"]["prefix_columns"] == ["step_id", "step_desc", "항목", "값", "Split"]
     assert result["st_view"]["parameter_prefix_index"] == 2
     assert result["rows"][0][:6] == ["S10", "ETCH", "A", "PP_A", "S0", "S0"]
+
+
+def test_mask_process_columns_resolves_step_id_and_module_from_vehicle_matching(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc,module\n"
+        "proda,PH210300,GATE_PHOTO,PHOTO\n"
+        "proda,CC942300,1.0 STI,ETCH\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    monkeypatch.setattr(splittable, "_mltable_schema_columns", lambda *args, **kwargs: [
+        "MASK_GATE_PHOTO", "MASK_1.0 STI",
+    ])
+
+    meta = splittable._build_mask_meta("ML_TABLE_PRODA")
+
+    # MASK_GATE_PHOTO resolves step_id, step_desc, and module
+    gate_meta = meta["MASK_GATE_PHOTO"]
+    assert gate_meta["step_id"] == "PH210300"
+    assert gate_meta["step_desc"] == "GATE_PHOTO"
+    assert gate_meta["module"] == "PHOTO"
+    assert gate_meta["modules"] == ["PHOTO"]
+
+    # MASK_1.0 STI resolves step_id, step_desc, and module
+    sti_meta = meta["MASK_1.0 STI"]
+    assert sti_meta["step_id"] == "CC942300"
+    assert sti_meta["step_desc"] == "1.0 STI"
+    assert sti_meta["module"] == "ETCH"
+
+    metas = splittable._step_label_metas("ML_TABLE_PRODA")
+    assert "mask" in metas
+    assert metas["mask"]["MASK_GATE_PHOTO"]["step_id"] == "PH210300"
+
+    cols = splittable._step_process_columns_for_param("MASK_GATE_PHOTO", metas)
+    assert cols == {"step_id": "PH210300", "step_desc": "GATE_PHOTO"}
+
+
+def test_mask_process_columns_fallback_when_not_in_vehicle_matching(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc,module\n"
+        "proda,PH210300,OTHER_STEP,PHOTO\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    monkeypatch.setattr(splittable, "_mltable_schema_columns", lambda *args, **kwargs: [
+        "MASK_CUSTOM_UNMATCHED",
+    ])
+
+    meta = splittable._build_mask_meta("ML_TABLE_PRODA")
+    assert meta["MASK_CUSTOM_UNMATCHED"]["step_desc"] == "CUSTOM_UNMATCHED"
+    assert meta["MASK_CUSTOM_UNMATCHED"]["step_id"] == ""
+    assert meta["MASK_CUSTOM_UNMATCHED"]["module"] == ""
+
+    metas = splittable._step_label_metas("ML_TABLE_PRODA")
+    # Even if parameter wasn't in schema, fallback extracts MASK_ tail as step_desc
+    cols = splittable._step_process_columns_for_param("MASK_SOME_DYNAMIC_STEP", metas)
+    assert cols == {"step_id": "", "step_desc": "SOME_DYNAMIC_STEP"}

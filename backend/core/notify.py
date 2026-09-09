@@ -31,6 +31,7 @@ _DEFAULT_RULES = {
     "watched_lot_note_registered": True,
     "watched_lot_management_updated": True,
     "lot_step_threshold_reached": True,
+    "teg_mapfile_abnormal": True,
 }
 
 _EVENT_META = {
@@ -47,6 +48,7 @@ _EVENT_META = {
     "watched_lot_note_registered": ("관심랏 메모 등록", "info"),
     "watched_lot_management_updated": ("관심랏 랏관리 갱신", "info"),
     "lot_step_threshold_reached": ("기준 Step 도달", "neutral"),
+    "teg_mapfile_abnormal": ("TEG Mapfile 이상", "critical"),
 }
 
 
@@ -214,7 +216,7 @@ def dismiss_by_ids(username: str, ids: list):
 # ─────────────────────────────────────────────────────────
 def emit_event(event_type: str, actor: str = "", target_user: str = "",
                title: str = "", body: str = "", payload: dict | None = None,
-               allow_self: bool = False) -> bool:
+               allow_self: bool = False, notification_id: str = "") -> bool:
     """이벤트 단일 진입점.
     - target_user 가 비어있으면 no-op
     - actor 와 target_user 가 같을 때: allow_self 또는 watched_lot_ 이벤트가 아니면 no-op
@@ -237,8 +239,9 @@ def emit_event(event_type: str, actor: str = "", target_user: str = "",
         else:
             body = meta_title
     # payload 는 참조용 — 별도 필드로 저장해 FE 에서 라우팅 판단 가능
+    stable_id = str(notification_id or "").strip()
     entry = {
-        "id": str(uuid.uuid4())[:8],
+        "id": stable_id or str(uuid.uuid4())[:8],
         "title": final_title,
         "body": body,
         "type": tone,
@@ -248,8 +251,19 @@ def emit_event(event_type: str, actor: str = "", target_user: str = "",
         "read": False,
         "timestamp": datetime.datetime.now().isoformat(),
     }
-    fp = NOTIFY_DIR / f"{target_user}.jsonl"
-    append_text_line(fp, json.dumps(entry, ensure_ascii=False))
+    fp = _notification_file(target_user)
+    if stable_id:
+        # A stable producer id closes the scheduler crash window: if the event
+        # was appended but its producer state was not saved, replay observes
+        # the existing id instead of creating another visible notification.
+        from core.file_transaction import file_transaction
+
+        with file_transaction(fp):
+            if any(str(n.get("id") or "") == stable_id for n in _read_all(target_user)):
+                return False
+            append_text_line(fp, json.dumps(entry, ensure_ascii=False))
+    else:
+        append_text_line(fp, json.dumps(entry, ensure_ascii=False))
     return True
 
 

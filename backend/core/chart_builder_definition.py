@@ -31,7 +31,7 @@ CHART_HEADER_RE = re.compile(r"^\s*chart\s*:?(.*)$", re.IGNORECASE)
 CHART_FIELD_RE = re.compile(
     r"^\s*(type|chart_type|x|x_col|y|y_col|color|color_col|trellis|trellis_col|color_rule|color_else"
     r"|highlight|show_legend|legend|width|height|size|title|x_label|y_label|trend_grain|aggregation"
-    r"|map_y|map_scope|map_target|pie_basis|fit|point_size|marker_opacity|line_width|x_min|x_max|y_min|y_max"
+    r"|x_font_size|y_font_size|map_y|map_scope|map_target|pie_basis|fit|point_size|marker_opacity|line_width|x_min|x_max|y_min|y_max"
     r"|y_scale|show_grid|legend_position|spec_low|spec_high|box_points|wafer_palette|wafer_mode"
     r"|wafer_spec_low|wafer_spec_high|wafer_low|wafer_center|wafer_high)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
@@ -719,7 +719,7 @@ def _assign_chart_field(chart: dict[str, Any], name: str, value: str) -> None:
             raise ChartBuilderDefinitionError("CHART SIZE는 WIDTHxHEIGHT 형식이어야 합니다. 예: 1200x650")
         chart["width"] = int(match.group(1))
         chart["height"] = int(match.group(2))
-    elif key in {"width", "height", "point_size"}:
+    elif key in {"width", "height", "point_size", "x_font_size", "y_font_size"}:
         if not cleaned.isdigit():
             raise ChartBuilderDefinitionError(f"CHART {key.upper()}는 픽셀 숫자여야 합니다.")
         chart[key] = int(cleaned)
@@ -770,6 +770,9 @@ def _validate_chart(chart: dict[str, Any]) -> None:
         raise ChartBuilderDefinitionError("CHART WIDTH는 320~2400px 사이여야 합니다.")
     if height and not 240 <= height <= 1600:
         raise ChartBuilderDefinitionError("CHART HEIGHT는 240~1600px 사이여야 합니다.")
+    for axis in ("x", "y"):
+        if chart.get(f"{axis}_font_size") and not 8 <= int(chart[f"{axis}_font_size"]) <= 48:
+            raise ChartBuilderDefinitionError("축 글꼴 크기는 8~48이어야 합니다.")
     point_size = int(chart.get("point_size") or 0)
     if point_size and not 2 <= point_size <= 30:
         raise ChartBuilderDefinitionError("CHART POINT_SIZE는 2~30 사이여야 합니다.")
@@ -922,6 +925,7 @@ def format_chart_builder_definition(
             ("y_label", "Y_LABEL"), ("color", "COLOR"), ("trellis", "TRELLIS"), ("trend_grain", "TREND_GRAIN"),
             ("aggregation", "AGGREGATION"), ("map_y", "MAP_Y"), ("map_scope", "MAP_SCOPE"),
             ("map_target", "MAP_TARGET"), ("pie_basis", "PIE_BASIS"), ("fit", "FIT"),
+            ("x_font_size", "X_FONT_SIZE"), ("y_font_size", "Y_FONT_SIZE"),
             ("point_size", "POINT_SIZE"), ("marker_opacity", "MARKER_OPACITY"), ("line_width", "LINE_WIDTH"),
             ("x_min", "X_MIN"), ("x_max", "X_MAX"), ("y_min", "Y_MIN"), ("y_max", "Y_MAX"),
             ("y_scale", "Y_SCALE"),

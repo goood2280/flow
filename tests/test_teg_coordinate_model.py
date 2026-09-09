@@ -149,6 +149,7 @@ def test_main_chip_purpose_loader_and_name_normalization(tmp_path, monkeypatch):
     assert teg_map.normalize_main_purpose(" no-teg ") == "NO TEG"
     assert teg_map.is_main_purpose_warning("no teg") is True
     assert teg_map.is_main_purpose_warning("IP") is True
+    assert teg_map.is_main_purpose_warning(" teg ") is False
     assert teg_map.is_main_purpose_warning("LOGIC") is True
     assert teg_map.is_main_purpose_warning("reserved area") is True
     assert teg_map.is_main_purpose_warning("") is False
@@ -203,7 +204,8 @@ def test_mapfile_main_inside_is_yellow_and_forbidden_purpose_is_red(monkeypatch)
     assert anchor_only["teg"]["main_purpose_warnings"] == []
 
 
-def test_teg_location_unregistered_module_is_orange_main_info_missing_not_die_intrusion(monkeypatch):
+@pytest.mark.parametrize("purpose, expected", [("", "yellow"), ("teg", "yellow"), ("LOGIC", "red")])
+def test_unregistered_module_is_inferred_main_and_checks_purpose(monkeypatch, purpose, expected):
     cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
     cfg["check"] = teg_map._clean_check({})
     cfg["ebeam_scale"] = 0.001
@@ -222,21 +224,45 @@ def test_teg_location_unregistered_module_is_orange_main_info_missing_not_die_in
     monkeypatch.setattr(teg_check._tm, "target_verification", lambda vehicle, names: {
         "source": "default", "items": [], "matched": 0, "missing": 0, "total": 0,
     })
-    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({}, None))
+    monkeypatch.setattr(teg_check._tm, "load_main_chip_purposes", lambda: ({"P": {"MAIN01": purpose}}, None))
     monkeypatch.setattr(teg_check._tm, "load_main_chips", lambda: ({}, None))
 
     result = teg_check.inspect(
         "P", "#teg-map\nmodule UNKNOWN (1000,1000) ! UNKNOWN\n", flat="h",
     )
 
-    row = result["teg"]["rows"][0]
-    assert row["status"] == "missing"
-    assert row["teg_kind"] == "main_info_missing"
-    assert row["light"] == "orange"
+    assert result["teg"]["rows"] == []
+    row = result["teg"]["main_groups"][0]["tegs"][0]
+    assert row["teg"] == "UNKNOWN"
+    assert row["light"] == expected
     assert row["main_group"] == "MAIN01"
-    assert row["light_reason"] == "MAIN 정보없음 · 소속 MAIN01"
-    assert row["die_state"] is None
-    assert row["chip_overlap"] is None
+    assert row["purpose_forbidden"] == (expected == "red")
+
+
+@pytest.mark.parametrize("x, expected, forbidden", [
+    (1000, "yellow", False), (4950, "red", False), (6000, "red", False),
+])
+def test_inferred_main_shot_boundary_is_red(monkeypatch, x, expected, forbidden):
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg["check"] = teg_map._clean_check({})
+    cfg.update(ebeam_scale=0.001, teg_default_w=0.1, teg_default_h=0.1)
+    monkeypatch.setattr(teg_map, "load_cfg", lambda: cfg)
+    monkeypatch.setattr(teg_check, "load_ref", lambda v: ({}, {}, "ref.csv", ""))
+    monkeypatch.setattr(teg_check, "_shot_info", lambda v, extra_anchors=None: {
+        "available": True, "checked": False, "cells": [],
+        "shot_w_mm": 10, "shot_h_mm": 10,
+        "main_cells": [{"name": "MAIN01", "x": 0, "y": 0, "w": 10, "h": 10}],
+    })
+    monkeypatch.setattr(teg_map, "load_main_chip_purposes", lambda: ({"P": {"MAIN01": "TEG"}}, None))
+    monkeypatch.setattr(teg_map, "load_main_chips", lambda: ({"P": {"MAIN01": (10, 10)}}, None))
+    monkeypatch.setattr(teg_map, "target_verification", lambda v, n: {
+        "items": [], "total": 0, "matched": 0, "missing": 0})
+    result = teg_check.inspect("P", f"#teg-map\nmodule INNER ({x},1000) ! INNER\n", flat="h")
+    row = result["teg"]["main_groups"][0]["tegs"][0]
+    assert row["light"] == expected
+    assert row["purpose_forbidden"] is forbidden
+    if expected == "red":
+        assert "shot" in row["light_reason"]
 
 
 def test_explicit_main_group_without_main_chip_info_is_orange(monkeypatch):
@@ -553,7 +579,8 @@ def test_alias_matching_keeps_different_tegs_apart(monkeypatch, module_name, ref
     result = teg_check.inspect("P", f"#teg-map\nmodule {module_name} (100.5,200.5) !\n",
                                flat="h")
 
-    assert result["teg"]["rows"][0]["ref_teg"] is None
+    assert result["teg"]["rows"] == []
+    assert result["teg"]["main_groups"][0]["tegs"][0]["teg"] == module_name
 
 
 def test_alias_matching_refuses_ambiguous_keys():
