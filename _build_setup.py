@@ -62,6 +62,7 @@ INCLUDE_DIRS = [
 
 INCLUDE_FILES = [
     'README.md',
+    'SECOND_BRAIN.md',
     'package.json',
     'package-lock.json',
     'VERSION.json',
@@ -484,7 +485,7 @@ _PROTECTED_SEGMENTS = {{
 _ALLOWED_TOP_LEVEL = {{
     'backend', 'frontend', 'docs', 'scripts', 'app_v2', 'core', 'routers',
     'tests',
-    'app.py', 'README.md', 'VERSION.json',
+    'app.py', 'README.md', 'SECOND_BRAIN.md', 'VERSION.json',
     # 에이전트 진입점 / 저장소 위생 규칙 / 번들 빌더 자신 / npm 잠금.
     # 이 화이트리스트에 없으면 FILES 에 담겨 있어도 extract 가 조용히 버린다 —
     # GitHub 저장소를 "README.md + setup.py" 로 줄였을 때 영구 소실되는 경로다.

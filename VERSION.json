@@ -1,7 +1,52 @@
 {
-  "version": "10.4.244",
+  "version": "10.4.249",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.249",
+      "date": "2026-09-10",
+      "tag": "feat",
+      "title": "confidential 내 제품별 inline shot matching CSV 지원 및 ChartBuilder subitem 좌표 매칭 & 미매칭 통계치 필터링",
+      "changes": [
+        "[Inline좌표/차트빌더] confidential 내 제품별·항목별 matching CSV 연동 부재 및 AVG/MIN 통계 행 노출 → confidential 내 {제품명}_*.csv 다중 탐색, Normal.jpg 확장자 호환 매칭, 매칭된 ITEM의 AVG/MIN 미매칭 행 자동 제외 및 미매칭 ITEM 정상 보존 처리."
+      ]
+    },
+    {
+      "version": "10.4.248",
+      "date": "2026-09-10",
+      "tag": "fix",
+      "title": "랏 현위치 확인 페이지 중복 설명 헤더 제거 및 LOT ID 조회 요청 헤더 누락 수정",
+      "changes": [
+        "[랏현위치확인] 상단 반복 설명 헤더 노출 및 LOT ID 조회 시 현위치 결과 미표출 → 중복 PageHeader 및 설명 문구 제거, sf() 호출 시 Content-Type 헤더 추가 및 백엔드 바디 역직렬화·Base LOT 접미사 매칭 유연화로 현위치 결과 정상 표출."
+      ]
+    },
+    {
+      "version": "10.4.247",
+      "date": "2026-09-10",
+      "tag": "feat",
+      "title": "TEG Mapfile 신호등을 GitHub 주기검사로 전면 개편 및 1일 이내 주기 다운로드 로그 신호등 연동",
+      "changes": [
+        "[TEG/GitHub주기검사] GitHub 주기 다운로드 실행 여부 확인 부재 및 루트 파일 혼선 → DB/mapfile download.log 파싱으로 1일 이내 실행 여부·업데이트중 신호등 표출, Mapfile 신호등 명칭을 GitHub 주기검사로 전면 개편하고 기타 루트 카드 제거."
+      ]
+    },
+    {
+      "version": "10.4.246",
+      "date": "2026-09-10",
+      "tag": "fix",
+      "title": "TEG 위치조회 Inline map setting 설정 저장 위치를 DB credential에서 confidential로 변경",
+      "changes": [
+        "[TEG위치조회] Inline map setting 저장 시 DB/credential 폴더에 파일이 생성됨 → 보안 및 데이터 격리 기준에 따라 confidential 폴더 사용 필요 → INLINE_MAP_DIR_NAME을 confidential로 변경하고 저장 시 confidential 생성, 읽기 시 레거시 credential 폴백 및 UI 안내 뱃지 갱신."
+      ]
+    },
+    {
+      "version": "10.4.245",
+      "date": "2026-09-10",
+      "tag": "feat",
+      "title": "TEG 위치조회 Mapfile dev(개발 DC)·prod(양산DC) 폴더 구분 검사 및 .map 텍스트 검사 지원",
+      "changes": [
+        "[TEG위치조회] DB/mapfile 내 개발·양산 mapfile 구분 부재 및 .map 확장자 검사 미지원 → 단일 폴더 검색 및 확장자 제한으로 dev/prod 분리 검증 불가 → dev(개발 DC)와 prod(양산DC) 서브폴더 분리 인식, 제품코드 대소문자 무관 매칭, .map 파일을 txt로 안전 디코딩하여 DC별 신호등 카드 및 검사 목록 분리 표출."
+      ]
+    },
     {
       "version": "10.4.244",
       "date": "2026-09-10",
