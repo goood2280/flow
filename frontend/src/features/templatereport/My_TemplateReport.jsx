@@ -103,7 +103,7 @@ function templateCodeFromDraft(draft,variables=[]){
     $schema:"flow-template-report/v1",
     id:draft.id||"",
     name:draft.name||"Template Report",
-    options:{cover:draft.options?.cover!==false,footer:draft.options?.footer!==false,subtitle:text(draft.options?.subtitle),repeat_variable:text(draft.options?.repeat_variable||"LOT")},
+    options:{cover:draft.options?.cover!==false,footer:draft.options?.footer!==false,subtitle:text(draft.options?.subtitle),repeat_variable:text(draft.options?.repeat_variable||"LOT"),background_id:text(draft.options?.background_id)},
     variables:(variables||draft.variables||[]).map(item=>({name:item.name,label:item.label||item.name,default:item.default||""})),
     pages,
   },null,2);
@@ -493,26 +493,49 @@ function SlideCanvas({page,pageIndex,runs={},tables={},editing=false,charts=[],d
 
 function TemplateBackgroundSettings({settings,canEdit,onChanged}){
   const background=settings?.background||{};
+  const backgrounds=settings?.backgrounds||[];
+  const[name,setName]=useState("");
   const[pastedImage,setPastedImage]=useState("");
+  const[selectedLibraryId,setSelectedLibraryId]=useState("");
   const[busy,setBusy]=useState(false);
-  const shownImage=pastedImage||background.data_url||"";
+  const selectedBackground=backgrounds.find(item=>item.id===selectedLibraryId)||null;
+  const shownImage=pastedImage||selectedBackground?.data_url||background.data_url||"";
+  const readImage=file=>{
+    if(!file){toast.warn("이미지 파일을 찾지 못했습니다.");return;}
+    if(!["image/png","image/jpeg","image/webp"].includes(file.type)){toast.error("PNG, JPG, WebP 이미지만 사용할 수 있습니다.");return;}
+    if(file.size>12*1024*1024){toast.error("배경 이미지는 12MB 이하만 사용할 수 있습니다.");return;}
+    const reader=new FileReader();
+    reader.onload=()=>{setPastedImage(text(reader.result));if(!name.trim())setName(file.name.replace(/\.[^.]+$/,"")||"새 배경");toast.ok("그림을 받았습니다. 이름과 미리보기를 확인해 주세요.");};
+    reader.onerror=()=>toast.error("그림을 읽지 못했습니다.");
+    reader.readAsDataURL(file);
+  };
   const handlePaste=event=>{
     if(!canEdit)return;
     const item=Array.from(event.clipboardData?.items||[]).find(entry=>entry.kind==="file"&&entry.type.startsWith("image/"));
     const file=item?.getAsFile();
     if(!file){toast.warn("클립보드에서 그림을 찾지 못했습니다. 그림을 복사한 뒤 이 영역에서 Ctrl+V 해 주세요.");return;}
-    event.preventDefault();
-    if(file.size>12*1024*1024){toast.error("배경 이미지는 12MB 이하만 사용할 수 있습니다.");return;}
-    const reader=new FileReader();
-    reader.onload=()=>{setPastedImage(text(reader.result));toast.ok("그림을 받았습니다. 미리보기 확인 후 저장해 주세요.");};
-    reader.onerror=()=>toast.error("클립보드 그림을 읽지 못했습니다.");
-    reader.readAsDataURL(file);
+    event.preventDefault();readImage(file);
+  };
+  const saveNamedBackground=async()=>{
+    const trimmedName=name.trim();
+    if(!trimmedName){toast.warn("배경 이름을 입력해 주세요.");return;}
+    if(!pastedImage){toast.warn("먼저 그림을 붙여넣거나 파일을 선택해 주세요.");return;}
+    setBusy(true);
+    try{const out=await postJson(`${API}/settings/backgrounds`,{name:trimmedName,data_url:pastedImage});onChanged(out.settings||{});setName("");setPastedImage("");toast.ok(`'${trimmedName}' 배경을 저장했습니다.`);}
+    catch(error){toast.error(error.message||String(error));}finally{setBusy(false);}
+  };
+  const removeNamedBackground=async item=>{
+    if(!window.confirm(`'${item.name}' 배경을 삭제할까요?`))return;
+    setBusy(true);
+    try{const out=await sf(`${API}/settings/backgrounds/${encodeURIComponent(item.id)}`,{method:"DELETE"});onChanged(out.settings||{});if(selectedLibraryId===item.id)setSelectedLibraryId("");toast.ok("저장 배경을 삭제했습니다.");}
+    catch(error){toast.error(error.message||String(error));}finally{setBusy(false);}
   };
   const saveBackground=async()=>{
-    if(!pastedImage){toast.warn("먼저 아래 영역을 누르고 그림을 붙여넣어 주세요.");return;}
+    const dataUrl=pastedImage||selectedBackground?.data_url||"";
+    if(!dataUrl){toast.warn("먼저 그림을 붙여넣거나 저장 배경을 선택해 주세요.");return;}
     setBusy(true);
     try{
-      const out=await postJson(`${API}/settings/background`,{data_url:pastedImage});
+      const out=await postJson(`${API}/settings/background`,{data_url:dataUrl});
       setPastedImage("");onChanged(out.settings||{});toast.ok("기본 PPT 배경을 저장했습니다.");
     }catch(error){toast.error(error.message||String(error));}finally{setBusy(false);}
   };
@@ -525,22 +548,40 @@ function TemplateBackgroundSettings({settings,canEdit,onChanged}){
     }catch(error){toast.error(error.message||String(error));}finally{setBusy(false);}
   };
   return <div style={{display:"grid",gap:10}}>
-    <div style={{fontSize:12,lineHeight:1.6,color:"var(--text-secondary)"}}>그림을 복사한 뒤 아래 영역을 한 번 누르고 <b style={{color:"var(--text-primary)"}}>Ctrl+V</b> 하세요. 저장하면 표지·본문·Appendix와 화면 미리보기의 기본 배경으로 사용합니다.</div>
+    <div style={{fontSize:12,lineHeight:1.6,color:"var(--text-secondary)"}}>템플릿마다 고를 배경을 이름과 함께 저장합니다. 아래 영역에 <b style={{color:"var(--text-primary)"}}>Ctrl+V</b> 하거나 이미지 파일을 선택하세요.</div>
+    {canEdit&&<div style={{display:"flex",gap:7,alignItems:"end",flexWrap:"wrap"}}>
+      <label style={{...label,flex:"1 1 180px"}}>배경 이름<input value={name} onChange={event=>setName(event.target.value)} placeholder="예: 고객사 정기 보고" style={{...input,marginTop:3}}/></label>
+      <label style={{...btn,display:"inline-flex",alignItems:"center"}}>이미지 파일 선택<input type="file" accept="image/png,image/jpeg,image/webp" onChange={event=>{readImage(event.target.files?.[0]);event.target.value="";}} style={{display:"none"}}/></label>
+    </div>}
     <div
       tabIndex={canEdit?0:undefined}
       onPaste={handlePaste}
-      aria-label="Template Report 기본 배경 그림 붙여넣기"
+      aria-label="Template Report 배경 그림 붙여넣기"
       style={{aspectRatio:"16 / 9",border:`2px dashed ${pastedImage?"var(--accent)":"var(--border)"}`,borderRadius:8,backgroundColor:"var(--bg-primary)",backgroundImage:shownImage?`url(${JSON.stringify(shownImage)})`:"none",backgroundPosition:"center",backgroundSize:"cover",backgroundRepeat:"no-repeat",display:"grid",placeItems:"center",outline:"none",cursor:canEdit?"text":"default",overflow:"hidden"}}
     >
-      {!shownImage&&<span style={{padding:18,textAlign:"center",fontSize:12,color:"var(--text-secondary)"}}>{canEdit?"여기를 누르고 Ctrl+V":"설정된 기본 배경이 없습니다."}</span>}
+      {!shownImage&&<span style={{padding:18,textAlign:"center",fontSize:12,color:"var(--text-secondary)"}}>{canEdit?"여기를 누르고 Ctrl+V 또는 위에서 파일 선택":"미리볼 배경이 없습니다."}</span>}
       {shownImage&&pastedImage&&<span style={{alignSelf:"end",margin:8,padding:"3px 8px",borderRadius:999,background:"rgba(0,0,0,.65)",color:"#fff",fontSize:10,fontWeight:800}}>저장 전 미리보기</span>}
     </div>
     <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
-      {canEdit&&<button type="button" onClick={saveBackground} disabled={!pastedImage||busy} style={primary}>{busy?"처리 중…":"붙여넣은 그림 저장"}</button>}
+      {canEdit&&<button type="button" onClick={saveNamedBackground} disabled={!pastedImage||!name.trim()||busy} style={primary}>{busy?"처리 중…":"이름 붙여 저장"}</button>}
       {canEdit&&pastedImage&&<button type="button" onClick={()=>setPastedImage("")} disabled={busy} style={btn}>붙여넣기 취소</button>}
-      {canEdit&&background.configured&&!pastedImage&&<button type="button" onClick={removeBackground} disabled={busy} style={{...btn,color:"var(--danger)"}}>기본 배경 제거</button>}
     </div>
-    {background.configured&&<div style={{fontSize:10,color:"var(--text-secondary)"}}>현재 배경 · {background.updated_by||"—"} · {formatTime(background.updated_at)}</div>}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:8}}>
+      {backgrounds.map(item=><div key={item.id} style={{border:`1px solid ${selectedLibraryId===item.id?"var(--accent)":"var(--border)"}`,borderRadius:8,overflow:"hidden",background:selectedLibraryId===item.id?"var(--accent-glow)":"var(--bg-primary)"}}>
+        <button type="button" onClick={()=>setSelectedLibraryId(current=>current===item.id?"":item.id)} aria-pressed={selectedLibraryId===item.id} title={`${item.name} 미리보기`} style={{display:"block",width:"100%",padding:0,border:0,cursor:"pointer",aspectRatio:"16 / 9",backgroundImage:`url(${JSON.stringify(item.data_url||"")})`,backgroundPosition:"center",backgroundSize:"cover",backgroundRepeat:"no-repeat",backgroundColor:IBM_PAGE}}/>
+        <div style={{padding:7,display:"grid",gap:4}}><strong style={{fontSize:11,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={item.name}>{item.name}</strong>{canEdit&&<button type="button" onClick={()=>removeNamedBackground(item)} disabled={busy} style={{...btn,padding:"4px 6px",fontSize:10,color:"var(--danger)"}}>삭제</button>}</div>
+      </div>)}
+    </div>
+    {!backgrounds.length&&<div style={{fontSize:11,color:"var(--text-secondary)"}}>저장된 이름 배경이 없습니다.</div>}
+    <div style={{borderTop:"1px solid var(--border)",paddingTop:10,display:"grid",gap:7}}>
+      <strong style={{fontSize:12}}>기본 배경 (기존 설정)</strong>
+      <div style={{fontSize:10,lineHeight:1.5,color:"var(--text-secondary)"}}>템플릿에서 ‘기본 배경’을 선택했을 때 사용합니다.</div>
+      <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}>
+        {canEdit&&<button type="button" onClick={saveBackground} disabled={(!pastedImage&&!selectedBackground)||busy} style={btn}>{pastedImage?"현재 그림을 기본으로 저장":"선택 배경을 기본으로 지정"}</button>}
+        {canEdit&&background.configured&&<button type="button" onClick={removeBackground} disabled={busy} style={{...btn,color:"var(--danger)"}}>기본 배경 제거</button>}
+      </div>
+      {background.configured&&<div style={{fontSize:10,color:"var(--text-secondary)"}}>현재 기본 배경 · {background.updated_by||"—"} · {formatTime(background.updated_at)}</div>}
+    </div>
   </div>;
 }
 
@@ -548,7 +589,7 @@ export default function My_TemplateReport({user}){
   const[templates,setTemplates]=useState([]),[charts,setCharts]=useState([]),[selectedId,setSelectedId]=useState("");
   const[draft,setDraft]=useState(null),[editing,setEditing]=useState(false),[loading,setLoading]=useState(true),[loadError,setLoadError]=useState("");
   const[templateSearch,setTemplateSearch]=useState("");
-  const[reportSettings,setReportSettings]=useState({background:{configured:false,data_url:""}});
+  const[reportSettings,setReportSettings]=useState({background:{configured:false,data_url:""},backgrounds:[]});
   const[bindings,setBindings]=useState({}),[repeatText,setRepeatText]=useState("");
   const[contextRootLots,setContextRootLots]=useState(""),[contextWafers,setContextWafers]=useState("");
   const[overrideRecentDays,setOverrideRecentDays]=useState(false),[contextRecentDays,setContextRecentDays]=useState("7"),[contextDateColumn,setContextDateColumn]=useState("tkout_time");
@@ -562,7 +603,7 @@ export default function My_TemplateReport({user}){
   const load=useCallback(async()=>{
     setLoadError("");
     const[data,chartData,settingsData]=await Promise.all([sf(`${API}/templates`),sf(`${API}/charts`),sf(`${API}/settings`)]);
-    setTemplates(data.templates||[]);setCharts(chartData.charts||[]);setReportSettings(settingsData.settings||{background:{configured:false,data_url:""}});
+    setTemplates(data.templates||[]);setCharts(chartData.charts||[]);setReportSettings(settingsData.settings||{background:{configured:false,data_url:""},backgrounds:[]});
     setSelectedId(current=>current||(data.templates?.[0]?.id||""));
   },[]);
   useEffect(()=>{load().catch(error=>{const message=templateApiError(error);setLoadError(message);toast.error(message);}).finally(()=>setLoading(false));},[load]);
@@ -573,7 +614,8 @@ export default function My_TemplateReport({user}){
   const options=draft?.options||{};
   const canManageSettings=canManagePage(user,"templatereport");
   const canUseLlm=user?.role==="admin";
-  const backgroundImage=reportSettings?.background?.data_url||"";
+  const previewBackgroundId=text(editing?options.background_id:(deck?.background_id??options.background_id));
+  const backgroundImage=previewBackgroundId==="none"?"":previewBackgroundId?(reportSettings?.backgrounds||[]).find(item=>item.id===previewBackgroundId)?.data_url||"":reportSettings?.background?.data_url||"";
   const defaultSubtitle=defaultPageSubtitle(user);
   const repeatVariable=text(options.repeat_variable||"LOT");
   // 실행 폼에 낼 변수 — 저장된 목록 + 지금 편집 중에 새로 등장한 이름.
@@ -601,7 +643,7 @@ export default function My_TemplateReport({user}){
 
   const resetRun=()=>{setDeck(null);setRuns({});setTables({});setImages([]);setRunProgress("");};
   const choose=template=>{setSelectedId(template.id);setDraft(clone(template));setEditing(false);setTemplateCode("");setTemplateAiMessage("");resetRun();};
-  const createNew=()=>{setSelectedId("");setDraft({id:"",name:"새 Template Report",pages:[newPage(1)],variables:[],options:{cover:true,footer:true,subtitle:"",repeat_variable:"LOT"}});setEditing(true);setTemplateCode("");setTemplateAiMessage("");resetRun();};
+  const createNew=()=>{setSelectedId("");setDraft({id:"",name:"새 Template Report",pages:[newPage(1)],variables:[],options:{cover:true,footer:true,subtitle:"",repeat_variable:"LOT",background_id:""}});setEditing(true);setTemplateCode("");setTemplateAiMessage("");resetRun();};
   const updatePage=(index,patch)=>setDraft(old=>({...old,pages:old.pages.map((page,i)=>i===index?{...page,...patch}:page)}));
   const addSlot=(pageIndex,slot)=>setDraft(old=>({...old,pages:old.pages.map((page,index)=>index===pageIndex?{...page,slots:[...(page.slots||[]),slot]}:page)}));
   const updateSlot=(pageIndex,position,patch)=>setDraft(old=>({...old,pages:old.pages.map((page,index)=>index===pageIndex?{...page,slots:(page.slots||[]).map(slot=>Number(slot.position)===Number(position)?{...slot,...patch}:slot)}:page)}));
@@ -651,7 +693,7 @@ export default function My_TemplateReport({user}){
       const payload={
         id:draft.id||"",name:draft.name,
         variables:variables.map(item=>({name:item.name,label:item.label||item.name,default:item.default||""})),
-        options:{cover:options.cover!==false,footer:options.footer!==false,subtitle:text(options.subtitle),repeat_variable:repeatVariable},
+        options:{cover:options.cover!==false,footer:options.footer!==false,subtitle:text(options.subtitle),repeat_variable:repeatVariable,background_id:text(options.background_id)},
         pages:draft.pages.map(page=>({id:page.id,title:page.title,subtitle:page.subtitle||"",slots:(page.slots||[]).map(slot=>{
           const kind=slotKind(slot),layout=slotLayout(slot);
           const base={position:slot.position,kind,title:slot.title||"",x:layout.x,y:layout.y};
@@ -788,6 +830,11 @@ export default function My_TemplateReport({user}){
             </div>
             <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"end"}}>
               <label style={label}>반복 변수<input value={options.repeat_variable??"LOT"} onChange={event=>updateOptions({repeat_variable:event.target.value})} placeholder="LOT" style={{...input,width:130,marginTop:3,fontFamily:"monospace"}}/></label>
+              <label style={{...label,flex:"0 1 260px"}}>슬라이드 배경<select aria-label="Template 슬라이드 배경" value={text(options.background_id)} onChange={event=>updateOptions({background_id:event.target.value})} style={{...input,marginTop:3}}>
+                <option value="">기본 배경</option>
+                <option value="none">배경 없음</option>
+                {(reportSettings?.backgrounds||[]).map(item=><option key={item.id} value={item.id}>{item.name}</option>)}
+              </select></label>
               <span style={{fontSize:11,color:"var(--text-secondary)",flex:"1 1 320px"}}>반복 변수에 랏을 여러 개 넣으면 페이지 묶음이 랏마다 반복됩니다. 조건 비교(A/B)는 ChartBuilder 코드에서 조건 열을 COLOR·X 로 지정해 차트 자체에 표현합니다.</span>
             </div>
             {!!variables.length&&<div style={{display:"grid",gap:6}}>
@@ -911,7 +958,7 @@ export default function My_TemplateReport({user}){
         </section>}
       </>}
     </main>
-    <PageGear title="Template Report 기본 배경" canEdit={canManageSettings} position="bottom-left" width={430}>
+    <PageGear title="Template Report 배경 관리" canEdit={canManageSettings} position="bottom-left" width={430}>
       <TemplateBackgroundSettings settings={reportSettings} canEdit={canManageSettings} onChanged={setReportSettings}/>
     </PageGear>
   </div>;

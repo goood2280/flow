@@ -987,9 +987,9 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
       {fullChipMode && fullChipDies.map(die => (
         <rect key={die.key} x={toX(die.x)} y={toY(die.y + die.h)}
           width={Math.max(0.6, die.w * mmScale)} height={Math.max(0.6, die.h * mmScale)}
-          fill="rgba(47,158,99,0.16)" stroke="#2f9e63" strokeWidth="0.55"
+          fill={die.fill || "rgba(47,158,99,0.16)"} stroke={die.fill ? "#475569" : "#2f9e63"} strokeWidth="0.55"
           pointerEvents="none">
-          <title>{`die · shot (${die.shotX}, ${die.shotY})\nwafer 좌하단 (${fmt(die.x, 3)}, ${fmt(die.y, 3)}) mm\n최외곽 ${fmt(edgeMm, 0)}mm 안`}</title>
+          <title>{`die · shot (${die.shotX}, ${die.shotY})\nwafer 좌하단 (${fmt(die.x, 3)}, ${fmt(die.y, 3)}) mm` + (Number.isFinite(Number(die.value)) ? `\nvalue: ${fmt(die.value, 4)}` : "") + `\n최외곽 ${fmt(edgeMm, 0)}mm 안`}</title>
         </rect>
       ))}
       {data.shots.map(s0 => {
@@ -1687,7 +1687,7 @@ function ProductAccessAdmin({ onSaved }) {
       <div style={{ fontSize: 12, color: "var(--muted)", lineHeight: 1.6, marginBottom: 9 }}>
         기존 제품명은 변경 대상을 찾는 키이므로 그대로 두고, 변경 제품명과 제품 분류, 제품코드를 수정합니다.
         예: <b>2나노 / 2나노A</b>로 저장하면 선택 화면에는 <b>2나노 / 2나노A / 제품명</b>으로 표시됩니다.
-        제품코드는 DB mapfile 폴더 내 <code>제품코드*</code> 파일 자동 검증(Mapfile 신호등)에 매칭됩니다.
+        제품코드는 DB mapfile 폴더 내 <code>제품코드*</code> 파일 자동 검증(GitHub 주기검사)에 매칭됩니다.
         제품명 변경은 Chip_Radius·Teg_location·Main_chip_info·제품 설정에도 함께 반영됩니다.
       </div>
       <SpreadsheetPasteGrid columns={PRODUCT_NODE_ADMIN_COLUMNS} rows={productRows} onChange={setProductRows}
@@ -1885,7 +1885,7 @@ function InlineMapSetting({ data, vehicle, onVehicleChange }) {
   ), [tables, vehicle]);
   return <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
     {error && <div style={{ color: "var(--danger)", fontSize: 13 }}>{error}</div>}
-    <Card title={`Inline map setting — ${vehicle || "제품 미선택"}`} right={<Pill tone="warn">global admin only · DB/credential</Pill>}>
+    <Card title={`Inline map setting — ${vehicle || "제품 미선택"}`} right={<Pill tone="warn">global admin only · DB/confidential</Pill>}>
       <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10 }}>제품 map의 shot을 선택하고 INLINE DB의 subitem_id를 입력한 뒤 TABLE 이름으로 저장합니다. WF MAP은 원천 shot 좌표 대신 이 매칭테이블을 기준으로 값을 배치합니다.</div>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(360px,2fr) minmax(280px,1fr)", gap: 14, alignItems: "start" }}>
         <InlineShotPicker data={data} selected={selected} onToggle={toggle} tableName={tableName.trim()} />
@@ -2530,7 +2530,7 @@ export default function My_TegMap({ user }) {
       <TabStrip active={view} onChange={setView}
         items={[{ k: "map", l: "위치 조회" }, { k: "check", l: "Mapfile 검증" },
                 { k: "gen", l: "Mapfile 좌표 생성" },
-                { k: "traffic", l: "Mapfile 신호등" },
+                { k: "traffic", l: "GitHub 주기검사" },
                 ...(isAdmin ? [
                   { k: "access", l: "제품 권한 · 관리자" },
                   { k: "inline", l: "Inline map setting · 관리자" },

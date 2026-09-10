@@ -7,7 +7,6 @@ import {
   Button,
   Card,
   Input,
-  PageHeader,
   PageShell,
   Pill,
   Toolbar,
@@ -64,6 +63,7 @@ export default function My_LotLocation() {
     try {
       const resp = await sf("/api/lot-location/query", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           lot_ids: parsedLots,
           match_root: matchRoot,
@@ -235,31 +235,6 @@ export default function My_LotLocation() {
 
   return (
     <PageShell layout="workflow" className="lot-location-page">
-      <PageHeader
-        title="📍 랏 현위치 확인"
-        subtitle="IBM Carbon 스프레드시트 기반으로 Excel 복붙 및 웨이퍼별 WIP 공정 위치(step_id, step_desc)를 조회하고 내보냅니다."
-        actions={
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <Button
-              variant="secondary"
-              onClick={handleCopySpreadsheet}
-              disabled={!items.length}
-              style={{ borderRadius: 0, fontSize: 12, height: 32 }}
-            >
-              📋 표 복사 (TSV)
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={handleExportCsv}
-              disabled={downloading || !items.length}
-              style={{ borderRadius: 0, fontSize: 12, height: 32 }}
-            >
-              {downloading ? "다운로드 중…" : "📥 CSV 다운로드"}
-            </Button>
-          </div>
-        }
-      />
-
       <div
         style={{
           display: "grid",
@@ -308,6 +283,7 @@ export default function My_LotLocation() {
             columns={LOT_INPUT_COLUMNS}
             rows={inputRows}
             onChange={setInputRows}
+            aliases={{ lot: "lot_id", "lot id": "lot_id", lotid: "lot_id", "root_lot": "lot_id", "root_lot_id": "lot_id" }}
             columnLabels={{ lot_id: "LOT ID" }}
             placeholders={{ lot_id: "예: A1022A.2" }}
             showRowNumbers={true}
@@ -378,7 +354,16 @@ export default function My_LotLocation() {
                 disabled={!items.length}
                 style={{ borderRadius: 0, height: 32, fontSize: 12 }}
               >
-                표 복사
+                📋 표 복사
+              </Button>
+              <Button
+                variant="secondary"
+                size="compact"
+                onClick={handleExportCsv}
+                disabled={downloading || !items.length}
+                style={{ borderRadius: 0, height: 32, fontSize: 12 }}
+              >
+                {downloading ? "다운로드 중…" : "📥 CSV 다운로드"}
               </Button>
             </div>
           </Toolbar>

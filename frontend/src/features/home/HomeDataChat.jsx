@@ -4,7 +4,6 @@ import { sf } from "../../lib/api";
 import "./HomeDataChat.css";
 
 const PAGE_SIZE = 50;
-const MAX_STORED_MESSAGES = 24;
 const API_HISTORY_MESSAGES = 20;
 const API_HISTORY_CHARS = 4000;
 
@@ -30,8 +29,17 @@ function readJson(key, fallback) {
   }
 }
 
+function newConversationId() {
+  // getRandomValues also works on the internal HTTP deployment.
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 15) | 64;
+  bytes[8] = (bytes[8] & 63) | 128;
+  const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 function emptyChatState(username) {
-  return { username, messages: [], context: {}, updatedAt: Date.now() };
+  return { username, conversationId: newConversationId(), messages: [], context: {}, updatedAt: Date.now() };
 }
 
 function loadChatState(username) {
@@ -40,7 +48,8 @@ function loadChatState(username) {
   if (stored?.username === username && Array.isArray(stored.messages)) {
     return {
       username,
-      messages: stored.messages.slice(-MAX_STORED_MESSAGES),
+      conversationId: stored.conversationId || stored.id || newConversationId(),
+      messages: normalizeMessages(stored.messages),
       context: stored.context && typeof stored.context === "object" ? stored.context : {},
       updatedAt: Number(stored.updatedAt) || Date.now(),
     };
@@ -161,6 +170,17 @@ function apiHistory(messages) {
     .map((message) => ({ role: message.role, content: message.content.slice(0, API_HISTORY_CHARS) }));
 }
 
+function normalizeMessages(messages) {
+  return messages.filter((message) => message && (message.role === "user" || message.role === "assistant"))
+    .map((message, index) => ({
+      id: message.id || `${Date.now()}-${index}`,
+      role: message.role,
+      content: asText(message.content),
+      ...(message.response ? { response: message.response } : {}),
+      ...(message.error ? { error: message.error } : {}),
+    }));
+}
+
 function MessageArtifacts({ response, pendingId, loading, onDecision }) {
   const tool = response?.tool && typeof response.tool === "object" ? response.tool : {};
   const table = tableFromTool(tool);
@@ -190,21 +210,125 @@ function MessageArtifacts({ response, pendingId, loading, onDecision }) {
   );
 }
 
+function ModelStatus() {
+  const [model, setModel] = useState({});
+  const [checking, setChecking] = useState(false);
+  const active = useRef(true);
+  const busy = useRef(false);
+  const refresh = async (probe = false) => {
+    if (busy.current) return;
+    busy.current = true;
+    if (probe) setChecking(true);
+    try {
+      const result = await sf(probe ? "/api/home-agent/probe" : "/api/home-agent/status", { method: probe ? "POST" : "GET" });
+      if (active.current) setModel(result.model || {});
+    } catch {
+      if (active.current) setModel({ status: "unknown" });
+    } finally {
+      busy.current = false;
+      if (active.current) setChecking(false);
+    }
+  };
+  useEffect(() => {
+    active.current = true;
+    refresh();
+    const timer = setInterval(() => refresh(), 30000);
+    return () => { active.current = false; clearInterval(timer); };
+  }, []);
+  const labels = { connected: "연결됨", disconnected: "연결 끊김", disabled: "사용 안 함", unconfigured: "미설정" };
+  return <div className="home-data-chat__model-bar">
+    <span>현재 모델 · {model.model || labels[model.status] || "확인 중"}</span>
+    {model.model && <span>{labels[model.status] || "확인 불가"}</span>}
+    <button type="button" onClick={() => refresh(true)} disabled={checking}>{checking ? "검사 중…" : "연결 검사"}</button>
+  </div>;
+}
+
 export default function HomeDataChat({ user }) {
   const username = user?.username || "guest";
   const admin = user?.role === "admin";
   const [prompt, setPrompt] = useState("");
   const [chatState, setChatState] = useState(() => loadChatState(username));
   const [loading, setLoading] = useState(false);
+  const [conversations, setConversations] = useState([]);
+  const [conversationError, setConversationError] = useState("");
+  const [conversationLoading, setConversationLoading] = useState(false);
   const scrollRef = useRef(null);
   const requestVersionRef = useRef(0);
+  const conversationGenerationRef = useRef(0);
+  const conversationAbortRef = useRef(null);
 
   useEffect(() => {
     requestVersionRef.current += 1;
+    conversationGenerationRef.current += 1;
+    conversationAbortRef.current?.abort();
+    conversationAbortRef.current = null;
     setLoading(false);
+    setConversations([]);
+    setConversationError("");
+    setConversationLoading(false);
     setPrompt("");
     setChatState(loadChatState(username));
   }, [username]);
+
+  useEffect(() => {
+    if (!admin) return undefined;
+    let active = true;
+    const generation = conversationGenerationRef.current;
+    const controller = new AbortController();
+    conversationAbortRef.current = controller;
+    setConversationLoading(true);
+    setConversationError("");
+    sf("/api/home-agent/conversations", { signal: controller.signal })
+      .then((payload) => {
+        if (!active || generation !== conversationGenerationRef.current) return;
+        setConversations(Array.isArray(payload?.conversations) ? payload.conversations : []);
+      })
+      .catch((error) => {
+        if (active && generation === conversationGenerationRef.current && error?.name !== "AbortError") setConversationError("대화 목록을 불러오지 못했습니다.");
+      })
+      .finally(() => {
+        if (active && generation === conversationGenerationRef.current) setConversationLoading(false);
+      });
+    return () => {
+      active = false;
+      controller.abort();
+      if (conversationAbortRef.current === controller) conversationAbortRef.current = null;
+    };
+  }, [admin, username]);
+
+  const refreshConversations = async () => {
+    const generation = conversationGenerationRef.current;
+    try {
+      const payload = await sf("/api/home-agent/conversations");
+      if (generation === conversationGenerationRef.current) setConversations(Array.isArray(payload?.conversations) ? payload.conversations : []);
+    } catch {
+      if (generation === conversationGenerationRef.current) setConversationError("대화 목록을 불러오지 못했습니다.");
+    }
+  };
+
+  const selectConversation = async (conversationId) => {
+    if (!conversationId || conversationId === chatState.conversationId || conversationLoading || loading) return;
+    const generation = conversationGenerationRef.current + 1;
+    conversationGenerationRef.current = generation;
+    conversationAbortRef.current?.abort();
+    const controller = new AbortController();
+    conversationAbortRef.current = controller;
+    requestVersionRef.current += 1;
+    setConversationLoading(true);
+    setConversationError("");
+    try {
+      const payload = await sf(`/api/home-agent/conversations/${encodeURIComponent(conversationId)}`, { signal: controller.signal });
+      if (generation !== conversationGenerationRef.current) return;
+      setChatState({ username, conversationId: payload?.id || conversationId, messages: normalizeMessages(Array.isArray(payload?.messages) ? payload.messages : []), context: payload?.context && typeof payload.context === "object" ? payload.context : {}, updatedAt: Date.now() });
+    } catch (error) {
+      if (generation === conversationGenerationRef.current && error?.name !== "AbortError") setConversationError("대화를 불러오지 못했습니다.");
+    } finally {
+      if (conversationAbortRef.current === controller) {
+        conversationAbortRef.current = null;
+        if (generation === conversationGenerationRef.current) setConversationLoading(false);
+      }
+    }
+  };
 
   useEffect(() => {
     if (chatState.username === username) persistChatState(chatState);
@@ -222,6 +346,11 @@ export default function HomeDataChat({ user }) {
 
   const newConversation = () => {
     requestVersionRef.current += 1;
+    conversationGenerationRef.current += 1;
+    conversationAbortRef.current?.abort();
+    conversationAbortRef.current = null;
+    setConversationLoading(false);
+    setConversationError("");
     setLoading(false);
     setPrompt("");
     try { sessionStorage.removeItem(storageKeys(username).chartTransfer); } catch {}
@@ -231,7 +360,7 @@ export default function HomeDataChat({ user }) {
   const submit = async (event, decision = "") => {
     event?.preventDefault();
     const value = (decision || prompt).trim();
-    if (!admin || !value || loading) return;
+    if (!admin || !value || loading || conversationLoading) return;
 
     const requestVersion = requestVersionRef.current + 1;
     requestVersionRef.current = requestVersion;
@@ -242,7 +371,7 @@ export default function HomeDataChat({ user }) {
     setLoading(true);
     setChatState((current) => ({
       ...current,
-      messages: [...current.messages, userMessage].slice(-MAX_STORED_MESSAGES),
+      messages: [...current.messages, userMessage],
       updatedAt: Date.now(),
     }));
 
@@ -250,21 +379,23 @@ export default function HomeDataChat({ user }) {
       const response = await sf("/api/home-agent/orchestrate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: value, top_k: 1, context: requestContext, history: requestHistory }),
+        body: JSON.stringify({ conversation_id: chatState.conversationId, prompt: value, top_k: 1, context: requestContext, history: requestHistory }),
       });
       if (requestVersionRef.current !== requestVersion) return;
 
       setChatState((current) => ({
         ...current,
+        conversationId: response?.conversation_id || current.conversationId,
         context: responseContext(current.context, response),
         messages: [...current.messages, {
           id: `${Date.now()}-assistant`,
           role: "assistant",
           content: answerText(response),
           response: withoutContext(response),
-        }].slice(-MAX_STORED_MESSAGES),
+        }],
         updatedAt: Date.now(),
       }));
+      refreshConversations();
     } catch (error) {
       if (requestVersionRef.current !== requestVersion) return;
       setChatState((current) => ({
@@ -274,9 +405,10 @@ export default function HomeDataChat({ user }) {
           role: "assistant",
           content: error.message,
           error: true,
-        }].slice(-MAX_STORED_MESSAGES),
+        }],
         updatedAt: Date.now(),
       }));
+      refreshConversations();
     } finally {
       if (requestVersionRef.current === requestVersion) setLoading(false);
     }
@@ -286,8 +418,17 @@ export default function HomeDataChat({ user }) {
 
   return (
     <section className="home-data-chat" aria-label="데이터 채팅">
-      <div className="home-data-chat__actions">
-        <button type="button" onClick={newConversation}>새 대화</button>
+      <ModelStatus key={username} />
+      <div className="home-data-chat__conversation-bar">
+        <select value={chatState.conversationId} onChange={(event) => selectConversation(event.target.value)} disabled={conversationLoading || loading} aria-label="저장된 대화 선택">
+          <option value={chatState.conversationId}>{conversations.find((item) => item.id === chatState.conversationId)?.title || "새 대화"}</option>
+          {conversations.filter((conversation) => conversation.id !== chatState.conversationId).map((conversation) => (
+            <option key={conversation.id} value={conversation.id}>{conversation.title || "제목 없는 대화"}</option>
+          ))}
+        </select>
+        <button type="button" onClick={newConversation} disabled={loading}>새 대화</button>
+        {conversationLoading && <span className="home-data-chat__conversation-status">불러오는 중…</span>}
+        {conversationError && <span className="home-data-chat__conversation-error" role="status">{conversationError}</span>}
       </div>
 
       <div className="home-data-chat__conversation" ref={scrollRef} aria-live="polite">
@@ -321,10 +462,10 @@ export default function HomeDataChat({ user }) {
           placeholder="메시지를 입력하세요"
           rows={1}
           maxLength={API_HISTORY_CHARS}
-          disabled={loading}
+          disabled={loading || conversationLoading}
           aria-label="데이터 질문"
         />
-        <button type="submit" disabled={loading || !prompt.trim()} aria-label="메시지 보내기">↑</button>
+        <button type="submit" disabled={loading || conversationLoading || !prompt.trim()} aria-label="메시지 보내기">↑</button>
       </form>
     </section>
   );

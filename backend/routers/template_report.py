@@ -148,6 +148,7 @@ class TemplateVariableReq(BaseModel):
 
 
 class TemplateOptionsReq(BaseModel):
+    background_id: str = ""
     cover: bool = True
     footer: bool = True
     subtitle: str = ""
@@ -223,6 +224,10 @@ class ExportReq(BaseModel):
 
 class BackgroundSaveReq(BaseModel):
     data_url: str
+
+
+class NamedBackgroundSaveReq(BackgroundSaveReq):
+    name: str
 
 
 # ── 저장소 ────────────────────────────────────────────────────────────────────
@@ -330,6 +335,33 @@ def _background_bytes() -> bytes:
     return payload if payload else b""
 
 
+def _named_background_path(background_id: str) -> Path:
+    if not re.fullmatch(r"bg_[a-f0-9]{32}", background_id):
+        raise HTTPException(400, "올바르지 않은 배경 ID입니다.")
+    return SETTINGS_FILE.parent / "template_report_backgrounds" / f"{background_id}.png"
+
+
+def _report_background_bytes(background_id: str) -> bytes:
+    if not background_id:
+        return _background_bytes()
+    if background_id == "none":
+        return b""
+    path = _named_background_path(background_id)
+    if not any(row["id"] == background_id for row in _load_settings().get("backgrounds", [])) or not path.is_file():
+        raise HTTPException(400, "선택한 배경이 없습니다. 템플릿에서 배경을 다시 선택해 주세요.")
+    return path.read_bytes()
+
+
+def _report_settings() -> dict:
+    backgrounds = []
+    for row in _load_settings().get("backgrounds", []):
+        path = _named_background_path(row["id"])
+        payload = path.read_bytes() if path.is_file() else b""
+        backgrounds.append({**row, "configured": bool(payload), "data_url":
+            f"data:image/png;base64,{base64.b64encode(payload).decode('ascii')}" if payload else ""})
+    return {"background": _background_public_settings(include_data=True), "backgrounds": backgrounds}
+
+
 def _chart_history() -> dict[str, dict]:
     from routers import filebrowser
 
@@ -366,6 +398,7 @@ def _template_options(row: dict) -> dict:
         "footer": bool(raw.get("footer", True)),
         "subtitle": _clean_text(raw.get("subtitle", ""), 180),
         "repeat_variable": repeat_variable,
+        "background_id": _clean_text(raw.get("background_id", ""), 80),
     }
 
 
@@ -583,7 +616,47 @@ def list_charts(_user=Depends(current_user)):
 
 @router.get("/settings")
 def get_template_report_settings(_user=Depends(current_user)):
-    return {"ok": True, "settings": {"background": _background_public_settings(include_data=True)}}
+    return {"ok": True, "settings": _report_settings()}
+
+
+@router.post("/settings/backgrounds")
+def save_named_background(req: NamedBackgroundSaveReq, user=Depends(require_page_manager("templatereport"))):
+    name = _clean_text(req.name, 80)
+    if not name:
+        raise HTTPException(400, "배경 이름을 입력해 주세요.")
+    payload = _decode_background(req.data_url)
+    with _SETTINGS_LOCK:
+        settings = _load_settings()
+        rows = list(settings.get("backgrounds", []))
+        if len(rows) >= 30:
+            raise HTTPException(400, "배경은 최대 30개까지 저장할 수 있습니다.")
+        if any(row["name"].casefold() == name.casefold() for row in rows):
+            raise HTTPException(400, "이미 사용 중인 배경 이름입니다.")
+        background_id = f"bg_{uuid.uuid4().hex}"
+        path = _named_background_path(background_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+        rows.append({"id": background_id, "name": name, "updated_by": str(user.get("username") or ""),
+                     "updated_at": dt.datetime.now(dt.timezone.utc).isoformat()})
+        settings["backgrounds"] = rows
+        save_json(SETTINGS_FILE, settings)
+    return {"ok": True, "settings": _report_settings()}
+
+
+@router.delete("/settings/backgrounds/{background_id}")
+def delete_named_background(background_id: str, user=Depends(require_page_manager("templatereport"))):
+    path = _named_background_path(background_id)
+    with _STORE_LOCK, _SETTINGS_LOCK:
+        settings = _load_settings()
+        rows = settings.get("backgrounds", [])
+        if not any(row["id"] == background_id for row in rows):
+            raise HTTPException(404, "배경을 찾을 수 없습니다.")
+        if any(_template_options(row)["background_id"] == background_id for row in _load_templates()):
+            raise HTTPException(409, "템플릿에서 사용 중인 배경입니다. 해당 템플릿의 배경을 먼저 변경해 주세요.")
+        settings["backgrounds"] = [row for row in rows if row["id"] != background_id]
+        save_json(SETTINGS_FILE, settings)
+        path.unlink(missing_ok=True)
+    return {"ok": True, "settings": _report_settings()}
 
 
 @router.get("/settings/background/image")
@@ -616,7 +689,7 @@ def save_template_report_background(
             "background_updated_at": now,
         })
         save_json(SETTINGS_FILE, settings)
-    return {"ok": True, "settings": {"background": _background_public_settings(include_data=True)}}
+    return {"ok": True, "settings": _report_settings()}
 
 
 @router.delete("/settings/background")
@@ -630,7 +703,7 @@ def delete_template_report_background(user=Depends(require_page_manager("templat
             "background_updated_at": now,
         })
         save_json(SETTINGS_FILE, settings)
-    return {"ok": True, "settings": {"background": _background_public_settings()}}
+    return {"ok": True, "settings": _report_settings()}
 
 
 # ── 저장 ──────────────────────────────────────────────────────────────────────
@@ -771,6 +844,7 @@ def save_template(req: TemplateSaveReq, user=Depends(current_user)):
                 "slots": sorted(slots, key=lambda item: item["position"]),
             })
         options = (req.options or TemplateOptionsReq()).model_dump()
+        _report_background_bytes(options["background_id"])
         variables = [
             {
                 "name": normalize_name(item.name),
@@ -1188,6 +1262,7 @@ def _expand_deck(template: dict, params: dict) -> dict:
         "subtitle": subtitle,
         "cover": options["cover"],
         "footer": options["footer"],
+        "background_id": options["background_id"],
         "pages": pages_out,
         "charts": charts,
         "bindings": dict(params.get("bindings") or {}),
@@ -1923,7 +1998,7 @@ def export_pptx(req: ExportReq, user=Depends(current_user)):
         tables=_decode_tables(req.tables),
         report_user=str(user.get("username") or ""),
         report_generated_at=dt.datetime.now(dt.timezone.utc).isoformat(),
-        background_image=_background_bytes(),
+        background_image=_report_background_bytes(_template_options(template)["background_id"]),
     )
     stamp = dt.datetime.now().strftime("%Y%m%d")
     filename = safe_filename(f"{template.get('name') or 'template_report'}_{stamp}.pptx")

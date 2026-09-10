@@ -1168,25 +1168,15 @@ def _list_row(iss: dict) -> dict:
 
 
 def _prime_list_rows_cache(issue: dict) -> None:
-    """Publish a just-written issue without reparsing the full history file."""
-    if not isinstance(issue, dict) or not issue.get("id"):
-        return
-    # An uninitialised cache has no copy of the older issues; priming it with
-    # only the new row would hide those issues until the next file change.
-    if _LIST_ROWS_CACHE.get("sig") is None:
-        return
-    current = [dict(row) for row in (_LIST_ROWS_CACHE.get("rows") or [])]
-    row = _list_row(issue)
-    replaced = False
-    for idx, existing in enumerate(current):
-        if existing.get("id") == row.get("id"):
-            current[idx] = row
-            replaced = True
-            break
-    if not replaced:
-        current.append(row)
-    _LIST_ROWS_CACHE["sig"] = _issues_file_sig()
-    _LIST_ROWS_CACHE["rows"] = current
+    """Invalidate cached rows after a write.
+
+    A second writer can commit between the repository write and this callback.
+    Stamping a locally patched cache with that writer's file signature would
+    then hide its change indefinitely.  The create response already includes
+    the new list row, so make the next list request rebuild from durable state.
+    """
+    _LIST_ROWS_CACHE["sig"] = None
+    _LIST_ROWS_CACHE["rows"] = []
 
 
 def _enrich_created_issue_lots(issue_id: str, lots: list[dict], category: str, username: str) -> None:
@@ -1199,10 +1189,15 @@ def _enrich_created_issue_lots(issue_id: str, lots: list[dict], category: str, u
         if enriched == lots:
             return
         result = TRACKER_SERVICE.update_legacy_issue(
-            issue_id=issue_id, username=username, lots=enriched,
+            issue_id=issue_id,
+            username=username,
+            lots=enriched,
+            expected_lots=lots,
         )
-        if result.ok:
+        if result.ok and result.data.get("updated"):
             _prime_list_rows_cache(result.data.get("issue") or {})
+        elif result.ok and result.data.get("conflict"):
+            logger.info("tracker LOT enrichment skipped after concurrent edit issue_id=%s", issue_id)
     except Exception:
         logger.warning("tracker post-registration LOT enrichment failed issue_id=%s", issue_id, exc_info=True)
 
@@ -1362,37 +1357,30 @@ def create_issue(req: IssueCreate, request: Request, background_tasks: Backgroun
 
 
 @router.post("/update")
-def update_issue(req: IssueUpdate, request: Request):
+def update_issue(req: IssueUpdate, request: Request, background_tasks: BackgroundTasks = None):
     me = current_user(request)
     req.username = me.get("username") or ""
-    issues = _load()
-    iss = next((i for i in issues if i["id"] == req.issue_id), None)
-    if not iss:
-        raise HTTPException(404)
     if req.category is not None and not (req.category or "").strip():
         raise HTTPException(400, "카테고리를 지정해주세요.")
     desc = None
     desc_images = []
     if req.description is not None:
         desc, desc_images = _process_description(req.description)
-    old_status = iss.get("status")
-    status_changed = False
-    if req.status is not None:
-        status_changed = (old_status != req.status)
     fields_set_raw = getattr(req, "model_fields_set", None)
     if fields_set_raw is None:
         fields_set_raw = getattr(req, "__fields_set__", set())
     fields_set = set(fields_set_raw or set())
-    next_lots = None
+    lots_builder = None
     if "lots" in fields_set:
-        next_category = req.category if req.category is not None else iss.get("category") or _default_monitor_category()
-        next_lots = _merge_lot_update_rows(
-            iss.get("lots") or [],
-            req.lots or [],
-            category=next_category,
-            issue_product=iss.get("product") or "",
-            username=req.username,
-        )
+        def lots_builder(current_issue):
+            next_category = req.category if req.category is not None else current_issue.get("category") or _default_monitor_category()
+            return _merge_lot_update_rows(
+                current_issue.get("lots") or [],
+                req.lots or [],
+                category=next_category,
+                issue_product=current_issue.get("product") or "",
+                username=req.username,
+            )
     result = TRACKER_SERVICE.update_legacy_issue(
         issue_id=req.issue_id,
         username=req.username,
@@ -1402,57 +1390,67 @@ def update_issue(req: IssueUpdate, request: Request):
         priority=req.priority,
         category=req.category,
         group_ids=req.group_ids,
-        lots=next_lots,
         append_images=desc_images,
+        lots_builder=lots_builder,
     )
     if not result.ok:
         raise HTTPException(404, result.error)
     iss = result.data["issue"]
-    _append_tracker_knowledge_events(
-        iss,
-        actor=req.username,
-        text=" ".join(str(x or "") for x in (req.title, req.description, req.status, req.category)),
-        source_id=req.issue_id,
-        lots=next_lots,
-    )
-    # Phase 5: 상태 변경 시 generic event 기록.
-    if status_changed:
-        try:
-            from core.wiki_event_hooks import emit_issue_status_event
-            first_lot = (next_lots or iss.get("lots") or [{}])[0] if isinstance(next_lots or iss.get("lots"), list) else {}
-            emit_issue_status_event(
-                issue_id=str(req.issue_id or ""),
-                title=str(iss.get("title") or ""),
-                new_status=str(req.status or ""),
-                actor=req.username or "",
-                product=str(iss.get("product") or ""),
-                root_lot_id=str((first_lot or {}).get("lot_id") or ""),
-                wafer_id=str((first_lot or {}).get("wafer_id") or ""),
-            )
-        except Exception:
-            pass
-    # v8.8.33: 이슈 작성자에게 상태 변경 알림.
-    if status_changed:
-        try:
-            from core.notify import emit_event
-            target = iss.get("username")
-            if target:
-                emit_event(
-                    "my_tracker_status_changed",
+    previous_issue = result.data.get("previous_issue") or {}
+    old_status = previous_issue.get("status")
+    status_changed = req.status is not None and old_status != req.status
+    next_lots = iss.get("lots") if "lots" in fields_set else None
+
+    def _record_update_followup():
+        _append_tracker_knowledge_events(
+            iss,
+            actor=req.username,
+            text=" ".join(str(x or "") for x in (req.title, req.description, req.status, req.category)),
+            source_id=req.issue_id,
+            lots=next_lots,
+        )
+        # Phase 5: 상태 변경 시 generic event 기록.
+        if status_changed:
+            try:
+                from core.wiki_event_hooks import emit_issue_status_event
+                first_lot = (next_lots or iss.get("lots") or [{}])[0] if isinstance(next_lots or iss.get("lots"), list) else {}
+                emit_issue_status_event(
+                    issue_id=str(req.issue_id or ""),
+                    title=str(iss.get("title") or ""),
+                    new_status=str(req.status or ""),
                     actor=req.username or "",
-                    target_user=target,
-                    title=f"[이슈 상태 변경] {iss.get('title') or iss['id']}",
-                    body=f"{req.username or ''} · {old_status or '-'} → {req.status}",
-                    payload={"issue_id": iss["id"], "old_status": old_status or "", "new_status": req.status},
+                    product=str(iss.get("product") or ""),
+                    root_lot_id=str((first_lot or {}).get("lot_id") or ""),
+                    wafer_id=str((first_lot or {}).get("wafer_id") or ""),
                 )
-        except Exception:
-            pass
-    # 활동 대시보드: 어떤 이슈를 수정했는지 (상태 변경 포함).
-    from core.audit import record_user as _audit_user
-    _audit_user(req.username, "tracker:issue_update",
-                detail=f"id={req.issue_id} status={req.status or '(unchanged)'} "
-                       f"title={str(iss.get('title') or '')[:80]}",
-                tab="tracker")
+            except Exception:
+                pass
+            # v8.8.33: 이슈 작성자에게 상태 변경 알림.
+            try:
+                from core.notify import emit_event
+                target = iss.get("username")
+                if target:
+                    emit_event(
+                        "my_tracker_status_changed",
+                        actor=req.username or "",
+                        target_user=target,
+                        title=f"[이슈 상태 변경] {iss.get('title') or iss['id']}",
+                        body=f"{req.username or ''} · {old_status or '-'} → {req.status}",
+                        payload={"issue_id": iss["id"], "old_status": old_status or "", "new_status": req.status},
+                    )
+            except Exception:
+                pass
+        # 활동 대시보드: 어떤 이슈를 수정했는지 (상태 변경 포함).
+        from core.audit import record_user as _audit_user
+        _audit_user(req.username, "tracker:issue_update",
+                    detail=f"id={req.issue_id} status={req.status or '(unchanged)'} "
+                           f"title={str(iss.get('title') or '')[:80]}",
+                    tab="tracker")
+
+    if background_tasks is not None:
+        background_tasks.add_task(_record_update_followup)
+    else:
+        _record_update_followup()
     return {"ok": True}
 
 

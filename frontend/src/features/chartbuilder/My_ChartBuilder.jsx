@@ -516,9 +516,14 @@ function SqlColumnAutocomplete({value,onChange,root,product,resolveContext,ariaL
   </div>;
 }
 
-function shotCoordinatePairs(columns){
+function shotCoordinatePairs(columns,roots=[]){
   const lower=new Map(columns.map(c=>[c.toLowerCase(),c]));
-  const bases=[["chip_x_pos","chip_y_pos"],["shot_x","shot_y"],["x_pos","y_pos"]];
+  const rootText=Array.isArray(roots)?roots.join(" "):text(roots);
+  const bases=[["chip_x_pos","chip_y_pos"],["chip_x","chip_y"],["die_x_pos","die_y_pos"],["die_x","die_y"],["shot_x","shot_y"],["x_pos","y_pos"]];
+  // BIN/YLD/MSR tables commonly expose die coordinates as plain x/y. Treat
+  // that pair as die coordinates only for those roots; Inline x/y remains a
+  // shot coordinate and must continue to use its explicit shot columns.
+  if(/(?:YLD|BIN|MSR)/i.test(rootText))bases.push(["x","y"]);
   const pairs=[];
   for(const[xBase,yBase]of bases){
     for(const column of columns){
@@ -541,41 +546,51 @@ function radiusCoordinateMatcher(dataRows,xColumn,yColumn,layoutRows){
   const source=[...sourceMap.values()];
   const layout=(layoutRows||[]).map(row=>({x:Number(row.shot_x),y:Number(row.shot_y),radius:Number(row.radius)})).filter(row=>Number.isFinite(row.x)&&Number.isFinite(row.y)&&Number.isFinite(row.radius));
   const layoutMap=new Map(layout.map(row=>[coordKey(row.x,row.y),row]));
-  const transforms=[
-    {name:"identity",fn:(x,y)=>[x,y]}, {name:"rotate 90°",fn:(x,y)=>[-y,x]},
-    {name:"rotate 180°",fn:(x,y)=>[-x,-y]}, {name:"rotate 270°",fn:(x,y)=>[y,-x]},
-    {name:"mirror X",fn:(x,y)=>[-x,y]}, {name:"mirror Y",fn:(x,y)=>[x,-y]},
-    {name:"swap XY",fn:(x,y)=>[y,x]}, {name:"swap XY mirror",fn:(x,y)=>[-y,-x]},
-  ];
-  let best={matched:-1,transform:transforms[0],dx:0,dy:0,rank:Number.MAX_SAFE_INTEGER};
-  transforms.forEach((transform,transformIndex)=>{
-    const offsets=new Map([["0.000000,0.000000",[0,0]]]);
-    source.slice(0,10).forEach(point=>{
-      const[tx,ty]=transform.fn(point.x,point.y);
-      layout.forEach(target=>{
-        const dx=target.x-tx,dy=target.y-ty;
-        offsets.set(coordKey(dx,dy),[dx,dy]);
-      });
-    });
-    offsets.forEach(([dx,dy])=>{
-      let matched=0;
-      source.forEach(point=>{
-        const[tx,ty]=transform.fn(point.x,point.y);
-        if(layoutMap.has(coordKey(tx+dx,ty+dy)))matched++;
-      });
-      const rank=transformIndex*1000000+Math.abs(dx)+Math.abs(dy);
-      if(matched>best.matched||(matched===best.matched&&rank<best.rank))best={matched,transform,dx,dy,rank};
-    });
-  });
+  // Coordinates attached by the backend are authoritative TEG shot indices.
+  // Do not rotate/translate a partial result: that can silently put a value on
+  // another shot. Source records with null/blank coordinates are unmatched.
+  const matched=source.reduce((count,point)=>count+(layoutMap.has(coordKey(point.x,point.y))?1:0),0);
   return{
     sourceCount:source.length,
-    matchedCount:Math.max(0,best.matched),
-    description:`${best.transform.name} · offset (${Number(best.dx).toFixed(3)}, ${Number(best.dy).toFixed(3)})`,
+    matchedCount:matched,
+    description:"exact canonical TEG shot coordinates",
     match(x,y){
-      const[tx,ty]=best.transform.fn(Number(x),Number(y));
-      return layoutMap.get(coordKey(tx+best.dx,ty+best.dy))||null;
+      const nx=Number(x),ny=Number(y);
+      if(!Number.isFinite(nx)||!Number.isFinite(ny))return null;
+      return layoutMap.get(coordKey(nx,ny))||null;
     },
   };
+}
+
+function dieShotCoordinate(row,xColumn,yColumn,dieLayout){
+  if(!dieLayout?.enabled)return null;
+  const x=Number(row?.[xColumn]),y=Number(row?.[yColumn]);
+  const cols=Number(dieLayout.cols),rows=Number(dieLayout.rows);
+  const ox=Number(dieLayout.origin_x),oy=Number(dieLayout.origin_y);
+  if(![x,y,cols,rows,ox,oy].every(Number.isFinite)||!Number.isInteger(x)||!Number.isInteger(y)||cols<1||rows<1)return null;
+  const relX=x-ox,relY=y-oy;
+  return {shotX:Math.floor(relX/cols),shotY:Math.floor(relY/rows),dieX:((relX%cols)+cols)%cols,dieY:((relY%rows)+rows)%rows};
+}
+
+function isDieCoordinatePair(xColumn,yColumn,root=""){
+  const x=text(xColumn).toLowerCase(), y=text(yColumn).toLowerCase();
+  // Inline rows are shot-level. Treat only explicit chip/die coordinate names
+  // as die coordinates so generic x_pos/y_pos columns remain shot coordinates.
+  if(/(?:^|[_-])(chip|die)[_-]?x(?:[_-]|$)/i.test(x)
+    && /(?:^|[_-])(chip|die)[_-]?y(?:[_-]|$)/i.test(y))return true;
+  // Legacy YLD/BIN/MSR files commonly call die coordinates x_pos/y_pos.
+  if(!/(?:YLD|BIN|MSR)/i.test(text(root)))return false;
+  const xLeaf=x.split("__").pop(), yLeaf=y.split("__").pop();
+  return (xLeaf==="x"&&yLeaf==="y")
+    || (/^(?:x[_-]?pos)$/i.test(xLeaf)&&/^(?:y[_-]?pos)$/i.test(yLeaf));
+}
+
+function isBinDataRoot(root){
+  return /(?:YLD|BIN|MSR)/i.test(text(root));
+}
+
+function isBinValueColumn(column){
+  return /^(?:bin|bin_no|bin_id|hard_bin|soft_bin|bin_code|result_bin)$/i.test(text(column).split("__").pop());
 }
 
 function aggregateShot(values,method){
@@ -1000,6 +1015,7 @@ export default function My_ChartBuilder({user}){
   const[barAggregation,setBarAggregation]=useState("median");
   const[radiusAggregation,setRadiusAggregation]=useState("raw");
   const[radiusFitMode,setRadiusFitMode]=useState("cubic");
+  const[radiusTeg,setRadiusTeg]=useState("");
   const[corrFitMode,setCorrFitMode]=useState("linear");
   const[pieBasis,setPieBasis]=useState("count");
   const[showBoxStats,setShowBoxStats]=useState(true);
@@ -1060,29 +1076,42 @@ export default function My_ChartBuilder({user}){
   const joined=result?.joined||{};
   const columns=Array.isArray(joined.columns)?joined.columns:[];
   const rows=Array.isArray(joined.rows)?joined.rows:[];
+  const coordinateRoots=useMemo(()=>[...new Set([
+    ...(sources||[]).map(source=>text(source?.root).trim()).filter(Boolean),
+    ...((result?.sources)||[]).map(source=>text(source?.root).trim()).filter(Boolean),
+  ])],[sources,result]);
   const colorListText=useMemo(()=>colorListTextFromRows(colorListRows),[colorListRows]);
   const colorListPreview=useMemo(()=>parseChartColorList(colorListText),[colorListText]);
   const linkedColorRuleLines=useMemo(()=>colorListPreview.errors.length?[]:chartColorListRules(colorListPreview.rows),[colorListPreview]);
   const formulaColorRuleLines=useMemo(()=>text(customColorRules).split(/\r?\n/).map(rule=>rule.trim()).filter(Boolean),[customColorRules]);
   const combinedColorRuleLines=useMemo(()=>[...linkedColorRuleLines,...formulaColorRuleLines],[linkedColorRuleLines,formulaColorRuleLines]);
   const numericCols=useMemo(()=>columns.filter(c=>rows.slice(0,80).some(r=>text(r[c]).trim()!==""&&Number.isFinite(Number(r[c])))),[columns,rows]);
-  const shotPairs=useMemo(()=>shotCoordinatePairs(columns),[columns]);
+  const binValueCol=useMemo(()=>coordinateRoots.some(isBinDataRoot)?(columns.find(isBinValueColumn)||""):"",[columns,coordinateRoots]);
+  const shotPairs=useMemo(()=>shotCoordinatePairs(columns,coordinateRoots),[columns,coordinateRoots]);
   const radiusSource=useMemo(()=>{
     const sourcesOut=result?.sources||[];
     return sourcesOut.find(source=>Array.isArray(source.columns)&&source.columns.includes(xCol)&&source.columns.includes(mapYCol))
       ||sourcesOut.find(source=>Array.isArray(source.columns)&&shotPairs.some(pair=>source.columns.includes(pair.x)&&source.columns.includes(pair.y)))
       ||sourcesOut.find(source=>source.product)||null;
   },[result,xCol,mapYCol,shotPairs]);
-  const radiusProduct=radiusSource?.inline_coordinate_mapping?.vehicles?.[0]||radiusSource?.product||"";
+  const radiusVehicles=radiusSource?.inline_coordinate_mapping?.vehicles||[];
+  const radiusProduct=radiusVehicles.length===1?radiusVehicles[0]:(radiusSource?.product||"");
+  const radiusVehicleConflict=radiusVehicles.length>1;
+  const radiusSourceProduct=radiusSource?.product||"";
   useEffect(()=>{
-    if(!["radius","wafer_map"].includes(chartType)||!radiusProduct){setRadiusLayout(null);setRadiusError("");setRadiusBusy(false);return undefined;}
+    if(chartType!=="radius"&&!(["wafer_map"].includes(chartType))){setRadiusLayout(null);setRadiusError("");setRadiusBusy(false);return undefined;}
+    if(!radiusProduct){setRadiusLayout(null);setRadiusError("");setRadiusBusy(false);return undefined;}
+    if(radiusVehicleConflict){setRadiusLayout(null);setRadiusError("여러 제품 WF MAP이 섞였습니다. 단일 제품 또는 단일 Inline map으로 조회해 주세요.");setRadiusBusy(false);return undefined;}
     let alive=true;setRadiusBusy(true);setRadiusError("");
-    sf(`/api/filebrowser/chart-builder/radius-layout?product=${encodeURIComponent(radiusProduct)}`)
+    const params=new URLSearchParams({product:radiusProduct,source_product:radiusSourceProduct});
+    if(chartType==="radius"&&radiusTeg)params.set("teg",radiusTeg);
+    sf(`/api/filebrowser/chart-builder/radius-layout?${params.toString()}`)
       .then(data=>{if(alive)setRadiusLayout(data);})
       .catch(error=>{if(alive){setRadiusLayout(null);setRadiusError(error.message||String(error));}})
       .finally(()=>{if(alive)setRadiusBusy(false);});
     return()=>{alive=false;};
-  },[chartType,radiusProduct]);
+  },[chartType,radiusProduct,radiusSourceProduct,radiusTeg,radiusVehicleConflict]);
+  useEffect(()=>{setRadiusTeg("");},[radiusProduct,radiusSourceProduct]);
   const radiusMatcher=useMemo(()=>{
     if(!["radius","wafer_map"].includes(chartType)||!xCol||!mapYCol||!radiusLayout?.rows?.length)return null;
     return radiusCoordinateMatcher(rows,xCol,mapYCol,radiusLayout.rows);
@@ -1104,18 +1133,18 @@ export default function My_ChartBuilder({user}){
   },[rows,mapScope,rootLotCol,waferCol]);
   useEffect(()=>{
     if(columns.length&&!xCol)setXCol(columns.find(c=>c==="tkout_time")||columns[0]);
-    if(numericCols.length&&!yCol)setYCol(numericCols.find(c=>c==="value"||c==="y")||numericCols[0]);
+    if(numericCols.length&&!yCol)setYCol(binValueCol||numericCols.find(c=>c==="value"||c==="y")||numericCols[0]);
     if(shotPairs.length&&!mapYCol)setMapYCol(shotPairs[0].y);
-  },[columns,numericCols,shotPairs,xCol,yCol,mapYCol]);
+  },[columns,numericCols,binValueCol,shotPairs,xCol,yCol,mapYCol]);
   useEffect(()=>{
     if(!["wafer_map","radius"].includes(chartType)||!columns.length)return;
     const shotX=shotPairs[0]?.x;
     const shotY=shotPairs[0]?.y;
-    const value=columns.find(c=>["value","item_value","measurement_value"].includes(c.toLowerCase()));
+    const value=columns.find(c=>["value","item_value","measurement_value"].includes(c.toLowerCase()))||binValueCol;
     if(shotX)setXCol(shotX);
     if(shotY)setMapYCol(shotY);
     if(value)setYCol(value);
-  },[chartType,columns,shotPairs]);
+  },[chartType,columns,shotPairs,binValueCol]);
   useEffect(()=>{if(mapGroups.length&&!mapGroups.some(g=>g.key===mapTarget))setMapTarget(mapGroups[0].key);},[mapGroups,mapTarget]);
   const resolveSourceRoot=source=>{
     const requested=text(source?.root).trim().toLowerCase();
@@ -1164,6 +1193,7 @@ export default function My_ChartBuilder({user}){
     map_target:chartType==="wafer_map"?mapTarget:"",
     pie_basis:isPie?pieBasis:"",
     fit:chartType==="scatter"?corrFitMode:chartType==="radius"?radiusFitMode:"",
+    radius_teg:chartType==="radius"?radiusTeg:"",
     point_size:Number(pointSize)||9,
     marker_opacity:Number(markerOpacity)||0.82,
     line_width:Number(lineWidth)||2.3,
@@ -1213,6 +1243,7 @@ export default function My_ChartBuilder({user}){
     setMapYCol(hasConfig?text(config.map_y):"");setMapScope(hasConfig&&config.map_scope?text(config.map_scope):"root_wafer");setMapTarget(hasConfig?text(config.map_target):"");
     setPieBasis(hasConfig&&config.pie_basis?text(config.pie_basis):"count");
     setCorrFitMode(hasConfig&&config.fit?text(config.fit):"linear");setRadiusFitMode(hasConfig&&config.fit?text(config.fit):"cubic");
+    setRadiusTeg(hasConfig?text(config.radius_teg):"");
     setAxisFonts({x_font_size:Number(config?.x_font_size)||14,y_font_size:Number(config?.y_font_size)||14});
     setPointSize(hasConfig&&config.point_size?text(config.point_size):"9");setMarkerOpacity(hasConfig&&config.marker_opacity!=null?text(config.marker_opacity):"0.82");setLineWidth(hasConfig&&config.line_width?text(config.line_width):"2.3");
     setXMin(hasConfig&&config.x_min!=null?text(config.x_min):"");setXMax(hasConfig&&config.x_max!=null?text(config.x_max):"");
@@ -1515,25 +1546,36 @@ export default function My_ChartBuilder({user}){
     if(!rows.length||!xCol||(!yCol&&!["pie","donut"].includes(chartType)))return null;
     if(chartType==="wafer_map"){
       const validPair=shotPairs.find(pair=>pair.x===xCol&&pair.y===mapYCol);
-      if(!validPair)return{chart_type:"wafer_map",error:"WF MAP은 chip_x_pos+chip_y_pos 또는 shot_x+shot_y 좌표 열이 모두 있어야 합니다."};
-      if(radiusBusy)return{chart_type:"wafer_map",error:"제품별 Chip_Radius.csv shot 좌표를 불러오는 중입니다."};
+      if(!validPair)return{chart_type:"wafer_map",error:"WF MAP은 chip/die/shot 좌표 쌍이 필요합니다. BIN·YLD·MSR는 x+y도 사용할 수 있습니다."};
+      if(radiusBusy)return{chart_type:"wafer_map",error:"제품별 shot geometry를 불러오는 중입니다."};
       if(radiusError)return{chart_type:"wafer_map",error:radiusError};
-      if(!radiusMatcher||!radiusLayout)return{chart_type:"wafer_map",error:"제품별 Chip_Radius.csv shot 좌표를 불러오지 못했습니다."};
-      if(radiusMatcher.matchedCount===0)return{chart_type:"wafer_map",error:"SQL shot 좌표와 제품 WF MAP 좌표를 매칭하지 못했습니다."};
+      if(!radiusMatcher||!radiusLayout)return{chart_type:"wafer_map",error:"제품별 TEG 위치조회 shot 좌표를 불러오지 못했습니다."};
       const trellisMode=mapScope.startsWith("trellis_");
       const waferMode=["root_wafer","trellis_wafer","trellis_root_wafer"].includes(mapScope);
       if(mapScope!=="trellis_wafer"&&!rootLotCol)return{chart_type:"wafer_map",error:"선택한 WF MAP 단위에는 SQL 결과의 root_lot_id가 필요합니다."};
       if(waferMode&&!waferCol)return{chart_type:"wafer_map",error:"선택한 WF MAP 단위에는 SQL 결과의 wafer_id가 필요합니다."};
       const source=(result?.sources||[]).find(s=>s.product&&Array.isArray(s.columns)&&s.columns.includes(xCol)&&s.columns.includes(mapYCol))||(result?.sources||[]).find(s=>s.product);
+      const diePair=isDieCoordinatePair(xCol,mapYCol,source?.root);
+      if(radiusMatcher.matchedCount===0&&!diePair)return{chart_type:"wafer_map",error:"SQL shot 좌표와 제품 WF MAP 좌표를 매칭하지 못했습니다."};
+      const dieLayout=radiusLayout?.die_layout?.enabled?radiusLayout.die_layout:null;
+      if(diePair&&!dieLayout)return{chart_type:"wafer_map",error:"die 좌표를 shot에 배치할 제품별 shot_layout 설정이 없습니다."};
+      if(diePair){
+        const convertedRows=rows.slice(0,10000).map(row=>dieShotCoordinate(row,xCol,mapYCol,dieLayout)).filter(Boolean);
+        const convertedMatched=convertedRows.filter(die=>radiusMatcher.match(die.shotX,die.shotY)).length;
+        if(!convertedMatched)return{chart_type:"wafer_map",error:"die 좌표를 제품 WF MAP shot 좌표에 매칭하지 못했습니다."};
+      }
       const addShot=(groups,r)=>{
-        const target=radiusMatcher.match(r[xCol],r[mapYCol]),value=Number(r[yCol]);
+        const die=diePair?dieShotCoordinate(r,xCol,mapYCol,dieLayout):null;
+        const target=die?radiusMatcher.match(die.shotX,die.shotY):radiusMatcher.match(r[xCol],r[mapYCol]),value=Number(r[yCol]);
         if(!target||!Number.isFinite(value))return;
         const x=Number(target.x),y=Number(target.y);
-        const key=`${x},${y}`,group=groups.get(key)||{x,y,values:[]};group.values.push(value);groups.set(key,group);
+        const key=`${x},${y}`,group=groups.get(key)||{x,y,values:[],die_points:[]};group.values.push(value);
+        if(die)group.die_points.push({shot_x:x,shot_y:y,die_x:die.dieX,die_y:die.dieY,value});
+        groups.set(key,group);
       };
       const shotPoints=groups=>[...groups.values()].map(group=>{
         const n=group.values.length,value=aggregateShot(group.values,mapAggregation);
-        return{x:group.x,y:group.y,value,n};
+        return{x:group.x,y:group.y,value,n,die_points:group.die_points};
       });
       if(trellisMode){
         const panelShots=new Map(mapGroups.map(group=>[group.key,new Map()]));
@@ -1544,7 +1586,7 @@ export default function My_ChartBuilder({user}){
         });
         const panels=mapGroups.map(group=>({key:group.key,label:group.label,points:shotPoints(panelShots.get(group.key)||new Map())})).filter(panel=>panel.points.length);
         const mapVehicle=source?.inline_coordinate_mapping?.vehicles?.[0]||source?.product||"";
-        return{chart_type:"wafer_map",title:`${yCol} WF MAP Trellis (${mapAggregation})`,x_label:xCol,map_y_label:mapYCol,y_label:`${yCol} ${mapAggregation}`,product:mapVehicle,points:[],panels,aggregation:mapAggregation,map_scope:mapScope};
+        return{chart_type:"wafer_map",title:`${yCol} WF MAP Trellis (${mapAggregation})`,x_label:xCol,map_y_label:mapYCol,y_label:`${yCol} ${mapAggregation}`,product:mapVehicle,points:[],panels,aggregation:mapAggregation,die_layout:dieLayout,die_mode:!!diePair,map_scope:mapScope};
       }
       const selected=mapGroups.find(group=>group.key===mapTarget);
       if(!selected)return{chart_type:"wafer_map",error:"표시할 root lot 또는 wafer를 선택해 주세요."};
@@ -1555,15 +1597,16 @@ export default function My_ChartBuilder({user}){
       });
       const points=shotPoints(groups);
       const mapVehicle=source?.inline_coordinate_mapping?.vehicles?.[0]||source?.product||"";
-      return{chart_type:"wafer_map",title:`${selected.label} · ${yCol} WF MAP (${mapAggregation})`,x_label:xCol,map_y_label:mapYCol,y_label:`${yCol} ${mapAggregation}`,product:mapVehicle,points,aggregation:mapAggregation,map_scope:mapScope,map_target:selected};
+      return{chart_type:"wafer_map",title:`${selected.label} · ${yCol} WF MAP (${mapAggregation})`,x_label:xCol,map_y_label:mapYCol,y_label:`${yCol} ${mapAggregation}`,product:mapVehicle,points,aggregation:mapAggregation,die_layout:dieLayout,die_mode:!!diePair,map_scope:mapScope,map_target:selected};
     }
     if(chartType==="radius"){
       const validPair=shotPairs.find(pair=>pair.x===xCol&&pair.y===mapYCol);
-      if(!validPair)return{chart_type:"scatter",error:"Radius Plot에는 chip_x_pos+chip_y_pos 또는 shot_x+shot_y 좌표 열이 모두 있어야 합니다."};
-      if(radiusBusy)return{chart_type:"scatter",error:"Chip_Radius.csv의 제품별 shot radius를 불러오는 중입니다."};
+      if(!validPair)return{chart_type:"scatter",error:"Radius Plot에는 shot 좌표 쌍이 필요합니다. BIN·YLD·MSR의 die x+y는 WF MAP에서 사용해 주세요."};
+      if(isDieCoordinatePair(xCol,mapYCol,radiusSource?.root))return{chart_type:"scatter",error:"Radius Plot은 Inline shot 좌표용입니다. YLD/BIN/MSR die 좌표는 WF MAP에서 사용해 주세요."};
+      if(radiusBusy)return{chart_type:"scatter",error:"제품별 shot geometry를 불러오는 중입니다."};
       if(radiusError)return{chart_type:"scatter",error:radiusError};
-      if(!radiusMatcher||!radiusLayout)return{chart_type:"scatter",error:"제품별 Chip_Radius shot 정보를 불러오지 못했습니다."};
-      if(radiusMatcher.matchedCount===0)return{chart_type:"scatter",error:"SQL shot 좌표와 Chip_Radius.csv 좌표를 매칭하지 못했습니다."};
+      if(!radiusMatcher||!radiusLayout)return{chart_type:"scatter",error:"제품별 TEG 위치조회 shot 정보를 불러오지 못했습니다."};
+      if(radiusMatcher.matchedCount===0)return{chart_type:"scatter",error:"SQL shot 좌표와 TEG 위치조회 좌표를 매칭하지 못했습니다."};
       const mapped=rows.slice(0,10000).map(row=>{
         const target=radiusMatcher.match(row[xCol],row[mapYCol]),value=Number(row[yCol]);
         if(!target||!Number.isFinite(value))return null;
@@ -1580,7 +1623,7 @@ export default function My_ChartBuilder({user}){
         });
         points=[...buckets.values()].map(({row,target,values})=>({...row,x:target.radius,x_label:target.radius,y:aggregateShot(values,radiusAggregation),radius:target.radius,radius_shot:`${target.x},${target.y}`,source_shot:`${row[xCol]},${row[mapYCol]}`,n:values.length,color_value:rowColorValue(row),trellis_value:trellisCol?row[trellisCol]:""}));
       }
-      return{chart_type:"scatter",title:"",x_label:"Chip Radius (mm)",y_label:radiusAggregation==="raw"?yCol:`${yCol} ${radiusAggregation}`,color_by:colorLabel,color_map:chartColorMap,points,point_size:7,trend_grain:"radius",cubic_fit:radiusFitMode==="cubic",radius_mapping:radiusMatcher.description,radius_mask:radiusLayout.mask,radius_matched:radiusMatcher.matchedCount,radius_source_count:radiusMatcher.sourceCount,aggregation:radiusAggregation};
+      return{chart_type:"scatter",title:"",x_label:radiusTeg?`${radiusTeg} Radius (mm)`:"Shot Center Radius (mm)",y_label:radiusAggregation==="raw"?yCol:`${yCol} ${radiusAggregation}`,color_by:colorLabel,color_map:chartColorMap,points,point_size:7,trend_grain:"radius",cubic_fit:radiusFitMode==="cubic",radius_mapping:radiusMatcher.description,radius_mask:radiusLayout.mask,radius_matched:radiusMatcher.matchedCount,radius_source_count:radiusMatcher.sourceCount,radius_basis:radiusLayout.radius_basis||"shot_center",radius_teg:radiusTeg,aggregation:radiusAggregation};
     }
     if(chartType==="pie"||chartType==="donut"){
       // 조각은 "전체 대비 몫"이라 합계가 성립하는 값만 쓴다 — 행 수 또는 Y 합계.
@@ -1653,7 +1696,7 @@ export default function My_ChartBuilder({user}){
     const points=rows.slice(0,10000).map((r,i)=>({...r,x:numericX?Number(r[xCol]):i,x_label:r[xCol],y:Number(r[yCol]),color_value:rowColorValue(r),trellis_value:trellisCol?r[trellisCol]:""})).filter(p=>Number.isFinite(p.y)&&Number.isFinite(p.x));
     const fit=chartType==="scatter"&&numericX&&corrFitMode==="linear"?linearFit(points):null;
     return{chart_type:chartType,title:`${xCol} × ${yCol}`,x_label:xCol,y_label:yCol,color_by:colorLabel,color_map:chartColorMap,points,fit,corr:fit?.corr,emphasize_markers:chartType==="scatter",point_size:chartType==="scatter"?7:undefined};
-  },[rows,xCol,yCol,mapYCol,colorCol,colorLabel,colorListText,customColorRules,customColorElse,trellisCol,chartType,result,shotPairs,rootLotCol,waferCol,mapScope,mapGroups,mapTarget,mapAggregation,trendGrain,trendAggregation,barAggregation,radiusAggregation,radiusFitMode,corrFitMode,pieBasis,radiusLayout,radiusMatcher,radiusBusy,radiusError]);
+  },[rows,xCol,yCol,mapYCol,colorCol,colorLabel,colorListText,customColorRules,customColorElse,trellisCol,chartType,result,shotPairs,rootLotCol,waferCol,mapScope,mapGroups,mapTarget,mapAggregation,trendGrain,trendAggregation,barAggregation,radiusAggregation,radiusFitMode,radiusTeg,corrFitMode,pieBasis,radiusLayout,radiusMatcher,radiusBusy,radiusError,radiusVehicleConflict]);
   const displayChart=useMemo(()=>{
     if(!chart)return chart;
     const decorate=point=>({...point,spec_low:specLowCol?point?.[specLowCol]:point?.spec_low,spec_high:specHighCol?point?.[specHighCol]:point?.spec_high});
@@ -1758,7 +1801,7 @@ export default function My_ChartBuilder({user}){
         <div><b style={{color:"var(--text-primary)"}}>ET Reformatter</b> — ET Query에서 ET 다운로드와 같은 REAL·ADDP 계산 item을 선택할 수 있습니다. 코드에서는 <code>REFORMATTER = true</code>, <code>ITEMS = alias1, alias2</code>를 사용합니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>Box Plot</b> — X 열의 값마다 상자 하나를 그리고, 그림 아래 통계표에서 상자별 Count·Median·StdDev 등을 골라 볼 수 있습니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>Pie / Donut</b> — X 열의 값별 구성비입니다. 기준은 행 수 또는 Y 합계이고, 조각이 많으면 상위 {PIE_SLICE_LIMIT}개만 두고 나머지는 "기타"로 묶습니다.</div>
-        <div><b style={{color:"var(--text-primary)"}}>Radius / WF MAP</b> — Radius는 Chip_Radius.csv와 매칭된 shot만, WF MAP은 유효한 shot X·Y 좌표가 있는 데이터만 그립니다.</div>
+        <div><b style={{color:"var(--text-primary)"}}>Radius / WF MAP</b> — Radius는 TEG 위치조회와 매칭된 shot만, WF MAP은 유효한 shot X·Y 좌표가 있는 데이터만 그립니다. BIN·YLD·MSR의 die x/y는 제품별 저장 좌표계로 shot 안에 배치합니다.</div>
         <div><b style={{color:"var(--text-primary)"}}>집계 / 피팅</b> — Radius와 WF MAP은 shot 집계를 선택할 수 있고 Radius 3차 회귀와 Corr 1차 회귀·R²는 피팅 선택기로 켜거나 끕니다.</div>
         <div style={{marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}}><b style={{color:"var(--text-primary)"}}>전체 코드 예시와 해석</b> — 아래 코드는 Query부터 차트·색·크기·행 한도까지 모두 포함합니다. 필요한 예시를 코드 영역에 넣은 뒤 DB/Product와 열 이름만 실제 값으로 바꿔 사용하세요.</div>
         <div style={{display:"grid",gap:10,marginTop:9}}>{GUIDE_EXAMPLES.map(example=><details key={example.title} style={{border:"1px solid var(--border)",borderRadius:8,overflow:"hidden",background:"var(--bg-primary)"}}>
@@ -1869,6 +1912,7 @@ export default function My_ChartBuilder({user}){
         return <details key={s.id} style={card}><summary style={{cursor:"pointer",fontWeight:900}}>{s.id} · {s.root}/{s.product} · {s.row_count.toLocaleString()}행</summary>
           {mapping&&<div style={{marginTop:9,padding:"7px 9px",borderRadius:6,border:`1px solid ${mapping.applied?"#86efac":"var(--warn-line)"}`,background:mapping.applied?"#f0fdf4":"var(--warn-50)",color:mapping.applied?"#166534":"var(--warn)",fontSize:11,lineHeight:1.55}}>
             <b>TEG Inline map</b> · {mapping.applied?`${Number(mapping.matched_rows||0).toLocaleString()}/${Number((mapping.matched_rows||0)+(mapping.unmatched_rows||0)).toLocaleString()}행 매칭 (${Number(mapping.match_rate||0).toFixed(2)}%)`:mapping.configured?"사용 가능한 좌표 없음":"연결 규칙 없음"}
+            {!!Number(mapping.summary_rows_excluded||0)&&<> · 집계 행 제외 {Number(mapping.summary_rows_excluded).toLocaleString()}행</>}
             {!!mapping.map_names?.length&&<><br/>TABLE {mapping.map_names.join(", ")}</>}
             {!!mapping.vehicles?.length&&<> · 제품 map {mapping.vehicles.join(", ")}</>}
           </div>}
@@ -1908,6 +1952,7 @@ export default function My_ChartBuilder({user}){
               {chartType==="line"&&trendGrain!=="shot"&&<Field label="집계"><select aria-label="Trend 집계" value={trendAggregation} onChange={e=>setTrendAggregation(e.target.value)} style={fieldInput}>{AGGREGATIONS.map(method=><option key={method} value={method}>{method}</option>)}</select></Field>}
               {chartType.startsWith("bar")&&<Field label="Bar 집계"><select aria-label="Bar 집계" value={barAggregation} onChange={e=>setBarAggregation(e.target.value)} style={fieldInput}>{AGGREGATIONS.map(method=><option key={method} value={method}>{method}</option>)}</select></Field>}
               {chartType==="radius"&&<Field label="Radius 단위"><select aria-label="Radius 단위" value={radiusAggregation} onChange={e=>setRadiusAggregation(e.target.value)} style={fieldInput}><option value="raw">Shot raw</option>{AGGREGATIONS.map(method=><option key={method} value={method}>{method}</option>)}</select></Field>}
+              {chartType==="radius"&&<Field label="Radius 기준"><select aria-label="Radius 기준 TEG" value={radiusTeg} onChange={e=>setRadiusTeg(e.target.value)} style={fieldInput}><option value="">Shot center · wafer origin</option>{(radiusLayout?.tegs||[]).map(teg=><option key={teg} value={teg}>{teg} 실제 위치</option>)}</select></Field>}
               {!isPie&&<Field label="Color"><select aria-label="Color" value={colorCol} onChange={e=>setColorCol(e.target.value)} style={fieldInput}><option value="">없음</option><option value="__custom__">Custom 규칙</option>{columns.map(c=><option key={c}>{c}</option>)}</select></Field>}
               {!chartType.startsWith("bar")&&!isPie&&<Field label="Trellis"><select aria-label="Trellis" value={trellisCol} onChange={e=>setTrellisCol(e.target.value)} style={fieldInput}><option value="">없음</option>{columns.map(c=><option key={c}>{c}</option>)}</select></Field>}
               {!isPie&&<Field label="Highlight"><label style={{...fieldInput,display:"flex",alignItems:"center",gap:7,minHeight:31,cursor:"pointer"}}><input type="checkbox" checked={highlightEnabled} onChange={e=>setHighlightEnabled(e.target.checked)}/>Box / Lasso 선택 강조</label></Field>}
@@ -1946,8 +1991,8 @@ export default function My_ChartBuilder({user}){
         </div>
         {chartType==="wafer_map"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(mapScope.startsWith("trellis_")?`${mapScope==="trellis_wafer"?"wafer":"root_lot_id | wafer_id"}별 패널에서 같은 shot 좌표의 값을 ${mapAggregation}로 집계하고 공통 컬러 스케일을 적용합니다.`:`선택한 ${mapScope==="root_wafer"?"root lot·wafer":"root lot의 모든 wafer"}에서 같은 shot 좌표의 값을 ${mapAggregation}로 집계합니다.`)}</div>}
         {chartType==="line"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(TREND_GRAINS.find(g=>g.key===trendGrain)?.desc||"")}</div>}
-        {chartType==="radius"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(radiusBusy?"Chip_Radius.csv를 불러오는 중입니다.":`${radiusLayout?.file||"Chip_Radius.csv"} · ${radiusLayout?.mask||radiusSource?.product||"-"} · 좌표 ${chart?.radius_matched||0}/${chart?.radius_source_count||0} shot 매칭 · ${chart?.radius_mapping||""}`)}</div>}
-        {displayChart?.error?<div style={{padding:14,border:"1px solid #fecaca",borderRadius:8,background:"#fff7f7",color:"#b91c1c"}}>{displayChart.error}</div>:displayChart&&chartType==="wafer_map"?<div style={{width:chartWidth?`min(100%, ${chartWidth}px)`:"100%",margin:"0 auto"}}><TegValueWaferMap vehicle={displayChart.product} points={displayChart.points} panels={displayChart.panels} title={displayChart.title||"WF MAP"} valueLabel={displayChart.y_label} palette={waferPalette} low={waferLow} center={waferCenter} high={waferHigh} mode={displayChart.wafer_mode} specLow={displayChart.wafer_spec_low} specHigh={displayChart.wafer_spec_high} onScaleChange={scale=>{setWaferPalette(scale.palette);setWaferLow(text(scale.low));setWaferCenter(text(scale.center));setWaferHigh(text(scale.high));}}/></div>:displayChart&&trellisCol&&!chartType.startsWith("bar")?<TrellisPlot chart={{...displayChart,width:chartWidth,height:chartHeight}} column={trellisCol} enableHighlight={highlightEnabled}/>:displayChart&&<FlowPlotlyChart chart={displayChart} cfg={{...displayChart,width:chartWidth,height:chartHeight,hide_title:!text(chartTitle).trim(),emphasize_axes:true,hide_x_ticks:boxStatsAligned}} dark={false} enableHighlight={highlightEnabled} onGeometry={chartType==="box"?setBoxGeometry:null}/>}
+        {chartType==="radius"&&<div style={{fontSize:12,color:chart?.error?"#b91c1c":"#475569",margin:"0 0 9px"}}>{chart?.error||(radiusBusy?"제품 shot geometry를 불러오는 중입니다.":`${radiusLayout?.file||"TEG 위치조회"} · ${radiusLayout?.mask||radiusSource?.product||"-"} · ${radiusTeg?`${radiusTeg} 실제 radius`:`shot center radius`} · 좌표 ${chart?.radius_matched||0}/${chart?.radius_source_count||0} shot 매칭 · ${chart?.radius_mapping||""}`)}</div>}
+        {displayChart?.error?<div style={{padding:14,border:"1px solid #fecaca",borderRadius:8,background:"#fff7f7",color:"#b91c1c"}}>{displayChart.error}</div>:displayChart&&chartType==="wafer_map"?<div style={{width:chartWidth?`min(100%, ${chartWidth}px)`:"100%",margin:"0 auto"}}><TegValueWaferMap vehicle={displayChart.product} points={displayChart.points} panels={displayChart.panels} dieLayout={displayChart.die_layout} title={displayChart.title||"WF MAP"} valueLabel={displayChart.y_label} palette={waferPalette} low={waferLow} center={waferCenter} high={waferHigh} mode={displayChart.wafer_mode} specLow={displayChart.wafer_spec_low} specHigh={displayChart.wafer_spec_high} onScaleChange={scale=>{setWaferPalette(scale.palette);setWaferLow(text(scale.low));setWaferCenter(text(scale.center));setWaferHigh(text(scale.high));}}/></div>:displayChart&&trellisCol&&!chartType.startsWith("bar")?<TrellisPlot chart={{...displayChart,width:chartWidth,height:chartHeight}} column={trellisCol} enableHighlight={highlightEnabled}/>:displayChart&&<FlowPlotlyChart chart={displayChart} cfg={{...displayChart,width:chartWidth,height:chartHeight,hide_title:!text(chartTitle).trim(),emphasize_axes:true,hide_x_ticks:boxStatsAligned}} dark={false} enableHighlight={highlightEnabled} onGeometry={chartType==="box"?setBoxGeometry:null}/>}
         {boxStatsOn&&<BoxStatsTable boxes={boxBuckets} valueLabel={displayChart?.y_label||yCol} geometry={boxAlignGeometry}/>}</div>}
     </div>}
     <EtExpressionModal

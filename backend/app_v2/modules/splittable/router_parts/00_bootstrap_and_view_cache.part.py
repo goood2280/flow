@@ -82,7 +82,7 @@ _cache_sweeper.register_ttl_dict("splittable._RGLOB_CACHE", _RGLOB_CACHE, _DISCO
 _cache_sweeper.register_ttl_dict("splittable._FIRST_DATA_FILE_CACHE", _FIRST_DATA_FILE_CACHE, _DISCOVERY_CACHE_TTL_SEC, clock=time.monotonic)
 _cache_sweeper.register_ttl_dict("splittable._DB_ROOTS_CACHE", _DB_ROOTS_CACHE, _DISCOVERY_CACHE_TTL_SEC, clock=time.monotonic)
 _cache_sweeper.register_ttl_dict("splittable._LOT_LOOKUP_CACHE", _LOT_LOOKUP_CACHE, _LOT_LOOKUP_CACHE_TTL_SEC, clock=time.monotonic)
-_CSV_ROWS_CACHE: dict[str, tuple[float, int, list[dict]]] = {}
+_CSV_ROWS_CACHE: dict[str, tuple[int, int, list[dict]]] = {}
 _CSV_ROWS_CACHE_MAX = 32   # 파일 전체 행을 dict 로 들고 있으므로 개수 상한 필수
 _SCHEMA_COLUMNS_CACHE: dict[str, tuple[float, int, list[str]]] = {}
 _SCHEMA_COLUMNS_CACHE_MAX = 256

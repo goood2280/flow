@@ -102,3 +102,24 @@ def test_api_lot_location_export_csv(client):
     if rows:
         assert rows[0]["lot_id"] == "A1022A.2"
         assert rows[0]["root_lot_id"] == "A1022"
+
+
+def test_query_lot_locations_base_lot_matching():
+    # Query without sublot suffix (A1022A instead of A1022A.2)
+    result = query_lot_locations(["A1022A"])
+    items = result.get("items") or []
+    assert len(items) > 0
+    assert any(item["lot_id"] == "A1022A.2" for item in items)
+
+
+def test_api_lot_location_query_raw_body_resilience(client):
+    import json
+    raw_payload = json.dumps({"lot_ids": ["A1022A.2"]})
+    resp = client.post(
+        "/api/lot-location/query",
+        content=raw_payload,
+        headers={"content-type": "text/plain"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["stats"]["matched_lot_count"] >= 1

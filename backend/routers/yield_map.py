@@ -375,10 +375,21 @@ def scan(product: str, req: ShotScanReq, user=Depends(_require_manager)):
     if not vehicle:
         raise HTTPException(400, "같은 제품명의 WF geometry가 없습니다")
     try:
-        return {"ok": True, **_ym.scan_shot_layout(
+        result = _ym.scan_shot_layout(
             product, {**req.model_dump(), "vehicle": vehicle}, root_lot_id=req.root_lot_id,
             lot_id=req.lot_id, wafer_id=req.wafer_id,
-        )}
+        )
+        # The first successful BIN scan establishes the product's coordinate
+        # system. Persist it immediately so ChartBuilder WF MAP can reuse the
+        # same die-to-shot conversion on later runs. An existing enabled layout
+        # is kept intact; an explicit config save is required to replace it.
+        persisted = _ym.save_scanned_shot_layout(
+            product,
+            {**req.model_dump(), "vehicle": vehicle},
+            result.get("layout") or {},
+        )
+        layout_saved = bool(persisted.get("saved"))
+        return {"ok": True, **result, "layout_saved": layout_saved}
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     except ValueError as exc:

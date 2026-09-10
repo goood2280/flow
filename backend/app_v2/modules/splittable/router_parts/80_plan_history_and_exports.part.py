@@ -619,6 +619,7 @@ def download_csv(product: str = Query(...), root_lot_id: str = Query(""),
                     ck = f"{root_lot_id}|{wk}|{col_name}"
                     pv = plans.get(ck, {}).get("value")
                     row_data[idx] = "" if pv is None else str(pv)
+            row_data = [_format_export_cell_value(value, col_name) for value in row_data]
             process = process_columns.get(str(col_name), {})
             display_name = _export_param_display_name(col_rename.get(col_name, col_name), col_name)
             writer.writerow(
@@ -674,11 +675,45 @@ def _export_has_value(value: Any) -> bool:
 
 
 def _split_check_export_supported(selected: list[str]) -> bool:
-    for column in selected or []:
-        up = str(column or "").strip().upper()
-        if up in {"INLINE", "VM"} or up.startswith("INLINE_") or up.startswith("VM_"):
-            return False
+    # Split/PEMS transforms only KNOB rows. Other selected sources remain as
+    # ordinary wafer-value rows, so a mixed selection is always representable.
     return True
+
+
+def _is_knob_export_param(column: Any) -> bool:
+    up = str(column or "").strip().upper()
+    return up == "KNOB" or up.startswith("KNOB_")
+
+
+def _format_export_cell_value(value: Any, column: Any) -> str:
+    """Display-only value normalization shared by all XLSX layouts."""
+    if not _export_has_value(value):
+        return ""
+    text = str(value)
+    up = str(column or "").strip().upper()
+    # Reticle values commonly carry a product prefix (AAAA_PC_B). Keep an
+    # already-normalized value such as PC_B intact.
+    if (up == "MASK" or up.startswith("MASK_")) and text.count("_") >= 2:
+        return text.split("_", 1)[1]
+    return text
+
+
+def _build_ordinary_export_row(
+    column: str,
+    wafer_count: int,
+    value_maps: dict[str, tuple[dict[int, str], dict[int, str]]],
+    col_rename: dict[str, str] | None = None,
+) -> list[str]:
+    rename = col_rename or {}
+    display_name = _export_param_display_name(str(rename.get(column, column) or column), column)
+    actual_by_idx, plan_by_idx = value_maps.get(column, ({}, {}))
+    wafer_values = []
+    for idx in range(max(0, int(wafer_count or 0))):
+        plan_value = plan_by_idx.get(idx, "")
+        actual_value = actual_by_idx.get(idx, "")
+        value = actual_value if _export_has_value(actual_value) else plan_value
+        wafer_values.append(_format_export_cell_value(value, column))
+    return [display_name, "", "", *wafer_values]
 
 
 def _export_param_display_name(name: str, raw_column: str = "") -> str:
@@ -706,6 +741,9 @@ def _build_split_check_export_rows(
     rename = col_rename or {}
     s0_values = s0_by_param or {}
     for column in selected or []:
+        if not _is_knob_export_param(column):
+            rows.append(_build_ordinary_export_row(column, wafer_count, value_maps, rename))
+            continue
         display_name = _export_param_display_name(str(rename.get(column, column) or column), column)
         actual_by_idx, plan_by_idx = value_maps.get(column, ({}, {}))
         values_by_idx: dict[int, str] = {}
@@ -751,6 +789,10 @@ def _build_pems_export_rows(
     s0_values = s0_by_param or {}
     wafer_count = 25
     for column in selected or []:
+        if not _is_knob_export_param(column):
+            rows.append(_build_ordinary_export_row(column, wafer_count, value_maps, rename))
+            param_keys.append(str(column))
+            continue
         raw_display_name = str(rename.get(column, column) or column)
         display_name = _export_param_display_name(raw_display_name, column)
         actual_by_idx, plan_by_idx = value_maps.get(column, ({}, {}))
@@ -795,6 +837,9 @@ def _split_check_export_param_keys(
     keys: list[str] = []
     s0_values = s0_by_param or {}
     for column in selected or []:
+        if not _is_knob_export_param(column):
+            keys.append(str(column))
+            continue
         actual_by_idx, plan_by_idx = value_maps.get(column, ({}, {}))
         seen: set[str] = set()
         preferred = str(s0_values.get(column) or "").strip()
@@ -961,9 +1006,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                 wf2fab[w] = f
     wf_uniq = [w for w in dict.fromkeys(wf_vals) if w is not None and w != "None" and w != "null"]
 
-    pems_mode = pems_requested and _split_check_export_supported(selected)
-    if pems_requested and not pems_mode:
-        raise HTTPException(400, "PEMS export does not support INLINE/VM columns")
+    pems_mode = pems_requested
     if pems_mode:
         wf_sorted = list(range(1, 26))
         wf_idx = {str(w): i for i, w in enumerate(wf_sorted)}
@@ -988,10 +1031,7 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         if color:
             purpose_color_by_idx[idx] = str(color)
 
-    split_check_mode = (
-        requested_display_mode == "split_check"
-        and _split_check_export_supported(selected)
-    )
+    split_check_mode = requested_display_mode == "split_check"
     # v9.1.x: 제3 표시형식 — 행에서 왼쪽 값과 같은 칸을 셀 병합해 export (UI 병합 표시와 동일).
     merged_mode = (
         requested_display_mode == "merged"
@@ -1346,6 +1386,10 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         mark_font = Font(color="000000", bold=True, name="Consolas", size=11)
         prefix_font = Font(color="000000", bold=True, name="Consolas", size=11)
         value_font = Font(color="000000", name="Consolas", size=11)
+        orange_side = Side(style="medium", color="EA580C")
+        red_side = Side(style="medium", color="EF4444")
+        plan_border = Border(left=orange_side, right=orange_side, top=orange_side, bottom=orange_side)
+        mismatch_border = Border(left=red_side, right=red_side, top=red_side, bottom=red_side)
         palette = [
             ("C6EFCE", "000000"),  # S0 (#c6efce)
             ("FFEB9C", "000000"),  # S1 (#ffeb9c)
@@ -1471,7 +1515,8 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
         data_start = header_row + 1
         for r_idx, row in enumerate(split_check_rows, start=data_start):
             raw_param = split_check_param_keys[r_idx - data_start] if r_idx - data_start < len(split_check_param_keys) else ""
-            all_not_reached = bool(wf_sorted) and all((raw_param, idx) in not_reached_cells for idx in range(len(wf_sorted)))
+            knob_row = _is_knob_export_param(raw_param)
+            all_not_reached = knob_row and bool(wf_sorted) and all((raw_param, idx) in not_reached_cells for idx in range(len(wf_sorted)))
             label_idx = parameter_prefix_col + 1
             label = str(row[label_idx] if len(row) > label_idx else "")
             fill = _split_fill(label)
@@ -1486,8 +1531,24 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                     _style_cell(cell, fill=prefix_bg, font=(mark_font if c_idx == split_col else prefix_font), alignment=center if c_idx == split_col else left_top)
                 else:
                     wafer_idx = c_idx - first_wafer_col
-                    mark_fill = not_reached_fill if (raw_param, wafer_idx) in not_reached_cells else (fill if value else None)
-                    _style_cell(cell, fill=mark_fill, font=mark_font if value else value_font, alignment=center)
+                    if knob_row:
+                        mark_fill = not_reached_fill if (raw_param, wafer_idx) in not_reached_cells else (fill if value else None)
+                        _style_cell(cell, fill=mark_fill, font=mark_font if value else value_font, alignment=center)
+                    else:
+                        actual_by_idx, plan_by_idx = value_maps.get(raw_param, ({}, {}))
+                        actual = actual_by_idx.get(wafer_idx, "")
+                        plan = plan_by_idx.get(wafer_idx, "")
+                        is_plan_only = not _export_has_value(actual) and _export_has_value(plan)
+                        is_mismatch = _export_has_value(actual) and _export_has_value(plan) and str(actual) != str(plan)
+                        _style_cell(cell, font=value_font, alignment=center)
+                        if is_plan_only:
+                            cell.fill = PatternFill("solid", fgColor="FEF3C7")
+                            cell.font = Font(color="EA580C", bold=True, italic=True, name="Consolas", size=11)
+                            cell.border = plan_border
+                            if value and not str(value).startswith("📌 "):
+                                cell.value = "📌 " + str(value)
+                        elif is_mismatch:
+                            cell.border = mismatch_border
         for r1, c1, r2, c2 in _split_check_param_merges(split_check_rows, data_start, parameter_prefix_col):
             ws.merge_cells(start_row=r1, start_column=c1, end_row=r2, end_column=c2)
             ws.cell(row=r1, column=c1).alignment = Alignment(horizontal="left", vertical="top")
@@ -1716,7 +1777,8 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                     continue
                 is_plan_only = (not sv) and bool(pv)
                 is_mismatch = bool(sv) and bool(pv) and sv != pv
-                cell = ws.cell(row=rr, column=first_wafer_col + idx, value=cell_val)
+                display_cell_val = _format_export_cell_value(cell_val, col_name)
+                cell = ws.cell(row=rr, column=first_wafer_col + idx, value=display_cell_val)
                 cell.alignment = center
                 cell.border = border
                 if should_color and cell_val and cell_val in uniq_map:
@@ -1730,8 +1792,8 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
                     cell.fill = not_reached_fill
                 if is_plan_only:
                     _outline_span(rr, first_wafer_col + idx, g["span"], orange_side)
-                    if cell_val and not str(cell_val).startswith("📌 "):
-                        cell.value = "📌 " + str(cell_val)
+                    if display_cell_val and not str(display_cell_val).startswith("📌 "):
+                        cell.value = "📌 " + str(display_cell_val)
                 elif is_mismatch:
                     # 계획값과 실제값이 다른 셀 — 병합 구간 전체를 빨간 상자로.
                     _outline_span(rr, first_wafer_col + idx, g["span"], red_side)
@@ -1748,7 +1810,8 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
             cell_val = sv or pv
             is_plan_only = (not sv) and bool(pv)
             is_mismatch = bool(sv) and bool(pv) and sv != pv
-            cell = ws.cell(row=rr, column=first_wafer_col+idx, value=cell_val)
+            display_cell_val = _format_export_cell_value(cell_val, col_name)
+            cell = ws.cell(row=rr, column=first_wafer_col+idx, value=display_cell_val)
             cell.alignment = center
             cell.border = border
             if should_color and cell_val in uniq_map:
@@ -1771,8 +1834,8 @@ def download_xlsx(product: str = Query(...), root_lot_id: str = Query(""),
             if is_plan_only:
                 cell.border = plan_border
                 # 📌 prefix 접두로 plan 임을 한 번 더 명시
-                if not str(cell_val).startswith("📌 "):
-                    cell.value = "📌 " + str(cell_val)
+                if not str(display_cell_val).startswith("📌 "):
+                    cell.value = "📌 " + str(display_cell_val)
             elif is_mismatch:
                 cell.border = mismatch_border
 

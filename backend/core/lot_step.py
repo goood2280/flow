@@ -2033,19 +2033,29 @@ def et_history_packages_multi(product: str, specs: list, *, limit: int = 50,
         if since and "time" in schema:
             lf = lf.filter(pl.col("time").cast(pl.Utf8, strict=False).str.slice(0, 10) >= since)
         lot_exprs = []
+        seen_lots = set()
         for spec in specs or []:
+            lot_key = (spec.get("root_lot_id", ""), spec.get("lot_id", ""))
+            if lot_key in seen_lots:
+                continue
+            seen_lots.add(lot_key)
             expr = _et_lot_match_expr(pl, schema, spec.get("root_lot_id", ""), spec.get("lot_id", ""))
             if expr is not None:
                 lot_exprs.append(expr)
         if lot_exprs:
-            combined = lot_exprs[0]
-            for expr in lot_exprs[1:]:
-                combined = combined | expr
-            lf = lf.filter(combined)
+            lf = lf.filter(pl.any_horizontal(lot_exprs))
         df = lf.collect()
         out: list[list] = []
+        step_metadata = {}
+        def step_meta(step_id):
+            if step_id not in step_metadata:
+                step_metadata[step_id] = lookup_step_meta(product=product, step_id=step_id)
+            return step_metadata[step_id]
         for spec in specs or []:
             sub = df.lazy()
+            spec_since = str(spec.get("since_date", since) or "").strip()[:10]
+            if spec_since and "time" in schema:
+                sub = sub.filter(pl.col("time").cast(pl.Utf8, strict=False).str.slice(0, 10) >= spec_since)
             expr = _et_lot_match_expr(pl, schema, spec.get("root_lot_id", ""), spec.get("lot_id", ""))
             if expr is not None:
                 sub = sub.filter(expr)
@@ -2054,13 +2064,13 @@ def et_history_packages_multi(product: str, specs: list, *, limit: int = 50,
                 wafer_expr = _wafer_filter_expr(pl, "wafer_id", wafers)
                 if wafer_expr is not None:
                     sub = sub.filter(wafer_expr)
-            rows = sub.sort("time", descending=True).head(limit).collect().to_dicts()
+            rows = sub.sort("time", descending=True).head(int(spec.get("limit", limit))).collect().to_dicts()
             out.append([
                 {
                     "wafer_id": row.get("wafer_id"), "step_id": row.get("step_id"),
                     "step_seq": row.get("step_seq"), "flat": row.get("flat"),
                     "time": row.get("time"), "pt_count": int(row.get("pt_count") or 0),
-                    **lookup_step_meta(product=product, step_id=row.get("step_id")),
+                    **step_meta(row.get("step_id")),
                 }
                 for row in rows
             ])

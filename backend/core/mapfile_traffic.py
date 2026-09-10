@@ -7,9 +7,11 @@ performs verification with core.teg_check.inspect, and caches results by file si
 from __future__ import annotations
 
 import datetime as dt
-import logging
 import hashlib
+import json
+import logging
 from pathlib import Path
+import re
 from typing import Any
 
 from core.file_transaction import file_transaction
@@ -29,10 +31,21 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _directory_has_mapfiles(path: Path) -> bool:
     """Treat every non-temporary regular file as text mapfile input."""
     try:
-        return any(
-            entry.is_file() and not entry.name.startswith((".", "~", "$"))
-            for entry in path.iterdir()
-        )
+        if not path.is_dir():
+            return False
+        for entry in path.iterdir():
+            if entry.is_file() and not entry.name.startswith((".", "~", "$")):
+                return True
+            if entry.is_dir() and entry.name.lower() in ("dev", "prod"):
+                try:
+                    if any(
+                        sub.is_file() and not sub.name.startswith((".", "~", "$"))
+                        for sub in entry.iterdir()
+                    ):
+                        return True
+                except OSError:
+                    pass
+        return False
     except OSError:
         return False
 
@@ -98,7 +111,7 @@ def get_product_code_for_vehicle(vehicle: str) -> str:
 
 
 def list_mapfiles_for_product(vehicle: str) -> tuple[str, list[Path]]:
-    """List mapfiles matching the vehicle's product_code.
+    """List mapfiles matching the vehicle's product_code from dev, prod, and root directories.
 
     Returns (product_code, matching_paths).
     """
@@ -111,18 +124,39 @@ def list_mapfiles_for_product(vehicle: str) -> tuple[str, list[Path]]:
     prefix = code.strip().casefold() if code.strip() else ""
     veh_prefix = vehicle.strip().casefold()
 
-    try:
-        for entry in sorted(dir_path.iterdir(), key=lambda p: p.name.casefold()):
-            if not entry.is_file() or entry.name.startswith((".", "~", "$")):
-                continue
-            ename = entry.name.casefold()
-            # Match by product_code if configured, else fallback to vehicle name
-            if prefix and ename.startswith(prefix):
-                matched.append(entry)
-            elif not prefix and veh_prefix and ename.startswith(veh_prefix):
-                matched.append(entry)
-    except OSError as exc:
-        logger.warning("Error reading mapfile directory %s: %s", dir_path, exc)
+    def _matches(name: str) -> bool:
+        ename = name.casefold()
+        if prefix and ename.startswith(prefix):
+            return True
+        if not prefix and veh_prefix and ename.startswith(veh_prefix):
+            return True
+        return False
+
+    # 1. Subdirectories dev and prod (개발 DC, 양산DC)
+    has_dc_subdirs = False
+    for sub in ("dev", "prod"):
+        sub_path = dir_path / sub
+        if sub_path.is_dir():
+            has_dc_subdirs = True
+            try:
+                for entry in sorted(sub_path.iterdir(), key=lambda p: p.name.casefold()):
+                    if not entry.is_file() or entry.name.startswith((".", "~", "$")):
+                        continue
+                    if _matches(entry.name):
+                        matched.append(entry)
+            except OSError as exc:
+                logger.warning("Error reading mapfile subdirectory %s: %s", sub_path, exc)
+
+    # 2. Root directory (only legacy fallback when neither dev nor prod exists)
+    if not has_dc_subdirs:
+        try:
+            for entry in sorted(dir_path.iterdir(), key=lambda p: p.name.casefold()):
+                if not entry.is_file() or entry.name.startswith((".", "~", "$")):
+                    continue
+                if _matches(entry.name):
+                    matched.append(entry)
+        except OSError as exc:
+            logger.warning("Error reading mapfile directory %s: %s", dir_path, exc)
 
     return code, matched
 
@@ -161,9 +195,27 @@ def determine_traffic_light(summary: dict[str, int], targets: dict[str, Any], ha
     return "gray"
 
 
-def verify_single_mapfile(vehicle: str, file_path: Path) -> dict[str, Any]:
+def verify_single_mapfile(vehicle: str, file_path: Path, dc_type: str = "", dc_label: str = "") -> dict[str, Any]:
     """Inspect a single mapfile using core.teg_check.inspect."""
     filename = file_path.name
+    mapfile_dir = get_mapfile_dir()
+    try:
+        rel_path = file_path.relative_to(mapfile_dir).as_posix()
+    except Exception:
+        rel_path = filename
+
+    if not dc_type:
+        pname = file_path.parent.name.lower()
+        if pname == "dev":
+            dc_type = "dev"
+            dc_label = "개발 DC"
+        elif pname == "prod":
+            dc_type = "prod"
+            dc_label = "양산DC"
+        else:
+            dc_type = "root"
+            dc_label = "기타"
+
     try:
         st = file_path.stat()
         mtime_str = dt.datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
@@ -364,6 +416,9 @@ def verify_single_mapfile(vehicle: str, file_path: Path) -> dict[str, Any]:
         return {
             "signature": sig,
             "filename": filename,
+            "rel_path": rel_path,
+            "dc_type": dc_type,
+            "dc_label": dc_label,
             "size": file_size,
             "mtime": mtime_str,
             "verified_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -383,6 +438,9 @@ def verify_single_mapfile(vehicle: str, file_path: Path) -> dict[str, Any]:
         return {
             "signature": sig,
             "filename": filename,
+            "rel_path": rel_path,
+            "dc_type": dc_type,
+            "dc_label": dc_label,
             "size": file_size,
             "mtime": mtime_str,
             "verified_at": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -397,6 +455,210 @@ def verify_single_mapfile(vehicle: str, file_path: Path) -> dict[str, Any]:
             "issues": [],
             "error": str(exc),
         }
+
+
+def get_github_download_status(dir_path: Path | None = None, now: dt.datetime | None = None) -> dict[str, Any]:
+    """Inspect DB/mapfile download log to determine if GitHub periodic download ran within 1 day.
+
+    Supports:
+    - download.log (text or JSON)
+    - download_log.json
+    - sync.log
+    - download.json
+
+    Traffic light rules:
+    - Status in_progress / updating: light="blue", status_label="업데이트중", is_updating=True
+    - Status failed / error: light="red", status_label="다운로드 실패", is_updating=False
+    - Elapsed <= 24 hours: light="green", status_label="최신 (N시간 전)" or "최신 (N분 전)", within_one_day=True
+    - Elapsed > 24 hours: light="yellow", status_label="업데이트 지연 (N일 경과)", within_one_day=False
+    - No log found: light="gray", status_label="로그 없음", within_one_day=False, has_log=False
+    """
+    map_dir = dir_path or get_mapfile_dir()
+    cur_now = now or dt.datetime.now()
+
+    if not map_dir or not map_dir.is_dir():
+        return {
+            "has_log": False,
+            "log_file": "",
+            "log_path": "",
+            "status": "no_log",
+            "status_label": "로그 없음",
+            "light": "gray",
+            "timestamp": "",
+            "elapsed_hours": None,
+            "within_one_day": False,
+            "is_updating": False,
+            "message": "DB mapfile 폴더를 찾을 수 없습니다.",
+            "raw_text": "",
+        }
+
+    log_candidates = [
+        "download.log",
+        "download_log.json",
+        "sync.log",
+        "download.json",
+    ]
+    found_log: Path | None = None
+    for cand in log_candidates:
+        cand_path = map_dir / cand
+        if cand_path.is_file():
+            found_log = cand_path
+            break
+
+    if not found_log:
+        try:
+            for entry in map_dir.iterdir():
+                if entry.is_file() and entry.name.lower() in log_candidates:
+                    found_log = entry
+                    break
+        except OSError:
+            pass
+
+    if not found_log:
+        return {
+            "has_log": False,
+            "log_file": "",
+            "log_path": "",
+            "status": "no_log",
+            "status_label": "로그 없음",
+            "light": "gray",
+            "timestamp": "",
+            "elapsed_hours": None,
+            "within_one_day": False,
+            "is_updating": False,
+            "message": "DB/mapfile에 download log 파일이 없습니다.",
+            "raw_text": "",
+        }
+
+    raw_text = ""
+    for enc in ("utf-8-sig", "cp949", "utf-8"):
+        try:
+            raw_text = found_log.read_text(encoding=enc)
+            break
+        except UnicodeDecodeError:
+            continue
+        except OSError as exc:
+            logger.warning("Failed to read log file %s: %s", found_log, exc)
+            break
+
+    try:
+        file_mtime = dt.datetime.fromtimestamp(found_log.stat().st_mtime)
+    except OSError:
+        file_mtime = cur_now
+
+    parsed_dt: dt.datetime | None = None
+    status_str: str = ""
+    message_str: str = ""
+
+    # Try JSON parsing
+    if found_log.suffix.lower() == ".json" or raw_text.strip().startswith("{"):
+        try:
+            data = json.loads(raw_text)
+            if isinstance(data, dict):
+                t_val = data.get("timestamp") or data.get("time") or data.get("datetime")
+                if t_val:
+                    try:
+                        parsed_dt = dt.datetime.fromisoformat(str(t_val))
+                    except Exception:
+                        pass
+                status_str = str(data.get("status") or "").strip().lower()
+                message_str = str(data.get("message") or data.get("msg") or "").strip()
+        except Exception:
+            pass
+
+    # If not parsed as JSON, parse lines
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    last_line = lines[-1] if lines else ""
+
+    if parsed_dt is None:
+        dt_pattern = re.compile(r"(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)")
+        for line in reversed(lines):
+            m = dt_pattern.search(line)
+            if m:
+                dt_str = m.group(1).replace(" ", "T")
+                try:
+                    parsed_dt = dt.datetime.fromisoformat(dt_str)
+                    break
+                except Exception:
+                    pass
+
+    if not status_str:
+        text_to_check = "\n".join(lines[-5:]) if lines else raw_text
+        if re.search(r"(?i)\b(in_progress|updating|running|syncing|downloading)\b", text_to_check):
+            status_str = "in_progress"
+        elif re.search(r"(?i)\b(failed|fail|error|fatal)\b", text_to_check):
+            status_str = "failed"
+        elif re.search(r"(?i)\b(success|ok|done|finished|complete|completed)\b", text_to_check):
+            status_str = "success"
+        else:
+            status_str = "success"
+
+    if not message_str and last_line:
+        message_str = last_line
+
+    if parsed_dt is None:
+        parsed_dt = file_mtime
+
+    dt_for_diff = parsed_dt
+    if dt_for_diff.tzinfo is not None and cur_now.tzinfo is None:
+        cur_now_cmp = cur_now.astimezone()
+    elif dt_for_diff.tzinfo is None and cur_now.tzinfo is not None:
+        dt_for_diff = dt_for_diff.astimezone(cur_now.tzinfo)
+        cur_now_cmp = cur_now
+    else:
+        cur_now_cmp = cur_now
+
+    elapsed_seconds = (cur_now_cmp - dt_for_diff).total_seconds()
+    elapsed_hours = max(0.0, elapsed_seconds / 3600.0)
+    within_one_day = elapsed_seconds <= 86400.0
+
+    if status_str in ("in_progress", "updating", "running", "syncing"):
+        status = "in_progress"
+        light = "blue"
+        is_updating = True
+        status_label = "업데이트중"
+    elif status_str in ("failed", "fail", "error"):
+        status = "failed"
+        light = "red"
+        is_updating = False
+        status_label = "다운로드 실패"
+    elif within_one_day:
+        status = "success"
+        light = "green"
+        is_updating = False
+        if elapsed_hours < 1.0:
+            mins = max(1, int(elapsed_seconds / 60))
+            status_label = f"최신 ({mins}분 전)"
+        else:
+            hours = int(elapsed_hours)
+            status_label = f"최신 ({hours}시간 전)"
+    else:
+        status = "stale"
+        light = "yellow"
+        is_updating = False
+        days = int(elapsed_hours // 24)
+        rem_hours = int(elapsed_hours % 24)
+        if days >= 1 and rem_hours > 0:
+            status_label = f"업데이트 지연 ({days}일 {rem_hours}시간 경과)"
+        elif days >= 1:
+            status_label = f"업데이트 지연 ({days}일 경과)"
+        else:
+            status_label = f"업데이트 지연 ({int(elapsed_hours)}시간 경과)"
+
+    return {
+        "has_log": True,
+        "log_file": found_log.name,
+        "log_path": str(found_log),
+        "status": status,
+        "status_label": status_label,
+        "light": light,
+        "timestamp": parsed_dt.isoformat(timespec="seconds"),
+        "elapsed_hours": round(elapsed_hours, 1),
+        "within_one_day": within_one_day,
+        "is_updating": is_updating,
+        "message": message_str[:200],
+        "raw_text": raw_text[:500],
+    }
 
 
 def inspect_mapfiles_for_product(vehicle: str, force: bool = False) -> dict[str, Any]:
@@ -414,13 +676,24 @@ def inspect_mapfiles_for_product(vehicle: str, force: bool = False) -> dict[str,
         results: list[dict[str, Any]] = []
 
         for path in file_paths:
-            cache_key = f"{vehicle}:{path.name}"
+            try:
+                rel = path.relative_to(mapfile_dir).as_posix()
+            except Exception:
+                rel = path.name
+            cache_key = f"{vehicle}:{rel}"
             sig = file_signature(path)
-            cached_entry = cache.get(cache_key)
+            cached_entry = cache.get(cache_key) or cache.get(f"{vehicle}:{path.name}")
 
             if not force and cached_entry and cached_entry.get("signature") == sig and "sl" in cached_entry and "main" in cached_entry:
                 entry = dict(cached_entry)
                 entry["is_cached"] = True
+                # Ensure dc fields exist in cached entry
+                if "rel_path" not in entry:
+                    entry["rel_path"] = rel
+                if "dc_type" not in entry:
+                    pname = path.parent.name.lower()
+                    entry["dc_type"] = "dev" if pname == "dev" else "prod" if pname == "prod" else "root"
+                    entry["dc_label"] = "개발 DC" if entry["dc_type"] == "dev" else "양산DC" if entry["dc_type"] == "prod" else "기타"
                 results.append(entry)
             else:
                 entry = verify_single_mapfile(vehicle, path)
@@ -433,27 +706,65 @@ def inspect_mapfiles_for_product(vehicle: str, force: bool = False) -> dict[str,
         if cache_dirty:
             save_traffic_cache(cache)
 
-    # Calculate product summary
-    green_cnt = sum(1 for r in results if r.get("traffic_light") == "green")
-    yellow_cnt = sum(1 for r in results if r.get("traffic_light") == "yellow")
-    red_cnt = sum(1 for r in results if r.get("traffic_light") == "red")
-    gray_cnt = sum(1 for r in results if r.get("traffic_light") == "gray")
+    def _calc_group_summary(group_files: list[dict[str, Any]]) -> dict[str, int]:
+        return {
+            "total_files": len(group_files),
+            "green_files": sum(1 for r in group_files if r.get("traffic_light") == "green"),
+            "yellow_files": sum(1 for r in group_files if r.get("traffic_light") == "yellow"),
+            "red_files": sum(1 for r in group_files if r.get("traffic_light") == "red"),
+            "gray_files": sum(1 for r in group_files if r.get("traffic_light") == "gray"),
+            "sl_green_files": sum(1 for r in group_files if (r.get("sl") or {}).get("light") == "green"),
+            "sl_yellow_files": sum(1 for r in group_files if (r.get("sl") or {}).get("light") == "yellow"),
+            "sl_red_files": sum(1 for r in group_files if (r.get("sl") or {}).get("light") == "red"),
+            "main_green_files": sum(1 for r in group_files if (r.get("main") or {}).get("light") == "green"),
+            "main_yellow_files": sum(1 for r in group_files if (r.get("main") or {}).get("light") == "yellow"),
+            "main_red_files": sum(1 for r in group_files if (r.get("main") or {}).get("light") == "red"),
+        }
 
-    sl_green_cnt = sum(1 for r in results if (r.get("sl") or {}).get("light") == "green")
-    sl_yellow_cnt = sum(1 for r in results if (r.get("sl") or {}).get("light") == "yellow")
-    sl_red_cnt = sum(1 for r in results if (r.get("sl") or {}).get("light") == "red")
+    def _calc_light(sum_dict: dict[str, int]) -> str:
+        if sum_dict.get("red_files", 0) > 0:
+            return "red"
+        if sum_dict.get("yellow_files", 0) > 0:
+            return "yellow"
+        if sum_dict.get("gray_files", 0) == 0 and sum_dict.get("green_files", 0) > 0:
+            return "green"
+        return "gray"
 
-    main_green_cnt = sum(1 for r in results if (r.get("main") or {}).get("light") == "green")
-    main_yellow_cnt = sum(1 for r in results if (r.get("main") or {}).get("light") == "yellow")
-    main_red_cnt = sum(1 for r in results if (r.get("main") or {}).get("light") == "red")
+    # Groups: dev (개발 DC), prod (양산DC) - only dev and prod, root is excluded
+    dev_results = [r for r in results if r.get("dc_type") == "dev"]
+    prod_results = [r for r in results if r.get("dc_type") == "prod"]
 
-    overall_light = "gray"
-    if red_cnt > 0:
-        overall_light = "red"
-    elif yellow_cnt > 0:
-        overall_light = "yellow"
-    elif gray_cnt == 0 and green_cnt > 0:
-        overall_light = "green"
+    dev_summary = _calc_group_summary(dev_results)
+    dev_light = _calc_light(dev_summary)
+
+    prod_summary = _calc_group_summary(prod_results)
+    prod_light = _calc_light(prod_summary)
+
+    groups = [
+        {
+            "key": "dev",
+            "label": "개발 DC",
+            "folder": "dev",
+            "files": dev_results,
+            "overall_light": dev_light,
+            "summary": dev_summary,
+        },
+        {
+            "key": "prod",
+            "label": "양산DC",
+            "folder": "prod",
+            "files": prod_results,
+            "overall_light": prod_light,
+            "summary": prod_summary,
+        },
+    ]
+
+    # Overall summary across dev and prod files (or all matching files)
+    active_results = dev_results + prod_results if (dev_results or prod_results) else results
+    overall_summary = _calc_group_summary(active_results)
+    overall_light = _calc_light(overall_summary)
+
+    github_sync = get_github_download_status(mapfile_dir)
 
     return {
         "ok": True,
@@ -461,31 +772,55 @@ def inspect_mapfiles_for_product(vehicle: str, force: bool = False) -> dict[str,
         "product_code": code,
         "mapfile_dir": str(mapfile_dir),
         "mapfile_dir_exists": mapfile_dir.is_dir(),
-        "files": results,
+        "files": active_results,
+        "groups": groups,
         "overall_light": overall_light,
-        "summary": {
-            "total_files": len(results),
-            "green_files": green_cnt,
-            "yellow_files": yellow_cnt,
-            "red_files": red_cnt,
-            "gray_files": gray_cnt,
-            "sl_green_files": sl_green_cnt,
-            "sl_yellow_files": sl_yellow_cnt,
-            "sl_red_files": sl_red_cnt,
-            "main_green_files": main_green_cnt,
-            "main_yellow_files": main_yellow_cnt,
-            "main_red_files": main_red_cnt,
-        },
+        "summary": overall_summary,
+        "github_sync": github_sync,
     }
 
 
 def read_mapfile_text(filename: str) -> str:
-    """Safely read content of a mapfile from the mapfile directory."""
-    clean_name = Path(filename).name
-    target = get_mapfile_dir() / clean_name
-    if not target.is_file():
-        raise FileNotFoundError(f"Mapfile '{clean_name}'이 존재하지 않습니다.")
+    """Safely read content of a mapfile from the mapfile directory or dev/prod subfolders."""
+    clean = Path(str(filename or "").strip().replace("\\", "/"))
+    mapfile_dir = get_mapfile_dir()
+
+    candidates: list[Path] = []
+    # If relative path like dev/xxx or prod/xxx
+    if len(clean.parts) > 1:
+        candidates.append(mapfile_dir / clean)
+    else:
+        candidates.append(mapfile_dir / "dev" / clean.name)
+        candidates.append(mapfile_dir / "prod" / clean.name)
+        candidates.append(mapfile_dir / clean.name)
+
+    target: Path | None = None
+    for c in candidates:
+        if c.is_file():
+            target = c
+            break
+
+    # Fallback: case-insensitive search across mapfile_dir
+    if not target and mapfile_dir.is_dir():
+        target_name = clean.name.casefold()
+        for root_dir in [mapfile_dir / "dev", mapfile_dir / "prod", mapfile_dir]:
+            if root_dir.is_dir():
+                try:
+                    for entry in root_dir.iterdir():
+                        if entry.is_file() and entry.name.casefold() == target_name:
+                            target = entry
+                            break
+                except OSError:
+                    pass
+                if target:
+                    break
+
+    if not target or not target.is_file():
+        raise FileNotFoundError(f"Mapfile '{clean.name}'이 존재하지 않습니다.")
+
+    raw = target.read_bytes()
     try:
-        return target.read_text(encoding="utf-8")
+        return raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        return target.read_text(encoding="cp949", errors="replace")
+        return raw.decode("cp949", errors="replace")
+

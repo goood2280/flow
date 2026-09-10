@@ -165,6 +165,28 @@ def save_product_config(product: str, payload: dict) -> dict:
     return clean
 
 
+def save_scanned_shot_layout(product: str, payload: dict, layout: dict) -> dict:
+    """Persist the first valid BIN coordinate scan for a product.
+
+    A previously enabled layout is intentionally preserved so a re-scan cannot
+    silently move die positions. Managers can replace it through the normal
+    product-config save action.
+    """
+    current = product_config(product)
+    existing = current.get("shot_layout") if isinstance(current, dict) else {}
+    if isinstance(existing, dict) and existing.get("enabled"):
+        return {"saved": False, "config": current}
+    source_payload = payload if isinstance(payload, dict) else {}
+    config = save_product_config(product, {
+        **current,
+        "source": source_payload.get("source") or current.get("source") or "",
+        "fields": source_payload.get("fields") or current.get("fields") or {},
+        "vehicle": source_payload.get("vehicle") or current.get("vehicle") or "",
+        "shot_layout": layout or {},
+    })
+    return {"saved": True, "config": config}
+
+
 def _is_data_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in DATA_EXTENSIONS
 

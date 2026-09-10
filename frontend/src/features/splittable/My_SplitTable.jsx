@@ -16,7 +16,7 @@ import { appendSplitViewPerformanceSample, isSplitViewPerformanceEnabled, SPLIT_
 const SPLITTABLE_TABS_ALL = [{k:"view",l:"View"},{k:"history",l:"History"}];
 const splittableTabs = () => SPLITTABLE_TABS_ALL.filter(({k})=>allowedSubTabs("splittable").includes(k));
 import { statusPalette } from "../../components/UXKit";
-import SplitTableSnapshotView, { buildPemsStView, buildSplitCheckStView, normalizeSplitTableColumnWidths, planningS0ValueForParam, SPLIT_CHECK_PREFIX_COLUMNS, SPLITTABLE_COLUMN_WIDTH_DEFAULTS, splitParamDisplayName, s0ValueForParam } from "../../components/SplitTableSnapshotView";
+import SplitTableSnapshotView, { buildPemsStView, buildSplitCheckStView, normalizeSplitTableColumnWidths, formatSplitCellValue, planningS0ValueForParam, SPLIT_CHECK_PREFIX_COLUMNS, SPLITTABLE_COLUMN_WIDTH_DEFAULTS, splitParamDisplayName, s0ValueForParam } from "../../components/SplitTableSnapshotView";
 const API="/api/splittable";
 const INFORM_API="/api/informs";
 const INFORM_WIZARD_DRAFT_KEY="flow_inform_wizard_draft_v1";
@@ -133,14 +133,8 @@ export const nextSplitDraftLabelIndex=(sopValue,cellValues=[],draftValues=[],sop
   return rawValues.size+emptyDraftRows;
 };
 // v9.5.x: Root lot RAM cache 설정/수동 스캔/쿼리 코어 조정은 캐시 관리 탭(My_RamCache)으로 이동.
-const isInlineVmSplitParam=(value)=>{
-  const v=String(value||"").trim().toUpperCase();
-  return v==="INLINE"||v==="VM"||v.startsWith("INLINE_")||v.startsWith("VM_");
-};
-// 통합(병합) 표시는 split 조건 열에만 의미가 있다. INLINE/VM 은 wafer 별 실측값,
-// TAG/관리 행은 자유 입력이라 값이 우연히 같다고 묶으면 wafer 별 값을 못 읽는다.
-// backend routers/splittable.py 의 MERGE_VIEW_PREFIXES 와 같은 규약이다.
-const MERGE_PREFIXES=["KNOB","FAB","MASK"];
+// 표시 변환과 병합은 KNOB에만 적용한다.
+const MERGE_PREFIXES=["KNOB"];
 const isMergeableParam=(value)=>{
   const v=String(value||"").trim().toUpperCase();
   return MERGE_PREFIXES.some(p=>v===p||v.startsWith(p+"_"));
@@ -594,6 +588,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   },[categoryColorPicker]);
   // v8.4.7: KNOB feature_name → {label, groups}. 제품 바뀌면 재fetch.
   const[knobMeta,setKnobMeta]=useState({});
+  const[matchingMetaRevision,setMatchingMetaRevision]=useState(0);
   const[categoryColors,setCategoryColors]=useState({});
   // v8.4.9-b: Notes (wafer 태그 + param 메모). lot 단위로 fetch.
   const[notes,setNotes]=useState([]);
@@ -1094,7 +1089,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     sf(API+"/category-colors?product="+encodeURIComponent(selProd),{signal:controller.signal})
       .then(d=>{if(active)setCategoryColors(d.colors||{});}).catch(()=>{if(active)setCategoryColors({});});
     return()=>{active=false;controller.abort();};
-  },[selProd]);
+  },[selProd,matchingMetaRevision]);
   // v8.8.7: VM meta fetch — VM_ parameter 아래 step_id/step_desc 노출용.
   const[vmMeta,setVmMeta]=useState({});
   useEffect(()=>{
@@ -1105,7 +1100,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     sf(API+"/vm-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""),{signal:controller.signal})
       .then(d=>{if(active)setVmMeta(d.items||{});}).catch(()=>{if(active)setVmMeta({});});
     return()=>{active=false;controller.abort();};
-  },[selProd]);
+  },[selProd,matchingMetaRevision]);
   // v8.8.15: INLINE meta — INLINE_<item_id> row 의 step_id sub-label 용.
   const[inlineMetaSt,setInlineMetaSt]=useState({});
   useEffect(()=>{
@@ -1116,7 +1111,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     sf(API+"/inline-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""),{signal:controller.signal})
       .then(d=>{if(active)setInlineMetaSt(d.items||{});}).catch(()=>{if(active)setInlineMetaSt({});});
     return()=>{active=false;controller.abort();};
-  },[selProd]);
+  },[selProd,matchingMetaRevision]);
   // MASK meta — MASK_<step_desc> row 의 step_desc, step_id, module 매칭 용.
   const[maskMetaSt,setMaskMetaSt]=useState({});
   useEffect(()=>{
@@ -1127,7 +1122,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     sf(API+"/mask-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""),{signal:controller.signal})
       .then(d=>{if(active)setMaskMetaSt(d.items||{});}).catch(()=>{if(active)setMaskMetaSt({});});
     return()=>{active=false;controller.abort();};
-  },[selProd]);
+  },[selProd,matchingMetaRevision]);
   // 상단 purpose도 표의 wafer TAG_purpose와 같은 값을 사용한다.
   const waferPurposeLabel=(()=>{
     const row=(data?.rows||[]).find(item=>isDefaultPurposeTag(item?._param));
@@ -1373,7 +1368,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     if(!kind)return Promise.reject(new Error("kind is required"));
     return sf(API+"/rulebook/schema/save",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({kind,mapping,username:user?.username||""})})
-      .then(()=>{reloadRbSchema();loadView&&loadView();});
+      .then(()=>{setMatchingMetaRevision(revision=>revision+1);reloadRbSchema();loadView&&loadView();});
   };
   const openSchemaEditor=(kind)=>{setRbEditKind(kind);setRbDraftMap({...(rbSchema.schema?.[kind]||rbSchema.defaults?.[kind]||{})});};
   const saveSchemaEdit=()=>{if(!rbEditKind)return;
@@ -1464,22 +1459,15 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const stepLabelQ=showParamMeta
     ?`&step_labels=1&exclude_not_null=${excludeNotNullStepMeta?1:0}`
     :"";
-  const splitCheckDisabled=(!isCustomMode&&selPrefixes.some(isInlineVmSplitParam))
-    ||(isCustomMode&&customCols.some(isInlineVmSplitParam))
-    ||(Array.isArray(data?.rows)&&data.rows.some(row=>isInlineVmSplitParam(row?._param)||isInlineVmSplitParam(row?._display)));
   const pemsRootOnly=Boolean(lotId.trim())&&!fabLotId.trim();
-  // PEMS 는 KNOB split 을 물리 wafer 1..25 기준 S0/S1 그룹으로 읽는 표시다.
-  // MASK/FAB/INLINE/VM 을 섞으면 같은 S 그룹 의미가 없어지고, custom set은
-  // prefix 선택의 출처가 불명확하므로 KNOB 단독 선택에서만 허용한다.
-  const pemsKnobOnly=!isCustomMode&&selPrefixes.length===1&&String(selPrefixes[0]||"").toUpperCase()==="KNOB";
-  const pemsDisabled=!pemsRootOnly||!pemsKnobOnly;
-  const splitCheckViewActive=showSplitCheckView&&!splitCheckDisabled;
+  const pemsDisabled=!pemsRootOnly;
+  const splitCheckViewActive=showSplitCheckView;
   const pemsViewActive=showPemsView&&!pemsDisabled&&!splitCheckViewActive;
   const mergedViewActive=showMergedView&&!splitCheckViewActive&&!pemsViewActive;
   // 표시 형식 4종: cell / split / merged / PEMS(root lot 전용 1..25 고정).
   const tableFormat=splitCheckViewActive?"split":(pemsViewActive?"pems":(mergedViewActive?"merged":"cell"));
   const setTableFormat=(m)=>{
-    if(m==="split"){if(splitCheckDisabled)return;setShowMergedView(false);setShowPemsView(false);setShowSplitCheckView(true);return;}
+    if(m==="split"){setShowMergedView(false);setShowPemsView(false);setShowSplitCheckView(true);return;}
     if(m==="pems"){
       if(pemsDisabled)return;
       setShowMergedView(false);setShowSplitCheckView(false);setShowPemsView(true);
@@ -1494,18 +1482,13 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     setShowPemsView(false);
     setShowMergedView(m==="merged");
   };
-  const splitCheckToggleTitle=splitCheckDisabled
-    ?"INLINE/VM 항목은 wafer별 Split 체크 표시 대상이 아닙니다"
-    :"각 항목 값을 S0/S1 체크 행으로 펼쳐 wafer별 적용 위치를 봅니다";
+  const splitCheckToggleTitle="KNOB만 S0/S1 행으로 펼치고 나머지 항목은 wafer별 값을 그대로 표시합니다";
   const TABLE_FORMAT_OPTIONS=[
     {k:"cell",l:"기본",t:"모든 행/열을 개별 칸으로 표시"},
-    {k:"split",l:"Split 체크",t:splitCheckToggleTitle,d:splitCheckDisabled},
-    {k:"merged",l:"병합",t:"KNOB/FAB/MASK 행에서 왼쪽 값과 같은 칸을 하나로 병합해 표시 (읽기 전용). INLINE/VM/TAG 는 wafer별 값이라 병합하지 않습니다."},
-    {k:"pems",l:"PEMS",t:!pemsRootOnly?"PEMS는 lot_id가 아닌 root_lot_id 단독 조회에서만 사용할 수 있습니다":(!pemsKnobOnly?"PEMS는 KNOB만 단독 선택했을 때 사용할 수 있습니다":"wafer 1~25를 고정 표시하고 값별 S0/S1 그룹을 직접 표기합니다. 없는 wafer는 S0에 회색으로 표시합니다."),d:pemsDisabled},
+    {k:"split",l:"Split 체크",t:splitCheckToggleTitle},
+    {k:"merged",l:"병합",t:"KNOB 행의 연속 동일값만 병합합니다. 나머지 항목은 wafer별 값을 유지합니다 (읽기 전용)."},
+    {k:"pems",l:"PEMS",t:!pemsRootOnly?"PEMS는 lot_id가 아닌 root_lot_id 단독 조회에서만 사용할 수 있습니다":"wafer 1~25에서 KNOB만 S0/S1 그룹으로 표시하고 나머지 항목은 wafer별 값을 유지합니다.",d:pemsDisabled},
   ];
-  useEffect(()=>{
-    if(splitCheckDisabled&&showSplitCheckView)setShowSplitCheckView(false);
-  },[splitCheckDisabled,showSplitCheckView]);
   useEffect(()=>{
     if(pemsDisabled&&showPemsView)setShowPemsView(false);
   },[pemsDisabled,showPemsView]);
@@ -1597,6 +1580,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         splitPerfPendingRef.current.responseAt=responseReceivedAt;
       }
       setData(d);
+      setMatchingMetaRevision(revision=>revision+1);
       if(splitPerfEnabled&&d.rows?.length&&splitPerfPendingRef.current?.searchSeq===searchSeq){
         setSplitPerfReadySeq(searchSeq);
       }
@@ -2288,24 +2272,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const removePrefix=(p)=>{if(!confirm("Remove "+p+"?"))return;const next=prefixes.filter(x=>x!==p);
     sf(API+"/prefixes/save",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prefixes:next})}).then(()=>setPrefixes(next));};
 
-  const formatCell=(val,paramName)=>{
-    // Apply prefix-based decimal precision to numeric values.
-    // Non-numeric values pass through unchanged.
-    if(val===null||val===undefined||val==="")return val;
-    const s=String(val);
-    if(s==="None"||s==="null"||s==="NaN")return val;
-    const num=Number(s);
-    if(!isFinite(num)||isNaN(num))return val;
-    const pn=(paramName||"").toUpperCase();
-    // Find which prefix this param matches (prefix followed by underscore)
-    for(const pfx of Object.keys(precision||{})){
-      if(pn.startsWith(pfx.toUpperCase()+"_")){
-        const n=precision[pfx];
-        if(typeof n==="number"&&n>=0&&n<=10)return num.toFixed(n);
-      }
-    }
-    return val;
-  };
+  const formatCell=(val,paramName)=>formatSplitCellValue(val,paramName,precision);
   const getCellBg=(val,uniqueMap,paramName)=>{
     if(!val||val==="None"||val==="null"||val===null)return{};
     const categoryColor=categoryColorFor(paramName,val);
@@ -3443,7 +3410,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           :SPLIT_CHECK_PREFIX_COLUMNS;
         const splitLikeSource={
           ...data,
-          rows:displayRows,
+          precision,
+          rows:displayRows.map(row=>({...row,_cells:Object.fromEntries(Object.entries(row._cells||{}).map(([key,cell])=>[key,effectiveCellFor(cell).effectiveCell]))})),
           // TAG_purpose는 Split/S그룹으로 변환할 데이터 행이 아니라 모든 표시
           // 형식의 상단 고정 행이다. TAG prefix 선택 여부와 무관하게 별도 전달한다.
           purpose_row:purposeViewRow,
@@ -3768,7 +3736,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
               </td>);})()}
               {(mergedViewActive&&!editing&&isMergeableParam(row._param))?(()=>{
                 // v9.1.x: 병합 표시 — 왼쪽 칸과 같은 값이면 colSpan 으로 합쳐 한눈에 보이게 (읽기 전용).
-                // KNOB/FAB/MASK 행만 대상이다. INLINE/VM/TAG 는 아래 일반 셀 경로로 그린다.
+                // KNOB만 병합하고 나머지는 일반 셀로 그린다.
                 const groups=[];let cur=null;
                 (data.headers||[]).forEach((_,ci)=>{
                   const paintVal=cellDisplayValueAt(ci);
@@ -3857,10 +3825,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                   :isCustomTag?<span style={{color:display?"var(--text-primary)":"var(--text-secondary)",fontWeight:display?700:400}}>{display}</span>
                   :isManagementRow&&pendingMgmt!==undefined?<span style={{color:"rgba(5,150,105,0.95)",fontWeight:700}}>{pendingMgmt}</span>
                   :isManagementRow?<span style={{color:display?"var(--text-primary)":"var(--text-secondary)",fontWeight:display?700:400}}>{display}</span>
-                  :pendingPlan!==undefined?<span style={{color:"#ea580c",fontWeight:700,fontStyle:"italic"}}>{"📌 "}{pendingPlan}</span>
+                  :pendingPlan!==undefined?<span style={{color:"#ea580c",fontWeight:700,fontStyle:"italic"}}>{"📌 "}{formatCell(pendingPlan,row._param)}</span>
                   /* 진한 빨강 배경 위라 글자는 흰색이다 (getCellPlanStyle 과 한 쌍). */
-                  :isMismatch?<span style={{color:"#fff",fontWeight:800}}>{"✗ "}{formatCell(effectiveCell.actual,row._param)}<span style={{fontSize:14,color:"rgba(255,255,255,0.85)"}}>{" (≠"+effectiveCell.plan+")"}</span></span>
-                  :hasPlan?<span style={{fontStyle:"italic",fontWeight:700}}>{"📌 "}{effectiveCell.plan}</span>
+                  :isMismatch?<span style={{color:"#fff",fontWeight:800}}>{"✗ "}{formatCell(effectiveCell.actual,row._param)}<span style={{fontSize:14,color:"rgba(255,255,255,0.85)"}}>{" (≠"+formatCell(effectiveCell.plan,row._param)+")"}</span></span>
+                  :hasPlan?<span style={{fontStyle:"italic",fontWeight:700}}>{"📌 "}{formatCell(effectiveCell.plan,row._param)}</span>
                   :display}
                   {/* v8.4.9-c: per-cell 메모 배지. 메모가 있으면 항상 표시, 없으면 hover 시에만 + 아이콘 노출. */}
                   <span className="stm-note-btn" onClick={e=>{e.stopPropagation();setNoteFilter({scope:"cell",wafer_id:wid,param:row._param});setNoteDraftScope({scope:"param",product:selProd,root_lot_id:lotId,wafer_id:wid,param:row._param});setNotesOpen(true);}} title={cellNoteCount>0?`${cellNoteCount}개 메모`:"메모 추가"} style={{position:"absolute",top:1,right:2,cursor:"pointer",fontSize:14,padding:"0 5px",borderRadius:7,background:cellNoteCount>0?"rgba(139,92,246,0.95)":"rgba(139,92,246,0.25)",color:cellNoteCount>0?"var(--bg-secondary)":"rgba(139,92,246,0.95)",fontWeight:700,lineHeight:"14px",opacity:cellNoteCount>0?1:0,transition:"opacity 0.15s"}}>💬{cellNoteCount>0?" "+cellNoteCount:"+"}</span>

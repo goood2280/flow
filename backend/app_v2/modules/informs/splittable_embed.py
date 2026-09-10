@@ -330,13 +330,17 @@ def format_split_cell_value(value: Any, param: Any, precision: Any = None) -> st
     text = "" if value is None else str(value)
     if not text or text in {"None", "null", "NaN"}:
         return text
+    # MASK 값의 제품 prefix만 표시에서 제거한다. PC_B처럼 이미 두 구간인
+    # 값은 유지하고 AAAA_PC_B처럼 세 구간 이상인 값만 PC_B로 보인다.
+    pn = str(param or "").upper()
+    if (pn == "MASK" or pn.startswith("MASK_")) and text.count("_") >= 2:
+        return text.split("_", 1)[1]
     try:
         num = float(text)
     except (TypeError, ValueError):
         return text
     if num != num or num in (float("inf"), float("-inf")):
         return text
-    pn = str(param or "").upper()
     for prefix, digits in (precision or {}).items():
         if not pn.startswith(str(prefix or "").upper() + "_"):
             continue

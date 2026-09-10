@@ -49,7 +49,7 @@ export default function TegValueWaferMap({
   vehicle, points = [], panels = null, title = "WF MAP", valueLabel = "value", panelLimit = 25,
   palette: requestedPalette = "", low: requestedLow = null, center: requestedCenter = null, high: requestedHigh = null,
   mode = "value", specLow = null, specHigh = null,
-  interactive = true, onScaleChange = null,
+  interactive = true, onScaleChange = null, dieLayout = null,
 }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -98,16 +98,20 @@ export default function TegValueWaferMap({
     setError("");
     const standardMap = () => sf(`/api/filebrowser/chart-builder/radius-layout?product=${encodeURIComponent(vehicle)}`).then((layout) => {
       const geometry = layout.geometry || {};
-      const kx = Math.abs(Number(geometry.kx) || 1);
-      const ky = Math.abs(Number(geometry.ky) || 1);
-      const cx = Number(geometry.cx) || 0;
-      const cy = Number(geometry.cy) || 0;
+      const kx = Math.abs(Number(geometry.kx));
+      const ky = Math.abs(Number(geometry.ky));
+      const cx = Number(geometry.cx);
+      const cy = Number(geometry.cy);
+      const edge = Number(geometry.wafer_edge_mm);
+      if (![kx, ky, cx, cy, edge].every(Number.isFinite) || !(kx > 0) || !(ky > 0) || !(edge > 0)) {
+        throw new Error("제품별 TEG 위치조회 geometry가 불완전합니다. 제품 규격을 확인해 주세요.");
+      }
       return {
         vehicle: layout.mask || vehicle,
-        source: "Chip_Radius.csv",
-        geometry: { ...geometry, fit: "radius", wafer_radius_mm: 150, wafer_edge_mm: 147, shot_w_mm: kx, shot_h_mm: ky, pitch_x: 1, pitch_y: 1 },
+        source: layout.file || "TEG 위치조회",
+        geometry: { ...geometry, fit: "radius", wafer_edge_mm: edge },
         shots: (layout.rows || []).map((shot) => ({ x: Number(shot.shot_x), y: Number(shot.shot_y), r: Number(shot.radius), radius: Number(shot.radius), mm_x: (Number(shot.shot_x) - cx) * kx, mm_y: (Number(shot.shot_y) - cy) * ky })),
-        tegs: [],
+        tegs: layout.tegs || [],
       };
     });
     sf("/api/teg-map/vehicles").then((list) => {
@@ -157,6 +161,48 @@ export default function TegValueWaferMap({
   // 화면에서 여덟 칸으로 쪼개져 한 장이 점 무더기가 된다 — 패널 수에 맞춰 열
   // 수를 정하고 격자 전체 폭을 묶어, 여러 장이 같은 크기로 비교되게 한다.
   const grid = waferPanelGrid(panelRows.length);
+  const dieGeometry = useMemo(() => {
+    if (!dieLayout?.enabled || !data?.geometry || data.geometry.fit !== "radius") return null;
+    const cols = Number(dieLayout.cols), rows = Number(dieLayout.rows);
+    const shotW = Math.abs(Number(data.geometry.shot_w_mm));
+    const shotH = Math.abs(Number(data.geometry.shot_h_mm));
+    if (!Number.isInteger(cols) || !Number.isInteger(rows) || cols < 1 || rows < 1 || !(shotW > 0) || !(shotH > 0)) return null;
+    const shots = new Map((data.shots || []).map((shot) => [`${Number(shot.x)},${Number(shot.y)}`, shot]));
+    return { cols, rows, shotW, shotH, shots };
+  }, [data, dieLayout]);
+  const fullChipDiesFor = (panelPoints) => {
+    if (!dieGeometry) return null;
+    const dieW = dieGeometry.shotW / dieGeometry.cols;
+    const dieH = dieGeometry.shotH / dieGeometry.rows;
+    const seen = new Set();
+    const dies = [];
+    (panelPoints || []).forEach((point) => {
+      (point.die_points || []).forEach((diePoint, index) => {
+        const shotX = Number(diePoint.shot_x ?? point.x), shotY = Number(diePoint.shot_y ?? point.y);
+        const dieX = Number(diePoint.die_x), dieY = Number(diePoint.die_y);
+        const shot = dieGeometry.shots.get(`${shotX},${shotY}`);
+        if (!shot || ![shotX, shotY, dieX, dieY, Number(shot.mm_x), Number(shot.mm_y)].every(Number.isFinite)) return;
+        if (!Number.isInteger(dieX) || !Number.isInteger(dieY) || dieX < 0 || dieX >= dieGeometry.cols || dieY < 0 || dieY >= dieGeometry.rows) return;
+        const key = `${shotX},${shotY}:${dieX},${dieY}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        // TEG map stores mm_y positive downward; WaferMap uses Cartesian +Y up.
+        const centerX = Number(shot.mm_x), centerY = -Number(shot.mm_y);
+        dies.push({
+          key: `${key}:${index}`,
+          x: centerX - dieGeometry.shotW / 2 + dieX * dieW,
+          y: centerY + dieGeometry.shotH / 2 - (dieY + 1) * dieH,
+          w: dieW,
+          h: dieH,
+          shotX,
+          shotY,
+          value: Number(diePoint.value),
+          fill: Number.isFinite(Number(diePoint.value)) ? color(Number(diePoint.value)) : null,
+        });
+      });
+    });
+    return dies;
+  };
   return <div style={{ border: "1px solid #d1d5db", borderRadius: 8, background: "#fff", color: "#111827", padding: "10px 12px" }}>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}><strong>{title || "WF MAP"} · {data.vehicle}</strong><span style={{ fontSize: 12, color: "#475569", fontFamily: "monospace" }}>{panelCount > 1 ? `${panelRows.length}/${panelCount} panels · common scale` : "single map"}</span></div>
     {interactive&&!specOut&&<div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, alignItems: "end", margin: "10px 0" }}>
@@ -178,10 +224,11 @@ export default function TegValueWaferMap({
         const panelPoints = panel.points || [];
         const shotValues = new Map(panelPoints.map((point) => [`${Number(point.x)},${Number(point.y)}`, { value: Number(point.value ?? point.y), n: point.n, label: point.label }]));
         const matched = panelPoints.filter((point) => mapKeys.has(`${Number(point.x)},${Number(point.y)}`)).length;
+        const fullChipDies = fullChipDiesFor(panelPoints);
         return <div key={panel.key || panel.label} style={{ border: panelRows.length > 1 ? "1px solid #cbd5e1" : "none", borderRadius: 8, overflow: "hidden" }}>
           {panelRows.length > 1 && <div style={{ padding: "8px 10px", fontSize: 13, fontWeight: 900, textAlign: "center", background: "#e2e8f0", borderBottom: "2px solid #64748b" }}>{panel.label} · mapped {matched}/{panelPoints.length}</div>}
           {panelRows.length === 1 && <div style={{ textAlign: "right", fontSize: 12, color: "#475569", fontFamily: "monospace" }}>mapped {matched}/{panelPoints.length} shots</div>}
-          <div style={{ display: "flex", justifyContent: "center", paddingTop: 6, margin: "0 auto" }}><WaferMap data={data} selectedTegs={new Set()} tegColor={() => "#000"} selectedShot={null} onShotClick={() => {}} nearestShot={null} shotValues={shotValues} valueColor={color} valueLabel={valueLabel} light hideUnmeasured/></div>
+          <div style={{ display: "flex", justifyContent: "center", paddingTop: 6, margin: "0 auto" }}><WaferMap data={data} selectedTegs={new Set()} tegColor={() => "#000"} selectedShot={null} onShotClick={() => {}} nearestShot={null} shotValues={shotValues} valueColor={color} valueLabel={valueLabel} light hideUnmeasured fullChipDies={fullChipDies}/></div>
         </div>;
       })}
     </div>

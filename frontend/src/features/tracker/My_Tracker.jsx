@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { memo, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import Loading from "../../components/Loading";
 import PageGear from "../../components/PageGear";
 import Modal from "../../components/Modal";
@@ -8,6 +8,8 @@ import { authSrc, sf as apiSf } from "../../lib/api";
 import { sanitizeHtml } from "../../lib/sanitizeHtml";
 const API = "/api/tracker";
 const TRACKER_PRIORITY_TONE = { critical: "danger", high: "brand", normal: "info", low: "neutral" };
+const TRACKER_PRIORITY_LABEL = { low: "낮음", normal: "보통", high: "높음", critical: "긴급" };
+const TRACKER_STATUS_COLOR = { in_progress: "var(--warn)", closed: "var(--ok)" };
 const connectedPanelSection = { padding: 16, borderBottom: "1px solid var(--border)" };
 const connectedPanelSectionLast = { ...connectedPanelSection, borderBottom: "none" };
 const connectedSectionTitle = { fontSize: 14, fontWeight: 600, marginBottom: 8, color: "var(--text-secondary)" };
@@ -471,7 +473,7 @@ function DescEditor({ value, onChange, placeholder }) {
 //   - 새 입력은 lot_id 기준. 기존 이슈의 root_lot_id 는 조회 호환용으로만 유지.
 //   - Monitor 는 FAB step 만, ET source 계열은 ET 측정 패키지도 함께 조회.
 //   - 특정 step 설정 + 메일 옵션 인라인 저장.
-function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNames, cats }) {
+const LotTable = memo(function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNames, cats }) {
   const [stepData, setStepData] = useState({});  // {rowIdx: {fab:{...}, et:[...]} }
   const [busyRow, setBusyRow] = useState(null);
   const [batchBusy, setBatchBusy] = useState(false);
@@ -588,7 +590,7 @@ function LotTable({ lots, setLots, readOnly, issueId, product, category, roleNam
     roleNames, cats,
     stepData, setStepData, busyRow, setBusyRow, fetchStep, fetchAllSteps, batchBusy, batchDone,
   });
-}
+});
 
 function LotTableInner({ lots, setLots, readOnly, issueId, product, category, roleNames, cats, stepData, setStepData, busyRow, setBusyRow, fetchStep, fetchAllSteps, batchBusy, batchDone }) {
   const [productOptions, setProductOptions] = useState([]);
@@ -1391,7 +1393,7 @@ const GANTT_CELL_W = 26;
 // v9.5.84: 이슈명이 잘려서 안 보인다는 피드백 — 이슈 칸을 220 → 420 으로 넓혔다.
 const GANTT_LABEL_W = 420;
 
-function GanttChart({ issues, onIssueClick, cats = [] }) {
+const GanttChart = memo(function GanttChart({ issues, onIssueClick, cats = [] }) {
   // v8.1.5: look up category color from stored list; fall back to hash for orphan categories
   const hashColor = (name) => { let h = 0; for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0; return `hsl(${Math.abs(h) % 360}, 58%, 58%)`; };
   const catColor = (name) => { if (!name) return "var(--muted)"; const c = cats.find(x => x.name === name); return (c && c.color) || hashColor(name); };
@@ -1491,7 +1493,25 @@ function GanttChart({ issues, onIssueClick, cats = [] }) {
     </div>
     </>)}
   </div>);
-}
+});
+
+const TrackerIssueRow = memo(function TrackerIssueRow({ issue, selected, onOpen, categoryColor }) {
+  return (
+    <div onClick={() => onOpen(issue.id)} style={{ padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: selected ? "var(--bg-hover)" : "transparent" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+        <span title={issue.category ? `카테고리: ${issue.category}` : `상태: ${issue.status}`} style={{ width: 9, height: 9, borderRadius: "50%", background: issue.category ? categoryColor(issue.category) : (TRACKER_STATUS_COLOR[issue.status] || "var(--muted)"), flexShrink: 0, border: issue.category ? "1px solid rgba(255,255,255,0.2)" : "none" }} />
+        <span style={{ fontSize: 14, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{issue.title}</span>
+        <Pill tone={TRACKER_PRIORITY_TONE[issue.priority] || "neutral"}>{TRACKER_PRIORITY_LABEL[issue.priority] || issue.priority}</Pill>
+      </div>
+      <div style={{ fontSize: 14, color: "var(--text-secondary)", display: "flex", gap: 8 }}>
+        <span style={{ fontWeight: 500 }}>{issue.username || "?"}</span>
+        <span>{(issue.created || issue.timestamp || "")?.slice(0, 10)}</span>
+        {issue.lot_count > 0 && <span>lot {issue.lot_count}건</span>}
+        {issue.comment_count > 0 && <span>댓글 {issue.comment_count}개</span>}
+      </div>
+    </div>
+  );
+});
 
 /* ─── Main Tracker ─── */
 export default function My_Tracker({ user }) {
@@ -1503,8 +1523,12 @@ export default function My_Tracker({ user }) {
   // v8.8.13: 수정 시 카테고리도 변경 가능하도록 state 추가.
   const [editCategory, setEditCategory] = useState("");
   const [trackerPageConfig, setTrackerPageConfig] = useState({ role_names: { monitor: "Monitor" } });
+  const listRequestRef = useRef(0);
+  const detailRequestRef = useRef(0);
+  const selectedRef = useRef(null);
+  const editModeRef = useRef(false);
+  const postprocessTimerRef = useRef(null);
   const isAdmin = user?.role === "admin";
-  const statusColor = { in_progress: "var(--warn)", closed: "var(--ok)" };
   const prioColor = { critical: "var(--danger)", high: "var(--brand)", normal: "var(--info)", low: "var(--muted)" };
   // v8.1.5: look up category color from stored list; fall back to hash for orphans
   const [cats, setCats] = useState([]);
@@ -1518,22 +1542,75 @@ export default function My_Tracker({ user }) {
   }, []);
   useEffect(() => { loadTrackerPageConfig(); }, [loadTrackerPageConfig]);
   const roleNames = trackerPageConfig.role_names || { monitor: "Monitor" };
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
+  useEffect(() => () => {
+    detailRequestRef.current += 1;
+    listRequestRef.current += 1;
+    if (postprocessTimerRef.current) window.clearTimeout(postprocessTimerRef.current);
+  }, []);
   const hashColor = (name) => { let h = 0; for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0; return `hsl(${Math.abs(h) % 360}, 58%, 58%)`; };
-  const catColor = (name) => { if (!name) return "var(--muted)"; const c = cats.find(x => x.name === name); return (c && c.color) || hashColor(name); };
+  const catColor = useCallback((name) => { if (!name) return "var(--muted)"; const c = cats.find(x => x.name === name); return (c && c.color) || hashColor(name); }, [cats]);
 
-  const load = () => sf(API + "/issues").then(d => setIssues(d.issues || []));
-  useEffect(() => { load(); }, []);
-  const loadDetail = (id) => { sf(API + "/issue?issue_id=" + id).then(d => { setSelected(d.issue || d); setEditMode(false); setReplyDrafts({}); }); };
+  const load = useCallback(() => {
+    const requestId = ++listRequestRef.current;
+    return sf(API + "/issues").then(d => {
+      if (requestId !== listRequestRef.current) return null;
+      const next = d.issues || [];
+      setIssues(next);
+      return next;
+    });
+  }, []);
+  useEffect(() => { load().catch(() => {}); }, [load]);
+  const loadDetail = useCallback((id, { preserveEditor = false } = {}) => {
+    if (!id) return Promise.resolve(null);
+    const requestId = ++detailRequestRef.current;
+    return sf(API + "/issue?issue_id=" + encodeURIComponent(id)).then(d => {
+      if (requestId !== detailRequestRef.current || (preserveEditor && editModeRef.current)) return null;
+      const issue = d.issue || d;
+      selectedRef.current = issue;
+      setSelected(issue);
+      editModeRef.current = false;
+      setEditMode(false);
+      setReplyDrafts({});
+      return issue;
+    });
+  }, []);
+  const refreshIssue = useCallback((id) => {
+    if (!id) return Promise.resolve();
+    const listRequestId = ++listRequestRef.current;
+    const detailRequestId = ++detailRequestRef.current;
+    return Promise.all([
+      sf(API + "/issues"),
+      sf(API + "/issue?issue_id=" + encodeURIComponent(id)),
+    ]).then(([listData, detailData]) => {
+      if (listRequestId === listRequestRef.current) setIssues(listData.issues || []);
+      if (detailRequestId === detailRequestRef.current && selectedRef.current?.id === id) {
+        const issue = detailData.issue || detailData;
+        selectedRef.current = issue;
+        setSelected(issue);
+        editModeRef.current = false;
+        setEditMode(false);
+        setReplyDrafts({});
+      }
+    });
+  }, []);
+  const openIssue = useCallback((id) => {
+    setViewTab("list");
+    if (selectedRef.current?.id === id) return;
+    loadDetail(id).catch(e => toast.error(e.message || "이슈 상세 조회 실패"));
+  }, [loadDetail]);
   useEffect(() => {
     const issueId = new URLSearchParams(window.location.search || "").get("issue_id");
     if (issueId) loadDetail(issueId);
-  }, []);
+  }, [loadDetail]);
   const create = (data) => {
     // Issue + LOT rows are one atomic write. The former create-then-/lots/bulk
     // flow rewrote the entire issue store twice and silently lost bulk errors.
     const body = { ...(data || {}), username: user?.username || "anonymous" };
     return sf(API + "/create", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(d => {
       const iid = d.id || d.issue_id;
+      // A list response started before this write must not overwrite list_row.
+      listRequestRef.current += 1;
       setCreating(false);
       // Render the durable response immediately. LOT/history enrichment and a
       // canonical refresh can finish without holding the registration dialog.
@@ -1541,23 +1618,32 @@ export default function My_Tracker({ user }) {
         setIssues(prev => [d.list_row, ...prev.filter(row => row.id !== d.list_row.id)]);
       }
       if (d.issue) {
+        selectedRef.current = d.issue;
         setSelected(d.issue);
+        editModeRef.current = false;
         setEditMode(false);
         setReplyDrafts({});
       }
-      window.setTimeout(() => {
-        load();
-        loadDetail(iid);
-      }, d.postprocess_pending ? 800 : 100);
+      // The create response already has the durable list/detail rows. Only LOT
+      // enrichment needs a later detail refresh; avoid another full-list fetch.
+      detailRequestRef.current += 1;
+      if (postprocessTimerRef.current) window.clearTimeout(postprocessTimerRef.current);
+      if (d.postprocess_pending) {
+        postprocessTimerRef.current = window.setTimeout(() => {
+          if (selectedRef.current?.id === iid && !editModeRef.current) {
+            loadDetail(iid, { preserveEditor: true }).catch(() => {});
+          }
+        }, 800);
+      }
       return d;
     }).catch(e => {
       toast.error(e.message || "이슈 등록 실패");
       throw e;
     });
   };
-  const updateStatus = (id, status) => { sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: id, status }) }).then(() => { loadDetail(id); load(); }); };
+  const updateStatus = (id, status) => { sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: id, status }) }).then(() => refreshIssue(id)).catch(e => toast.error(e.message || "상태 변경 실패")); };
   const commentTotal = (comments = []) => (comments || []).reduce((acc, c) => acc + 1 + ((c.replies || []).length || 0), 0);
-  const addComment = () => { if (!comment.trim() || !selected) return; sf(API + "/comment", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, username: user?.username || "", text: comment }) }).then(() => { setComment(""); loadDetail(selected.id); load(); }); };
+  const addComment = () => { if (!comment.trim() || !selected) return; sf(API + "/comment", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issue_id: selected.id, username: user?.username || "", text: comment }) }).then(() => { setComment(""); return refreshIssue(selected.id); }).catch(e => toast.error(e.message || "댓글 저장 실패")); };
   const addReply = (parentIndex) => {
     const text = String(replyDrafts[parentIndex] || "").trim();
     if (!text || !selected) return;
@@ -1567,8 +1653,7 @@ export default function My_Tracker({ user }) {
       body: JSON.stringify({ issue_id: selected.id, parent_index: parentIndex, username: user?.username || "", text }),
     }).then(() => {
       setReplyDrafts(m => ({ ...m, [parentIndex]: "" }));
-      loadDetail(selected.id);
-      load();
+      return refreshIssue(selected.id);
     }).catch(e => toast.error(e.message || "대댓글 저장 실패"));
   };
   const canDeleteCommentItem = (item) => isAdmin || String(item?.username || "") === String(user?.username || "");
@@ -1585,26 +1670,36 @@ export default function My_Tracker({ user }) {
         reply_index: isReply ? replyIndex : null,
       }),
     }).then(() => {
-      loadDetail(selected.id);
-      load();
+      return refreshIssue(selected.id);
     }).catch(e => toast.error(e.message || "댓글 삭제 실패"));
   };
-  const deleteIssue = () => { if (!confirm("이 이슈를 삭제할까요?")) return; sf(API + "/delete?issue_id=" + selected.id, { method: "POST" }).then(() => { setSelected(null); load(); }); };
+  const deleteIssue = () => { if (!confirm("이 이슈를 삭제할까요?")) return; sf(API + "/delete?issue_id=" + encodeURIComponent(selected.id), { method: "POST" }).then(() => { detailRequestRef.current += 1; selectedRef.current = null; setSelected(null); return load(); }).catch(e => toast.error(e.message || "이슈 삭제 실패")); };
   const canEdit = selected && (selected.username === user?.username || isAdmin);
-  const startEdit = () => { if (!canEdit) return; setEditMode(true); setEditTitle(selected.title); setEditDesc(selected.description_html || selected.description || ""); setEditPrio(selected.priority || "normal"); setEditCategory(selected.category || ""); setEditLots((selected.lots || []).map(l => ({ ...l }))); };
+  const startEdit = () => { if (!canEdit) return; editModeRef.current = true; setEditMode(true); setEditTitle(selected.title); setEditDesc(selected.description_html || selected.description || ""); setEditPrio(selected.priority || "normal"); setEditCategory(selected.category || ""); setEditLots((selected.lots || []).map(l => ({ ...l }))); };
   const saveEdit = () => {
     if (!editTitle.trim()) return;
     // v9.5.13: 우선순위/카테고리 UI 제거 — 기존 값 그대로 유지해 저장 (빈 카테고리는 payload 에서 제외).
     const payload = { issue_id: selected.id, title: editTitle, description: editDesc, priority: editPrio, lots: editLots };
     if ((editCategory || "").trim()) payload.category = editCategory;
     sf(API + "/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) })
-      .then(() => { setEditMode(false); loadDetail(selected.id); load(); }).catch(e => toast.error(e.message));
+      .then(() => refreshIssue(selected.id)).catch(e => toast.error(e.message));
   };
-  const filteredIssues = issues.filter(iss => {
+  const filteredIssues = useMemo(() => issues.filter(iss => {
     if (filter && iss.status !== filter) return false;
     if (search) { const s = search.toLowerCase(); return (iss.title || "").toLowerCase().includes(s) || (iss.username || "").toLowerCase().includes(s) || (iss.category || "").toLowerCase().includes(s); }
     return true;
-  });
+  }), [issues, filter, search]);
+  const selectedDescriptionHtml = useMemo(
+    () => trackerDescHtml(selected?.description_html || selected?.description || ""),
+    [selected?.description_html, selected?.description],
+  );
+  const updateSelectedLots = useCallback((nextOrUpdater) => {
+    setSelected(current => {
+      if (!current) return current;
+      const nextLots = typeof nextOrUpdater === "function" ? nextOrUpdater(current.lots || []) : nextOrUpdater;
+      return nextLots === current.lots ? current : { ...current, lots: nextLots };
+    });
+  }, []);
 
   return (
     <div className="flow-connected-page" style={{ display: "flex", height: "calc(100vh - 52px)", background: "var(--bg-primary)", color: "var(--text-primary)" }}>
@@ -1641,27 +1736,15 @@ export default function My_Tracker({ user }) {
         </div>
         <div style={{ flex: 1, overflow: "auto" }}>
           {filteredIssues.map(iss => (
-            <div key={iss.id} onClick={() => { loadDetail(iss.id); setViewTab("list"); }} style={{ padding: "10px 16px", borderBottom: "1px solid var(--border)", cursor: "pointer", background: selected?.id === iss.id ? "var(--bg-hover)" : "transparent" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                {/* v9.5.13: 카테고리 텍스트 라벨(변경점/불량/Monitor 등) 제거 — 색 점만 유지해 제목이 길게 보이도록. */}
-                <span title={iss.category ? `카테고리: ${iss.category}` : `상태: ${iss.status}`} style={{ width: 9, height: 9, borderRadius: "50%", background: iss.category ? catColor(iss.category) : (statusColor[iss.status] || "var(--muted)"), flexShrink: 0, border: iss.category ? "1px solid rgba(255,255,255,0.2)" : "none" }} />
-                <span style={{ fontSize: 14, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{iss.title}</span>
-                <Pill tone={TRACKER_PRIORITY_TONE[iss.priority] || "neutral"}>{({low:"낮음",normal:"보통",high:"높음",critical:"긴급"}[iss.priority]) || iss.priority}</Pill>
-              </div>
-              <div style={{ fontSize: 14, color: "var(--text-secondary)", display: "flex", gap: 8 }}>
-                <span style={{ fontWeight: 500 }}>{iss.username || "?"}</span>
-                <span>{(iss.created || iss.timestamp || "")?.slice(0, 10)}</span>
-                {iss.lot_count > 0 && <span>lot {iss.lot_count}건</span>}
-                {iss.comment_count > 0 && <span>댓글 {iss.comment_count}개</span>}
-              </div>
-            </div>))}
+            <TrackerIssueRow key={iss.id} issue={iss} selected={selected?.id === iss.id} onOpen={openIssue} categoryColor={catColor} />
+          ))}
         </div>
       </div>
 
       {/* Main */}
       <div style={{ flex: 1, overflow: "auto", padding: 20 }}>
         {creating && <IssueForm onSubmit={create} onClose={() => setCreating(false)} user={user} roleNames={roleNames} cats={cats} />}
-        {viewTab === "gantt" ? <GanttChart issues={issues} cats={cats} onIssueClick={(id) => { loadDetail(id); setViewTab("list"); }} />
+        {viewTab === "gantt" ? <GanttChart issues={issues} cats={cats} onIssueClick={openIssue} />
           : selected ? (<Card padding={0}>
             <section style={connectedPanelSection}>
             {/* Header */}
@@ -1675,7 +1758,7 @@ export default function My_Tracker({ user }) {
               </div>
               {canEdit && !editMode && <span onClick={startEdit} style={{ cursor: "pointer", fontSize: 14, color: "var(--accent)", padding: "4px 8px", borderRadius: 4, background: "var(--accent-glow)" }}>수정</span>}
               {editMode && <Pill tone="ok" onClick={saveEdit}>저장</Pill>}
-              {editMode && <span onClick={() => { setEditMode(false); setEditLots([]); }} style={{ cursor: "pointer", fontSize: 14, color: "var(--text-secondary)", padding: "4px 8px", borderRadius: 4, background: "var(--bg-hover)" }}>취소</span>}
+              {editMode && <span onClick={() => { editModeRef.current = false; setEditMode(false); setEditLots([]); }} style={{ cursor: "pointer", fontSize: 14, color: "var(--text-secondary)", padding: "4px 8px", borderRadius: 4, background: "var(--bg-hover)" }}>취소</span>}
               {canEdit && <Pill tone="danger" onClick={deleteIssue}>삭제</Pill>}
               <Filter
                 value={selected.status}
@@ -1702,7 +1785,7 @@ export default function My_Tracker({ user }) {
               <div style={connectedSectionTitle}>설명</div>
               <style>{`.desc-view img{max-width:400px!important;border-radius:6px;display:block;margin:4px 0;}`}</style>
               <div className="desc-view" style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.7, wordBreak: "break-word" }}
-                dangerouslySetInnerHTML={{ __html: trackerDescHtml(selected.description_html || selected.description) }} />
+                dangerouslySetInnerHTML={{ __html: selectedDescriptionHtml }} />
               </section>
 
             )}
@@ -1743,13 +1826,7 @@ export default function My_Tracker({ user }) {
             </section>}
             {/* Lots table */}
             {!editMode && selected.lots?.length > 0 && <section style={connectedPanelSection}>
-              <LotTable lots={selected.lots} setLots={(fn) => {
-                // readonly 이긴 하지만 watch 저장 후 로컬 반영 위해 setLots 는 유용.
-                if (typeof fn === "function") {
-                  const next = fn(selected.lots);
-                  setSelected(s => s ? { ...s, lots: next } : s);
-                }
-              }} readOnly={true}
+              <LotTable lots={selected.lots} setLots={updateSelectedLots} readOnly={true}
               issueId={selected.id} product={selected.product || ""} category={selected.category || ""} roleNames={roleNames} cats={cats} />
             </section>}
 
@@ -1811,8 +1888,8 @@ function TrackerSettings({ isAdmin }) {
   // v9.5.84: 구 '자동 갱신'(lot watch 30분 폴링) 설정 제거 — Tracker 는 ET DB 만
   //   추적하므로 갱신 경로는 아래 ET Tracker 스캔 하나뿐이다.
   // v9.5.13: ET Tracker 일일 스캔 설정 — 스캔 시각·메일 on/off·PGM 필터·수신 그룹·링크 주소.
-  const [etScan, setEtScan] = useState({ enabled: true, scan_times: [], mail_enabled: false, mail_group_ids: [], pgm_filters: [], app_base_url: "", status: {} });
-  const [etTimesText, setEtTimesText] = useState("");
+  const [etScan, setEtScan] = useState({ enabled: true, scan_times: ["08:00", "20:00"], mail_enabled: false, mail_group_ids: [], pgm_filters: [], app_base_url: "", status: {} });
+  const [etTimesText, setEtTimesText] = useState("08:00, 20:00");
   const [etPgmText, setEtPgmText] = useState("");
   const [etScanMsg, setEtScanMsg] = useState("");
   const [etScanBusy, setEtScanBusy] = useState(false);
@@ -1881,6 +1958,7 @@ function TrackerSettings({ isAdmin }) {
     const times = etTimesText.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
     const bad = times.filter(t => !/^([01]?\d|2[0-3]):[0-5]\d$/.test(t));
     if (bad.length) { setEtScanMsg(`시간 형식 오류: ${bad.join(", ")} (HH:MM 로 입력)`); return; }
+    if (times.length > 2) { setEtScanMsg("스캔 시간은 하루 최대 2개까지 지정할 수 있습니다."); return; }
     const pgms = etPgmText.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
     setEtScanBusy(true);
     setEtScanMsg("");
@@ -2125,7 +2203,7 @@ function TrackerSettings({ isAdmin }) {
           스캔 시간
           <input value={etTimesText} disabled={!isAdmin || etScanBusy}
             onChange={e => setEtTimesText(e.target.value)}
-            placeholder="예: 08:00, 13:00, 18:00 (하루 n번)"
+            placeholder="예: 08:00, 20:00 (하루 최대 2회)"
             style={{ padding: "6px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
         </label>
         <label style={{ display: "grid", gridTemplateColumns: "110px 1fr", gap: 8, alignItems: "center", fontSize: 14, color: "var(--text-secondary)" }}>

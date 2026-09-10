@@ -393,6 +393,59 @@ def test_vm_process_info_preserves_underscores_and_vehicle_module(monkeypatch, t
     }
 
 
+def test_inline_and_vm_process_info_accept_case_variant_headers_and_configured_files(monkeypatch, tmp_path):
+    from routers import splittable
+
+    (tmp_path / "inline_custom.csv").write_text(
+        " PRODUCT , STEP_ID , ITEM_ID , ITEM_DESC \n"
+        " proda , IN200 , CD_ITEM , CD VALUE \n",
+        encoding="utf-8",
+    )
+    (tmp_path / "vm_custom.csv").write_text(
+        " STEP_DESC , ITEM_ID \n gate   etch , VM_ITEM \n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        " PRODUCT , STEP_ID , STEP_DESC \n ML_TABLE_PRODA , VM300 , GATE ETCH \n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    defaults = splittable.rulebook_repo.get_default_schema()
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {
+        **defaults.get(kind, {}),
+        **({"file_name": "inline_custom.csv"} if kind == "inline_matching" else {}),
+        **({"file_name": "vm_custom.csv"} if kind == "vm_matching" else {}),
+    })
+
+    inline = splittable._build_inline_meta("ML_TABLE_PRODA")
+    vm = splittable._build_vm_meta("PRODA")
+
+    assert inline["CD_ITEM"]["step_ids"] == ["IN200"]
+    assert vm["gate   etch_VM_ITEM"]["step_ids"] == ["VM300"]
+    assert splittable._step_process_columns_for_param(
+        "vm_GATE   ETCH_vm_item", {"vm": vm}
+    )["step_id"] == "VM300"
+
+
+def test_matching_csv_cache_refreshes_after_same_sized_rewrite(monkeypatch, tmp_path):
+    from routers import splittable
+
+    import os
+    stamp = 1_700_000_000_000_000_000
+    path = tmp_path / "inline_matching.csv"
+    path.write_text("step_id,item_id\nA100,ITEM\n", encoding="utf-8")
+    os.utime(path, ns=(stamp, stamp))
+    monkeypatch.setattr(splittable, "_CSV_ROWS_CACHE", {})
+    first = splittable._load_csv_rows(path)
+
+    path.write_text("step_id,item_id\nB200,ITEM\n", encoding="utf-8")
+    os.utime(path, ns=(stamp + 100, stamp + 100))
+    second = splittable._load_csv_rows(path)
+
+    assert first[0]["step_id"] == "A100"
+    assert second[0]["step_id"] == "B200"
+
+
 def test_knob_virtual_columns_emit_one_row_per_rulebook_feature(monkeypatch):
     from routers import splittable
 
@@ -608,6 +661,60 @@ def test_inform_split_check_keeps_process_prefix_columns():
     assert result["st_view"]["prefix_columns"] == ["step_id", "step_desc", "항목", "값", "Split"]
     assert result["st_view"]["parameter_prefix_index"] == 2
     assert result["rows"][0][:6] == ["S10", "ETCH", "A", "PP_A", "S0", "S0"]
+
+
+def test_inform_split_check_only_expands_knob_and_keeps_mask_wafer_values():
+    from routers import informs
+
+    embed = {
+        "st_view": {
+            "headers": ["#1", "#2"],
+            "root_lot_id": "L1",
+            "rows": [
+                {
+                    "_param": "KNOB_A", "_display": "KNOB_A",
+                    "_cells": {"0": {"actual": "P0"}, "1": {"actual": "P1"}},
+                },
+                {
+                    "_param": "MASK_GATE", "_display": "MASK_GATE",
+                    "_cells": {"0": {"actual": "AAAA_PC_B"}, "1": {"actual": "PC_B"}},
+                },
+                {
+                    "_param": "INLINE_CD", "_display": "INLINE_CD",
+                    "_cells": {"0": {"actual": "10.1"}, "1": {"actual": "10.2"}},
+                },
+            ],
+        },
+    }
+
+    result = informs._convert_splittable_embed_to_split_check(embed)
+
+    assert len(result["st_view"]["rows"]) == 4
+    assert result["rows"] == [
+        ["A", "P0", "S0", "S0", ""],
+        ["A", "P1", "S1", "", "S1"],
+        ["GATE", "", "", "PC_B", "PC_B"],
+        ["CD", "", "", "10.1", "10.2"],
+    ]
+    html = informs._render_embed_table_html(result)
+    assert "AAAA_PC_B" not in html
+    assert "PC_B" in html
+    inline_row = result["st_view"]["rows"][-1]
+    inline_row["_cells"]["0"] = {"actual": "10.1", "plan": "11.2"}
+    inline_row["_cells"]["1"] = {"actual": "", "plan": "12.3"}
+    html = informs._render_embed_table_html(result)
+    assert "≠11.2" in html
+    assert "📌 12.3" in html
+
+
+def test_merged_mode_is_knob_only():
+    from routers import informs, splittable
+
+    assert informs._merge_view_allowed_param("KNOB_A")
+    assert splittable._merge_view_allowed_param("KNOB_A")
+    for param in ("MASK_A", "FAB_A", "INLINE_A", "VM_A", "TAG_A"):
+        assert not informs._merge_view_allowed_param(param)
+        assert not splittable._merge_view_allowed_param(param)
 
 
 def test_mask_process_columns_resolves_step_id_and_module_from_vehicle_matching(tmp_path, monkeypatch):

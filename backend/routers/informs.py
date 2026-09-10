@@ -3024,10 +3024,10 @@ def _apply_step_labels_to_embed(embed: dict, product: str) -> dict:
     return out
 
 
-# 통합(병합)은 split 조건 열에만 의미가 있다. INLINE/VM 은 wafer 별 실측값,
-# TAG/관리 행은 자유 입력이라 값이 우연히 같다고 묶으면 wafer 별 값을 못 읽는다.
+# 통합(병합)은 KNOB 조건 열에만 의미가 있다. 나머지 행은 wafer 별 값을
+# 그대로 읽어야 하므로 값이 우연히 같아도 묶지 않는다.
 # routers/splittable.py 의 MERGE_VIEW_PREFIXES 와 같은 규약이다.
-_MERGE_VIEW_PREFIXES = ("KNOB", "FAB", "MASK")
+_MERGE_VIEW_PREFIXES = ("KNOB",)
 
 
 def _merge_view_allowed_param(param: str) -> bool:
@@ -3107,6 +3107,32 @@ def _split_check_rows_from_st_view(st_view: dict[str, Any]) -> tuple[list[dict[s
         if not param and not display:
             continue
         cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
+        process = row.get("_process_columns") if isinstance(row.get("_process_columns"), dict) else {}
+        item_label = split_param_display_name(display or param, param)
+        if not _merge_view_allowed_param(param):
+            prefix_cells = (
+                [str(process.get("step_id") or ""), str(process.get("step_desc") or ""),
+                 item_label, "", ""]
+                if step_labels else [item_label, "", ""]
+            )
+            ordinary_cells: dict[str, dict[str, Any]] = {}
+            values: list[str] = []
+            for ci in range(len(headers)):
+                cell = cells.get(str(ci)) or cells.get(ci) or {}
+                cell_copy = dict(cell) if isinstance(cell, dict) else {}
+                ordinary_cells[str(ci)] = cell_copy
+                actual = cell_copy.get("actual")
+                plan = cell_copy.get("plan")
+                value = actual if _snapshot_has_value(actual) else plan
+                values.append(format_split_cell_value(value, param, precision))
+            out_rows.append({
+                **row,
+                "_prefix_cells": prefix_cells,
+                "_cells": ordinary_cells,
+                "_not_reached_all": bool(headers) and not_reached.row(param, len(headers)),
+            })
+            legacy_rows.append([*prefix_cells, *values])
+            continue
         order: list[str] = []
         seen: set[str] = set()
         per_header: list[str] = []
@@ -3130,10 +3156,8 @@ def _split_check_rows_from_st_view(st_view: dict[str, Any]) -> tuple[list[dict[s
                     "split_check": True,
                     "not_reached": not_reached.cell(param, ci),
                 }
-            item_label = split_param_display_name(display or param, param)
             # 묶음은 raw 값 기준, 보여주는 값만 화면과 같은 소수 자리수로.
             value_label = format_split_cell_value(value, param, precision)
-            process = row.get("_process_columns") if isinstance(row.get("_process_columns"), dict) else {}
             prefix_cells = (
                 [str(process.get("step_id") or ""), str(process.get("step_desc") or ""),
                  item_label, value_label, label]
@@ -5539,6 +5563,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                       f"{max_rows}행으로 잘림 — 전체 데이터는 첨부 xlsx 참고</div>") if truncated else ""
         body_parts = []
         for ri, r in enumerate(shown):
+            knob_row = _merge_view_allowed_param(r.get("_param"))
             raw_prefix = r.get("_prefix_cells") if isinstance(r.get("_prefix_cells"), list) else []
             prefix_vals = list(raw_prefix[:len(prefix_columns)])
             while len(prefix_vals) < len(prefix_columns):
@@ -5555,7 +5580,7 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
             split_label = str(r.get("_split_label") or (prefix_vals[split_prefix_index] if len(prefix_vals) > split_prefix_index else "") or "")
             split_color = _split_check_color_style(split_label)
             row_span = param_spans[ri] if ri < len(param_spans) else 1
-            row_gray = _SPLIT_NOT_REACHED_BG if (
+            row_gray = _SPLIT_NOT_REACHED_BG if knob_row and (
                 r.get("_not_reached_all") is True
                 or not_reached.row(r.get("_param"), len(headers))
             ) else ""
@@ -5571,6 +5596,34 @@ def _render_embed_table_html(embed: Optional[dict], max_rows: int = 60, module: 
                 )
             for i in range(len(headers)):
                 cell = cells.get(i) or cells.get(str(i)) or {}
+                if not knob_row:
+                    actual = (cell or {}).get("actual")
+                    plan = (cell or {}).get("plan")
+                    has_actual = _st_has_value(actual)
+                    has_plan = _st_has_value(plan)
+                    display_actual = format_split_cell_value(actual, r.get("_param"), precision) if has_actual else ""
+                    display_plan = format_split_cell_value(plan, r.get("_param"), precision) if has_plan else ""
+                    plan_diff = has_actual and has_plan and str(actual) != str(plan)
+                    plan_only = has_plan and not has_actual
+                    if plan_diff:
+                        plan_style = _SPLIT_MISMATCH_STYLE
+                        body_html = (
+                            f"<span style='color:#ffffff;font-weight:800'>✗ {esc(display_actual)}"
+                            f"<span style='font-size:{_MAIL_SNAPSHOT_FONT};color:rgba(255,255,255,0.85)'>"
+                            f" (≠{esc(display_plan)})</span></span>"
+                        )
+                    elif plan_only:
+                        plan_style = _SPLIT_PLAN_LINE + "font-style:italic;font-weight:700;"
+                        body_html = f"<span style='font-style:italic;font-weight:700'>📌 {esc(display_plan)}</span>"
+                    else:
+                        plan_style = _SPLIT_PLAN_LINE if has_plan else ""
+                        body_html = esc(display_actual)
+                    paint_value = plan if has_plan else actual
+                    cell_bg = _st_cell_bg(paint_value, _st_build_uniq_map([r], headers), str(r.get("_param") or ""))
+                    row_cells.append(
+                        f"<td style='{td_check}{data_col_style}{cell_bg}{plan_style}'>{body_html}</td>"
+                    )
+                    continue
                 mark = str((cell or {}).get("actual") or "")
                 cell_gray = _SPLIT_NOT_REACHED_BG if (
                     (cell or {}).get("not_reached") is True or not_reached.cell(r.get("_param"), i)

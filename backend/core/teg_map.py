@@ -56,7 +56,7 @@ LEGACY_CFG_PATH = PATHS.data_root / "teg_map.json"
 
 CFG_NAME = "teg_map.json"
 DIR_NAME = "teg_location"
-INLINE_MAP_DIR_NAME = "credential"
+INLINE_MAP_DIR_NAME = "confidential"
 INLINE_MAP_FILE_NAME = "inline_map_settings.json"
 INLINE_SHOT_MATCHING_FILE_NAME = "inline_shot_matching.csv"
 INLINE_SHOT_MATCHING_COLUMNS = ("product", "step_id", "item_id", "map_name")
@@ -294,13 +294,23 @@ def _cfg_path() -> Path:
     return teg_dir() / CFG_NAME
 
 
-def inline_map_settings_path() -> Path:
-    """Inline 좌표 매칭용 관리자 설정 파일 (DB root/credential)."""
-    return roots.get_db_root() / INLINE_MAP_DIR_NAME / INLINE_MAP_FILE_NAME
+def inline_map_settings_path(for_write: bool = False) -> Path:
+    """Inline 좌표 매칭용 관리자 설정 파일 (DB root/confidential)."""
+    target = roots.get_db_root() / INLINE_MAP_DIR_NAME / INLINE_MAP_FILE_NAME
+    if for_write:
+        return target
+    if not target.is_file():
+        legacy = roots.get_db_root() / "credential" / INLINE_MAP_FILE_NAME
+        if legacy.is_file():
+            return legacy
+    return target
 
 
 def inline_shot_matching_path() -> Path:
-    """Inline ITEM → map 연결표 (DB root)."""
+    """Inline ITEM → map 연결표 (DB root/confidential 우선, 레거시 DB root 호환)."""
+    confidential = roots.get_db_root() / "confidential" / INLINE_SHOT_MATCHING_FILE_NAME
+    if confidential.is_file():
+        return confidential
     return roots.get_db_root() / INLINE_SHOT_MATCHING_FILE_NAME
 
 
@@ -551,7 +561,7 @@ def save_inline_map_table(table_name: str, vehicle: str, shots: list[dict], user
         tables.append(cleaned)
         tables.sort(key=lambda item: item["table_name"].casefold())
         out = {"version": 1, "tables": tables}
-        path = inline_map_settings_path()
+        path = inline_map_settings_path(for_write=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         save_json(path, out, indent=2)
         return out
@@ -562,11 +572,18 @@ def delete_inline_map_table(table_name: str) -> dict:
     if not name:
         raise ValueError("TABLE 이름이 필요합니다")
     with _INLINE_MAP_LOCK:
-        references = [row for row in load_inline_shot_matching().get("rows", [])
-                      if row["map_name"].casefold() == name.casefold()]
+        from core import inline_coordinates
+        name_cf = name.casefold()
+        name_stem_cf = Path(name).stem.casefold()
+        all_rules = inline_coordinates.load_matching_rules(roots.get_db_root())
+        references = [
+            r for r in all_rules
+            if str(r.get("matching_table") or "").casefold() in (name_cf, name_stem_cf)
+            or Path(str(r.get("matching_table") or "")).stem.casefold() in (name_cf, name_stem_cf)
+        ]
         if references:
             raise ValueError(
-                f"inline_shot_matching.csv에서 {len(references)}개 행이 사용하는 map입니다. "
+                f"Inline shot matching 설정에서 {len(references)}개 항목이 사용하는 map입니다. "
                 "연결 행을 먼저 삭제해 주세요"
             )
         current = load_inline_map_settings()
@@ -574,7 +591,7 @@ def delete_inline_map_table(table_name: str) -> dict:
         if len(tables) == len(current["tables"]):
             raise LookupError(f"저장된 TABLE이 없습니다: {name}")
         out = {"version": 1, "tables": tables}
-        path = inline_map_settings_path()
+        path = inline_map_settings_path(for_write=True)
         path.parent.mkdir(parents=True, exist_ok=True)
         save_json(path, out, indent=2)
         return out
@@ -3336,7 +3353,7 @@ def update_product_identity(current_vehicle: str, vehicle: str, node_path: str,
         affected_paths.add(info_path)
     affected_paths.add(_cfg_path())
     if changed_inline:
-        affected_paths.add(inline_map_settings_path())
+        affected_paths.add(inline_map_settings_path(for_write=True))
     if changed_inline_matching:
         affected_paths.add(inline_shot_matching_path())
     originals = {path: path.read_bytes() if path.is_file() else None for path in affected_paths}
@@ -3416,7 +3433,7 @@ def update_product_identity(current_vehicle: str, vehicle: str, node_path: str,
                                  "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
                                  "updated_by": str(username or "")[:200]}
                     tables.append(table)
-                inline_path = inline_map_settings_path()
+                inline_path = inline_map_settings_path(for_write=True)
                 inline_path.parent.mkdir(parents=True, exist_ok=True)
                 save_json(inline_path, {"version": 1, "tables": tables}, indent=2)
 

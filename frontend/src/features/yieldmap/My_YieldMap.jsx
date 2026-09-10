@@ -780,6 +780,21 @@ export default function My_YieldMap({ user }) {
       });
       setScanPreview(data);
       setConfig(current => ({ ...current, vehicle: data.vehicle, shot_layout: data.layout }));
+      if (data.layout_saved) {
+        setBoot(current => ({
+          ...current,
+          configs: {
+            ...(current.configs || {}),
+            [product]: {
+              ...(current.configs?.[product] || {}),
+              source: config.source,
+              fields: config.fields || {},
+              vehicle: data.vehicle,
+              shot_layout: data.layout,
+            },
+          },
+        }));
+      }
       setBinRows(current => {
         const existing = new Map(current.filter(row => String(row.bin || "").trim())
           .map(row => [String(row.bin).trim(), String(row.color || "").toUpperCase()]));
@@ -1153,6 +1168,7 @@ export default function My_YieldMap({ user }) {
               <Pill tone={scanPreview.partial_shot_count ? "warn" : "neutral"}>Partial {scanPreview.partial_shot_count || 0}개</Pill>
               <Pill tone="neutral">Full Shot당 {scanPreview.layout?.expected_die || 0} die</Pill>
               <Pill tone="neutral">geometry 매칭 {Number(scanPreview.matched_rows || 0).toLocaleString()} / {Number(scanPreview.scan_rows || 0).toLocaleString()} die</Pill>
+              <Pill tone={scanPreview.layout_saved ? "ok" : "neutral"}>{scanPreview.layout_saved ? "좌표계 자동 저장됨" : "기존 좌표계 유지 · 덮어쓰기는 설정 저장"}</Pill>
             </div>
             <div style={{ width: "min(100%, 480px)", marginTop: 12 }}>
               <div style={{ marginBottom: 6, fontSize: 11, fontWeight: 800 }}>WAFER {scanPreview.preview_wafer_id || "(미지정)"} · Scan 미리보기</div>

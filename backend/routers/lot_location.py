@@ -4,11 +4,12 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import io
+import json
 import re
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from core import fab_reference
@@ -23,6 +24,27 @@ class LotLocationQueryRequest(BaseModel):
     lot_ids: list[str] = Field(default_factory=list)
     raw_text: str = Field(default="")
     match_root: bool = Field(default=True)
+
+
+async def _extract_query_payload(request: Request) -> LotLocationQueryRequest:
+    body_bytes = await request.body()
+    if not body_bytes:
+        return LotLocationQueryRequest()
+    try:
+        data = json.loads(body_bytes.decode("utf-8-sig"))
+        if isinstance(data, str):
+            try:
+                data = json.loads(data)
+            except Exception:
+                data = {"raw_text": data}
+        if isinstance(data, dict):
+            return LotLocationQueryRequest(**data)
+        elif isinstance(data, list):
+            return LotLocationQueryRequest(lot_ids=[str(x) for x in data])
+    except Exception:
+        text_content = body_bytes.decode("utf-8-sig", errors="replace")
+        return LotLocationQueryRequest(raw_text=text_content)
+    return LotLocationQueryRequest()
 
 
 def parse_lot_ids(lot_ids: list[str] | None, raw_text: str = "") -> list[str]:
@@ -109,6 +131,12 @@ def query_lot_locations(lot_ids: list[str], match_root: bool = True) -> dict[str
         )
         predicate = lot_id_col.is_in(requested_upper)
 
+        # Base lot matching (e.g. A1000A matches A1000A.3 or A1000A-01)
+        lot_base_col = (
+            lot_id_col.str.split(".").list.get(0).str.split("-").list.get(0)
+        )
+        predicate |= lot_base_col.is_in(requested_upper)
+
         if match_root and "root_lot_id" in schema_cols:
             root_id_col = (
                 pl.col("root_lot_id").cast(pl.Utf8, strict=False).fill_null("")
@@ -157,6 +185,7 @@ def query_lot_locations(lot_ids: list[str], match_root: bool = True) -> dict[str
         # Record which requested token matched this row
         lot_upper = lot_id.upper()
         root_upper = root_lot_id.upper()
+        base_upper = lot_upper.split(".")[0].split("-")[0]
         matched_token = ""
         matched_rank = 999999
         if lot_upper in lot_order_map:
@@ -167,6 +196,10 @@ def query_lot_locations(lot_ids: list[str], match_root: bool = True) -> dict[str
             matched_token = clean_lots[lot_order_map[root_upper]]
             matched_rank = lot_order_map[root_upper]
             matched_lots_found.add(root_upper)
+        elif base_upper in lot_order_map:
+            matched_token = clean_lots[lot_order_map[base_upper]]
+            matched_rank = lot_order_map[base_upper]
+            matched_lots_found.add(base_upper)
 
         items.append({
             "lot_id": lot_id,
@@ -190,7 +223,11 @@ def query_lot_locations(lot_ids: list[str], match_root: bool = True) -> dict[str
         item.pop("_sort_rank", None)
         item.pop("_wafer_key", None)
 
-    unmatched = [lot for lot in clean_lots if lot.upper() not in matched_lots_found]
+    unmatched = [
+        lot for lot in clean_lots
+        if lot.upper() not in matched_lots_found
+        and lot.upper().split(".")[0].split("-")[0] not in matched_lots_found
+    ]
 
     return {
         "items": items,
@@ -204,7 +241,8 @@ def query_lot_locations(lot_ids: list[str], match_root: bool = True) -> dict[str
 
 
 @router.post("/query")
-def query_lot_location_endpoint(req: LotLocationQueryRequest):
+async def query_lot_location_endpoint(request: Request):
+    req = await _extract_query_payload(request)
     lot_ids = req.lot_ids
     if req.raw_text:
         lot_ids = parse_lot_ids(lot_ids, req.raw_text)
@@ -212,7 +250,8 @@ def query_lot_location_endpoint(req: LotLocationQueryRequest):
 
 
 @router.post("/export-csv")
-def export_lot_location_csv(req: LotLocationQueryRequest):
+async def export_lot_location_csv(request: Request):
+    req = await _extract_query_payload(request)
     lot_ids = req.lot_ids
     if req.raw_text:
         lot_ids = parse_lot_ids(lot_ids, req.raw_text)

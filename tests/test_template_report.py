@@ -78,6 +78,54 @@ def _png_data_url():
     return "data:image/png;base64," + base64.b64encode(stream.getvalue()).decode("ascii")
 
 
+def test_named_background_selection_roundtrip_and_export(tmp_path, monkeypatch):
+    saved = _save_demo_template(tmp_path, monkeypatch)
+    user = {"username": "engineer", "role": "admin"}
+    ids = []
+    for name, color in [("Blue", "blue"), ("Red", "red")]:
+        stream = io.BytesIO()
+        Image.new("RGB", (160, 90), color).save(stream, format="PNG")
+        out = template_report.save_named_background(template_report.NamedBackgroundSaveReq(
+            name=name, data_url="data:image/png;base64," + base64.b64encode(stream.getvalue()).decode()), user)
+        ids.append(out["settings"]["backgrounds"][-1]["id"])
+    assert len(out["settings"]["backgrounds"]) == 2
+    for background_id in [*ids, "none", ""]:
+        saved["options"]["background_id"] = background_id
+        saved = template_report.save_template(template_report.TemplateSaveReq(**saved), user)["template"]
+        assert saved["options"]["background_id"] == background_id
+        parsed = template_report.parse_template_code(
+            template_report.TemplateCodeReq(code=json.dumps(saved)), user)
+        assert parsed["template"]["options"]["background_id"] == background_id
+        run = template_report.prepare_run(template_report.TemplateRunReq(template_id=saved["id"]), user)
+        assert run["deck"]["background_id"] == background_id
+        response = template_report.export_pptx(template_report.ExportReq(template_id=saved["id"]), user)
+        ppt = Presentation(io.BytesIO(response.body))
+        pictures = [shape for shape in ppt.slides[0].shapes if shape.shape_type == 13]
+        if background_id in ids:
+            assert pictures[0].image.blob == template_report._report_background_bytes(background_id)
+            with pytest.raises(HTTPException) as exc:
+                template_report.delete_named_background(background_id, user)
+            assert exc.value.status_code == 409
+        else:
+            assert not pictures
+    template_report.delete_named_background(ids[0], user)
+    assert len(template_report.get_template_report_settings(user)["settings"]["backgrounds"]) == 1
+    saved["options"]["background_id"] = ids[0]
+    with pytest.raises(HTTPException):
+        template_report.save_template(template_report.TemplateSaveReq(**saved), user)
+
+
+def test_named_background_rejects_duplicate_and_invalid_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(template_report, "STORE_FILE", tmp_path / "templates.json")
+    user = {"username": "manager"}
+    req = template_report.NamedBackgroundSaveReq(name="Weekly", data_url=_png_data_url())
+    template_report.save_named_background(req, user)
+    with pytest.raises(HTTPException):
+        template_report.save_named_background(req, user)
+    with pytest.raises(HTTPException):
+        template_report.delete_named_background("../outside", user)
+
+
 def test_template_run_replays_the_time_window_saved_in_the_chart_code(tmp_path, monkeypatch):
     """시간 창은 차트생성 코드가 가진다 — 보고서는 덧씌우지 않고 그대로 다시 실행한다."""
     saved = _save_demo_template(tmp_path, monkeypatch)

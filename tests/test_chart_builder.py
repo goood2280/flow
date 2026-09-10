@@ -510,14 +510,14 @@ def test_chart_builder_runs_two_read_only_queries_and_joins(tmp_path, monkeypatc
 def test_chart_builder_enriches_inline_subitems_with_authoritative_teg_coordinates(tmp_path, monkeypatch):
     source = tmp_path / "inline.parquet"
     pl.DataFrame({
-        "root_lot_id": ["A", "A"],
-        "wafer_id": ["1", "1"],
-        "step_id": ["STEP1", "STEP1"],
-        "item_id": ["CD1", "CD1"],
-        "subitem_id": ["SITE_1", "UNMAPPED"],
-        "shot_x": [999, 998],
-        "shot_y": [999, 998],
-        "value": [10.5, 20.5],
+        "root_lot_id": ["A", "A", "A"],
+        "wafer_id": ["1", "1", "1"],
+        "step_id": ["STEP1", "STEP1", "STEP2"],
+        "item_id": ["CD1", "CD1", "UNMAPPED_ITEM"],
+        "subitem_id": ["SITE_1", "UNMAPPED", "AVG"],
+        "shot_x": [999, 998, 997],
+        "shot_y": [999, 998, 997],
+        "value": [10.5, 20.5, 30.5],
     }).write_parquet(source)
     monkeypatch.setattr(filebrowser, "source_data_files", lambda root, product: [source])
     monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "tester"})
@@ -547,20 +547,72 @@ def test_chart_builder_enriches_inline_subitems_with_authoritative_teg_coordinat
     ), object())
 
     rows = result["joined"]["rows"]
+    assert len(rows) == 1
+    # Row 0: CD1 with matched shot coordinates
     assert rows[0]["shot_x"] == -2.0
     assert rows[0]["shot_y"] == 3.0
     assert rows[0]["raw_inline_shot_x"] == 999
     assert rows[0]["raw_inline_shot_y"] == 999
     assert rows[0]["inline_map_name"] == "MAP_A"
     assert rows[0]["inline_vehicle"] == "VH_P"
-    assert rows[1]["shot_x"] is None
+    # AVG is excluded even for an item with no mapping.
+    assert result["sources"][0]["inline_coordinate_mapping"]["summary_rows_excluded"] == 1
     assert "step_id" not in result["joined"]["columns"]
     mapping = result["sources"][0]["inline_coordinate_mapping"]
     assert mapping["applied"] is True
     assert mapping["matched_rows"] == 1
-    assert mapping["unmatched_rows"] == 1
-    assert mapping["match_rate"] == 50.0
+    assert mapping["unmatched_rows"] == 2
+    assert mapping["match_rate"] == 33.33
     assert mapping["vehicles"] == ["VH_P"]
+
+
+def test_chart_builder_filters_avg_min_and_unmatched_subitems_for_mapped_item(tmp_path, monkeypatch):
+    source = tmp_path / "inline_stats.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["LOT1"] * 5,
+        "wafer_id": ["W01"] * 5,
+        "step_id": ["STEP_CD"] * 5,
+        "item_id": ["CD_GATE"] * 5,
+        "subitem_id": ["SITE1", "SITE2", "AVG", "MIN", "MAX"],
+        "value": [22.1, 22.3, 22.2, 22.1, 22.3],
+    }).write_parquet(source)
+    monkeypatch.setattr(filebrowser, "source_data_files", lambda root, product: [source])
+    monkeypatch.setattr(filebrowser, "current_user", lambda request: {"username": "tester"})
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
+    monkeypatch.setattr(filebrowser.inline_coordinates, "load_matching_rules", lambda *args, **kwargs: [{
+        "product": "PROD_A", "step_id": "STEP_CD", "item_id": "CD_GATE",
+        "matching_table": "Normal.jpg", "available": True, "vehicle": "VH_A", "shot_count": 2,
+    }])
+    monkeypatch.setattr(filebrowser.inline_coordinates, "load_coordinate_mapping", lambda *args, **kwargs: {
+        "configured": True,
+        "configured_tables": ["Normal.jpg"],
+        "missing_tables": [],
+        "rows": [
+            {"product": "prod_a", "step_id": "step_cd", "item_id": "cd_gate", "subitem_id": "site1", "shot_x": 1.0, "shot_y": 2.0, "matching_table": "Normal.jpg"},
+            {"product": "prod_a", "step_id": "step_cd", "item_id": "cd_gate", "subitem_id": "site2", "shot_x": 3.0, "shot_y": 4.0, "matching_table": "Normal.jpg"},
+        ],
+    })
+
+    result = filebrowser.chart_builder_run(filebrowser.ChartBuilderRunReq(
+        sources=[filebrowser.ChartBuilderSourceReq(
+            id="inline", root="INLINE", product="PROD_A",
+            sql="SELECT root_lot_id, wafer_id, subitem_id, value",
+        )],
+        save_history=False,
+    ), object())
+
+    rows = result["joined"]["rows"]
+    # Only SITE1 and SITE2 should remain; AVG, MIN, MAX must be filtered out!
+    assert len(rows) == 2
+    subitems = [r["subitem_id"] for r in rows]
+    assert subitems == ["SITE1", "SITE2"]
+    assert rows[0]["shot_x"] == 1.0
+    assert rows[0]["shot_y"] == 2.0
+    assert rows[1]["shot_x"] == 3.0
+    assert rows[1]["shot_y"] == 4.0
+    mapping = result["sources"][0]["inline_coordinate_mapping"]
+    assert mapping["matched_rows"] == 2
+    assert mapping["unmatched_rows"] == 3
 
 
 def test_chart_builder_accepts_a_single_trend_query(tmp_path, monkeypatch):
@@ -1101,3 +1153,38 @@ def test_chart_builder_parse_reformatize_key_and_query_field(tmp_path, monkeypat
     assert src_q["product"] == "PRODA"
     assert src_q["apply_reformatter"] is True
     assert "VTH_N" in src_q["reformatter_items"]
+
+
+
+def test_radius_layout_uses_product_teg_geometry(monkeypatch):
+    from core import teg_map
+    payload = {"vehicle": "VH_TEST", "shots": [{"x": 1, "y": 2, "radius": 10}],
+               "geometry": {"kx": 20, "ky": 25}, "tegs": [{"teg": "GATE"}]}
+    monkeypatch.setattr(teg_map, "map_payload", lambda product: payload)
+    monkeypatch.setattr(teg_map, "teg_radius_table", lambda product, teg: {"rows": [{"shot_x": 1, "shot_y": 2, "radius": 12.5}]})
+    center = filebrowser._chart_builder_radius_layout("VH_TEST")
+    named = filebrowser._chart_builder_radius_layout("VH_TEST", "GATE")
+    assert center["rows"][0]["radius"] == 10
+    assert center["radius_basis"] == "shot_center"
+    assert named["rows"][0]["radius"] == 12.5
+    assert named["radius_basis"] == "teg"
+    assert named["tegs"] == ["GATE"]
+    def missing(*args): raise LookupError("missing")
+    monkeypatch.setattr(teg_map, "teg_radius_table", missing)
+    with pytest.raises(HTTPException):
+        filebrowser._chart_builder_radius_layout("VH_TEST", "MISSING")
+
+
+
+def test_radius_teg_definition_round_trip():
+    definition = format_chart_builder_definition(sources=[{"id": "q1", "root": "INLINE", "product": "TEST", "sql": "SELECT *"}], joins=[], chart={"type": "radius", "radius_teg": "H_GATE"})
+    assert parse_chart_builder_definition(definition)["chart"]["radius_teg"] == "H_GATE"
+
+
+def test_die_layout_requires_saved_product_mapping(monkeypatch):
+    from core import teg_map, yield_map
+    monkeypatch.setattr(teg_map, "map_payload", lambda product: {"vehicle": "VH_TEST", "shots": [{"x": 1, "y": 2, "radius": 10}], "geometry": {"kx": 20, "ky": 25}, "tegs": []})
+    monkeypatch.setattr(yield_map, "product_config", lambda product: {"vehicle": "VH_TEST", "shot_layout": {"enabled": True, "cols": 2, "rows": 3, "origin_x": 10, "origin_y": 20}})
+    assert filebrowser._chart_builder_radius_layout("VH_TEST", source_product="TEST")["die_layout"]["cols"] == 2
+    monkeypatch.setattr(yield_map, "product_config", lambda product: {"vehicle": "OTHER", "shot_layout": {"enabled": True, "cols": 2, "rows": 3, "origin_x": 10, "origin_y": 20}})
+    assert not filebrowser._chart_builder_radius_layout("VH_TEST", source_product="TEST")["die_layout"]

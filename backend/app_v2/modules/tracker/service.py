@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+from typing import Callable
 
 from app_v2.modules.tracker.domain import TrackerIssue, make_legacy_issue
 from app_v2.modules.tracker.repository import TrackerIssueRepository
@@ -95,6 +96,8 @@ class TrackerService:
         group_ids=None,
         lots=None,
         append_images=None,
+        lots_builder: Callable[[dict], list] | None = None,
+        expected_lots=None,
     ):
         patch = {}
         if title is not None:
@@ -117,10 +120,26 @@ class TrackerService:
                 patch["closed_at"] = None
         if append_images:
             patch["images_append"] = list(append_images)
-        row = self.repo.update_legacy_issue(issue_id, patch, username=username)
+        patch_builder = None
+        if lots_builder is not None:
+            patch_builder = lambda current: {"lots": list(lots_builder(current) or [])}
+        expected_fields = None if expected_lots is None else {"lots": expected_lots}
+        saved = self.repo.update_legacy_issue_with_context(
+            issue_id,
+            patch,
+            username=username,
+            patch_builder=patch_builder,
+            expected_fields=expected_fields,
+        )
+        row = saved.get("issue")
         if not row:
             return fail("issue not found")
-        return ok({"issue": row})
+        return ok({
+            "issue": row,
+            "previous_issue": saved.get("previous_issue"),
+            "updated": bool(saved.get("applied")),
+            "conflict": bool(saved.get("conflict")),
+        })
 
     def add_legacy_comment(
         self,

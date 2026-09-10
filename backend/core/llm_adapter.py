@@ -40,6 +40,7 @@ caller 규약:
 from __future__ import annotations
 
 import configparser
+import hashlib
 import contextvars
 from contextlib import contextmanager
 import json
@@ -77,6 +78,7 @@ _DATA_TASK_PATHS = (
     "/api/filebrowser/chart-builder/run", "/api/filebrowser/view",
     "/api/filebrowser/root-parquet-view", "/api/filebrowser/download",
     "/api/llm/test", "/api/llm/flowi/verify",
+    "/api/home-agent/probe",
 )
 
 ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
@@ -150,6 +152,7 @@ def _execution_denial() -> str:
 # never a multi-minute hang.
 _LLM_HEALTH_LOCK = threading.RLock()
 _LLM_HEALTH: Dict[str, Any] = {
+    "config_key": "",
     "status": "unknown",          # unknown | healthy | unhealthy
     "unhealthy_until": 0.0,
     "last_error": "",
@@ -168,10 +171,17 @@ def _llm_breaker_cooldown_s() -> float:
     return max(5.0, min(600.0, value))
 
 
-def _mark_llm_healthy(latency_ms: int = 0) -> None:
+def _health_config_key(cfg=None) -> str:
+    # Never expose credentials; changing endpoint/model/auth invalidates old health.
+    cfg = _raw_config() if cfg is None else cfg
+    return hashlib.sha256(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _mark_llm_healthy(latency_ms: int = 0, *, cfg=None) -> None:
     now = time.time()
     with _LLM_HEALTH_LOCK:
         _LLM_HEALTH.update({
+            "config_key": _health_config_key(cfg),
             "status": "healthy",
             "unhealthy_until": 0.0,
             "last_error": "",
@@ -181,10 +191,11 @@ def _mark_llm_healthy(latency_ms: int = 0) -> None:
         })
 
 
-def _mark_llm_unhealthy(error: str, latency_ms: int = 0) -> None:
+def _mark_llm_unhealthy(error: str, latency_ms: int = 0, *, cfg=None) -> None:
     now = time.time()
     with _LLM_HEALTH_LOCK:
         _LLM_HEALTH.update({
+            "config_key": _health_config_key(cfg),
             "status": "unhealthy",
             "unhealthy_until": now + _llm_breaker_cooldown_s(),
             "last_error": str(error or "")[:240],
@@ -193,22 +204,27 @@ def _mark_llm_unhealthy(error: str, latency_ms: int = 0) -> None:
         })
 
 
-def should_attempt_llm() -> bool:
+def should_attempt_llm(*, cfg=None) -> bool:
     """False while the breaker is open.  Callers gate enhancement/node LLM
     calls on this so one failure short-circuits the rest of a turn."""
     with _LLM_HEALTH_LOCK:
-        return time.time() >= float(_LLM_HEALTH.get("unhealthy_until") or 0.0)
+        return (_LLM_HEALTH.get("config_key") != _health_config_key(cfg)
+                or time.time() >= float(_LLM_HEALTH.get("unhealthy_until") or 0.0))
 
 
-def health_snapshot() -> Dict[str, Any]:
+def health_snapshot(*, cfg=None) -> Dict[str, Any]:
     """PII-safe LLM health for verify/status surfaces."""
     now = time.time()
     with _LLM_HEALTH_LOCK:
+        if _LLM_HEALTH.get("config_key") != _health_config_key(cfg):
+            return {"status": "unknown", "last_error": "", "last_latency_ms": 0,
+                    "last_check_at": 0, "breaker_open": False, "cooldown_remaining_s": 0}
         unhealthy_until = float(_LLM_HEALTH.get("unhealthy_until") or 0.0)
         return {
             "status": str(_LLM_HEALTH.get("status") or "unknown"),
             "last_error": str(_LLM_HEALTH.get("last_error") or ""),
             "last_latency_ms": int(_LLM_HEALTH.get("last_latency_ms") or 0),
+            "last_check_at": float(_LLM_HEALTH.get("last_check_at") or 0),
             "breaker_open": now < unhealthy_until,
             "cooldown_remaining_s": max(0, int(unhealthy_until - now)),
         }
@@ -222,6 +238,9 @@ def reset_llm_health() -> None:
             "unhealthy_until": 0.0,
             "last_error": "",
             "last_latency_ms": 0,
+            "last_check_at": 0.0,
+            "last_ok_at": 0.0,
+            "config_key": "",
         })
 
 
@@ -1300,7 +1319,7 @@ def _complete_impl(prompt: str, *, system: Optional[str] = None,
         return {"ok": False, "text": "", "error": f"llm request preparation failed: {prep_error}",
                 "meta": _call_summary(cfg, prompt_chars=len(prompt), error="llm request preparation failed")}
     if str(cfg.get("auth_mode") or "").strip().lower() == "google_adc" and "Authorization" not in hdrs:
-        _mark_llm_unhealthy("google adc token unavailable")
+        _mark_llm_unhealthy("google adc token unavailable", cfg=cfg)
         return {"ok": False, "text": "", "error": "google adc token unavailable",
                 "meta": _call_summary(cfg, prompt_chars=len(prompt), error="google adc token unavailable")}
     last_error = ""
@@ -1316,14 +1335,19 @@ def _complete_impl(prompt: str, *, system: Optional[str] = None,
                                  "invoked": attempt > 0}}
             with urllib.request.urlopen(req, timeout=to) as resp:
                 raw = resp.read(1024 * 1024).decode("utf-8", errors="replace")
-            _mark_llm_healthy(int((time.monotonic() - started_at) * 1000))
             try:
                 obj = json.loads(raw)
             except Exception:
+                if fmt != "raw" or not raw.strip():
+                    raise ValueError("llm returned invalid JSON instead of a model response")
+                _mark_llm_healthy(int((time.monotonic() - started_at) * 1000), cfg=cfg)
                 return {"ok": True, "text": raw, "raw": raw,
                         "meta": _call_summary(cfg, prompt_chars=len(prompt), response_chars=len(raw),
                                               started_at=started_at, ok=True)}
             text = _extract_response_text(obj)
+            if not text and not _extract_native_tool_call(obj):
+                raise ValueError("llm returned an empty or unsupported model response")
+            _mark_llm_healthy(int((time.monotonic() - started_at) * 1000), cfg=cfg)
             return {"ok": True, "text": text, "raw": obj,
                     "meta": _call_summary(cfg, prompt_chars=len(prompt), response_chars=len(text or ""),
                                           started_at=started_at, ok=True)}
@@ -1343,16 +1367,16 @@ def _complete_impl(prompt: str, *, system: Optional[str] = None,
                     delay = 0.8
                 time.sleep(delay)
                 continue
-            _mark_llm_unhealthy(last_error, int((time.monotonic() - started_at) * 1000))
+            _mark_llm_unhealthy(last_error, int((time.monotonic() - started_at) * 1000), cfg=cfg)
             return {"ok": False, "text": "", "error": last_error, "status_code": e.code,
                     "meta": _call_summary(cfg, prompt_chars=len(prompt), started_at=started_at, error=last_error)}
         except Exception as e:
             last_error = _redact_error_text(e)
             logger.warning("llm error: %s", last_error)
-            _mark_llm_unhealthy(last_error, int((time.monotonic() - started_at) * 1000))
+            _mark_llm_unhealthy(last_error, int((time.monotonic() - started_at) * 1000), cfg=cfg)
             return {"ok": False, "text": "", "error": last_error,
                     "meta": _call_summary(cfg, prompt_chars=len(prompt), started_at=started_at, error=last_error)}
-    _mark_llm_unhealthy(last_error or "llm request failed", int((time.monotonic() - started_at) * 1000))
+    _mark_llm_unhealthy(last_error or "llm request failed", int((time.monotonic() - started_at) * 1000), cfg=cfg)
     return {"ok": False, "text": "", "error": last_error or "llm request failed",
             "meta": _call_summary(cfg, prompt_chars=len(prompt), started_at=started_at,
                                   error=last_error or "llm request failed")}

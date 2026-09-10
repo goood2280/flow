@@ -31,7 +31,7 @@ CHART_HEADER_RE = re.compile(r"^\s*chart\s*:?(.*)$", re.IGNORECASE)
 CHART_FIELD_RE = re.compile(
     r"^\s*(type|chart_type|x|x_col|y|y_col|color|color_col|trellis|trellis_col|color_rule|color_else"
     r"|highlight|show_legend|legend|width|height|size|title|x_label|y_label|trend_grain|aggregation"
-    r"|x_font_size|y_font_size|map_y|map_scope|map_target|pie_basis|fit|point_size|marker_opacity|line_width|x_min|x_max|y_min|y_max"
+    r"|x_font_size|y_font_size|radius_teg|map_y|map_scope|map_target|pie_basis|fit|point_size|marker_opacity|line_width|x_min|x_max|y_min|y_max"
     r"|y_scale|show_grid|legend_position|spec_low|spec_high|box_points|wafer_palette|wafer_mode"
     r"|wafer_spec_low|wafer_spec_high|wafer_low|wafer_center|wafer_high)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
@@ -923,7 +923,7 @@ def format_chart_builder_definition(
         for key, label in (
             ("type", "TYPE"), ("title", "TITLE"), ("x", "X"), ("y", "Y"), ("x_label", "X_LABEL"),
             ("y_label", "Y_LABEL"), ("color", "COLOR"), ("trellis", "TRELLIS"), ("trend_grain", "TREND_GRAIN"),
-            ("aggregation", "AGGREGATION"), ("map_y", "MAP_Y"), ("map_scope", "MAP_SCOPE"),
+            ("radius_teg", "RADIUS_TEG"), ("aggregation", "AGGREGATION"), ("map_y", "MAP_Y"), ("map_scope", "MAP_SCOPE"),
             ("map_target", "MAP_TARGET"), ("pie_basis", "PIE_BASIS"), ("fit", "FIT"),
             ("x_font_size", "X_FONT_SIZE"), ("y_font_size", "Y_FONT_SIZE"),
             ("point_size", "POINT_SIZE"), ("marker_opacity", "MARKER_OPACITY"), ("line_width", "LINE_WIDTH"),

@@ -369,3 +369,255 @@ def test_filebrowser_hides_mapfile_and_confidential():
     assert filebrowser._is_filebrowser_hidden_dir_name("credential") is True
     assert filebrowser._is_filebrowser_hidden_dir_name("teg_location") is True
     assert filebrowser._is_filebrowser_hidden_dir_name("normal_folder") is False
+
+
+def test_mapfile_traffic_dev_and_prod_folders_distinction(tmp_path):
+    mapfile_dir = tmp_path / "mapfile"
+    dev_dir = mapfile_dir / "dev"
+    prod_dir = mapfile_dir / "prod"
+    dev_dir.mkdir(parents=True)
+    prod_dir.mkdir(parents=True)
+
+    # 1. Dev file (.map)
+    f_dev = dev_dir / "PA100_dev_recipe.map"
+    f_dev.write_text("DEV CONTENT", encoding="utf-8")
+
+    # 2. Prod file (.map with different casing)
+    f_prod = prod_dir / "pa100_prod_recipe.map"
+    f_prod.write_text("PROD CONTENT", encoding="utf-8")
+
+    # 3. Irrelevant file
+    (dev_dir / "OTHER_recipe.map").write_text("OTHER", encoding="utf-8")
+
+    cache_file = tmp_path / "cache.json"
+
+    with patch.object(mapfile_traffic, "get_mapfile_dir", return_value=mapfile_dir), \
+         patch.object(mapfile_traffic, "get_traffic_cache_path", return_value=cache_file), \
+         patch.object(mapfile_traffic, "get_product_code_for_vehicle", return_value="PA100"), \
+         patch.object(mapfile_traffic._tc, "inspect") as mock_inspect:
+
+        mock_inspect.return_value = {
+            "flat": {"detected": "Horizontal"},
+            "teg": {
+                "summary": {"match": 2, "warning": 0, "mismatch": 0},
+                "targets": {"matched": 2, "missing": 0, "total": 2},
+                "rows": [{"name": "H_TEG", "light": "green", "status": "match"}],
+            },
+        }
+
+        # Verify discovery
+        code, paths = mapfile_traffic.list_mapfiles_for_product("PROD_A")
+        assert code == "PA100"
+        assert len(paths) == 2
+        path_names = {p.name for p in paths}
+        assert path_names == {"PA100_dev_recipe.map", "pa100_prod_recipe.map"}
+
+        # Verify inspection and grouping
+        res = mapfile_traffic.inspect_mapfiles_for_product("PROD_A", force=True)
+        assert res["ok"] is True
+        assert len(res["files"]) == 2
+
+        groups = {g["key"]: g for g in res["groups"]}
+        assert "dev" in groups
+        assert "prod" in groups
+
+        dev_grp = groups["dev"]
+        assert dev_grp["label"] == "개발 DC"
+        assert len(dev_grp["files"]) == 1
+        assert dev_grp["files"][0]["filename"] == "PA100_dev_recipe.map"
+        assert dev_grp["files"][0]["dc_type"] == "dev"
+        assert dev_grp["files"][0]["dc_label"] == "개발 DC"
+        assert dev_grp["overall_light"] == "green"
+
+        prod_grp = groups["prod"]
+        assert prod_grp["label"] == "양산DC"
+        assert len(prod_grp["files"]) == 1
+        assert prod_grp["files"][0]["filename"] == "pa100_prod_recipe.map"
+        assert prod_grp["files"][0]["dc_type"] == "prod"
+        assert prod_grp["files"][0]["dc_label"] == "양산DC"
+        assert prod_grp["overall_light"] == "green"
+
+        # Verify read_mapfile_text retrieves contents across dev and prod
+        assert mapfile_traffic.read_mapfile_text("PA100_dev_recipe.map") == "DEV CONTENT"
+        assert mapfile_traffic.read_mapfile_text("dev/PA100_dev_recipe.map") == "DEV CONTENT"
+        assert mapfile_traffic.read_mapfile_text("pa100_prod_recipe.map") == "PROD CONTENT"
+        assert mapfile_traffic.read_mapfile_text("prod/pa100_prod_recipe.map") == "PROD CONTENT"
+
+
+def test_mapfile_traffic_case_insensitive_and_map_extension_as_text(tmp_path):
+    mapfile_dir = tmp_path / "mapfile"
+    dev_dir = mapfile_dir / "dev"
+    dev_dir.mkdir(parents=True)
+
+    # Mixed case product code, uppercase extension
+    f_mixed = dev_dir / "pA100_mixed_case.MAP"
+    f_mixed.write_text("#teg-map\nmodule H_PCHK (0,0) ! H_PCHK", encoding="utf-8-sig")
+
+    with patch.object(mapfile_traffic, "get_mapfile_dir", return_value=mapfile_dir), \
+         patch.object(mapfile_traffic, "get_product_code_for_vehicle", return_value="Pa100"):
+        code, paths = mapfile_traffic.list_mapfiles_for_product("PROD_A")
+        assert code == "Pa100"
+        assert len(paths) == 1
+        assert paths[0].name == "pA100_mixed_case.MAP"
+
+        # Ensure .map text is read correctly as text
+        content = mapfile_traffic.read_mapfile_text("pA100_mixed_case.MAP")
+        assert "#teg-map" in content
+
+
+def test_directory_has_mapfiles_detects_subdirectories(tmp_path):
+    mapfile_dir = tmp_path / "mapfile"
+    mapfile_dir.mkdir()
+    # Initially empty
+    assert mapfile_traffic._directory_has_mapfiles(mapfile_dir) is False
+
+    # With empty dev dir
+    dev_dir = mapfile_dir / "dev"
+    dev_dir.mkdir()
+    assert mapfile_traffic._directory_has_mapfiles(mapfile_dir) is False
+
+    # With a mapfile in dev dir
+    (dev_dir / "PA100.map").write_text("MAP", encoding="utf-8")
+    assert mapfile_traffic._directory_has_mapfiles(mapfile_dir) is True
+
+
+def test_github_download_log_within_one_day_success(tmp_path):
+    import datetime as dt
+    now = dt.datetime(2026, 9, 10, 19, 0, 0)
+    log_file = tmp_path / "download.log"
+    # Logged 2 hours ago
+    log_file.write_text("2026-09-10T17:00:00 [SUCCESS] 15 mapfiles downloaded", encoding="utf-8")
+
+    status = mapfile_traffic.get_github_download_status(tmp_path, now=now)
+    assert status["has_log"] is True
+    assert status["status"] == "success"
+    assert status["light"] == "green"
+    assert status["within_one_day"] is True
+    assert status["is_updating"] is False
+    assert "최신" in status["status_label"]
+    assert status["elapsed_hours"] == 2.0
+
+
+def test_github_download_log_in_progress_updating(tmp_path):
+    import datetime as dt
+    now = dt.datetime(2026, 9, 10, 19, 0, 0)
+    log_file = tmp_path / "download.log"
+    log_file.write_text("2026-09-10T18:59:00 [IN_PROGRESS] Syncing mapfiles from GitHub...", encoding="utf-8")
+
+    status = mapfile_traffic.get_github_download_status(tmp_path, now=now)
+    assert status["has_log"] is True
+    assert status["status"] == "in_progress"
+    assert status["light"] == "blue"
+    assert status["is_updating"] is True
+    assert status["status_label"] == "업데이트중"
+
+
+def test_github_download_log_over_one_day_stale(tmp_path):
+    import datetime as dt
+    now = dt.datetime(2026, 9, 10, 19, 0, 0)
+    log_file = tmp_path / "download.log"
+    # Logged 30 hours ago
+    log_file.write_text("2026-09-09T13:00:00 [SUCCESS] Done", encoding="utf-8")
+
+    status = mapfile_traffic.get_github_download_status(tmp_path, now=now)
+    assert status["has_log"] is True
+    assert status["status"] == "stale"
+    assert status["light"] == "yellow"
+    assert status["within_one_day"] is False
+    assert status["is_updating"] is False
+    assert "업데이트 지연" in status["status_label"]
+    assert status["elapsed_hours"] == 30.0
+
+
+def test_github_download_log_failed(tmp_path):
+    import datetime as dt
+    now = dt.datetime(2026, 9, 10, 19, 0, 0)
+    log_file = tmp_path / "download.log"
+    log_file.write_text("2026-09-10T18:00:00 [FAILED] Connection error", encoding="utf-8")
+
+    status = mapfile_traffic.get_github_download_status(tmp_path, now=now)
+    assert status["has_log"] is True
+    assert status["status"] == "failed"
+    assert status["light"] == "red"
+    assert status["is_updating"] is False
+    assert status["status_label"] == "다운로드 실패"
+
+
+def test_github_download_log_missing(tmp_path):
+    empty_dir = tmp_path / "empty_dir"
+    empty_dir.mkdir()
+    status = mapfile_traffic.get_github_download_status(empty_dir)
+    assert status["has_log"] is False
+    assert status["status"] == "no_log"
+    assert status["light"] == "gray"
+    assert status["within_one_day"] is False
+    assert status["status_label"] == "로그 없음"
+
+
+def test_github_download_json_format(tmp_path):
+    import datetime as dt
+    now = dt.datetime(2026, 9, 10, 19, 0, 0)
+    json_log = tmp_path / "download_log.json"
+    json_log.write_text(json.dumps({
+        "timestamp": "2026-09-10T18:30:00",
+        "status": "success",
+        "message": "GitHub 동기화 완료: 12개 파일",
+        "downloaded_files": 12,
+    }), encoding="utf-8")
+
+    status = mapfile_traffic.get_github_download_status(tmp_path, now=now)
+    assert status["has_log"] is True
+    assert status["status"] == "success"
+    assert status["light"] == "green"
+    assert status["within_one_day"] is True
+    assert "GitHub 동기화 완료" in status["message"]
+
+
+def test_inspect_mapfiles_groups_excludes_root_and_includes_github_sync(tmp_path):
+    mapfile_dir = tmp_path / "mapfile"
+    dev_dir = mapfile_dir / "dev"
+    prod_dir = mapfile_dir / "prod"
+    dev_dir.mkdir(parents=True)
+    prod_dir.mkdir(parents=True)
+
+    # Place a root file that should NOT be in groups
+    root_file = mapfile_dir / "PA100_root_legacy.txt"
+    root_file.write_text("ROOT", encoding="utf-8")
+
+    dev_file = dev_dir / "PA100_dev.txt"
+    dev_file.write_text("DEV", encoding="utf-8")
+
+    prod_file = prod_dir / "PA100_prod.txt"
+    prod_file.write_text("PROD", encoding="utf-8")
+
+    log_file = mapfile_dir / "download.log"
+    log_file.write_text("2026-09-10T18:00:00 [SUCCESS] 2 files", encoding="utf-8")
+
+    cache_file = tmp_path / "cache.json"
+
+    with patch.object(mapfile_traffic, "get_mapfile_dir", return_value=mapfile_dir), \
+         patch.object(mapfile_traffic, "get_traffic_cache_path", return_value=cache_file), \
+         patch.object(mapfile_traffic, "get_product_code_for_vehicle", return_value="PA100"), \
+         patch.object(mapfile_traffic._tc, "inspect") as mock_inspect:
+
+        mock_inspect.return_value = {
+            "flat": {"detected": "Horizontal"},
+            "teg": {
+                "summary": {"match": 1, "warning": 0, "mismatch": 0},
+                "targets": {"matched": 1, "missing": 0, "total": 1},
+                "rows": [{"name": "H_1", "light": "green", "status": "match"}],
+            },
+        }
+
+        res = mapfile_traffic.inspect_mapfiles_for_product("PROD_A", force=True)
+        assert res["ok"] is True
+        assert "github_sync" in res
+        assert res["github_sync"]["has_log"] is True
+        assert res["github_sync"]["light"] == "green"
+
+        # Verify groups ONLY contains dev and prod (NO root group)
+        group_keys = [g["key"] for g in res["groups"]]
+        assert group_keys == ["dev", "prod"]
+        assert "root" not in group_keys
+
+

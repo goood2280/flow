@@ -9,6 +9,7 @@ from pathlib import Path
 
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
+NO_CHANGE = object()
 
 
 def _get_lock(path: Path) -> threading.Lock:
@@ -60,6 +61,8 @@ class JsonFileStore:
         with lock:
             current = self.load()
             updated = updater(current)
+            if updated is NO_CHANGE:
+                return current
             tmp = self.path.with_suffix(self.path.suffix + ".tmp")
             tmp.write_text(
                 json.dumps(updated, ensure_ascii=False, indent=self.indent, separators=(",", ":") if self.indent is None else None),

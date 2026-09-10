@@ -1,7 +1,7 @@
 """core/et_tracker.py v1.0.0 — ET Tracker 일일 스캔.
 
 목표 (v9.5.13):
-  - 진행중(closed 아님)인 ET source 이슈의 lot 행(root_lot_id/wafer_id)을 하루 n번
+  - 진행중(closed 아님)인 ET source 이슈의 lot 행(root_lot_id/wafer_id)을 하루 최대 2번
     (톱니바퀴에서 HH:MM 시각 목록 지정) 이미 생성된 제품 ET history에서 조회 —
     어떤 step_id 에 PGM(pt) 가 측정되었는지 확인한다. Tracker 자체는 원본 ET DB를
     다시 스캔하지 않는다.
@@ -47,6 +47,7 @@ _TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
 # 증분 조회에서 워터마크 뒤로 되짚어 다시 읽는 일수. ET history 갱신 시 당일분은
 # 계속 바뀔 수 있으므로, 마지막 하루는 이미 봤더라도 캐시에서 다시 확인한다.
 _SCAN_OVERLAP_DAYS = 1
+_DEFAULT_SCAN_TIMES = ["08:00", "20:00"]
 
 
 def _now_iso() -> str:
@@ -79,7 +80,10 @@ def _normalize_times(values) -> list[str]:
             text = "0" + text
         if _TIME_RE.match(text) and text not in out:
             out.append(text)
-    return sorted(out)
+    ordered = sorted(out)
+    # Legacy settings sometimes contain frequent slots. Keep the endpoints
+    # while bounding automatic scans to the requested twice-daily cadence.
+    return [ordered[0], ordered[-1]] if len(ordered) > 2 else ordered
 
 
 def _normalize_tokens(values) -> list[str]:
@@ -108,7 +112,7 @@ def et_tracker_config() -> dict:
         raw = tracker.get("et_scan") if isinstance(tracker.get("et_scan"), dict) else {}
     return {
         "enabled": bool(raw.get("enabled", True)),
-        "scan_times": _normalize_times(raw.get("scan_times")),
+        "scan_times": _normalize_times(raw.get("scan_times", _DEFAULT_SCAN_TIMES)),
         "mail_enabled": bool(raw.get("mail_enabled")),
         "mail_group_ids": [str(x) for x in (raw.get("mail_group_ids") or []) if str(x).strip()],
         "pgm_filters": _normalize_tokens(raw.get("pgm_filters")),
@@ -295,7 +299,7 @@ def _since_from_watermark(lot: dict, scope: str) -> str:
 
 
 def _scan_issue_lots(iss: dict, *, source_root: str, now_iso: str,
-                     full: bool = False) -> tuple[list[dict], bool, int]:
+                     full: bool = False, package_cache: dict | None = None) -> tuple[list[dict], bool, int]:
     """이슈의 모든 lot 행을 제품 ET history에서 읽어 et_history 를 갱신한다.
     반환: (신규 엔트리 [{lot, entry}], changed, scanned_lot_count).
 
@@ -342,6 +346,10 @@ def _scan_issue_lots(iss: dict, *, source_root: str, now_iso: str,
     batches: dict[tuple, list[dict]] = {}
     for item in prepared:
         if not (item["root"] or item["lid"]):
+            continue
+        key = (source_root, item["product"], item["root"], item["lid"], item["wid"], item["since_date"], item["limit"])
+        if package_cache is not None and key in package_cache:
+            item["packages"], item["diag"] = package_cache[key]
             continue
         batches.setdefault((item["product"], item["since_date"]), []).append(item)
     for (product, since_date), items in batches.items():
@@ -775,6 +783,54 @@ def _slim_lot(lot: dict) -> dict:
     }
 
 
+def _prefetch_history(targets: list[tuple[dict, str]], *, full: bool) -> dict:
+    """Read each source/product once per scan, sharing duplicate wafer queries.
+
+    The cache lives only for this scan; no stale results survive a history rebuild.
+    Per-row watermarks and limits are applied by the history reader after the
+    shared read, so new and existing issues can safely share the same batch.
+    """
+    from core.lot_step import et_history_packages_multi, parse_wafer_selection
+    from core.tracker_schema import normalize_lot_row
+    groups: dict = {}
+    for iss, source_root in targets:
+        for raw in iss.get("lots") or []:
+            lot = normalize_lot_row(raw)
+            root = str(lot.get("root_lot_id") or "").strip()
+            lid = str(lot.get("lot_id") or "").strip()
+            if not (root or lid):
+                continue
+            wid = str(lot.get("wafer_id") or "").strip()
+            product = str(lot.get("product") or lot.get("monitor_prod") or iss.get("product") or "").strip()
+            since = "" if full else _since_from_watermark(lot, _scan_scope(product, root, lid, wid))
+            multi = len(parse_wafer_selection(wid)) > 1 or wid.lower() in ("all", "전체", "*")
+            limit = _HISTORY_CAP * 25 if multi else _HISTORY_CAP
+            key = (source_root, product, root, lid, wid, since, limit)
+            groups.setdefault((source_root, product), {})[key] = {
+                "root_lot_id": root, "lot_id": lid, "wafer_id": wid,
+                "since_date": since, "limit": limit,
+            }
+    cache = {}
+    for (source_root, product), queries in groups.items():
+        diag = {}
+        specs = list(queries.values())
+        try:
+            rows = et_history_packages_multi(
+                product, specs, source_root=source_root,
+                since_date=min(s["since_date"] for s in specs),
+                limit=max(s["limit"] for s in specs), diag=diag,
+            )
+            if rows is None or len(rows) != len(specs):
+                diag.setdefault("error", "ET history scan 결과가 준비되지 않았습니다")
+                rows = [None] * len(specs)
+        except Exception as exc:
+            diag["error"] = str(exc)
+            rows = [None] * len(specs)
+        for key, packages in zip(queries, rows):
+            cache[key] = (packages, dict(diag))
+    return cache
+
+
 def scan_phase(only_issue_id: str = "", full: bool = False) -> dict:
     """스캔 phase — 제품 ET history 조회 + et_history diff. 저장/알림/메일 없음.
 
@@ -817,6 +873,15 @@ def scan_phase(only_issue_id: str = "", full: bool = False) -> dict:
     cats_map = _load_cats_map()
     roles = _role_names()
     target = out["only_issue_id"]
+    targets = [
+        (iss, source_root_for_context("et", iss.get("category") or ""))
+        for iss in issues if isinstance(iss, dict)
+        and (not target or str(iss.get("id") or "") == target)
+        and (target or iss.get("status") != "closed")
+        and _issue_source(iss, cats_map, roles) in ("et", "both")
+        and iss.get("lots")
+    ]
+    package_cache = _prefetch_history(targets, full=bool(full))
     reported_history_caches: set[tuple[str, str]] = set()
     for iss in issues:
         if not isinstance(iss, dict):
@@ -870,7 +935,7 @@ def scan_phase(only_issue_id: str = "", full: bool = False) -> dict:
             })
         now_iso = _now_iso()
         new_items, issue_changed, scanned = _scan_issue_lots(
-            iss, source_root=source_root, now_iso=now_iso, full=bool(full),
+            iss, source_root=source_root, now_iso=now_iso, full=bool(full), package_cache=package_cache,
         )
         out["issues_scanned"] += 1
         out["lots_scanned"] += scanned
@@ -998,33 +1063,37 @@ def _apply_scan_result(result: dict, cfg: dict, *, notify: bool, actor: str) -> 
         summary.update({"ok": False, "finished_at": _now_iso(), "last_error": f"import failed: {e}"})
         return summary
     issues_fp = PATHS.data_root / "tracker" / "issues.json"
-    issues = load_json(issues_fp, [])
-    if not isinstance(issues, list):
-        issues = []
-    by_id = {str(i.get("id") or ""): i for i in issues if isinstance(i, dict)}
-    changed = False
-    notify_batches: list[tuple[dict, list[dict]]] = []
-    for row in rows:
-        iss = by_id.get(str(row.get("issue_id") or ""))
-        if iss is None:
-            continue
-        if int(iss.get("revision") or 0) != int(row.get("revision") or 0):
-            summary["skipped_stale"] += 1
-            continue
-        if row.get("changed"):
-            iss["lots"] = row.get("lots") or []
-            iss["updated_at"] = row.get("checked_at") or _now_iso()
-            iss["updated_by"] = actor
-            iss["revision"] = int(iss.get("revision") or 0) + 1
-            changed = True
-        new_items = [x for x in (row.get("new_items") or []) if isinstance(x, dict)]
-        if new_items and notify:
-            notify_batches.append((iss, new_items))
-    if changed:
-        try:
-            save_json(issues_fp, issues, indent=2)
-        except Exception as e:
-            summary.update({"ok": False, "last_error": f"save issues failed: {e}"})
+    from app_v2.shared.json_store import _get_lock
+    # Serialize the revision check and write with interactive issue mutations.
+    with _get_lock(issues_fp):
+        issues = load_json(issues_fp, [])
+        if not isinstance(issues, list):
+            issues = []
+        by_id = {str(i.get("id") or ""): i for i in issues if isinstance(i, dict)}
+        changed = False
+        notify_batches: list[tuple[dict, list[dict]]] = []
+        for row in rows:
+            iss = by_id.get(str(row.get("issue_id") or ""))
+            if iss is None:
+                continue
+            if int(iss.get("revision") or 0) != int(row.get("revision") or 0):
+                summary["skipped_stale"] += 1
+                continue
+            if row.get("changed"):
+                iss["lots"] = row.get("lots") or []
+                iss["updated_at"] = row.get("checked_at") or _now_iso()
+                iss["updated_by"] = actor
+                iss["revision"] = int(iss.get("revision") or 0) + 1
+                changed = True
+            new_items = [x for x in (row.get("new_items") or []) if isinstance(x, dict)]
+            if new_items and notify:
+                notify_batches.append((iss, new_items))
+        if changed:
+            try:
+                save_json(issues_fp, issues)
+            except Exception as e:
+                summary.update({"ok": False, "last_error": f"save issues failed: {e}"})
+                notify_batches.clear()
     for iss, new_items in notify_batches:
         matched = [x for x in new_items if _pgm_matches(x.get("entry") or {}, cfg["pgm_filters"])]
         if matched:
@@ -1146,5 +1215,5 @@ def start_scheduler() -> bool:
     t.start()
     _scheduler_thread = t
     _scheduler_started = True
-    logger.info("et tracker scheduler started (daily time slots, scan phase offloads to worker when alive)")
+    logger.info("et tracker scheduler started (up to two daily slots, shared product history cache)")
     return True

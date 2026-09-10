@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from typing import Callable
 
 from app_v2.modules.tracker.domain import TrackerIssue
-from app_v2.shared.json_store import JsonFileStore, next_revision
+from app_v2.shared.json_store import JsonFileStore, NO_CHANGE, next_revision
 
 
 class TrackerIssueRepository:
@@ -44,7 +45,7 @@ class TrackerIssueRepository:
                 ), None)
                 if existing is not None:
                     saved["row"] = existing
-                    return rows
+                    return NO_CHANGE
             rows.append(issue)
             saved["row"] = issue
             return rows
@@ -77,20 +78,46 @@ class TrackerIssueRepository:
         self.store.load_and_update(updater)
         return saved["row"]
 
-    def update_legacy_issue(self, issue_id: str, patch: dict, username: str) -> dict | None:
-        saved = {"row": None}
+    def update_legacy_issue_with_context(
+        self,
+        issue_id: str,
+        patch: dict,
+        username: str,
+        *,
+        patch_builder: Callable[[dict], dict] | None = None,
+        expected_fields: dict | None = None,
+    ) -> dict:
+        """Update one issue from the latest row held by the store lock.
+
+        ``patch_builder`` lets callers derive fields such as merged LOT rows
+        without first parsing ``issues.json`` outside the transaction.  The
+        optional expectations are checked against that same latest row so
+        delayed background work cannot overwrite a newer user edit.
+        """
+        saved = {
+            "issue": None,
+            "previous_issue": None,
+            "applied": False,
+            "conflict": False,
+        }
 
         def updater(current):
             rows = current if isinstance(current, list) else []
-            out = []
-            for row in rows:
+            out = list(rows)
+            for index, row in enumerate(rows):
                 if row.get("id") != issue_id:
-                    out.append(row)
                     continue
+                saved["issue"] = row
+                if expected_fields and any(row.get(key) != value for key, value in expected_fields.items()):
+                    saved["conflict"] = True
+                    return NO_CHANGE
+                effective_patch = dict(patch)
+                if patch_builder is not None:
+                    effective_patch.update(patch_builder(copy.deepcopy(row)) or {})
                 meta = next_revision(row, username)
                 next_row = dict(row)
-                append_images = patch.get("images_append") or []
-                for key, value in patch.items():
+                append_images = effective_patch.get("images_append") or []
+                for key, value in effective_patch.items():
                     if key == "images_append":
                         continue
                     next_row[key] = value
@@ -100,12 +127,19 @@ class TrackerIssueRepository:
                 next_row["updated_at"] = meta.updated_at
                 next_row["updated_by"] = meta.updated_by
                 next_row["revision"] = meta.revision
-                saved["row"] = next_row
-                out.append(next_row)
-            return out
+                saved["previous_issue"] = copy.deepcopy(row)
+                saved["issue"] = next_row
+                saved["applied"] = True
+                out[index] = next_row
+                break
+            return out if saved["applied"] else NO_CHANGE
 
         self.store.load_and_update(updater)
-        return saved["row"]
+        return saved
+
+    def update_legacy_issue(self, issue_id: str, patch: dict, username: str) -> dict | None:
+        saved = self.update_legacy_issue_with_context(issue_id, patch, username)
+        return saved["issue"] if saved["applied"] else None
 
     def append_legacy_comment(self, issue_id: str, comment: dict, username: str) -> dict | None:
         saved = {"row": None}

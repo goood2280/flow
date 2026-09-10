@@ -233,6 +233,7 @@ function stPlanStyle(cell) {
 export function formatSplitCellValue(val, paramName, precision) {
   if (val === null || val === undefined || val === "") return val;
   const s = String(val);
+  if (/^MASK(?:_|$)/i.test(String(paramName || "")) && s.split("_").length >= 3) return s.slice(s.indexOf("_") + 1);
   if (s === "None" || s === "null" || s === "NaN") return val;
   const num = Number(s);
   if (!isFinite(num) || isNaN(num)) return val;
@@ -300,6 +301,16 @@ function splitTableHeaderGroups(st) {
   return groups;
 }
 
+const isKnobRow = row => /^KNOB(?:_|$)/i.test(String(row?._param || "").trim());
+
+function ordinarySplitRow(source, row, cells, processInfoForParam, labelForParam) {
+  const process = processInfoForParam?.(row._param, row._display) || row._process_columns || row._applied_process || {};
+  const label = labelForParam?.(row._param, row._display) || splitParamDisplayName(row._display || row._param, row._param);
+  const columns = source.prefix_columns || SPLIT_CHECK_PREFIX_COLUMNS;
+  return { ...row, _cells: cells, _process_columns: process,
+    _prefix_cells: columns.map(col => col === "항목" ? label : String(process[col] || "")) };
+}
+
 // processInfoForParam: 적용 공정 정보를 항목과 분리된 step_id / step_desc 열로
 // 넣기 위한 훅. labelForParam은 이전 저장 스냅샷 호환용으로만 유지한다.
 export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, labelForParam, processInfoForParam, preferredValueForParam, extraValuesForParam, forceFirstDraftAsS0ForParam, ensureEmptyRows = true } = {}) {
@@ -318,6 +329,7 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
   const splitRows = splitSourceRows.flatMap(row => {
     const cells = row?._cells || {};
     const param = String(row?._param || "");
+    if (!isKnobRow(row)) return [ordinarySplitRow(source, row, cells, processInfoForParam, labelForParam)];
     const perHeader = headers.map((header, ci) => {
       const cell = cells[String(ci)] || cells[ci] || {};
       const waferNotReached = byWafer[normalizeWafer(source?.wafer_keys?.[ci] ?? header)]?.has(param) === true;
@@ -441,6 +453,13 @@ export function buildPemsStView(matrix, { valueForCell, displayForValue, labelFo
   const pemsRows = sourceRows.flatMap(row => {
     const cells = row?._cells || {};
     const param = String(row?._param || "");
+    if (!isKnobRow(row)) {
+      const mappedCells = Object.fromEntries(waferKeys.map((wafer, ci) => {
+        const sourceIndex = sourceIndexByWafer.get(wafer);
+        return [String(ci), sourceIndex == null ? {} : { ...(cells[String(sourceIndex)] || cells[sourceIndex] || {}) }];
+      }));
+      return [ordinarySplitRow(source, row, mappedCells, processInfoForParam, labelForParam)];
+    }
     const perWafer = waferKeys.map(wafer => {
       const sourceIndex = sourceIndexByWafer.get(wafer);
       const missingWafer = sourceIndex == null;
@@ -636,7 +655,7 @@ export default function SplitTableSnapshotView({
     if (!splitCheckMode) return tableRows.map(() => 1);
     return tableRows.map((row, idx) => {
       const param = String(row?._param || "").trim();
-      if (!param) return 1;
+      if (!param || !isKnobRow(row)) return 1;
       const prev = idx > 0 ? String(tableRows[idx - 1]?._param || "").trim() : "";
       if (prev === param) return 0;
       let span = 1;
@@ -769,6 +788,7 @@ export default function SplitTableSnapshotView({
           </thead>
           <tbody>
             {tableRows.map((r, ri) => {
+              const splitRowMode = splitCheckMode && isKnobRow(r);
               const rawPrefixCells = Array.isArray(r._prefix_cells) ? r._prefix_cells : [];
               const prefixValues = visiblePrefixColumns.map((colName, idx) => {
                 if (splitCheckMode) {
@@ -785,7 +805,7 @@ export default function SplitTableSnapshotView({
                 return splitParamDisplayName(r._display || r._param || "", r._param);
               });
               const span = rowSpans[ri] || 0;
-              const rowHasValue = (mergedMode && Array.isArray(r._merged_runs))
+              const rowHasValue = (mergedMode && isKnobRow(r) && Array.isArray(r._merged_runs))
                 ? r._merged_runs.some(run => hasStValue(run?.value))
                 : headers.some((_, ci) => {
                     const cell = (r._cells && (r._cells[ci] || r._cells[String(ci)])) || {};
@@ -797,8 +817,8 @@ export default function SplitTableSnapshotView({
                   {prefixValues.map((value, pi) => {
                     if (splitCheckMode && pi <= parameterPrefixIndex && span === 0) return null;
                     const isParamCol = splitCheckMode && pi === parameterPrefixIndex;
-                    const isValueCol = splitCheckMode && pi === parameterPrefixIndex + 1;
-                    const isSplitCol = splitCheckMode && pi === splitPrefixIndex;
+                    const isValueCol = splitRowMode && pi === parameterPrefixIndex + 1;
+                    const isSplitCol = splitRowMode && pi === splitPrefixIndex;
                     const isModuleCol = visiblePrefixColumns[pi] === "module";
                     const categoryStyle = categoryColorStyle(r._split_value, categoryColors);
                     const splitStyle = isSplitCol
@@ -834,7 +854,7 @@ export default function SplitTableSnapshotView({
                           if ((isValueCol || isSplitCol) && (r._split_value_raw || r._split_value)) {
                             onViewRuleMatch?.("knob_ppid", r._param, r, r._split_value_raw || r._split_value, r._split_label);
                           } else if (isParamCol) {
-                            onViewRuleMatch?.("knob_ppid", r._param, r, null, null);
+                            onViewRuleMatch?.(/^INLINE(?:_|$)/i.test(r._param) ? "inline_matching" : /^VM(?:_|$)/i.test(r._param) ? "vm_matching" : /^MASK(?:_|$)/i.test(r._param) ? "mask_matching" : /^FAB(?:_|$)/i.test(r._param) ? "step_matching" : isKnobRow(r) ? "knob_ppid" : null, r._param, r, null, null);
                           }
                         }}
                         onContextMenu={(event) => {
@@ -850,7 +870,7 @@ export default function SplitTableSnapshotView({
                       </td>
                     );
                   })}
-                  {mergedMode && Array.isArray(r._merged_runs) && r._merged_runs.map((run, ri2) => {
+                  {mergedMode && isKnobRow(r) && Array.isArray(r._merged_runs) && r._merged_runs.map((run, ri2) => {
                     const value = String(run?.value ?? "");
                     const runSpan = Math.max(1, Number(run?.span || 1));
                     const runNotReached = (run?.not_reached === true || notReached.cell(r._param, Number(run?.start ?? 0))) && !hasStValue(value);
@@ -861,19 +881,19 @@ export default function SplitTableSnapshotView({
                       </td>
                     );
                   })}
-                  {!(mergedMode && Array.isArray(r._merged_runs)) && headers.map((_, ci) => {
+                  {!(mergedMode && isKnobRow(r) && Array.isArray(r._merged_runs)) && headers.map((_, ci) => {
                     const cell = (r._cells && (r._cells[ci] || r._cells[String(ci)])) || {};
                     const display = hasStValue(cell.actual)
-                      ? String(splitCheckMode ? cell.actual : (formatSplitCellValue(cell.actual, r._param, precision) ?? cell.actual))
+                      ? String(splitRowMode ? cell.actual : (formatSplitCellValue(cell.actual, r._param, precision) ?? cell.actual))
                       : "";
-                    const bg = splitCheckMode
+                    const bg = splitRowMode
                       ? (display ? { ...splitCheckColorStyle(prefixValues[splitPrefixIndex] || r._split_label), ...categoryColorStyle(r._split_value, categoryColors) } : {})
                       : splitTableCellBg(hasStValue(cell.plan) ? cell.plan : cell.actual, uniq, r._param);
-                    const plan = splitCheckMode ? {} : stPlanStyle(cell);
+                    const plan = splitRowMode ? {} : stPlanStyle(cell);
                     const hasPlan = hasStValue(cell.plan);
                     const hasActual = hasStValue(cell.actual);
-                    const isPlanOnly = !splitCheckMode && hasPlan && !hasActual;
-                    const isMismatch = !splitCheckMode && hasPlan && hasActual && String(cell.plan) !== String(cell.actual);
+                    const isPlanOnly = !splitRowMode && hasPlan && !hasActual;
+                    const isMismatch = !splitRowMode && hasPlan && hasActual && String(cell.plan) !== String(cell.actual);
                     // PEMS 는 미진행/누락 wafer도 S0/S1 그룹 라벨을 유지해야 한다.
                     // 따라서 값(S0 등)이 들어 있어도 회색 배경을 덮어쓴다. 일반
                     // Split 체크/스냅샷은 실제 값이 있는 셀을 회색 처리하지 않는다.
@@ -882,26 +902,26 @@ export default function SplitTableSnapshotView({
                       : (cell.not_reached === true || notReached.cell(r._param, ci)) && !hasActual && !hasPlan;
                     return (
                       <td key={ci}
-                        onMouseDown={editable && splitCheckMode ? (event) => {
+                        onMouseDown={editable && splitRowMode ? (event) => {
                           if (event.button !== 0 || !r._split_value_raw) return;
                           event.preventDefault();
                           splitPaintRef.current = { param: r._param, value: r._split_value_raw };
                           onAssignSplit?.(r._param, r._split_value_raw, ci);
                         } : undefined}
-                        onMouseEnter={editable && splitCheckMode ? () => {
+                        onMouseEnter={editable && splitRowMode ? () => {
                           const paint = splitPaintRef.current;
                           if (paint && paint.param === r._param) onAssignSplit?.(paint.param, paint.value, ci);
                         } : undefined}
-                        onMouseUp={editable && splitCheckMode ? () => { splitPaintRef.current = null; } : undefined}
-                        title={editable && splitCheckMode ? (r._split_value_raw ? `${r._split_label} 배정 · 클릭하거나 드래그` : "먼저 값 칸에서 KNOB 값을 입력하세요") : undefined}
-                        style={{ ...stCellStyle, ...bg, ...plan, ...(splitCheckMode && display ? { fontWeight: 900 } : {}), ...(cellNotReached ? notReachedStyle : {}), ...(editable && splitCheckMode ? { cursor: r._split_value_raw ? "cell" : "not-allowed" } : {}) }}>
+                        onMouseUp={editable && splitRowMode ? () => { splitPaintRef.current = null; } : undefined}
+                        title={editable && splitRowMode ? (r._split_value_raw ? `${r._split_label} 배정 · 클릭하거나 드래그` : "먼저 값 칸에서 KNOB 값을 입력하세요") : undefined}
+                        style={{ ...stCellStyle, ...bg, ...plan, ...(splitRowMode && display ? { fontWeight: 900 } : {}), ...(cellNotReached ? notReachedStyle : {}), ...(editable && splitRowMode ? { cursor: r._split_value_raw ? "cell" : "not-allowed" } : {}) }}>
                         {/* 진한 빨강 배경 위라 글자는 흰색이다 (stPlanStyle 과 한 쌍). */}
-                        {splitCheckMode
+                        {splitRowMode
                           ? display
                           : isMismatch
-                            ? <span style={{ color: "#fff", fontWeight: 800 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: "rgba(255,255,255,0.85)" }}>{" (≠" + cell.plan + ")"}</span></span>
+                            ? <span style={{ color: "#fff", fontWeight: 800 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: "rgba(255,255,255,0.85)" }}>{" (≠" + formatSplitCellValue(cell.plan, r._param, precision) + ")"}</span></span>
                             : isPlanOnly
-                              ? <span style={{ fontStyle: "italic", fontWeight: 700 }}>{"📌 "}{cell.plan}</span>
+                              ? <span style={{ fontStyle: "italic", fontWeight: 700 }}>{"📌 "}{formatSplitCellValue(cell.plan, r._param, precision)}</span>
                               : display}
                       </td>
                     );

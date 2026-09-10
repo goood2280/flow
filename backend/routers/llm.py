@@ -126,7 +126,7 @@ def status(request: Request):
 def test(req: LLMTestReq, _admin=Depends(require_admin)):
     if not llm_adapter.is_available():
         raise HTTPException(400, "LLM 이 설정되어 있지 않거나 비활성화됨")
-    return llm_adapter.complete(req.prompt.strip(), system=req.system)
+    return llm_adapter.complete(req.prompt.strip(), system=req.system, probe=True)
 
 
 def _is_gpt_oss_120b() -> bool:

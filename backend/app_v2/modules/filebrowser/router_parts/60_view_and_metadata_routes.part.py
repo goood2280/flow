@@ -464,18 +464,21 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
         raise HTTPException(400, f"Error: {str(e)}")
 
 
-def _chart_builder_radius_layout(product: str) -> dict:
+def _chart_builder_radius_layout(product: str, teg: str = "", source_product: str = "") -> dict:
     def teg_layout() -> dict:
         from core import teg_map as _teg_map
         payload = _teg_map.map_payload(product)
-        shots = _teg_map.full_shots_for_payload(payload)
+        shots = payload.get("shots") or []
+        teg_rows = {}
+        if teg:
+            teg_rows = {(float(r["shot_x"]), float(r["shot_y"])): r for r in _teg_map.teg_radius_table(product, teg)["rows"]}
         rows = []
         seen = set()
         for shot in shots:
             try:
                 x = float(shot.get("x"))
                 y = float(shot.get("y"))
-                radius = float(shot.get("radius", shot.get("r")))
+                radius = float(teg_rows[(x, y)]["radius"] if teg else shot.get("radius", shot.get("r")))
             except (TypeError, ValueError):
                 continue
             key = (round(x, 6), round(y, 6))
@@ -486,6 +489,18 @@ def _chart_builder_radius_layout(product: str) -> dict:
         if not rows:
             raise LookupError(f"TEG 위치조회에 {product} shot geometry가 없습니다")
         rows.sort(key=lambda row: (row["shot_y"], row["shot_x"]))
+        die_layout = {}
+        from core import yield_map as _yield_map
+        saved = _yield_map.product_config(source_product or product)
+        raw = saved.get("shot_layout") or {}
+        if raw.get("enabled") and str(saved.get("vehicle") or source_product or product).casefold() == str(payload.get("vehicle") or product).casefold():
+            try:
+                cols, count = int(raw["cols"]), int(raw["rows"])
+                ox, oy = float(raw["origin_x"]), float(raw["origin_y"])
+                if 1 <= cols <= 100 and 1 <= count <= 100 and all(math.isfinite(v) and v.is_integer() for v in (ox, oy)):
+                    die_layout = {"enabled": True, "cols": cols, "rows": count, "origin_x": int(ox), "origin_y": int(oy)}
+            except (ValueError, TypeError, KeyError):
+                pass
         return {
             "ok": True,
             "product": str(product),
@@ -495,8 +510,19 @@ def _chart_builder_radius_layout(product: str) -> dict:
             "row_count": len(rows),
             "geometry": payload.get("geometry") or {},
             "geometry_source": "teg_map",
+            "tegs": [str(t["teg"]) for t in payload.get("tegs", []) if t.get("teg")],
+            "teg": teg,
+            "radius_basis": "teg" if teg else "shot_center",
+            "die_layout": die_layout,
         }
 
+    # The same product geometry as TEG lookup is authoritative. The legacy CSV
+    # fallback is used only when the product has no usable TEG layout.
+    try:
+        return teg_layout()
+    except Exception as exc:
+        if teg:
+            raise HTTPException(400, f"지정 TEG radius를 계산할 수 없습니다: {exc}") from exc
     root = _db_root()
     path = next((candidate for candidate in root.iterdir()
                  if candidate.is_file() and candidate.name.casefold() == "chip_radius.csv"), None)
@@ -554,6 +580,32 @@ def _chart_builder_radius_layout(product: str) -> dict:
             geometry = {key: round(float(value), 8) for key, value in fitted.items()}
     except Exception:
         geometry = {}
+    # Keep the legacy CSV path usable without inventing map geometry in the
+    # browser. Derive shot pitch from its canonical grid and edge/radius from
+    # the TEG product configuration; incomplete products fail closed in the UI.
+    if geometry:
+        try:
+            from core import teg_map as _teg_map
+            unique_x = sorted({float(value) for value in layout["shot_x"].to_list()})
+            unique_y = sorted({float(value) for value in layout["shot_y"].to_list()})
+            dx = [b - a for a, b in zip(unique_x, unique_x[1:]) if b > a]
+            dy = [b - a for a, b in zip(unique_y, unique_y[1:]) if b > a]
+            if not dx or not dy:
+                raise ValueError("legacy Chip_Radius grid pitch is incomplete")
+            pitch_x = min(dx)
+            pitch_y = min(dy)
+            cfg = _teg_map.load_cfg()
+            geometry.update({
+                "fit": "radius",
+                "shot_w_mm": abs(float(geometry["kx"])) * pitch_x,
+                "shot_h_mm": abs(float(geometry["ky"])) * pitch_y,
+                "wafer_radius_mm": float(cfg.get("wafer_radius_mm") or 0),
+                "wafer_edge_mm": float(_teg_map.vehicle_wafer_edge_mm(cfg, str(matched_mask))),
+                "pitch_x": pitch_x,
+                "pitch_y": pitch_y,
+            })
+        except (KeyError, TypeError, ValueError):
+            geometry = {}
     return {
         "ok": True,
         "product": str(product),
@@ -1193,9 +1245,20 @@ def _chart_builder_attach_inline_coordinates(
     """
     if not _chart_builder_is_inline_root(source.root):
         return frame, {}
+    # Statistic rows are never individual spatial measurements, even if an
+    # unrelated ITEM has no map or a saved map accidentally lists AVG/MIN.
+    subitem = _chart_builder_runtime_column(list(frame.columns), "subitem_id")
+    summary_rows = 0
+    if subitem:
+        summary = pl.col(subitem).cast(pl.String, strict=False).str.strip_chars().str.to_lowercase().str.replace_all(r"[\s_.-]+", "").is_in(list(inline_coordinates.NORMALIZED_SUMMARY_SUBITEM_IDS)).fill_null(False)
+        summary_rows = frame.filter(summary).height
+        frame = frame.filter(~summary)
+        if summary_rows:
+            warnings.append(f"{source_id}: Inline 집계 subitem {summary_rows:,}행 제외 (AVG/MIN/MAX 등).")
     meta = {
         "inline_coordinate_mapping": {
             "configured": False,
+            "summary_rows_excluded": summary_rows,
             "applied": False,
             "matched_rows": 0,
             "unmatched_rows": int(frame.height),
@@ -1276,7 +1339,7 @@ def _chart_builder_attach_inline_coordinates(
             "shot_x": float(row["shot_x"]),
             "shot_y": float(row["shot_y"]),
             "inline_map_name": map_name,
-            "inline_vehicle": vehicle_by_table.get(map_name.casefold(), ""),
+            "inline_vehicle": str(row.get("vehicle") or vehicle_by_table.get(map_name.casefold(), "")),
         }
         old = coordinate_by_key.get(key)
         if old and (old["shot_x"], old["shot_y"], old["inline_map_name"].casefold()) != (
@@ -1307,6 +1370,14 @@ def _chart_builder_attach_inline_coordinates(
             raw_coordinate_columns[canonical] = renamed
     status["raw_coordinate_columns"] = raw_coordinate_columns
 
+    total_original = int(frame.height) + summary_rows
+    configured_pairs = {
+        (inline_coordinates.normalize_key(rule.get("step_id")),
+         inline_coordinates.normalize_key(rule.get("item_id")))
+        for rule in rules
+        if rule.get("available") and rule.get("step_id") and rule.get("item_id")
+    }
+
     map_frame = pl.DataFrame(list(coordinate_by_key.values()))
     working = frame.with_row_index("__flow_inline_row_order").with_columns([
         pl.col(step_col).cast(pl.String, strict=False).str.strip_chars().str.to_lowercase().alias("__flow_inline_step"),
@@ -1314,33 +1385,44 @@ def _chart_builder_attach_inline_coordinates(
          if item_col else pl.lit(constant_item.casefold())).alias("__flow_inline_item"),
         pl.col(subitem_col).cast(pl.String, strict=False).str.strip_chars().str.to_lowercase().alias("__flow_inline_subitem"),
     ])
+    working = working.join(
+        map_frame,
+        on=["__flow_inline_step", "__flow_inline_item", "__flow_inline_subitem"],
+        how="left",
+    )
+
+    # Filtering rule:
+    # 1. For configured items with an available map, keep only matched shot rows.
+    #    Unmatched subitems (including AVG, MIN, MAX, STD, etc.) are excluded.
+    # 2. For unconfigured items ("없는 아이템"), rows pass through untouched (shot_x/shot_y is None).
+    if configured_pairs:
+        configured_keys = [f"{s}|{i}" for s, i in configured_pairs]
+        is_configured = pl.concat_str([
+            pl.col("__flow_inline_step"),
+            pl.lit("|"),
+            pl.col("__flow_inline_item"),
+        ]).is_in(configured_keys)
+        is_matched = pl.col("shot_x").is_not_null() & pl.col("shot_y").is_not_null()
+        keep_mask = (~is_configured) | is_matched
+        working = working.filter(keep_mask)
+
     working = (
-        working.join(
-            map_frame,
-            on=["__flow_inline_step", "__flow_inline_item", "__flow_inline_subitem"],
-            how="left",
-        )
-        .sort("__flow_inline_row_order")
+        working.sort("__flow_inline_row_order")
         .drop(["__flow_inline_row_order", "__flow_inline_step", "__flow_inline_item", "__flow_inline_subitem"])
     )
     matched = working.filter(pl.col("shot_x").is_not_null() & pl.col("shot_y").is_not_null()).height
-    unmatched = int(working.height - matched)
+    unmatched_dropped = int(total_original - working.height)
     status.update({
         "applied": True,
         "matched_rows": int(matched),
-        "unmatched_rows": unmatched,
-        "match_rate": round((matched * 100.0 / working.height), 2) if working.height else 0.0,
+        "unmatched_rows": unmatched_dropped,
+        "match_rate": round((matched * 100.0 / total_original), 2) if total_original else 0.0,
         "vehicles": sorted({value for value in working["inline_vehicle"].drop_nulls().to_list() if str(value).strip()}, key=str.casefold),
     })
-    if unmatched:
-        sample = (
-            working.filter(pl.col("shot_x").is_null())
-            .select(pl.col(subitem_col).cast(pl.String, strict=False)).drop_nulls().unique().head(8).to_series().to_list()
-        )
-        status["unmatched_subitems"] = [str(value) for value in sample]
+    if unmatched_dropped:
         warnings.append(
-            f"{source_id}: TEG Inline map 좌표 매칭 {matched:,}/{working.height:,}행 "
-            f"({status['match_rate']:.2f}%), 미매칭 {unmatched:,}행은 shot 차트에서 제외됩니다."
+            f"{source_id}: TEG Inline map 좌표 매칭 {matched:,}행 적용 "
+            f"(미매칭/통계 {unmatched_dropped:,}행 제외)."
         )
     elif working.height:
         warnings.append(f"{source_id}: TEG Inline map 좌표 {matched:,}행을 모두 매칭했습니다.")

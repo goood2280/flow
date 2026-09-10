@@ -2383,3 +2383,21 @@ def test_product_catalog_cache_avoids_repeated_source_scans(monkeypatch):
         assert second[0]["vehicle"] == "P"
     finally:
         teg_map._TEG_PRODUCT_CATALOG_CACHE.clear()
+
+
+def test_save_inline_map_table_creates_confidential_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(teg_map.roots, "get_db_root", lambda: tmp_path)
+    monkeypatch.setattr(teg_map, "map_payload", lambda veh: {"vehicle": veh, "shots": [{"x": 1, "y": 1}]})
+
+    res = teg_map.save_inline_map_table(
+        "INLINE_CONF_TEST",
+        "TEST_VEH",
+        [{"shot_x": 1, "shot_y": 1, "subitem_id": "PT_1"}],
+        "tester",
+        "confidential test comment",
+    )
+    confidential_file = tmp_path / "confidential" / "inline_map_settings.json"
+    assert confidential_file.is_file()
+    assert (tmp_path / "credential" / "inline_map_settings.json").exists() is False
+    assert res["tables"][0]["table_name"] == "INLINE_CONF_TEST"
+

@@ -385,7 +385,7 @@ class InlineMapTableReq(BaseModel):
 
 @router.get("/inline-map-settings")
 def inline_map_settings_get(_admin=Depends(require_admin)):
-    """DB root/credential 데이터지만 global admin에게만 반환한다."""
+    """DB root/confidential 데이터지만 global admin에게만 반환한다."""
     out = _tm.load_inline_map_settings()
     return {"ok": True, **out}
 
@@ -629,6 +629,13 @@ def mapfile_traffic_get(vehicle: str = Query(...), force: bool = False,
     _require_product_access(user, vehicle)
     from core import mapfile_traffic
     return mapfile_traffic.inspect_mapfiles_for_product(vehicle, force=bool(force))
+
+
+@router.get("/mapfile-sync-status")
+def mapfile_sync_status_get(user=Depends(current_user)):
+    """DB mapfile download log를 기반으로 GitHub 주기 다운로드 실행 상태 조회."""
+    from core import mapfile_traffic
+    return mapfile_traffic.get_github_download_status()
 
 
 @router.get("/mapfile-traffic/content")

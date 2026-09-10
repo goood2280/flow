@@ -88,9 +88,9 @@ def chart_builder_history_like(history_id: str, req: ChartBuilderLikeReq, reques
 
 
 @router.get("/chart-builder/radius-layout")
-def chart_builder_radius_layout(request: Request, product: str = Query(...)):
+def chart_builder_radius_layout(request: Request, product: str = Query(...), teg: str = Query("", max_length=200), source_product: str = Query("", max_length=200)):
     _require_filebrowser_user(request)
-    return _chart_builder_radius_layout(product)
+    return _chart_builder_radius_layout(product, teg=teg if isinstance(teg, str) else "", source_product=source_product if isinstance(source_product, str) else "")
 
 
 def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict):
@@ -334,16 +334,7 @@ def _chart_builder_cache_limits() -> tuple[int, int, float]:
 def _chart_builder_cache_key(req: ChartBuilderRunReq) -> str:
     inline_mapping_signature = []
     if any(_chart_builder_is_inline_root(source.root) for source in (req.sources or [])):
-        for path in (
-            PATHS.base_root / inline_coordinates.DEFAULT_RULEBOOK_NAME,
-            PATHS.base_root / inline_coordinates.LEGACY_RULEBOOK_NAME,
-            PATHS.base_root / "credential" / "inline_map_settings.json",
-        ):
-            try:
-                stat = path.stat()
-                inline_mapping_signature.append((path.name, int(stat.st_mtime_ns), int(stat.st_size)))
-            except OSError:
-                inline_mapping_signature.append((path.name, 0, 0))
+        inline_mapping_signature = inline_coordinates.rulebook_and_settings_signature(PATHS.base_root)
     payload = {
         "sources": [_chart_builder_model_dict(source) for source in (req.sources or [])],
         "joins": [_chart_builder_model_dict(join) for join in (req.joins or [])],

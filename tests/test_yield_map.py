@@ -213,6 +213,46 @@ def test_yield_map_scans_full_shots_and_exports_chart_builder_grain(tmp_path, mo
     }
 
 
+def test_first_bin_scan_persists_product_coordinate_system(tmp_path, monkeypatch):
+    db_root = tmp_path / "DB"
+    source_id = "1.RAWDATA_DB_EDS/WAFER_BIN"
+    product_dir = db_root / source_id / "product=PROD_A"
+    product_dir.mkdir(parents=True)
+    (product_dir / "part.csv").write_text(
+        "chip_x_pos,chip_y_pos,BIN,lot_id,wafer_id\n"
+        "0,0,1,L1,1\n1,0,1,L1,1\n0,1,1,L1,1\n1,1,2,L1,1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(yield_map, "PATHS", SimpleNamespace(db_root=db_root, data_root=tmp_path))
+    monkeypatch.setattr(yield_map, "CONFIG_PATH", tmp_path / "yield_map.json")
+    monkeypatch.setattr(yield_map, "_wf_geometry", lambda vehicle: {
+        "vehicle": vehicle, "display": {"cols": 2, "rows": 2},
+        "shots": [{"x": 0, "y": 0}],
+    })
+    config = {
+        "source": source_id,
+        "fields": {"x": "chip_x_pos", "y": "chip_y_pos", "bin": "BIN", "lot": "lot_id", "wafer": "wafer_id"},
+    }
+    yield_map.save_product_config("PROD_A", config)
+    scan = yield_map.scan_shot_layout("PROD_A", {**config, "vehicle": "PROD_A"}, lot_id="L1", wafer_id="1")
+
+    persisted = yield_map.save_scanned_shot_layout("PROD_A", {**config, "vehicle": "PROD_A"}, scan["layout"])
+    assert persisted["saved"] is True
+    saved = yield_map.product_config("PROD_A")
+    assert saved["vehicle"] == "PROD_A"
+    assert saved["shot_layout"]["enabled"] is True
+    assert saved["shot_layout"]["cols"] == 2
+    assert saved["shot_layout"]["rows"] == 2
+    assert saved["shot_layout"]["origin_x"] == 0
+    assert saved["shot_layout"]["origin_y"] == 0
+
+    replacement = yield_map.save_scanned_shot_layout(
+        "PROD_A", {**config, "vehicle": "PROD_A"}, {"enabled": True, "cols": 9, "rows": 9},
+    )
+    assert replacement["saved"] is False
+    assert yield_map.product_config("PROD_A")["shot_layout"]["cols"] == 2
+
+
 def test_et_wf_map_uses_native_shot_coordinates_without_subitem(tmp_path, monkeypatch):
     db_root = tmp_path / "DB"
     product_dir = db_root / "1.RAWDATA_DB_ET" / "PROD_A"

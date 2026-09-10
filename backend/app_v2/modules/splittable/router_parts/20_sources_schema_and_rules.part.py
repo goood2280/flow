@@ -1448,7 +1448,10 @@ def _load_csv_rows(fp: Path) -> list[dict]:
         st = fp.stat()
         key = str(fp.resolve())
         cached = _CSV_ROWS_CACHE.get(key)
-        if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+        # nanosecond precision matters for rulebook edits followed immediately by
+        # a metadata reload.  Float seconds can collapse two same-sized writes
+        # into one cache signature on filesystems with fine timestamp support.
+        if cached and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
             return [dict(row) for row in cached[2]]
         with open(fp, "r", encoding="utf-8-sig") as f:
             reader = csv_mod.DictReader(f)
@@ -1463,7 +1466,7 @@ def _load_csv_rows(fp: Path) -> list[dict]:
         # 무한 성장 방지 — 파일 단위 키가 계속 늘 수 있어 오래된 것부터 정리.
         while len(_CSV_ROWS_CACHE) >= _CSV_ROWS_CACHE_MAX:
             _CSV_ROWS_CACHE.pop(next(iter(_CSV_ROWS_CACHE)), None)
-        _CSV_ROWS_CACHE[key] = (st.st_mtime, st.st_size, [dict(row) for row in rows])
+        _CSV_ROWS_CACHE[key] = (st.st_mtime_ns, st.st_size, [dict(row) for row in rows])
         return rows
     except Exception:
         return []
@@ -1537,11 +1540,24 @@ def _dedup_list(values: list[str]) -> list[str]:
     return out
 
 
+def _row_value_ci(row: dict, col: str):
+    """Read a CSV field with whitespace/case-insensitive header fallback."""
+    if not isinstance(row, dict) or not str(col or "").strip():
+        return None
+    if col in row:
+        return row.get(col)
+    wanted = str(col).strip().casefold()
+    for key, value in row.items():
+        if str(key or "").strip().casefold() == wanted:
+            return value
+    return None
+
+
 def _first_row_value(row: dict, *cols: str) -> str:
     for col in cols:
         if not col:
             continue
-        value = str((row or {}).get(col) or "").strip()
+        value = str(_row_value_ci(row, col) or "").strip()
         if value:
             return value
     return ""
@@ -1589,9 +1605,9 @@ def _product_step_map_by_desc(product: str, base: Path | None = None) -> dict[st
     step_map: dict[str, list[dict]] = {}
     p_col = sm.get("product_col", "product")
     for r in matching:
-        row_prod = r.get(p_col)
+        row_prod = _row_value_ci(r, p_col)
         if row_prod is None and p_col != "product":
-            row_prod = r.get("product")
+            row_prod = _row_value_ci(r, "product")
         # Vehicle_matching.csv 에 product 열이 있으면 그 값이 제품별 step_id의
         # 유일한 귀속 근거다. 예전에는 다른 제품 행을 fallback_map에 모은 뒤
         # step_desc가 없거나 S0 route에 같은 step_id가 있다는 이유로 다시 합쳐
@@ -1600,7 +1616,7 @@ def _product_step_map_by_desc(product: str, base: Path | None = None) -> dict[st
             continue
         step_desc = _row_step_desc(r, sm)
         step_desc_key = _step_desc_match_key(step_desc)
-        step_id = (r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
+        step_id = _first_row_value(r, sm.get("step_id_col", "step_id"), "step_id", "raw_step_id")
         if not step_desc_key or not step_id:
             continue
         item = {
@@ -2484,7 +2500,7 @@ def _split_step_progress(product: str, root_lot_id: str, selected: list[str],
 def _build_inline_meta(product: str = "") -> dict:
     """inline_matching.csv (product, step_id, item_id, optional map table)."""
     base = _base_root()
-    rows = _load_csv_rows(base / "inline_matching.csv")
+    rows = _load_csv_rows(_rulebook_path_for_base("inline_matching", base))
     im = _sch("inline_matching")
     sid_to_desc: dict[str, str] = {}
     for steps in _product_step_map_by_desc(product, base).values():
@@ -2497,21 +2513,24 @@ def _build_inline_meta(product: str = "") -> dict:
     # 채우던 보강은 뺐다 — INLINE 은 module 로 따로 묶지 않고 '—' 로 둔다.
     grouped: dict[str, list[dict]] = {}
     p_col = im.get("product_col", "product")
-    has_product_col = any(p_col in r or "product" in r for r in rows)
+    has_product_col = any(
+        _row_value_ci(r, p_col) is not None or _row_value_ci(r, "product") is not None
+        for r in rows
+    )
     for r in rows:
-        row_prod = r.get(p_col)
+        row_prod = _row_value_ci(r, p_col)
         if row_prod is None and p_col != "product":
-            row_prod = r.get("product")
+            row_prod = _row_value_ci(r, "product")
         if not _step_matching_product_matches(product, row_prod, allow_common=not has_product_col):
             continue
-        iid = (r.get(im.get("item_id_col", "item_id")) or "").strip()
-        sid = (r.get(im.get("step_id_col", "step_id")) or "").strip()
+        iid = _first_row_value(r, im.get("item_id_col", "item_id"), "item_id")
+        sid = _first_row_value(r, im.get("step_id_col", "step_id"), "step_id")
         # INLINE 제품 귀속과 step_id는 inline_matching이 원천이다.
         # Vehicle_matching에 설명이 없어도 측정 step 자체를 버리지 않는다.
-        process_id = (r.get(im.get("process_id_col", "process_id")) or "").strip()
-        desc = (r.get(im.get("item_desc_col", "item_desc")) or "").strip()
-        matching_table = (r.get(im.get("matching_table_col", "matching_table")) or "").strip()
-        func_step = (r.get("function_step") or "").strip() or sid_to_desc.get(sid.casefold(), "")
+        process_id = _first_row_value(r, im.get("process_id_col", "process_id"), "process_id")
+        desc = _first_row_value(r, im.get("item_desc_col", "item_desc"), "item_desc")
+        matching_table = _first_row_value(r, im.get("matching_table_col", "matching_table"), "matching_table")
+        func_step = _first_row_value(r, "function_step") or sid_to_desc.get(sid.casefold(), "")
         if not iid or not sid:
             continue
         item = {
@@ -2567,7 +2586,7 @@ def _build_inline_meta(product: str = "") -> dict:
 def _build_vm_meta(product: str = "") -> dict:
     """vm_matching.csv has step_desc + item_id; step_id comes from Vehicle_matching.csv."""
     base = _base_root()
-    rows = _load_csv_rows(base / "vm_matching.csv")
+    rows = _load_csv_rows(_rulebook_path_for_base("vm_matching", base))
     vm = _sch("vm_matching")
     step_map = _product_step_map_by_desc(product, base)
     grouped: dict[str, list[dict]] = {}
@@ -2980,9 +2999,9 @@ def _apply_step_label_columns(product: str, selected: list[str], col_rename: dic
 
 # ── 통합(병합) 표시 대상 ────────────────────────────────────────────────
 # 옆칸과 같은 값을 하나로 묶는 표시는 split 조건 열에만 의미가 있다.
-# INLINE/VM 은 wafer 별 실측값이고 TAG/관리 행은 자유 입력이라, 값이 우연히
-# 같다고 묶으면 wafer 별 값이 몇 개인지 읽을 수 없게 된다.
-MERGE_VIEW_PREFIXES = ("KNOB", "FAB", "MASK")
+# KNOB 외의 INLINE/VM/TAG/MASK/FAB 행은 wafer 별 값을 그대로 읽어야 하므로
+# 값이 우연히 같아도 병합하지 않는다.
+MERGE_VIEW_PREFIXES = ("KNOB",)
 
 
 def _merge_view_allowed_param(param: str) -> bool:
