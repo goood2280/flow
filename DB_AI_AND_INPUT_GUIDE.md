@@ -155,6 +155,83 @@ manifest = {
 
 상태는 `PATHS.data_root/teg_map/mapfile_alert_state.json`, 검사 캐시는 같은 폴더의 `mapfile_traffic_cache.json`에 저장된다. 일반 운영에서 중복 방지 파일을 지우지 않는다. 알림이 없으면 그룹·멤버·개인 설정, 제품 코드와 파일 접두어, dev/prod 배치, 스케줄러 로그의 warnings/failed/suppressed/duplicates를 확인한다. 파일이 발견되지 않아 결과가 없는 경우는 개별 이상 파일 알람과 다르며, 파일 부재 알람을 보장하지 않는다.
 
+### 3.1 Mapfile 신호등 상세 판정
+
+검사는 TEG의 중심점 하나가 아니라 **좌하단 앵커 `(x,y)`와 폭·높이로 만든 사각형 전체**를 본다. 좌표는 flat(Horizontal/Vertical R/Vertical L), PCHK/PRBCHK 기준점, 제품별 보정과 모듈별 변환을 적용한 뒤 정답지와 대조한다. 원문 숫자와 정답지 숫자를 그대로 빼면 화면의 ΔX/ΔY와 다를 수 있다.
+
+S/L 목록의 기준은 `Teg_location.csv`다. 이름·top_cell 및 지원하는 이름 변환으로 정답지를 찾은 행은 S/L로 검사한다. 정답지 파일은 읽혔으나 이름을 찾지 못한 행은 MAIN 내부 TEG 쪽으로 분류하며, 무조건 S/L die 침범으로 처리하지 않는다. 이름 변환으로 찾았다는 이유만으로 좌표 검사를 통과시키지도 않는다.
+
+#### S/L 좌표 차이: 얼마부터 빨간불인가
+
+`ΔX = 환산 X − 정답지 X`, `ΔY = 환산 Y − 정답지 Y`다. 단위는 **ebeam raw 좌표 단위**이며, 유클리드 거리나 X·Y 오차의 합으로 판정하지 않는다. 입력 정밀도에 맞게 차이를 정리한 뒤 아래 조건을 적용한다.
+
+| 조건 | 좌표 판정 | 예시 ΔX, ΔY |
+|---|---|---|
+| 두 축 모두 절댓값이 `0.000001` 미만 | match / 초록 | `0, 0` |
+| 위 조건은 아니지만 두 축 모두 절댓값이 `2.0` 이하 | warning / 노랑 | `2, 0`, `-2, 2`, `1.5, 1.5` |
+| 어느 한 축이라도 절댓값이 `2.0` 초과 | mismatch / 빨강 | `2.1, 0`, `0, -2.1` |
+
+따라서 **2 이상이 아니라 2 초과**다. 기본 `ebeam_scale=0.001`이면 raw 2는 0.002 mm(2 µm)다. scale이 다른 제품/설정에서는 같은 raw 2의 물리적 길이가 달라진다. `TOL=1e-6`, `WARN_TOL=2.0`은 현재 코드 상수이며 `check.die_tol`을 바꿔도 이 좌표 임계값은 바뀌지 않는다. 같은 이름의 정답지가 여러 행이면 환산 위치와 `|ΔX|+|ΔY|`가 가장 작은 후보를 선택한 후 축별로 판정한다.
+
+#### S/L die 침범·방향 오류
+
+| 빨간불 조건 | 판정 범위와 확인할 내용 |
+|---|---|
+| 등록 S/L TEG가 die 안으로 허용오차보다 깊게 들어감 | 좌표 차이가 0이어도 die 침범이면 빨강. 정답지 좌표·TEG 크기·die 형상을 함께 확인 |
+| 정답지 방향과 해당 행의 Map 방향이 다름 | 예: Horizontal TEG가 Vertical(R) Map에 포함. 방향 오류만으로 빨강 |
+| TEG 사각형 일부 또는 전체가 shot 밖 | 아래 shot 경계 규칙 적용. die 침범과 별도 사유 |
+
+Die 침범 허용오차는 `check.die_tol × ebeam_scale` mm다. 기본 die_tol은 raw `3.0`, 기본 scale에서는 **0.003 mm(3 µm)**다. 경계에 정확히 닿거나 허용오차 이하로 살짝 겹치는 것은 침범으로 세지 않는다. 코드는 사각형을 die 밖으로 빼내는 데 필요한 최소 축 이동량이 허용오차를 넘는지 검사한다(수치 오차 1e-9 mm 포함). 단순 겹침 면적 비율 기준은 아니다. 예를 들어 기본 설정에서 0.003 mm 겹침은 허용하고 0.004 mm 침범은 빨강이다.
+
+PCHK/PRBCHK 기준행은 **die 침범 검사만 제외**한다. 좌표·방향·shot 검사를 전부 면제한다는 뜻은 아니다. 현재 die_proximity는 경계 근처라는 이유만으로 새 노랑을 만들지 않는다. 관련 die 형상 정보가 없으면 침범 검사를 완료했다고 해석하면 안 된다.
+
+#### MAIN 내부 TEG: 자기 die에 포함되는가
+
+MAIN 앵커는 Teg_location의 MAIN 위치를 우선 사용하고 필요한 경우 Mapfile MAIN 앵커를 사용한다. MAIN 크기는 `Main_chip_info.csv`의 chipsize_x/chipsize_y에서 가져온다(µm → mm). TEG 이름이 없는 MAIN 블록 자체의 앵커 행은 내부 TEG 판정 대상에서 제외되어 회색일 수 있다.
+
+| 배치 상태 | 색 / 사유 |
+|---|---|
+| 자기 MAIN 사각형 안에 TEG 전체가 포함되고 다른 MAIN 침범 없음 | 노랑 / `MAIN… die 안`. S/L 정답지의 정밀 좌표 검증을 통과했다는 뜻은 아님 |
+| 자기 MAIN에 일부 걸친 채 나머지가 밖으로 나감 | 빨강 / `MAIN… 경계 넘어감` |
+| 자기 MAIN과 다른 MAIN에 동시에 걸침 | 빨강 / `여러 MAIN(…)에 걸침` |
+| 자기 MAIN 안에 포함되지만 다른 MAIN 영역도 침범 | 빨강 / `여러 MAIN(…)에 걸침` |
+| 자기 MAIN에는 없고 다른 MAIN 안에 들어감/일부 침범 | 빨강 / `다른 MAIN(…) 안` 또는 `침범` |
+| 자기 MAIN과 다른 MAIN 어디에도 들어가지 않음 | 빨강 / `MAIN… 밖` |
+| 자기 MAIN의 위치·크기 정보를 찾지 못함 | 주황 / `MAIN 정보없음`. 정상으로 간주하지 않음 |
+
+전체 포함 비교에도 die_tol을 사용한다. “대부분 자기 MAIN 안에 있다”거나 중심점이 안에 있다는 것만으로 통과하지 않는다. MAIN 이름은 정규화해 비교하므로 `MAIN01`과 `MAIN_M01` 같은 표기를 연결할 수 있다.
+
+#### purpose가 IP이거나 다른 값인 die
+
+`Main_chip_info.csv`의 purpose는 공백 제거·대문자화 및 연속 공백/밑줄/하이픈을 공백으로 정규화한다.
+
+| purpose | MAIN 내부 TEG 배치 |
+|---|---|
+| 빈칸 또는 `TEG` | purpose 자체로 금지하지 않음. MAIN 경계·shot 검사는 계속 적용 |
+| `IP`, `NO TEG`, `NO_TEG`, `NO-TEG`, 그 밖의 비어 있지 않은 값 | 배치 금지 |
+
+MAIN 내부 TEG가 **허용오차를 넘게 실제로 겹친 MAIN 중 하나라도** 배치 금지 purpose이면 `purpose … — TEG 배치 금지`로 빨강이다. 자기 MAIN뿐 아니라 침범한 다른 MAIN의 purpose도 검사한다. purpose가 있는 die가 파일에 존재한다는 사실만으로 모든 행을 빨갛게 만들지는 않는다. S/L TEG는 purpose와 관계없이 일반 die 침범 규칙을 적용한다.
+
+예: MAIN01 purpose가 TEG이고 MAIN02가 IP일 때, MAIN01 소속 TEG가 MAIN02까지 걸치면 빨강이다. MAIN02 안에 완전히 들어가도 빨강이다. 화면 사유는 purpose 금지 사유가 MAIN 걸침 사유를 대체할 수 있으므로 관련 MAIN과 배치도를 함께 확인한다. 제품에 MAIN 정보가 한 행뿐인 경우 이름이 달라도 그 크기/purpose를 사용하는 호환 처리가 있으므로 chip_name도 정확히 관리한다.
+
+#### Shot 경계 이탈
+
+Shot은 중심 기준 `[-W/2,+W/2] × [-H/2,+H/2]`이고 TEG는 `[x,x+w] × [y,y+h]`다. 두 영역은 mm 단위로 비교한다.
+
+- TEG 전체가 shot 안: inside. TEG의 바깥 변이 shot 경계에 정확히 맞는 것은 허용.
+- 면적 일부는 안에 있지만 나머지는 밖: partial → **빨강, shot 경계 벗어남**.
+- 면적 교집합이 없음: outside → **빨강, shot 완전 이탈**. 바깥에서 경계선에만 닿아도 outside.
+
+예: 폭·높이 20 mm shot에서 `(x,y)=(9.5,0)`, `(w,h)=(1,0.1)`이면 x 끝이 10.5여서 partial이다. x=10에서 시작하면 outside다. shot 검사는 수치 오차 `1e-9 mm`를 제외하면 die_tol로 경계 초과를 허용하지 않는다. Shot 크기가 없으면 이 검사를 수행할 수 없다.
+
+#### 행 색과 파일 신호등의 차이
+
+S/L이나 MAIN에 빨간 행이 하나라도 있으면 해당 영역이 빨강이고, 둘 중 하나가 빨강이면 파일 신호등도 빨강이다. 빨강이 없을 때 주황·노랑 또는 S/L 필수 대상 누락은 영역/파일 노랑으로 모인다. **필수 대상 누락만으로는 빨강이 아니다.** MAIN 내부에 정상적으로 포함된 미등록 TEG도 확인 성격의 노랑이라 파일 노랑의 원인이 될 수 있다.
+
+현재 파일 집계는 빨강 → 노랑 → 초록 → 회색 순이다. 한 영역이 초록이고 다른 영역이 회색/없음이면 전체가 초록일 수 있으므로 전체 색만으로 모든 영역 검증 완료를 단정하지 않는다. 파일 읽기·검사 오류는 회색일 수 있고, 회색/노랑도 앞 절의 알람 대상이다.
+
+빨간불을 확인할 때는 S/L과 MAIN 상세에서 **행 이름, 정답지 이름, 환산 좌표, ΔX/ΔY, 방향, 크기, 침범한 MAIN, purpose**를 함께 확인한다. 좌표·die·shot 문제가 동시에 있으면 하나만 수정해도 다른 사유가 남는다. `die_tol`을 크게 해서 구조 오류를 숨기지 말고 원천 좌표계와 형상을 먼저 맞춘다.
+
 ## 4. inline_shotmatching 열 설계와 값
 
 ### 4.1 테이블 선택 CSV
@@ -223,8 +300,122 @@ map 이름은 파일명·확장자를 제거한 별칭으로도 조회하지만 
 4. 실제 INLINE 원천 한 행이 기대한 shot_x/shot_y로 연결되는지 확인한다. 평균 등 통계 행은 제외되어야 한다.
 5. 테이블명 오타, 누락 subitem, 중복 규칙을 점검한다. CSV·설정 파일 변경 시각/크기는 캐시 서명에 사용되므로 값을 바꾼 뒤 이전 결과가 남지 않는지 확인한다.
 
-## 5. 유지보수 시 확인할 소스
+## 5. confidential 및 관련 기준 파일의 용도
 
+파일명이 기준 파일이라고 해서 모두 confidential을 자동 탐색하지는 않는다. **소비 기능별 경로가 다르다.** 현재 소스의 기본 경로는 아래와 같으며, 운영에서 별도 파일명/경로를 설정했다면 그 설정을 확인한다. 실제 파일을 임의로 한 폴더에 모아 옮기면 조회가 끊길 수 있다.
+
+| 파일 | 기본 위치/우선순위 | 역할 |
+|---|---|---|
+| `f_step.csv` | `DB/credential/` 우선 | 제품별 현재 route와 step의 POR recipe, S0 입력 기준 |
+| `f_step.parquet` | 위 CSV가 없을 때 `DB/confidential/` | f_step의 이전 형식 호환 입력 |
+| `ppid_knob.csv` | `DB/` 루트, SplitTable 설정 파일명 적용 가능 | PPID 값과 KNOB feature·category 연결 |
+| `Vehicle_matching.csv` | `DB/` 루트, SplitTable 설정 파일명 적용 가능 | 제품별 step_id와 공통 step_desc 연결 |
+| `step_matching.csv` | `DB/` 루트 | function_step 조회 및 Vehicle 매칭의 레거시 호환 |
+| `inline_matching.csv` | `DB/` 루트 | 제품·step·item 설명과 Inline 메타데이터 |
+| `vm_matching.csv` | `DB/` 루트 | VM item과 공통 step_desc 연결 |
+| `mask_info.csv` | 매칭 기능의 DB 기준 경로 | reticle 정보와 제품·공정 연결 보조 |
+| `inline_shot_matching.csv`, `inline_map_settings.json` | `DB/confidential/` 우선 | 4절의 Inline 좌표 선택·내용 |
+| `teg_map.json` | `DB/teg_location/` | TEG 파일 경로·좌표 변환·검사·제품 설정 |
+| `Chip_Radius.csv`, `Teg_location.csv`, `Main_chip_info.csv` | 기본 DB 루트, teg_map 설정에서 상대/절대 경로 변경 가능 | shot/TEG/die 형상과 검사 기준 |
+
+`confidential/ppid_knob.csv`를 복사해 놓는 것만으로 기본 루트 소비자가 그 파일을 읽지는 않는다. SplitTable의 스키마 파일 설정, 실제 DB root, 해당 기능의 파일 resolver를 확인한다. CSV 캐시에 등록된 호환 파일명 목록도 모든 파일을 자동 탐색·통합한다는 의미는 아니다.
+
+### 5.1 f_step: 공정 순서와 POR recipe
+
+`f_step`은 열 이름이 아니라 파일 이름이다. 권장 열은 다음과 같다.
+
+| 열 | 의미/규칙 |
+|---|---|
+| `product` | 제품별 범위. 여러 제품이 함께 있으면 반드시 명시 권장 |
+| `step_id` | 공정 식별자 문자열. 앞자리 0 유지 |
+| `recipe_id` | 해당 step의 현재 POR PPID 문자열. KNOB category나 function_step을 넣지 않음 |
+
+```csv
+product,step_id,recipe_id
+DEMO_PRODUCT,001200,DEMO_POR_A
+DEMO_PRODUCT,001300,DEMO_POR_B
+```
+
+행 순서가 route 순서다. 임의로 step_id 문자순 정렬해서 원래 공정 순서를 바꾸지 않는다. 같은 제품·step이 중복되면 **처음 등장한 route 위치를 유지하고 마지막 비어 있지 않은 recipe_id를 사용**한다. product 열이 없으면 step_id가 전 제품에서 유일한 공통 키라고 취급한다. product 열은 있는데 값이 빈 행은 건너뛴다. step·recipe 열 자체가 없으면 유효한 f_step으로 읽지 못한다.
+
+`credential/f_step.csv`가 존재하면 `confidential/f_step.parquet`를 함께 병합하거나 우선하지 않는다. CSV가 잘못되었다고 정상 Parquet로 조용히 넘어간다고 기대하지 않는다. 두 입력이 없을 때 레거시 `credential/*_sop.csv` 탐색 경로가 있지만, 편집 시점 S0 입력 경로는 f_step CSV/Parquet만 허용한다.
+
+소비처는 SplitTable의 공정/parameter 순서, 현재 recipe 조회 및 S0 캡처다. **S0 이력으로 이미 확정한 값은 나중에 POR 파일을 바꿨다고 덮어쓰지 않는다.** 현재 편집에서 쓰는 f_step recipe와 과거에 캡처한 S0는 시간 기준이 다를 수 있으므로 구분한다. f_step은 실제 wafer가 실행한 모든 FAB 이력 파일을 대체하지 않는다.
+
+### 5.2 ppid_knob: PPID → KNOB 규칙
+
+SplitTable 관리자 룰북의 현재 표준 열은 다음과 같다.
+
+| 열 | 입력 의미 |
+|---|---|
+| `feature_name` | KNOB/실험 축 이름. 예: `DEMO_WIDTH` |
+| `rule_order` | 규칙 표식/순서. 예: `R1`, `R2`. `RO`는 문자 O이며 R0(숫자 0)와 구분 |
+| `step_desc` | 연결할 공통 공정 설명. Vehicle_matching의 step_desc와 맞춤 |
+| `operator` | 비교 연산. 신규 호환 예시는 `eq` 사용 |
+| `value` | 비교할 실제 PPID 문자열. 예: `DEMO_POR_A` |
+| `category` | PPID가 매칭되었을 때의 KNOB/Split 분류값. 예: `BASE` |
+
+```csv
+feature_name,rule_order,step_desc,operator,value,category
+DEMO_WIDTH,R1,DEMO_PATTERN,eq,DEMO_POR_A,BASE
+DEMO_WIDTH,R2,DEMO_PATTERN,eq,DEMO_RECIPE_B,VARIANT_B
+```
+
+이 예시는 같은 공정에서 PPID에 따라 BASE/VARIANT_B를 구분한다. 하나의 feature에 여러 공정이 연결될 수도 있다. 공통 룰북의 step_desc를 선택 제품의 Vehicle_matching에서 실제 step_id로 확장하므로 **룰북에 제품명만 추가한다고 제품별 step 매칭을 대신하지 않는다.** 현재 SplitTable은 ppid_knob 규칙을 제품 공통으로 읽고 제품별 공정 확장은 Vehicle_matching에서 한다.
+
+소비 경로별 호환 차이가 있다. `core/fab_reference.py`의 단일 PPID 조회는 `function_step` 열을 사용하며, `value`를 대소문자 무시로 비교하고 operator가 빈칸 또는 `eq`인 행만 처리한다. regex/contains/부등호를 적어도 이 조회에서는 동작하지 않는다. SplitTable 표준 편집 열은 `step_desc`이므로 두 소비자를 모두 쓴다면 function_step과 step_desc의 연결도 확인해야 한다. 레거시 파일의 열 이름을 추측해서 일괄 변경하지 않는다. 퇴역/미배포 AI 화면이 해당 조회를 제공한다고 가정하지 않는다.
+
+규칙 목록 조회는 숫자 R 순서로 정렬하고 RO를 뒤에 둔다. 여러 eq 규칙이 같은 PPID에 맞으면 단일 규칙만 선택한다고 보장하지 않으므로 서로 다른 category로 중복 매칭하지 않게 작성한다. Valve RO 알람 승인 경로는 해당 function_step 그룹의 다음 `R{n+1}` eq 규칙을 기존 RO 앞에 추가한다. 이는 담당자가 확인한 분류 반영 절차이며, 문서나 CSV 복사 자체가 승인/알람 처리를 실행하지 않는다.
+
+### 5.3 Vehicle_matching과 step_matching
+
+```csv
+product,step_id,step_desc
+DEMO_PRODUCT,001200,DEMO_PATTERN
+DEMO_PRODUCT,001300,DEMO_ETCH
+```
+
+Vehicle_matching은 현재 제품의 공정 귀속과 공통 공정 설명을 정하는 기준이다. 한 step_desc에 복수 step_id가 연결될 수 있으며, 이 연결로 KNOB와 VM의 공정 범위를 확장한다. 추가 vehicle/module 열을 쓰는 소비자도 있다. step_desc는 자유 텍스트라 쉼표가 있으면 CSV 따옴표로 감싸야 하며, 쉼표를 여러 공정 구분자로 해석한다고 가정하지 않는다.
+
+`step_matching.csv`의 기본 형식은 `product,step_id,function_step`이다. 공정 ID ↔ function_step 양방향 조회와 레거시 매칭에 쓰인다. 현재 Vehicle 파일이 있으면 비어 있어도 과거 step_matching 행을 자동 합쳐 복원하지 않는 경로가 있다. 새 제품은 Vehicle의 product·step_id·step_desc를 먼저 맞춘 뒤 해당 제품의 KNOB 확장 결과를 확인한다.
+
+### 5.4 Inline·VM·Mask 보조 기준
+
+- `inline_matching.csv`: `product,step_id,item_id,item_desc,matching_table`. 필수 의미는 제품·step·item이며 item_desc는 설명이다. `INLINE_<item_id>` 메타데이터와 제품/공정 연결에 쓰인다. matching_table만 적고 좌표 테이블 본문을 만들지 않으면 shot 좌표가 생기지 않는다. 4절의 전용 shot 룰북과 중복·충돌하지 않게 관리한다.
+- `vm_matching.csv`: `step_desc,item_id`를 기준으로 `VM_<step_desc>_<item_id>`를 연결하고 실제 제품별 step_id는 Vehicle_matching에서 확장한다. VM에 제품 정보를 임의 추가해 Vehicle의 제품 귀속을 대신하지 않는다.
+- `mask_info.csv`: 매칭 채우기는 `reticle_id`를 FAB 원천 reticle_id와 대조하고 같은 제품·step의 Vehicle 정보에서 step_desc를 가져온다. `mask_version,mask_vendor,photo_step` 및 `product,step_id,step_desc`는 해당 메타데이터다. PPID 분류 룰북과는 다른 키를 사용한다.
+
+매칭 채우기의 원천 스캔 결과는 검토할 제안이다. 제품/공정/설명을 확인한 뒤 기존 승인·저장 절차를 이용한다. 실제 데이터 없이 문서 예시만으로 운영 기준을 채우지 않는다.
+
+### 5.5 TEG 검사 설정·정답지
+
+| 파일/설정 | 핵심 값과 소비처 |
+|---|---|
+| `Teg_location.csv` | vehicle, TEG 이름/top_cell, ebeam 좌표, 방향, TEG 크기 등. S/L 정답지 매칭·좌표 비교·MAIN 앵커 |
+| `Main_chip_info.csv` | `vehicle,chip_name,chipsize_x,chipsize_y,purpose`. 크기는 µm, purpose는 3.1절 배치 금지 판정 |
+| `Chip_Radius.csv` | 제품의 shot/wafer 배치 형상. mm 기준으로 읽으며 ebeam_scale을 곱하는 표가 아님 |
+| `teg_map.json`의 `ebeam_scale` | ebeam raw → mm. 기본 0.001 |
+| `check.die_tol` | die 겹침/MAIN 포함 허용오차. raw 단위, 기본 3.0 |
+| `check.flat_offsets`, 제품 flat 보정·module 규칙 | 설비 상대좌표 환산. 정답지 PCHK/PRBCHK 기준점이 있으면 그 기준점을 우선 |
+| `teg_default_w`, `teg_default_h` | 정답지에 개별 크기가 없을 때 TEG 크기. 저장 mm, UI µm. 기본 3.0 × 0.1 mm |
+| `check_targets` | 제품별 필수 TEG 목록. 제품 키가 없으면 기본 H_/V_ 대상, 명시적 빈 배열은 대상 없음 |
+| `product_codes` | Mapfile 이름 접두어 선택용 제품 코드 |
+
+좌표 비교 `WARN_TOL=2.0`과 die_tol은 서로 다른 기준이다. 제품 vehicle은 이 파일들과 제품별 설정의 공통 조인 키이므로 한 표만 이름을 바꾸지 않는다. 정답지/형상 변경 후 대표 Mapfile을 강제 재검사해 ΔX/ΔY와 die/shot 결과를 확인한다. 검사 캐시와 알림 중복 방지는 별도이므로 재검사했다고 동일 파일 버전 알림이 다시 발행되는 것은 아니다.
+
+### 5.6 변경 후 확인 순서
+
+1. 소비 화면이 실제 읽는 DB root·파일명·경로를 확인한다. 기본 경로와 운영 지정 경로를 혼동하지 않는다.
+2. 원본을 내부에 백업하고 문자열 식별자·필수 열·중복 키·행 순서를 검토한다.
+3. f_step은 제품별 step→recipe와 route 순서, ppid_knob은 PPID→category와 공정 확장, Inline은 subitem→shot 좌표를 각각 대표 입력으로 확인한다.
+4. S0 과거 이력 보존과 현재 입력 반영을 따로 확인한다. 캐시 파일을 수기로 편집해 원천을 대신하지 않는다.
+5. 실제 confidential/credential 파일·제품 값·담당자·원천 데이터는 내부에 보관한다. GitHub에는 이 가이드의 합성 예시만 둔다.
+
+## 6. 유지보수 시 확인할 소스
+
+- `backend/app_v2/modules/splittable/router_parts/25_s0_snapshot.part.py`: f_step 우선순위·S0 원천과 이력
+- `backend/app_v2/modules/splittable/router_parts/20_sources_schema_and_rules.part.py`: 룰북 경로·열·제품별 공정 확장
+- `backend/core/fab_reference.py`, `backend/core/matching_fill.py`: PPID/공정 조회·매칭 제안
 - `backend/core/ai_semantic.py`: `_load`, `_validate_record`, `prompt_context`
 - `backend/core/inline_coordinates.py`: `find_matching_rulebook_files`, `load_matching_rules`, `load_coordinate_mapping`
 - `backend/core/teg_map.py`: `_clean_inline_table`, `save_inline_map_table`
