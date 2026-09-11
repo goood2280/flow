@@ -393,6 +393,49 @@ def test_vm_process_info_preserves_underscores_and_vehicle_module(monkeypatch, t
     }
 
 
+def test_fab_process_info_uses_fab_name_and_selected_product_vehicle_step(monkeypatch, tmp_path):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc,module\n"
+        "proda,A100,GATE_ETCH,GATE\n"
+        "prodb,B100,GATE_ETCH,OTHER\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "fab.csv").write_text(
+        "step_desc,feature_name\nGATE_ETCH,CHAMBER_ID\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+
+    meta = splittable._build_fab_meta("ML_TABLE_PRODA")
+
+    assert meta["GATE_ETCH_CHAMBER_ID"]["step_ids"] == ["A100"]
+    assert meta["FAB_GATE_ETCH_CHAMBER_ID"] is meta["GATE_ETCH_CHAMBER_ID"]
+    assert splittable._step_process_columns_for_param(
+        "FAB_GATE_ETCH_CHAMBER_ID", {"fab": meta}
+    ) == {"step_id": "A100", "step_desc": "GATE_ETCH"}
+
+
+def test_inline_virtual_columns_use_item_desc_once(monkeypatch):
+    from routers import splittable
+
+    by_item_id = {"item_id": "ITEM_1", "item_desc": "CD", "feature_name": "CD"}
+    by_item_desc = {"item_id": "ITEM_1", "item_desc": "CD", "feature_name": "CD"}
+    monkeypatch.setattr(
+        splittable, "_build_inline_meta", lambda *args, **kwargs: {
+            "ITEM_1": by_item_id,
+            "CD": by_item_desc,
+        },
+    )
+
+    assert splittable._virtual_columns_for_prefix("PRODA", "INLINE") == ["INLINE_CD"]
+    assert splittable._virtual_columns_for_prefix(
+        "PRODA", "INLINE", existing_columns=["INLINE_ITEM_1"]
+    ) == []
+
+
 def test_inline_and_vm_process_info_accept_case_variant_headers_and_configured_files(monkeypatch, tmp_path):
     from routers import splittable
 
@@ -778,3 +821,26 @@ def test_mask_process_columns_fallback_when_not_in_vehicle_matching(tmp_path, mo
     # Even if parameter wasn't in schema, fallback extracts MASK_ tail as step_desc
     cols = splittable._step_process_columns_for_param("MASK_SOME_DYNAMIC_STEP", metas)
     assert cols == {"step_id": "", "step_desc": "SOME_DYNAMIC_STEP"}
+
+
+def test_mask_meta_does_not_turn_vehicle_steps_into_virtual_rows(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc,module\n"
+        "proda,A100,GATE_ETCH,GATE\n"
+        "proda,A200,CONTACT_ETCH,CONTACT\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    monkeypatch.setattr(
+        splittable, "_mltable_schema_columns", lambda *args, **kwargs: ["MASK_GATE_ETCH"]
+    )
+
+    meta = splittable._build_mask_meta("ML_TABLE_PRODA")
+
+    assert "MASK_CONTACT_ETCH" not in meta
+    assert splittable._virtual_columns_for_prefix(
+        "ML_TABLE_PRODA", "MASK", existing_columns=["MASK_GATE_ETCH"]
+    ) == []

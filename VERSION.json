@@ -1,7 +1,18 @@
 {
-  "version": "10.4.252",
+  "version": "10.4.253",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.253",
+      "date": "2026-09-11",
+      "tag": "fix",
+      "title": "SplitTable INLINE·VM·FAB 공정 연결 및 MASK 행 중복 수정",
+      "changes": [
+        "[적용 공정 정보] INLINE은 inline_matching.csv의 item_desc·step_id, VM은 vm_matching.csv의 step_desc·item_id, FAB은 fab.csv의 step_desc·feature_name을 기준으로 이름을 구성하고 제품별 Vehicle_matching.csv의 step_id·module을 연결.",
+        "[MASK 행 중복] Vehicle 전체 공정과 lookup 별칭을 가상 MASK 행으로 확장해 한 값이 여러 행처럼 보임 → 실제 ML_TABLE MASK 컬럼만 후보로 사용하고 물리 컬럼별 메타를 한 번만 표시.",
+        "[캐시·검증] 기존 별칭 행 응답 제거를 위해 SplitTable view disk cache 버전을 갱신하고 SplitTable 회귀 92건과 프런트 production build를 통과."
+      ]
+    },
     {
       "version": "10.4.252",
       "date": "2026-09-11",

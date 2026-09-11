@@ -34,12 +34,16 @@ class RulebookService:
         for row in rows or []:
             if not isinstance(row, dict): continue
             r = dict(row)
-            if kind in {"knob_ppid", "step_matching", "vm_matching"} and not str(r.get("step_desc") or "").strip():
+            if kind in {"knob_ppid", "step_matching", "vm_matching", "fab_matching"} and not str(r.get("step_desc") or "").strip():
                 r["step_desc"] = self._row_step_desc(r, sch)
             if kind == "knob_ppid" and not str(r.get("value") or "").strip():
                 r["value"] = self._first_row_value(r, sch.get("value_col", "value"), "ppid", "category")
             if kind == "vm_matching" and not str(r.get("item_id") or "").strip():
                 r["item_id"] = self._first_row_value(r, sch.get("item_id_col", "item_id"), "feature_name")
+            if kind == "fab_matching" and not str(r.get("feature_name") or "").strip():
+                r["feature_name"] = self._first_row_value(
+                    r, sch.get("feature_name_col", "feature_name"), "feature_name"
+                )
             out.append(r)
         return out
 
@@ -61,7 +65,7 @@ class RulebookService:
         raw_rows = self.repo.load_csv_rows(path)
         rows = self.normalize_rows(kind, raw_rows)
         
-        if product and kind not in {"knob_ppid", "vm_matching"}:
+        if product and kind not in {"knob_ppid", "vm_matching", "fab_matching"}:
             allow_common = True
             if kind in {"step_matching", "inline_matching"}:
                 p_col = self.repo.get_sch(kind).get("product_col", "product")
@@ -93,7 +97,7 @@ class RulebookService:
             raise HTTPException(400, f"validation failed: {e}")
 
         product_scope = str(product or "").strip()
-        if kind in {"knob_ppid", "vm_matching"}:
+        if kind in {"knob_ppid", "vm_matching", "fab_matching"}:
             product_scope = ""
 
         if product_scope:

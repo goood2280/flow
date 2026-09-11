@@ -11,7 +11,7 @@ from scripts.split_router_source import _top_level_starts
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ROUTER_CONTRACTS = {
     "filebrowser": {"part_count": 9, "route_count": 53},
-    "splittable": {"part_count": 10, "route_count": 96},
+    "splittable": {"part_count": 10, "route_count": 100},
 }
 
 

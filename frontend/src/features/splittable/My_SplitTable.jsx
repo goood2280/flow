@@ -235,7 +235,7 @@ const knobStepLines=(groups,{excludeNotNull=false}={})=>{
   return lines;
 };
 const knobStepSummaryText=(groups,options={})=>knobStepLines(groups,options).join("\n");
-// INLINE(inline_matching) / VM(vm_matching + Vehicle_matching) 공용.
+// INLINE/VM/FAB/MASK item-style matching 공용.
 // VM 은 step_desc 를 Vehicle_matching 의 제품별 step_id 로 푼 결과가 이미
 // meta.groups[].step_ids 에 들어 있다 (backend _build_vm_meta).
 const stepItemLines=(meta)=>{
@@ -259,7 +259,7 @@ const stepItemLines=(meta)=>{
 // 이 행이 적용공정정보 모드에서 보여줄 줄 목록. 빈 배열이면 표시 대상이 없다.
 const matchStepLines=(kind,meta,{excludeNotNull=false}={})=>{
   if(kind==="knob_ppid")return knobStepLines(meta?.groups||[],{excludeNotNull});
-  if(kind==="inline_matching"||kind==="vm_matching"||kind==="mask_matching")return stepItemLines(meta||{});
+  if(kind==="inline_matching"||kind==="vm_matching"||kind==="fab_matching"||kind==="mask_matching")return stepItemLines(meta||{});
   return [];
 };
 // 적용 공정 정보는 항목명을 덮어쓰지 않고 별도 step_id / step_desc 열로 보인다.
@@ -1101,7 +1101,19 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       .then(d=>{if(active)setVmMeta(d.items||{});}).catch(()=>{if(active)setVmMeta({});});
     return()=>{active=false;controller.abort();};
   },[selProd,matchingMetaRevision]);
-  // v8.8.15: INLINE meta — INLINE_<item_id> row 의 step_id sub-label 용.
+  // FAB_<step_desc>_<feature_name> meta — fab.csv의 이름을 제품별 Vehicle step에 연결.
+  const[fabMeta,setFabMeta]=useState({});
+  useEffect(()=>{
+    if(!selProd){setFabMeta({});return;}
+    let active=true;
+    const controller=new AbortController();
+    setFabMeta({});
+    sf(API+"/fab-meta?product="+encodeURIComponent(selProd),{signal:controller.signal})
+      .then(d=>{if(active)setFabMeta(d.items||{});}).catch(()=>{if(active)setFabMeta({});});
+    return()=>{active=false;controller.abort();};
+  },[selProd,matchingMetaRevision]);
+  // INLINE meta — INLINE_<item_desc> row 의 step_id/step_desc 표기용
+  // (이전 INLINE_<item_id> 행도 lookup alias로 계속 지원).
   const[inlineMetaSt,setInlineMetaSt]=useState({});
   useEffect(()=>{
     if(!selProd){setInlineMetaSt({});return;}
@@ -1136,6 +1148,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   // v9.0.4: 이름이 같거나 prefix/casing 만 다른 경우도 soft-landing 으로 자동 매칭.
   const knobMetaLookup=useMemo(()=>buildNormalizedLookup(knobMeta),[knobMeta]);
   const vmMetaLookup=useMemo(()=>buildNormalizedLookup(vmMeta),[vmMeta]);
+  const fabMetaLookup=useMemo(()=>buildNormalizedLookup(fabMeta),[fabMeta]);
   const inlineMetaLookup=useMemo(()=>buildNormalizedLookup(inlineMetaSt),[inlineMetaSt]);
   const maskMetaLookup=useMemo(()=>buildNormalizedLookup(maskMetaSt),[maskMetaSt]);
   const categoryColorLookup=useMemo(()=>buildNormalizedLookup(categoryColors),[categoryColors]);
@@ -1151,6 +1164,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   };
   const knobLookup=(param)=>metaLookup(knobMeta,knobMetaLookup,param,"KNOB");
   const vmLookup=(param)=>metaLookup(vmMeta,vmMetaLookup,param,"VM");
+  const fabLookup=(param)=>metaLookup(fabMeta,fabMetaLookup,param,"FAB");
   const inlineLookup=(param)=>metaLookup(inlineMetaSt,inlineMetaLookup,param,"INLINE");
   const maskLookup=(param)=>{
     if(!param)return null;
@@ -1183,6 +1197,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     if(u.startsWith("KNOB_")||u==="KNOB")return "knob_ppid";
     if(u.startsWith("INLINE_")||u==="INLINE")return "inline_matching";
     if(u.startsWith("VM_")||u==="VM")return "vm_matching";
+    if(u.startsWith("FAB_")||u==="FAB")return "fab_matching";
     if(u.startsWith("MASK_")||u==="MASK")return "mask_matching";
     return null;
   };
@@ -1190,6 +1205,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     kind==="knob_ppid"?knobLookup(param)
     :kind==="inline_matching"?inlineLookup(param)
     :kind==="vm_matching"?vmLookup(param)
+    :kind==="fab_matching"?fabLookup(param)
     :kind==="mask_matching"?maskLookup(param)
     :null
   );
@@ -1346,7 +1362,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   };
   // v8.8.10: Rulebook 컬럼 매핑 schema — admin 이 역할→실제컬럼명 조정 가능.
   const[rbSchema,setRbSchema]=useState({schema:{},defaults:{}});
-  const[rbEditKind,setRbEditKind]=useState(null);   // "knob_ppid"|"step_matching"|"inline_matching"|"vm_matching"|null
+  const[rbEditKind,setRbEditKind]=useState(null);   // rulebook kind | null
   const[rbDraftMap,setRbDraftMap]=useState({});
   const[rbFileDrafts,setRbFileDrafts]=useState({});
   const reloadRbSchema=()=>sf(API+"/rulebook/schema").then(d=>setRbSchema({schema:d.schema||{},defaults:d.defaults||{}})).catch(()=>{});
@@ -1383,8 +1399,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       .then(()=>toast.ok("파일명 매칭 저장됨"))
       .catch(e=>toast.error("파일명 저장 실패: "+(e?.message||e)));
   };
-  // v9.0.5: KNOB/INLINE/VM Index 클릭 시 매칭 규칙 미리보기 모달.
-  const[rbMatchKind,setRbMatchKind]=useState(null); // "knob_ppid" | "inline_matching" | "vm_matching" | null
+  // 공정 연결 대상 항목 클릭 시 매칭 규칙 미리보기 모달.
+  const[rbMatchKind,setRbMatchKind]=useState(null);
   const[rbMatchParam,setRbMatchParam]=useState("");
   const[rbMatchRow,setRbMatchRow]=useState(null);
   const[rbMatchFilter,setRbMatchFilter]=useState(null);
@@ -1407,12 +1423,14 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     if (rbMatchKind === "knob_ppid") return knobLookup(p) || null;
     if (rbMatchKind === "inline_matching") return inlineLookup(p) || null;
     if (rbMatchKind === "vm_matching") return vmLookup(p) || null;
+    if (rbMatchKind === "fab_matching") return fabLookup(p) || null;
     if (rbMatchKind === "mask_matching") return maskLookup(p) || null;
     return null;
   })();
   const rbMatchTitle = rbMatchKind === "knob_ppid" ? "KNOB"
     : rbMatchKind === "inline_matching" ? "INLINE"
     : rbMatchKind === "vm_matching" ? "VM"
+    : rbMatchKind === "fab_matching" ? "FAB"
     : rbMatchKind === "mask_matching" ? "MASK"
     : "";
   // fab_lot_id 후보도 fetch (lot-candidates 엔드포인트 사용)
@@ -2829,8 +2847,9 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
 
           {/* v8.8.9: Column/step rulebook — prefix 별 섹션 분리.
                 KNOB: ppid_knob.csv 공용 룰 + Vehicle_matching.csv 제품별 step_desc→step_id 확장
-                INLINE: inline_matching.csv (item_id/step_id/desc) — INLINE_<item_id> 가 해당 step 에서 측정
+                INLINE: inline_matching.csv (item_desc/step_id) — INLINE_<item_desc> 가 해당 step 에서 측정
                 VM: vm_matching.csv (step_desc/item_id) + Vehicle_matching.csv — VM_<step_desc>_<item_id> 이 해당 제품 step 에서 예측
+                FAB: fab.csv (step_desc/feature_name) + Vehicle_matching.csv — FAB_<step_desc>_<feature_name> 연결
              */}
           {selProd && (() => {
             const rulebookSpecs={
@@ -2838,6 +2857,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
               step_matching:{file:"Vehicle_matching.csv",color:"rgba(96,165,250,0.95)",roles:[["product","product_col"],["step_id","step_id_col"],["step_desc","step_desc_col"]]},
               inline_matching:{file:"inline_matching.csv",color:"rgba(16,185,129,0.95)",roles:[["item_id","item_id_col"],["step_id","step_id_col"],["item_desc","item_desc_col"],["product","product_col"],["matching_table","matching_table_col"]]},
               vm_matching:{file:"vm_matching.csv",color:"rgba(196,181,253,0.95)",roles:[["step_desc","step_desc_col"],["item_id","item_id_col"]]},
+              fab_matching:{file:"fab.csv",color:"rgba(59,130,246,0.95)",roles:[["step_desc","step_desc_col"],["feature_name","feature_name_col"]]},
             };
             const SectionHeader = ({title, files, count}) => (
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
@@ -2910,7 +2930,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                 <div style={{marginBottom:8,padding:"8px 10px",borderRadius:6,background:"var(--bg-secondary)",border:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
                   <div>기본값은 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>같은 이름의 Base 파일</span>과 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>기본 열 이름</span>을 자동으로 사용합니다.</div>
                   <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>KNOB_*</span> 는 <span style={{fontFamily:"monospace"}}>ppid_knob.csv</span> 의 step_desc를 <span style={{fontFamily:"monospace"}}>Vehicle_matching.csv</span> 제품별 step_id에 연결합니다.</div>
-                  <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>INLINE_&lt;item_id&gt;</span> 는 <span style={{fontFamily:"monospace"}}>inline_matching.csv</span> 의 같은 product 행만, <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>VM_&lt;step_desc&gt;_&lt;item_id&gt;</span> 는 <span style={{fontFamily:"monospace"}}>vm_matching.csv</span> 의 step_desc/item_id를 <span style={{fontFamily:"monospace"}}>Vehicle_matching.csv</span> 제품별 step_id에 연결합니다.</div>
+                  <div><span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>INLINE_&lt;item_desc&gt;</span> 는 <span style={{fontFamily:"monospace"}}>inline_matching.csv</span> 의 같은 product/step_id 행을, <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>VM_&lt;step_desc&gt;_&lt;item_id&gt;</span> 와 <span style={{fontFamily:"monospace",color:"var(--text-primary)"}}>FAB_&lt;step_desc&gt;_&lt;feature_name&gt;</span> 는 각 CSV의 step_desc를 <span style={{fontFamily:"monospace"}}>Vehicle_matching.csv</span> 제품별 step_id에 연결합니다.</div>
                   <div>열 이름이 다르거나 다른 Base 데이터와 연결해야 하면 각 섹션의 <b>편집</b> / <b>🔧 컬럼</b>에서 역할과 실제 CSV 헤더를 바꾸면 됩니다.</div>
                 </div>
 
@@ -2936,6 +2956,14 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                     files={[rulebookFileName("vm_matching","vm_matching.csv"), rulebookFileName("step_matching","Vehicle_matching.csv")]} />
                   <RulebookSourceSummary kinds={["vm_matching","step_matching"]}/>
                   <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>VM row 미리보기는 표시하지 않고, 파일명 매칭과 컬럼 매칭만 관리합니다.</div>
+                </div>
+
+                {/* ── FAB 섹션 ─────────────────────────────── */}
+                <div style={{marginBottom:6,padding:"6px 8px",borderRadius:4,background:"var(--bg-primary)",border:"1px solid rgba(59,130,246,0.3)"}}>
+                  <SectionHeader title="🏭 FAB_*" count={Object.keys(fabMeta || {}).length}
+                    files={[rulebookFileName("fab_matching","fab.csv"), rulebookFileName("step_matching","Vehicle_matching.csv")]} />
+                  <RulebookSourceSummary kinds={["fab_matching","step_matching"]}/>
+                  <div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.5}}>FAB row 미리보기는 표시하지 않고, 파일명 매칭과 컬럼 매칭만 관리합니다.</div>
                 </div>
 
                 <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:4,lineHeight:1.4}}>
@@ -3666,6 +3694,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             const matchTitle = rowMatchKind==="knob_ppid"?"KNOB 매칭 규칙"
               :rowMatchKind==="inline_matching"?"INLINE 매칭 규칙"
               :rowMatchKind==="vm_matching"?"VM 매칭 규칙"
+              :rowMatchKind==="fab_matching"?"FAB 매칭 규칙"
               :rowMatchKind==="mask_matching"?"MASK 매칭 규칙":"";
             const rowKnobStepTitle = rowMatchKind==="knob_ppid"
               ? knobStepSummaryText(rowKnob?.groups||[],{excludeNotNull:excludeNotNullStepMeta})
@@ -4502,17 +4531,17 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                   ))}
                 </div>
               );})()}
-              {rbMatchKind === "vm_matching" && (()=>{const vm=rbMatchData;const groups=Array.isArray(vm.groups)?vm.groups:[];return(
+              {(rbMatchKind === "vm_matching" || rbMatchKind === "fab_matching") && (()=>{const vm=rbMatchData;const isFab=rbMatchKind==="fab_matching";const groups=Array.isArray(vm.groups)?vm.groups:[];return(
                 <div style={{display:"grid",gap:8}}>
                   <div style={{padding:"7px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:14}}>
-                    {String(vm.step_desc || "").trim() ? `step_desc: ${vm.step_desc}` : "step_desc 없음"}{String(vm.item_id || "").trim() ? ` · item_id: ${vm.item_id}` : ""}
+                    {String(vm.step_desc || "").trim() ? `step_desc: ${vm.step_desc}` : "step_desc 없음"}{String(vm.item_id || "").trim() ? ` · ${isFab?"feature_name":"item_id"}: ${vm.item_id}` : ""}
                   </div>
                   {groups.length===0 ? (
                     <div style={{padding:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--text-secondary)",fontSize:14}}>매칭 규칙이 없습니다.</div>
                   ) : groups.map((g, gi) => (
-                    <div key={`${rbMatchParam}-${gi}`} style={{padding:"8px 10px",borderRadius:6,border:"1px solid rgba(139,92,246,0.35)",background:"var(--bg-card)"}}>
+                    <div key={`${rbMatchParam}-${gi}`} style={{padding:"8px 10px",borderRadius:6,border:`1px solid ${isFab?"rgba(59,130,246,0.35)":"rgba(139,92,246,0.35)"}`,background:"var(--bg-card)"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap",marginBottom:4}}>
-                        {g.function_step && <span style={{color:"rgba(196,181,253,0.95)",fontWeight:700,fontFamily:"monospace"}}>{g.function_step}</span>}
+                        {g.function_step && <span style={{color:isFab?"rgba(59,130,246,0.95)":"rgba(196,181,253,0.95)",fontWeight:700,fontFamily:"monospace"}}>{g.function_step}</span>}
                         <span style={{color:"var(--text-secondary)",fontSize:14}}>{String(vm.feature || rbMatchParam)}</span>
                       </div>
                       {(() => {const sids=Array.isArray(g.step_ids)&&g.step_ids.length?g.step_ids:(g.step_id?[g.step_id]:[]);return sids.length?(

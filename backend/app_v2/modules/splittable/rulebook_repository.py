@@ -48,6 +48,11 @@ _DEFAULT_RULEBOOK_SCHEMA = {
         "step_desc_col": "step_desc",
         "item_id_col":   "item_id",
     },
+    "fab_matching": {
+        "file_name":        "fab.csv",
+        "step_desc_col":    "step_desc",
+        "feature_name_col": "feature_name",
+    },
 }
 
 _RULEBOOK_FILES = {
@@ -72,6 +77,11 @@ _RULEBOOK_FILES = {
         "filename": "vm_matching.csv",
         "cols": ["step_desc", "item_id"],
         "required": ["step_desc", "item_id"],
+    },
+    "fab_matching": {
+        "filename": "fab.csv",
+        "cols": ["step_desc", "feature_name"],
+        "required": ["step_desc", "feature_name"],
     },
 }
 

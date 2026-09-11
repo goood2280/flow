@@ -2268,6 +2268,7 @@ def _split_step_order_context(product: str) -> dict:
             ("KNOB", _build_knob_meta),
             ("INLINE", _build_inline_meta),
             ("VM", _build_vm_meta),
+            ("FAB", _build_fab_meta),
             ("MASK", _build_mask_meta),
         ):
             _register_step_order_meta(
@@ -2557,13 +2558,16 @@ def _build_inline_meta(product: str = "") -> dict:
                 continue
             seen.add(key)
             dedup.append(item)
-        step_ids = [x["step_id"] for x in dedup if x.get("step_id")]
+        step_ids = _dedup_list([x["step_id"] for x in dedup if x.get("step_id")])
         item_desc = next((x.get("item_desc") for x in dedup if x.get("item_desc")), "") or iid
         function_steps = [x["function_step"] for x in dedup if x.get("function_step")]
         process_ids = [x["process_id"] for x in dedup if x.get("process_id")]
         matching_tables = _dedup_list([x.get("matching_table", "") for x in dedup if x.get("matching_table")])
         modules = _dedup_list([x.get("module", "") for x in dedup if x.get("module")])
         out[iid] = {
+            # SplitTable physical/virtual naming contract is INLINE_<item_desc>.
+            # item_id remains a lookup alias because older tables used it.
+            "feature_name": item_desc,
             "item_id": dedup[0]["item_id"],
             "item_desc": item_desc,
             "modules": modules,
@@ -2650,21 +2654,81 @@ def _build_vm_meta(product: str = "") -> dict:
     return out
 
 
+def _build_fab_meta(product: str = "") -> dict:
+    """FAB_<step_desc>_<feature_name> metadata from fab.csv + Vehicle_matching.csv."""
+    base = _base_root()
+    rows = _load_csv_rows(_rulebook_path_for_base("fab_matching", base))
+    fm = _sch("fab_matching")
+    step_map = _product_step_map_by_desc(product, base)
+    out: dict[str, dict] = {}
+    for row in rows:
+        step_desc = _row_step_desc(row, fm)
+        feature_name = _first_row_value(
+            row,
+            fm.get("feature_name_col", "feature_name"),
+            fm.get("feature_col", "feature_name"),
+            "feature_name",
+        )
+        if not step_desc or not feature_name:
+            continue
+        matched_steps = step_map.get(_step_desc_match_key(step_desc), [])
+        if not matched_steps:
+            continue
+        name = f"{step_desc}_{feature_name}"
+        groups: list[dict] = []
+        seen_groups: set[tuple[str, str, str]] = set()
+        for step in matched_steps:
+            sid = str(step.get("step_id") or "").strip()
+            desc = str(step.get("step_desc") or "").strip() or step_desc
+            module = str(step.get("module") or "").strip()
+            marker = (sid.casefold(), desc.casefold(), module.casefold())
+            if marker in seen_groups:
+                continue
+            seen_groups.add(marker)
+            groups.append({
+                "feature_name": feature_name,
+                "item_id": feature_name,
+                "step_desc": desc,
+                "step_id": sid,
+                "step_ids": [sid] if sid else [],
+                "function_step": desc,
+                "module": module,
+                "modules": [module] if module else [],
+            })
+        step_ids = _dedup_list([sid for group in groups for sid in group["step_ids"]])
+        descs = _dedup_list([group["step_desc"] for group in groups])
+        modules = _dedup_list([group["module"] for group in groups])
+        entry = {
+            "feature_name": name,
+            "item_id": feature_name,
+            "step_desc": descs[0] if len(descs) == 1 else step_desc,
+            "step_id": step_ids[0] if len(step_ids) == 1 else "",
+            "step_ids": step_ids,
+            "function_step": descs[0] if len(descs) == 1 else step_desc,
+            "function_steps": descs,
+            "module": modules[0] if len(modules) == 1 else "",
+            "modules": modules,
+            "groups": groups,
+            "label": name,
+            "sub": "/".join(step_ids),
+        }
+        # Physical ML_TABLE columns use FAB_<step_desc>_<feature_name>.
+        # Keep both full and prefix-stripped lookup forms without creating two rows.
+        out.setdefault(name, entry)
+        out.setdefault(f"FAB_{name}", entry)
+    return out
+
+
 def _build_mask_meta(product: str = "") -> dict:
     """MASK_ prefix 항목 매칭 메타. MASK_ 뒤가 step_desc이며 Vehicle_matching.csv에서 step_id와 module을 연결한다."""
     base = _base_root()
     step_map = _product_step_map_by_desc(product, base)
 
     cols = _mltable_schema_columns(product, "MASK")
-    candidates: set[str] = set()
-    for col in cols:
-        candidates.add(str(col).strip())
-    for steps in step_map.values():
-        for s in steps:
-            sd = str(s.get("step_desc") or "").strip()
-            if sd:
-                candidates.add(f"MASK_{sd}")
-                candidates.add(sd)
+    # MASK rows come only from actual ML_TABLE columns.  Vehicle_matching is a
+    # lookup source, not a virtual MASK-row catalog; expanding every vehicle
+    # step here produced hundreds of empty MASK rows for one physical value.
+    candidates = {str(col).strip() for col in cols if str(col).strip()}
 
     out: dict[str, dict] = {}
 
@@ -2700,11 +2764,16 @@ def _build_mask_meta(product: str = "") -> dict:
         modules = _dedup_list([str(x.get("module") or "").strip() for x in matched_steps if str(x.get("module") or "").strip()])
 
         groups = []
+        seen_groups: set[tuple[str, str, str]] = set()
         if matched_steps:
             for x in matched_steps:
                 sid = str(x.get("step_id") or "").strip()
                 mod = str(x.get("module") or "").strip()
                 desc = str(x.get("step_desc") or "").strip() or step_desc_val
+                marker = (sid.casefold(), desc.casefold(), mod.casefold())
+                if marker in seen_groups:
+                    continue
+                seen_groups.add(marker)
                 groups.append({
                     "step_desc": desc,
                     "step_id": sid,
@@ -2769,6 +2838,8 @@ def _step_label_match_kind(param: str) -> str:
         return "inline_matching"
     if u.startswith("VM_") or u == "VM":
         return "vm_matching"
+    if u.startswith("FAB_") or u == "FAB":
+        return "fab_matching"
     if u.startswith("MASK_") or u == "MASK":
         return "mask_matching"
     return ""
@@ -2868,11 +2939,12 @@ def _step_label_item_lines(meta: dict) -> list[str]:
 
 
 def _step_label_metas(product: str) -> dict:
-    out = {"knob": {}, "inline": {}, "vm": {}, "mask": {}}
+    out = {"knob": {}, "inline": {}, "vm": {}, "fab": {}, "mask": {}}
     for key, fn in (
         ("knob", _build_knob_meta),
         ("inline", _build_inline_meta),
         ("vm", _build_vm_meta),
+        ("fab", _build_fab_meta),
         ("mask", _build_mask_meta),
     ):
         try:
@@ -2894,6 +2966,8 @@ def _step_label_lines_for_param(param: str, metas: dict, exclude_not_null: bool 
         return kind, _step_label_item_lines(_step_label_meta_lookup(metas.get("inline") or {}, param, "INLINE"))
     if kind == "mask_matching":
         return kind, _step_label_item_lines(_step_label_meta_lookup(metas.get("mask") or {}, param, "MASK"))
+    if kind == "fab_matching":
+        return kind, _step_label_item_lines(_step_label_meta_lookup(metas.get("fab") or {}, param, "FAB"))
     return kind, _step_label_item_lines(_step_label_meta_lookup(metas.get("vm") or {}, param, "VM"))
 
 
@@ -2937,8 +3011,18 @@ def _step_process_columns_for_param(param: str, metas: dict,
                     ids.append(sid)
         return {"step_id": "\n".join(ids), "step_desc": "\n".join(descs)}
 
-    meta_key = "inline" if kind == "inline_matching" else ("mask" if kind == "mask_matching" else "vm")
-    prefix = "INLINE" if kind == "inline_matching" else ("MASK" if kind == "mask_matching" else "VM")
+    meta_key = {
+        "inline_matching": "inline",
+        "vm_matching": "vm",
+        "fab_matching": "fab",
+        "mask_matching": "mask",
+    }.get(kind, "")
+    prefix = {
+        "inline_matching": "INLINE",
+        "vm_matching": "VM",
+        "fab_matching": "FAB",
+        "mask_matching": "MASK",
+    }.get(kind, "")
     meta = _step_label_meta_lookup(metas.get(meta_key) or {}, param, prefix)
     ids: list[str] = []
     descs: list[str] = []
@@ -3027,36 +3111,41 @@ def _virtual_columns_for_prefix(product: str, prefix: str,
             out.append(full)
 
     try:
-        if pref == "KNOB":
-            meta_map = _build_knob_meta(product) or {}
-            # _build_knob_meta keeps space/underscore/prefix/_Split aliases so
-            # lookup remains backward compatible.  Rendering every alias as a
-            # virtual column produced several near-identical blank KNOB rows;
-            # only the physical spelling had values.  Mark metadata objects
-            # already represented by a selected physical column, then emit at
-            # most one canonical virtual row for each genuinely absent KNOB.
-            represented: set[int] = set()
+        builders = {
+            "KNOB": _build_knob_meta,
+            "INLINE": _build_inline_meta,
+            "VM": _build_vm_meta,
+            "MASK": _build_mask_meta,
+        }
+        builder = builders.get(pref)
+        if builder:
+            meta_map = builder(product) or {}
+
+            def _canonical_name(key: str, meta: dict) -> str:
+                if pref == "INLINE":
+                    return str(meta.get("item_desc") or meta.get("feature_name") or key).strip()
+                return str(meta.get("feature_name") or key).strip()
+
+            # Metadata maps intentionally keep full/bare/item-id aliases for
+            # lookup compatibility.  A virtual row is a data row, so emit only
+            # one canonical name and suppress it when any physical alias is
+            # already selected.  This is especially important for MASK, whose
+            # former alias expansion multiplied a single value into many rows.
+            represented: set[str] = set()
             for column in existing_columns or []:
-                meta = _step_label_meta_lookup(meta_map, column, "KNOB")
+                meta = _step_label_meta_lookup(meta_map, column, pref)
                 if meta:
-                    represented.add(id(meta))
-            emitted: set[int] = set()
+                    represented.add(_canonical_name(str(column), meta).casefold())
+            emitted: set[str] = set()
             for key, meta in meta_map.items():
-                marker = id(meta)
-                if marker in represented or marker in emitted:
+                if not isinstance(meta, dict):
+                    continue
+                canonical = _canonical_name(str(key), meta)
+                marker = canonical.casefold()
+                if not canonical or marker in represented or marker in emitted:
                     continue
                 emitted.add(marker)
-                canonical = meta.get("feature_name") if isinstance(meta, dict) else ""
-                _push(canonical or key, "KNOB")
-        elif pref == "INLINE":
-            for key in (_build_inline_meta(product) or {}).keys():
-                _push(key, "INLINE")
-        elif pref == "VM":
-            for key in (_build_vm_meta(product) or {}).keys():
-                _push(key, "VM")
-        elif pref == "MASK":
-            for key in (_build_mask_meta(product) or {}).keys():
-                _push(key, "MASK")
+                _push(canonical, pref)
     except Exception:
         return out
     return out
@@ -3072,6 +3161,12 @@ def inline_meta(product: str = Query("")):
 def vm_meta(product: str = Query("")):
     """v8.7.5/v8.8.7: VM_ prefix 항목 매칭 메타. product 필터 추가."""
     return {"items": _build_vm_meta(product)}
+
+
+@router.get("/fab-meta")
+def fab_meta(product: str = Query("")):
+    """FAB_<step_desc>_<feature_name> process metadata for the selected product."""
+    return {"items": _build_fab_meta(product)}
 
 
 @router.get("/mask-meta")
@@ -3351,6 +3446,13 @@ _RULEBOOK_FILES = {
         "cols": ["step_desc", "item_id"],
         "required": ["step_desc", "item_id"],
     },
+    #   fab.csv: (step_desc, feature_name) — FAB_<step_desc>_<feature_name>,
+    #   step_id/module은 Vehicle_matching.csv에서 제품별로 확장.
+    "fab_matching": {
+        "filename": "fab.csv",
+        "cols": ["step_desc", "feature_name"],
+        "required": ["step_desc", "feature_name"],
+    },
 }
 
 
@@ -3360,12 +3462,16 @@ def _normalize_rulebook_rows(kind: str, rows: list[dict]) -> list[dict]:
         if not isinstance(row, dict):
             continue
         r = dict(row)
-        if kind in {"knob_ppid", "step_matching", "vm_matching"} and not str(r.get("step_desc") or "").strip():
+        if kind in {"knob_ppid", "step_matching", "vm_matching", "fab_matching"} and not str(r.get("step_desc") or "").strip():
             r["step_desc"] = _row_step_desc(r, _sch(kind))
         if kind == "knob_ppid" and not str(r.get("value") or "").strip():
             r["value"] = _first_row_value(r, _sch(kind).get("value_col", "value"), "ppid", "category")
         if kind == "vm_matching" and not str(r.get("item_id") or "").strip():
             r["item_id"] = _first_row_value(r, _sch(kind).get("item_id_col", "item_id"), "feature_name")
+        if kind == "fab_matching" and not str(r.get("feature_name") or "").strip():
+            r["feature_name"] = _first_row_value(
+                r, _sch(kind).get("feature_name_col", "feature_name"), "feature_name"
+            )
         out.append(r)
     return out
 
@@ -3407,7 +3513,7 @@ def get_rulebook(kind: str = Query("knob_ppid"), product: str = Query("")):
 
 
 class RulebookSaveReq(BaseModel):
-    kind: str               # "knob_ppid" | "step_matching" | "inline_matching" | "vm_matching"
+    kind: str               # "knob_ppid" | "step_matching" | "inline_matching" | "vm_matching" | "fab_matching"
     rows: List[dict]        # 전체 대체 (혹은 product 스코프 대체)
     product: str = ""       # 주어지면 해당 제품 rows 만 대체, 빈값이면 파일 전체 대체
     username: str = ""
