@@ -352,24 +352,29 @@ def test_inline_process_info_keeps_steps_without_vehicle_description(monkeypatch
         "product,step_id,step_desc\nproda,A100,ETCH\nprodb,B100,ETCH\n", encoding="utf-8",
     )
     (tmp_path / "inline_matching.csv").write_text(
-        "product,step_id,item_id,item_desc\nproda,A100,ITEM,CD\nproda,A200,ITEM2,CD\n"
-        "proda,A300,ITEM3,NO_DESC\nprodb,B100,ITEM,CD\n", encoding="utf-8",
+        "product,step_id,item_id,item_desc,step_desc\n"
+        "proda,A100,ITEM,CD,INLINE_ETCH\n"
+        "proda,A200,,CD,\n"
+        "proda,A300,,NO_DESC,\n"
+        "prodb,B100,ITEM,CD,OTHER_PRODUCT\n", encoding="utf-8",
     )
     monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
     monkeypatch.setattr(splittable, "_sch", lambda kind: {})
     meta = splittable._build_inline_meta("ML_TABLE_PRODA")
     assert meta["ITEM"]["step_ids"] == ["A100"]
     assert meta["CD"]["step_ids"] == ["A100", "A200"]
+    assert meta["CD"]["groups"][0]["step_desc"] == "INLINE_ETCH"
     assert meta["CD"]["groups"][1]["step_desc"] == ""
     assert meta["NO_DESC"]["step_ids"] == ["A300"]
+    assert meta["NO_DESC"]["item_id"] == ""
     assert splittable._step_process_columns_for_param("INLINE_NO_DESC", {"inline": meta}) == {
         "step_id": "A300", "step_desc": "",
     }
     assert splittable._step_label_lines_for_param("INLINE_NO_DESC", {"inline": meta}) == (
-        "inline_matching", ["A300 | ITEM3"],
+        "inline_matching", ["A300"],
     )
     assert splittable._step_process_columns_for_param("INLINE_CD", {"inline": meta}) == {
-        "step_id": "A100\nA200", "step_desc": "ETCH",
+        "step_id": "A100\nA200", "step_desc": "INLINE_ETCH",
     }
 
 
@@ -823,7 +828,7 @@ def test_mask_process_columns_fallback_when_not_in_vehicle_matching(tmp_path, mo
     assert cols == {"step_id": "", "step_desc": "SOME_DYNAMIC_STEP"}
 
 
-def test_mask_meta_does_not_turn_vehicle_steps_into_virtual_rows(tmp_path, monkeypatch):
+def test_mask_vehicle_aliases_supply_step_id_without_becoming_virtual_rows(tmp_path, monkeypatch):
     from routers import splittable
 
     (tmp_path / "Vehicle_matching.csv").write_text(
@@ -835,12 +840,11 @@ def test_mask_meta_does_not_turn_vehicle_steps_into_virtual_rows(tmp_path, monke
     monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
     monkeypatch.setattr(splittable, "_sch", lambda kind: {})
     monkeypatch.setattr(
-        splittable, "_mltable_schema_columns", lambda *args, **kwargs: ["MASK_GATE_ETCH"]
+        splittable, "_mltable_schema_columns", lambda *args, **kwargs: []
     )
 
     meta = splittable._build_mask_meta("ML_TABLE_PRODA")
 
-    assert "MASK_CONTACT_ETCH" not in meta
-    assert splittable._virtual_columns_for_prefix(
-        "ML_TABLE_PRODA", "MASK", existing_columns=["MASK_GATE_ETCH"]
-    ) == []
+    assert meta["MASK_GATE_ETCH"]["step_id"] == "A100"
+    assert meta["MASK_CONTACT_ETCH"]["step_id"] == "A200"
+    assert splittable._virtual_columns_for_prefix("ML_TABLE_PRODA", "MASK") == []

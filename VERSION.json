@@ -1,7 +1,18 @@
 {
-  "version": "10.4.253",
+  "version": "10.4.254",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.254",
+      "date": "2026-09-11",
+      "tag": "fix",
+      "title": "SplitTable MASK step_id 및 INLINE 직접 매칭 보완",
+      "changes": [
+        "[MASK 적용 공정] ML_TABLE 원본 스키마가 없는 pivot 조회에서는 MASK 설명 fallback만 남고 step_id가 비었음 → 선택 제품 Vehicle_matching의 step_desc를 lookup-only 메타로 유지해 MASK_<step_desc>에 step_id/module을 연결하고 가상 MASK 행 생성은 차단.",
+        "[INLINE 적용 공정] item_id 필수 조건과 Vehicle step_desc 역조회 때문에 INLINE_<item_desc> 행이 누락되거나 잘못 설명됨 → item_desc+step_id를 직접 원천으로 사용하고 item_id 없이도 연결하며, step_desc는 inline_matching.csv에 있을 때만 표시.",
+        "[캐시·검증] 변경된 INLINE 행 카탈로그가 즉시 반영되도록 SplitTable view disk cache를 갱신하고 SplitTable 회귀 92건과 프런트 production build를 통과."
+      ]
+    },
     {
       "version": "10.4.253",
       "date": "2026-09-11",

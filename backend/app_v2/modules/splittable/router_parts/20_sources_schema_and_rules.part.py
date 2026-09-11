@@ -2499,19 +2499,13 @@ def _split_step_progress(product: str, root_lot_id: str, selected: list[str],
 
 # v8.7.5/v8.8.10: INLINE / VM_ prefix 매칭 메타 — schema 매핑 기반.
 def _build_inline_meta(product: str = "") -> dict:
-    """inline_matching.csv (product, step_id, item_id, optional map table)."""
+    """INLINE_<item_desc> metadata; step_id/optional step_desc come from inline_matching.csv."""
     base = _base_root()
     rows = _load_csv_rows(_rulebook_path_for_base("inline_matching", base))
     im = _sch("inline_matching")
-    sid_to_desc: dict[str, str] = {}
-    for steps in _product_step_map_by_desc(product, base).values():
-        for step in steps:
-            sid = str(step.get("step_id") or "").strip()
-            desc = str(step.get("step_desc") or "").strip()
-            if sid and desc:
-                sid_to_desc.setdefault(sid.casefold(), desc)
-    # module 은 inline_matching.csv 에 없다. step_id 로 Vehicle_matching 을 눌러
-    # 채우던 보강은 뺐다 — INLINE 은 module 로 따로 묶지 않고 '—' 로 둔다.
+    # INLINE의 step_id와 step_desc는 모두 inline_matching.csv가 원천이다.
+    # Vehicle_matching에는 INLINE step_id 설명이 없을 수 있으므로 역조회하지 않는다.
+    # module도 해당 CSV에 없으므로 빈 값으로 유지한다.
     grouped: dict[str, list[dict]] = {}
     p_col = im.get("product_col", "product")
     has_product_col = any(
@@ -2531,8 +2525,11 @@ def _build_inline_meta(product: str = "") -> dict:
         process_id = _first_row_value(r, im.get("process_id_col", "process_id"), "process_id")
         desc = _first_row_value(r, im.get("item_desc_col", "item_desc"), "item_desc")
         matching_table = _first_row_value(r, im.get("matching_table_col", "matching_table"), "matching_table")
-        func_step = _first_row_value(r, "function_step") or sid_to_desc.get(sid.casefold(), "")
-        if not iid or not sid:
+        func_step = _first_row_value(
+            r, im.get("step_desc_col", "step_desc"), "step_desc", "function_step"
+        )
+        canonical_name = desc or iid
+        if not canonical_name or not sid:
             continue
         item = {
             "step_id": sid,
@@ -2544,9 +2541,9 @@ def _build_inline_meta(product: str = "") -> dict:
             "step_desc": func_step,
             "module": "",
         }
-        # Wide 테이블은 item_desc를 항목명으로 쓰기도 한다. 동일 설명의
-        # 여러 item_id/step_id도 누락 없이 묶고 기존 item_id 조회를 유지한다.
-        for key in _dedup_list([iid, desc]):
+        # Wide 테이블의 정식 이름은 INLINE_<item_desc>. item_id는 과거 물리
+        # 컬럼을 위한 lookup alias일 뿐이며 없어도 현재 행을 버리지 않는다.
+        for key in _dedup_list([canonical_name, iid]):
             grouped.setdefault(key, []).append(item)
     out: dict[str, dict] = {}
     for iid, items in grouped.items():
@@ -2560,7 +2557,7 @@ def _build_inline_meta(product: str = "") -> dict:
             dedup.append(item)
         step_ids = _dedup_list([x["step_id"] for x in dedup if x.get("step_id")])
         item_desc = next((x.get("item_desc") for x in dedup if x.get("item_desc")), "") or iid
-        function_steps = [x["function_step"] for x in dedup if x.get("function_step")]
+        function_steps = _dedup_list([x["function_step"] for x in dedup if x.get("function_step")])
         process_ids = [x["process_id"] for x in dedup if x.get("process_id")]
         matching_tables = _dedup_list([x.get("matching_table", "") for x in dedup if x.get("matching_table")])
         modules = _dedup_list([x.get("module", "") for x in dedup if x.get("module")])
@@ -2568,7 +2565,7 @@ def _build_inline_meta(product: str = "") -> dict:
             # SplitTable physical/virtual naming contract is INLINE_<item_desc>.
             # item_id remains a lookup alias because older tables used it.
             "feature_name": item_desc,
-            "item_id": dedup[0]["item_id"],
+            "item_id": next((x.get("item_id") for x in dedup if x.get("item_id")), ""),
             "item_desc": item_desc,
             "modules": modules,
             "module": modules[0] if len(modules) == 1 else "",
@@ -2725,10 +2722,16 @@ def _build_mask_meta(product: str = "") -> dict:
     step_map = _product_step_map_by_desc(product, base)
 
     cols = _mltable_schema_columns(product, "MASK")
-    # MASK rows come only from actual ML_TABLE columns.  Vehicle_matching is a
-    # lookup source, not a virtual MASK-row catalog; expanding every vehicle
-    # step here produced hundreds of empty MASK rows for one physical value.
     candidates = {str(col).strip() for col in cols if str(col).strip()}
+    # Some deployments serve SplitTable from a pivot cache without the original
+    # ML_TABLE parquet beside it.  Keep selected-product Vehicle descriptions as
+    # lookup-only MASK aliases so the physical MASK_<step_desc> row still gets a
+    # step_id. _virtual_columns_for_prefix intentionally never renders these.
+    for steps in step_map.values():
+        for step in steps:
+            desc = str(step.get("step_desc") or "").strip()
+            if desc:
+                candidates.add(f"MASK_{desc}")
 
     out: dict[str, dict] = {}
 
@@ -3115,7 +3118,6 @@ def _virtual_columns_for_prefix(product: str, prefix: str,
             "KNOB": _build_knob_meta,
             "INLINE": _build_inline_meta,
             "VM": _build_vm_meta,
-            "MASK": _build_mask_meta,
         }
         builder = builders.get(pref)
         if builder:
@@ -3434,11 +3436,12 @@ _RULEBOOK_FILES = {
         "required": ["product", "step_id", "step_desc"],
     },
     # v8.8.9: INLINE / VM 매칭도 동일 CRUD 로 관리.
-    #   inline_matching.csv: (product, step_id, item_id, item_desc) — INLINE_<item_id> 측정 메타.
+    #   inline_matching.csv: (product, step_id, item_desc, optional step_desc/item_id)
+    #   — INLINE_<item_desc> 측정 메타.
     "inline_matching": {
         "filename": "inline_matching.csv",
-        "cols": ["product", "step_id", "item_id", "item_desc", "matching_table"],
-        "required": ["product", "step_id", "item_id"],
+        "cols": ["product", "step_id", "item_id", "item_desc", "step_desc", "matching_table"],
+        "required": ["product", "step_id"],
     },
     #   vm_matching.csv: (step_desc, item_id) — VM_<step_desc>_<item_id>, step_id 는 Vehicle_matching.csv 에서 확장.
     "vm_matching": {

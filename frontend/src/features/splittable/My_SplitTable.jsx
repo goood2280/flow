@@ -2855,7 +2855,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             const rulebookSpecs={
               knob_ppid:{file:"ppid_knob.csv",color:"rgba(251,191,36,0.95)",roles:[["feature","feature_col"],["step_desc","step_desc_col"],["rule_order","rule_order_col"],["operator","operator_col"],["cell_value","value_col"],["category","category_col"]]},
               step_matching:{file:"Vehicle_matching.csv",color:"rgba(96,165,250,0.95)",roles:[["product","product_col"],["step_id","step_id_col"],["step_desc","step_desc_col"]]},
-              inline_matching:{file:"inline_matching.csv",color:"rgba(16,185,129,0.95)",roles:[["item_id","item_id_col"],["step_id","step_id_col"],["item_desc","item_desc_col"],["product","product_col"],["matching_table","matching_table_col"]]},
+              inline_matching:{file:"inline_matching.csv",color:"rgba(16,185,129,0.95)",roles:[["item_desc","item_desc_col"],["step_id","step_id_col"],["step_desc (선택)","step_desc_col"],["item_id (호환)","item_id_col"],["product","product_col"],["matching_table","matching_table_col"]]},
               vm_matching:{file:"vm_matching.csv",color:"rgba(196,181,253,0.95)",roles:[["step_desc","step_desc_col"],["item_id","item_id_col"]]},
               fab_matching:{file:"fab.csv",color:"rgba(59,130,246,0.95)",roles:[["step_desc","step_desc_col"],["feature_name","feature_name_col"]]},
             };

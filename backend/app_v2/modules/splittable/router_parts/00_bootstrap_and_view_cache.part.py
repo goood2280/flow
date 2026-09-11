@@ -244,9 +244,9 @@ _VIEW_CACHE_COMPACT_CELL_COST = 40  # v2 슬림 행(a/p/m) 셀당 비용 — 캐
 _VIEW_CACHE_AUTO_MB_LOCK = threading.Lock()
 _VIEW_CACHE_AUTO_MB_CACHE: tuple[float, float] | None = None
 _VIEW_CACHE_AUTO_MB_TTL = 60.0
-# v4: all metadata aliases are lookup-only; cached payloads from v3 may still
-# contain expanded MASK/INLINE alias rows and must not survive deploy.
-_VIEW_DISK_CACHE_VERSION = 4
+# v5: MASK Vehicle aliases are lookup-only and INLINE virtual rows use item_desc;
+# cached payloads built with older row catalogs must not survive deploy.
+_VIEW_DISK_CACHE_VERSION = 5
 _VIEW_DISK_CACHE_LOCK = threading.Lock()
 _VIEW_PRODUCT_SIG_CACHE: OrderedDict[tuple[str, ...], tuple[float, tuple]] = OrderedDict()
 _VIEW_PRODUCT_SIG_LOCK = threading.Lock()

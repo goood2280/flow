@@ -40,6 +40,10 @@ class RulebookService:
                 r["value"] = self._first_row_value(r, sch.get("value_col", "value"), "ppid", "category")
             if kind == "vm_matching" and not str(r.get("item_id") or "").strip():
                 r["item_id"] = self._first_row_value(r, sch.get("item_id_col", "item_id"), "feature_name")
+            if kind == "inline_matching" and not str(r.get("item_desc") or "").strip():
+                r["item_desc"] = self._first_row_value(
+                    r, sch.get("item_desc_col", "item_desc"), "item_id"
+                )
             if kind == "fab_matching" and not str(r.get("feature_name") or "").strip():
                 r["feature_name"] = self._first_row_value(
                     r, sch.get("feature_name_col", "feature_name"), "feature_name"

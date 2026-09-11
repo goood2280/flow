@@ -40,6 +40,7 @@ _DEFAULT_RULEBOOK_SCHEMA = {
         "process_id_col": "process_id",
         "item_id_col":   "item_id",
         "item_desc_col": "item_desc",
+        "step_desc_col": "step_desc",
         "product_col":   "product",
         "matching_table_col": "matching_table",
     },
@@ -70,8 +71,8 @@ _RULEBOOK_FILES = {
     },
     "inline_matching": {
         "filename": "inline_matching.csv",
-        "cols": ["product", "step_id", "item_id", "item_desc", "matching_table"],
-        "required": ["product", "step_id", "item_id"],
+        "cols": ["product", "step_id", "item_id", "item_desc", "step_desc", "matching_table"],
+        "required": ["product", "step_id"],
     },
     "vm_matching": {
         "filename": "vm_matching.csv",
