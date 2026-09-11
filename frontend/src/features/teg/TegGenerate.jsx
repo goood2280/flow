@@ -23,6 +23,7 @@ const TEG_COLOR = "#2563eb";
 const SHOT_COLOR = "#64748b";
 const DIE_COLOR = "#2f9e63";
 const PREVIEW_SIZE = 380;
+const PREVIEW_MIN_VERTICAL_TEG_WIDTH_PX = 16;
 // TEG 는 shot 대비 아주 작아 기본 배율(×12)로는 이름이 안 읽힌다 —
 // Mapfile 체크의 shot 확대와 같은 ×60 까지 연다.
 const PREVIEW_MAX_ZOOM = 60;
@@ -69,6 +70,8 @@ function downloadText(name, text) {
    서버가 rect/shot 을 회전 없는 좌표(wafer horizontal 기준)로 주므로 두 flat 이
    같은 방향으로 보이고, direction=V 인 TEG 만 서 있는 사각형으로 그려진다. ── */
 function FlatPreview({ block, imgUrl }) {
+  const flat = String(block.flat || "").trim().toLowerCase();
+  const vertical = ["v", "v_r", "v_l", "vertical(r)", "vertical(l)"].includes(flat);
   const rects = useMemo(
     () => [
       ...(block.pchk?.rect ? [{ ...block.pchk.rect, name: block.pchk.teg, pchk: true }] : []),
@@ -125,20 +128,31 @@ function FlatPreview({ block, imgUrl }) {
           ))}
           {/* TEG 사각형 — 좌하단 기준, 실제 배치 방향 (V 는 서 있는 모양).
               Mapfile 체크의 shot 확대와 같은 표기: 검은 테두리 + 사각형 가운데 이름.
-              이름 크기는 사각형에 맞추므로 확대할수록 커진다. */}
+              Vertical 표의 이름은 반시계 90° 회전해 긴 축에 맞추고, 확대할수록 커진다. */}
           {rects.map((r, i) => {
-            const w = Math.max(1.2 / zoom, r.w * s), h = Math.max(1.2 / zoom, r.h * s);
-            const x = toX(r.x), yTop = toY(r.y + r.h);
+            const rawW = r.w * s, rawH = r.h * s;
+            // 실제 좌표는 유지하되 Vertical 이름이 놓이는 얇은 축만 화면상 최소 16px로 보강한다.
+            // 기존에도 1.2px 최소치를 썼으며, 이 값은 좌표/CSV가 아닌 미리보기 표시만 바꾼다.
+            const w = Math.max((vertical ? PREVIEW_MIN_VERTICAL_TEG_WIDTH_PX : 1.2) / zoom, rawW);
+            const h = Math.max(1.2 / zoom, rawH);
+            const x = toX(r.x) - (w - rawW) / 2;
+            const yTop = toY(r.y + r.h) - (h - rawH) / 2;
             const nm = String(r.name || "");
-            const fs = Math.min(h * 0.62, (w * 0.92) / Math.max(1, nm.length * 0.58));
+            const labelWidth = vertical ? h : w;
+            const labelHeight = vertical ? w : h;
+            const fs = Math.min(labelHeight * 0.62,
+              (labelWidth * 0.92) / Math.max(1, nm.length * 0.58));
+            const labelX = x + w / 2, labelY = yTop + h / 2;
             return (
               <g key={i}>
                 <rect x={x} y={yTop} width={w} height={h}
                   fill={r.pchk ? "rgba(220,38,38,0.10)" : "rgba(37,99,235,0.10)"}
                   stroke={r.pchk ? PCHK_COLOR : "#111827"} strokeWidth={1.4 / zoom} />
-                {nm && fs * zoom >= 2.5 && (
-                  <text x={x + w / 2} y={yTop + h / 2} fontSize={fs} textAnchor="middle"
-                    dominantBaseline="central" fill="#111827" fontWeight={700}>{nm}</text>
+                {nm && (
+                  <text x={labelX} y={labelY} fontSize={fs} textAnchor="middle"
+                    dominantBaseline="central"
+                    transform={vertical ? `rotate(-90 ${labelX} ${labelY})` : undefined}
+                    fill="#111827" fontWeight={700}>{nm}</text>
                 )}
                 {r.point && <circle cx={toX(r.point.x)} cy={toY(r.point.y)} r={3 / zoom}
                   fill="#f59e0b" stroke="#92400e" strokeWidth={1 / zoom} />}

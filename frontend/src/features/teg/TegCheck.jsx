@@ -25,7 +25,6 @@ const INSPECT_TIMEOUT_MS = 90000;
 const SUMMARY_PAGE_SIZE = 100;
 const ISSUE_PAGE_SIZE = 200;
 const MAIN_GROUP_PAGE_SIZE = 50;
-const SHOT_LAYER_LIMIT = 200;
 
 const STATUS_ICON = { match: "🟢", warning: "🟡", mismatch: "🔴", extended: "🟣", missing: "⚪", noref: "—" };
 const LIGHT_ICON = { red: "🔴", orange: "🟠", yellow: "🟡", purple: "🟣", green: "🟢", gray: "⚪" };
@@ -36,6 +35,14 @@ const LIGHT_COLORS = { red: "#dc2626", orange: "#f97316", gray: "#9ca3af", yello
                        purple: "#7c3aed", dim: "#cbd5e1" };
 const LIGHT_RANK = { red: 0, orange: 1, gray: 2, yellow: 3, purple: 4, green: 5, dim: 6 };
 const RED_EDGE = "#991b1b";   // shot 확대의 빨간불 테두리 (진한 빨강)
+const SHOT_LIGHT_STYLE = {
+  red: { stroke: RED_EDGE, text: LIGHT_COLORS.red, fill: "rgba(220,38,38,0.16)" },
+  orange: { stroke: "#c2410c", text: "#c2410c", fill: "rgba(249,115,22,0.28)" },
+  yellow: { stroke: "#a16207", text: "#854d0e", fill: "rgba(234,179,8,0.34)" },
+  green: { stroke: "#166534", text: "#166534", fill: "rgba(34,197,94,0.30)" },
+  purple: { stroke: LIGHT_COLORS.purple, text: LIGHT_COLORS.purple, fill: "rgba(124,58,237,0.20)" },
+};
+const SHOT_DEFAULT_STYLE = { stroke: "#111827", text: "#111827", fill: "rgba(17,24,39,0.06)" };
 
 // 결과 화면에서 무엇을 볼지 — 대상 TEG(S/L) / MAIN 내부 TEG / 둘 다 (기본)
 const VIEW_ALL = "all", VIEW_TARGET = "target", VIEW_MAIN = "main";
@@ -482,34 +489,9 @@ function PatternGrid({ res, px, selected, onSelect, mapFor }) {
 }
 
 /* ── shot 확대 뷰 — die 격자 + 계산 좌표 기준 TEG 배치.
-   빨간불/노란불 TEG 만 그린다:
-     · 노란불 — 검은 테두리 + 사각형 가운데 검은 이름
-     · 빨간불 — 진한 빨간 테두리 + 사각형 가운데 빨간 이름
+   Mapfile 에 셋업된 TEG 를 모두 그리고 빨강/노랑/초록 상태색을 그대로 쓴다.
    TEG 는 shot 대비 아주 작아 기본 배율로는 이름이 안 읽힌다 — 뷰를 크게 잡고
    최대 배율도 올린다 (zoom/pan/핀치는 공용 ZoomPanSvg). ── */
-/* 겹치는 TEG 는 가장 위의 것 하나만 남긴다 — 같은 자리에 여러 TEG 가 쌓이면
-   사각형과 이름이 포개져 아무것도 못 읽는다. 위(mm_y 큰 것)부터 훑으며 이미
-   남긴 사각형과 겹치지 않는 것만 채택한다. mm_y 가 같으면 빨간불을 먼저 남겨
-   문제가 다른 색 아래로 숨지 않게 한다.
-   **대상 TEG 와 MAIN 내부 TEG 는 따로 걸러야 한다** — 한 덩어리로 돌리면
-   수많은 MAIN TEG 가 대상 TEG 를 덮어 정작 봐야 할 것이 사라진다. */
-function dropOverlapping(items, limit = SHOT_LAYER_LIMIT) {
-  const sorted = [...items].sort((a, b) =>
-    (b.mm_y - a.mm_y)
-    || ((a.light === "red" ? 0 : 1) - (b.light === "red" ? 0 : 1))
-    || (a.mm_x - b.mm_x));
-  const kept = [];
-  for (const t of sorted) {
-    if (kept.length >= limit) break;
-    const x1 = t.mm_x + (t.w || 0), y1 = t.mm_y + (t.h || 0);
-    const hit = kept.some(k =>
-      t.mm_x < k.mm_x + (k.w || 0) && x1 > k.mm_x
-      && t.mm_y < k.mm_y + (k.h || 0) && y1 > k.mm_y);
-    if (!hit) kept.push(t);
-  }
-  return kept;
-}
-
 function ShotView({ shot, items, size = 560 }) {
   const SIZE = size;
   const MAX_ZOOM = 60;
@@ -553,16 +535,12 @@ function ShotView({ shot, items, size = 560 }) {
               )}
             </g>
           ))}
-          {/* TEG — 계산 좌표(mm) 기준. 빨간불 = 진한 빨간 테두리 + 가운데 빨간 이름,
-              그 외 = 검은 테두리 + 가운데 검은 이름. 이름은 사각형 안에 들어가도록
-              크기를 맞추므로 확대할수록 커진다. 겹치는 것은 호출부에서 종류별로
-              걸러 가장 위의 것만 넘어온다 (dropOverlapping). */}
+          {/* TEG — 계산 좌표(mm) 기준. 상태별 색을 사각형·테두리·이름에 함께 적용한다.
+              이름은 사각형 안에 들어가도록
+              크기를 맞추므로 확대할수록 커진다. 같은 위치의 항목도 생략하지 않고
+              Mapfile에 나온 전체 행을 그린다. */}
           {drawItems.map((t) => {
-            const red = t.light === "red";
-            const stroke = red ? RED_EDGE : "#111827";
-            const text = red ? LIGHT_COLORS.red : "#111827";
-            const fill = red ? "rgba(220,38,38,0.16)"
-              : t.light === "yellow" ? "rgba(217,154,26,0.28)" : "rgba(17,24,39,0.06)";
+            const color = SHOT_LIGHT_STYLE[t.light] || SHOT_DEFAULT_STYLE;
             const x = toX(t.mm_x), yBottom = toY(t.mm_y);
             const wpx = Math.max(1.5 / zoom, (t.w || 0) * s);
             const hpx = Math.max(1.5 / zoom, (t.h || 0) * s);
@@ -579,12 +557,12 @@ function ShotView({ shot, items, size = 560 }) {
             return (
               <g key={t.key}>
                 <rect x={x} y={yBottom - hpx} width={wpx} height={hpx}
-                  fill={fill} stroke={stroke} strokeWidth={1.6 / zoom} />
+                  fill={color.fill} stroke={color.stroke} strokeWidth={1.6 / zoom} />
                 {label && fs * zoom >= 2.5 && (
                   <text x={labelX} y={labelY} fontSize={fs}
                     textAnchor="middle" dominantBaseline="central"
                     transform={labelAngle ? `rotate(${labelAngle} ${labelX} ${labelY})` : undefined}
-                    fill={text} fontWeight={700}>{label}</text>
+                    fill={color.text} fontWeight={700}>{label}</text>
                 )}
               </g>
             );
@@ -665,8 +643,6 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   // 무엇을 볼지 — 대상 TEG(S/L) / MAIN 내부 TEG / 둘 다.
   const seeTarget = view !== VIEW_MAIN;
   const seeMain = view !== VIEW_TARGET;
-  const mainHasAttention = mainInfoMissingRows.length > 0 || mainInfoMissingGroups.length > 0
-    || mainChecklist.some(t => ["red", "orange", "yellow"].includes(t.light));
   const mainRedCount = mainChecklist.filter(t => t.light === "red").length;
   const mainOrangeCount = mainInfoMissingRows.length + mainOrangeChecklist.length
     + mainInfoMissingGroupFallbacks.length;
@@ -788,12 +764,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const mainTopErrorMessages = topErrorMessages.filter(item => item.summary_section === "main");
   const slSummaryRows = slIssues;
   const mainSummaryRows = [...mainRedIssues, ...mainInfoIssues];
-  const hasShotIssue = (seeTarget && bad.length > 0)
-    || (seeMain && mainHasAttention);
-  // shot 배치도 — 기본은 **빨간불만**(지금 고쳐야 할 것). "전체 표시" 를 켜면
-  // 대상 TEG 전체와 MAIN 내부 TEG 전체를 그린다. 어느 쪽이든 겹치는 것은
-  // 종류별로 따로 걸러 가장 위의 것만 남긴다.
-  const [shotAll, setShotAll] = useState(false);
+  // shot 배치도 — Mapfile 에 나온 대상·미등록·MAIN 앵커를 포함해 전부 그린다.
+  // 같은 위치에 겹쳐도 생략하지 않는다. "전체 표시"와 실제 결과가 같아야 한다.
   const [showAll, setShowAll] = useState(false);
   const [showMain, setShowMain] = useState(false);
   const [showWarn, setShowWarn] = useState(false);
@@ -804,32 +776,31 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const [warnPage, setWarnPage] = useState(0);
   const [mainChecklistPage, setMainChecklistPage] = useState(0);
   const [mainGroupPage, setMainGroupPage] = useState(0);
-  const needsShotItems = Boolean(res.shot?.available && (hasShotIssue || showTechnical));
+  const needsShotItems = Boolean(res.shot?.available);
   const shotTargetCandidates = useMemo(() => (needsShotItems && seeTarget
     ? slRows
-        // Teg_location에 등록된 S/L TEG만 die_state를 표시한다.
-        .filter(r => shotAll || r.light === "red" || r.die_state === "in")
         .map((r, i) => ({
           ...r,
           light: r.die_state === "in" ? "red" : r.light,
           light_reason: r.die_state === "in" ? (r.light_reason || "die 침범") : r.light_reason,
           key: `r${i}`, w: r.teg_w, h: r.teg_h,
         }))
-    : []), [needsShotItems, slRows, seeTarget, shotAll]);
+    : []), [needsShotItems, slRows, seeTarget]);
   const shotMainCandidates = useMemo(() => (needsShotItems && seeMain
-    ? [
-        ...mainInfoMissingRows.map(row => ({ ...row, teg: row.name, group: "정보없음" })),
-        ...mainChecklist,
-      ]
-        // 정답지 정보는 없지만 비-IP 자기 MAIN 내부인 노랑도 즉시 비교할 수 있게 한다.
-        .filter(t => shotAll || t.light === "red" || t.light === "orange" || t.light === "yellow")
-        .map(t => ({ ...t, name: t.teg, w: t.teg_w, h: t.teg_h }))
-    : []), [needsShotItems, mainChecklist, mainInfoMissingRows, seeMain, shotAll]);
-  const shotTargetRows = useMemo(() => dropOverlapping(shotTargetCandidates), [shotTargetCandidates]);
-  const shotMainRows = useMemo(() => dropOverlapping(shotMainCandidates), [shotMainCandidates]);
+    ? (teg.main_groups || []).flatMap((group, groupIndex) => (group.tegs || []).map((t, index) => ({
+        ...t,
+        name: t.teg,
+        group: group.group,
+        light: t.light || "gray",
+        key: `m-${groupIndex}-${index}`,
+        w: t.teg_w,
+        h: t.teg_h,
+      })))
+    : []), [needsShotItems, teg.main_groups, seeMain]);
+  const shotTargetRows = shotTargetCandidates;
+  const shotMainRows = shotMainCandidates;
   const shotItems = useMemo(
     () => [...shotTargetRows, ...shotMainRows], [shotTargetRows, shotMainRows]);
-  const shotCandidateCount = shotTargetCandidates.length + shotMainCandidates.length;
   const targets = teg.targets || { items: [], matched: 0, missing: 0, total: 0, source: "default" };
   // 이 Mapfile 의 flat → Teg_location direction. 방향이 다른 대상 TEG 는 애초에
   // 이 원문에 없는 게 정상이라 '미설정' 이 아니라 '판정 불가' 로 가른다.
@@ -1158,16 +1129,11 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           이상으로 표시된 항목은 원문과 실제 배치를 눈으로 확인하고, 이 결과는 크로스체크 용도로 사용해 주세요.
         </div>
 
-        {res.shot?.available && hasShotIssue && (
+        {res.shot?.available && shotItems.length > 0 && (
           <div style={{ minWidth: 0, maxWidth: 420, marginTop: 12 }}>
             <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5 }}>
-              Shot에서 위치 확인 · 빨강=이상 · 노랑=확인 필요
+              Shot에서 위치 확인 · 빨강=이상 · 노랑=확인 필요 · 초록=정상
             </div>
-            {shotCandidateCount > shotItems.length && (
-              <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 5 }}>
-                후보 {shotCandidateCount}건 중 겹침 제거·레이어별 상위 {SHOT_LAYER_LIMIT}건만 표시
-              </div>
-            )}
             <ShotView shot={res.shot} items={shotItems} size={400} />
           </div>
         )}
@@ -1723,27 +1689,12 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
         <div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
                         fontSize: 12, marginBottom: 6 }}>
-            <span style={{ fontWeight: 700 }}>shot 확대</span>
-            {showTechnical && <div style={{ display: "inline-flex", border: "1px solid var(--line)",
-                          borderRadius: 6, overflow: "hidden" }}>
-              {[[false, "🔴 빨강 + MAIN 노랑"], [true, "전체 표시"]].map(([v, label]) => (
-                <button key={String(v)} onClick={() => setShotAll(v)}
-                  title={v ? "대상 TEG 전체와 MAIN 내부 TEG 전체를 그립니다"
-                    : "빨간불과 정상 MAIN 내부 TEG(노랑)를 그립니다 (기본)"}
-                  style={{ fontSize: 12, padding: "3px 10px", cursor: "pointer", border: "none",
-                           borderRight: "1px solid var(--line)",
-                           background: shotAll === v ? "var(--accent)" : "transparent",
-                           color: shotAll === v ? "#fff" : "var(--muted)",
-                           fontWeight: shotAll === v ? 700 : 400 }}>
-                  {label}
-                </button>
-              ))}
-            </div>}
+            <span style={{ fontWeight: 700 }}>shot 확대 · 전체 표시</span>
             {showTechnical && <span style={{ color: "var(--muted)" }}>
               {fmtN(res.shot.shot_w_mm)}×{fmtN(res.shot.shot_h_mm)} mm · 기준 {res.shot.geometry_source === "product_info" ? "config 제품정보(우선)" : "Chip_Radius fallback"} · shot 센터 = ebeam (0,0)
               {seeTarget ? ` · 대상 TEG ${shotTargetRows.length}` : ""}
               {seeMain ? ` · MAIN 내부 TEG ${shotMainRows.length}` : ""}
-              {` 표시 / 후보 ${shotCandidateCount} (겹치면 가장 위, 레이어별 최대 ${SHOT_LAYER_LIMIT})`}
+              {" 전체 표시"}
             </span>}
             {showTechnical && <Pill tone={res.shot.checked ? "ok" : "warn"} size="sm">
               {res.shot.checked
@@ -1756,11 +1707,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           </div>
           {showTechnical && showRule && (
             <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6, lineHeight: 1.7 }}>
-              계산 좌표(EbeamX/Y × 배율) 기준으로 그립니다. 기본은 <b>빨간불 + MAIN 내부 노란불</b>,
-              <b>전체 표시</b>를 켜면 대상 TEG 전체와 MAIN 내부 TEG 전체를
-              검은 테두리 + 검은 이름으로 함께 그립니다. 이름은 사각형 가운데에 넣으므로 확대하면
-              읽힙니다. <b>겹치는 것은 가장 위의 것 하나만</b> 그리며, 대상 TEG 와 MAIN 내부 TEG 는
-              따로 걸러 MAIN 이 대상 TEG 를 덮지 않습니다.
+              계산 좌표(EbeamX/Y × 배율) 기준으로 Mapfile의 대상 TEG, 미등록 행,
+              MAIN 내부 TEG와 MAIN 기준 앵커를 모두 그립니다. 상태색은 사각형과 이름에 같이 적용하고,
+              이름은 사각형 가운데에 넣으므로 확대하면 읽힙니다. 같은 위치에 겹치는 항목도 생략하지 않습니다.
               정답지에 있는 TEG 는 ΔX·ΔY 가 2 를 넘거나 die 안에 깊이 들어가면 빨간불이고,
               둘 다면 사유에 둘 다 적습니다. <b>die 경계에서 허용오차 안쪽/바깥쪽</b>(⚙️ 설정
               die_tol, ebeam raw 단위)은 노란불 '경계 근처' 입니다.
@@ -1790,7 +1739,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           )}
           {!shotItems.length && (targets.total > 0 || view === VIEW_MAIN) && (
             <div style={{ fontSize: 12, color: "var(--ok)", marginBottom: 6 }}>
-              🟢 배치도에 표시할 {shotAll ? "TEG" : "이상·확인 필요 TEG"}가 없습니다
+              🟢 배치도에 표시할 TEG가 없습니다
               {view !== VIEW_ALL ? ` (${view === VIEW_MAIN ? "MAIN TEG" : "대상 TEG"}만 보는 중)` : ""}.
             </div>
           )}
