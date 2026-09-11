@@ -198,6 +198,22 @@ def test_split_table_unmatched_steps_do_not_move_grey_boundary():
     assert "if(!rowTracksStepProgress[ri])return false" in source
 
 
+def test_split_table_process_columns_cache_is_identity_and_option_keyed():
+    source = (
+        Path(__file__).parents[1]
+        / "frontend"
+        / "src"
+        / "features"
+        / "splittable"
+        / "My_SplitTable.jsx"
+    ).read_text(encoding="utf-8")
+
+    assert "const processColumnsCache=new WeakMap()" in source
+    assert "processColumnsCache.get(meta)" in source
+    assert 'const cacheKey=`${kind}\\u0000${excludeNotNull?"1":"0"}`' in source
+    assert "byOption.set(cacheKey,columns)" in source
+
+
 def test_display_settings_save_normalizes_shared_column_widths(tmp_path, monkeypatch):
     from routers import splittable
 
@@ -828,6 +844,46 @@ def test_mask_process_columns_fallback_when_not_in_vehicle_matching(tmp_path, mo
     assert cols == {"step_id": "", "step_desc": "SOME_DYNAMIC_STEP"}
 
 
+def test_inline_legacy_filename_and_description_alias_keep_id_without_description(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Inline_mathcing.csv").write_text(
+        "item_desc,step_id\nCD GATE,A100\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    meta = splittable._build_inline_meta("ML_TABLE_PRODA")
+    for param in ("INLINE_CD GATE", "INLINE_CD_GATE"):
+        entry = splittable._step_label_meta_lookup(meta, param, "INLINE")
+        assert entry["step_ids"] == ["A100"]
+        assert entry["function_steps"] == []
+    # The canonical file takes precedence if both spellings exist.
+    (tmp_path / "Inline_matching.csv").write_text(
+        "item_desc,step_id,step_desc\nCD GATE,A200,MEASURE\n", encoding="utf-8",
+    )
+    entry = splittable._build_inline_meta("ML_TABLE_PRODA")["CD GATE"]
+    assert entry["step_ids"] == ["A200"]
+    assert entry["function_steps"] == ["MEASURE"]
+
+
+def test_mask_reticle_suffix_matches_vehicle_without_adding_rows(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        'product,step_id,step_desc,module\n"proda,prodb",A100,GATE ETCH,GATE\n'
+        'prodc,C100,GATE ETCH,OTHER\n', encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    for columns in ([], ["MASK_GATE_ETCH_reticle"]):
+        monkeypatch.setattr(splittable, "_mltable_schema_columns", lambda *args: columns)
+        meta = splittable._build_mask_meta("ML_TABLE_PRODA")
+        entry = meta["MASK_GATE_ETCH_reticle"]
+        assert entry["step_ids"] == ["A100"]
+        assert entry["step_desc"] == "GATE ETCH"
+        assert splittable._virtual_columns_for_prefix("ML_TABLE_PRODA", "MASK") == []
+
+
 def test_mask_vehicle_aliases_supply_step_id_without_becoming_virtual_rows(tmp_path, monkeypatch):
     from routers import splittable
 
@@ -848,3 +904,16 @@ def test_mask_vehicle_aliases_supply_step_id_without_becoming_virtual_rows(tmp_p
     assert meta["MASK_GATE_ETCH"]["step_id"] == "A100"
     assert meta["MASK_CONTACT_ETCH"]["step_id"] == "A200"
     assert splittable._virtual_columns_for_prefix("ML_TABLE_PRODA", "MASK") == []
+
+
+def test_mask_real_reticle_description_wins_over_suffix_alias(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc\nproda,A100,GATE\nproda,A200,GATE_reticle\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    monkeypatch.setattr(splittable, "_mltable_schema_columns", lambda *args: [])
+    assert splittable._build_mask_meta("ML_TABLE_PRODA")["MASK_GATE_reticle"]["step_ids"] == ["A200"]

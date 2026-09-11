@@ -2543,7 +2543,7 @@ def _build_inline_meta(product: str = "") -> dict:
         }
         # Wide 테이블의 정식 이름은 INLINE_<item_desc>. item_id는 과거 물리
         # 컬럼을 위한 lookup alias일 뿐이며 없어도 현재 행을 버리지 않는다.
-        for key in _dedup_list([canonical_name, iid]):
+        for key in _dedup_list([canonical_name, iid, canonical_name.replace(" ", "_")]):
             grouped.setdefault(key, []).append(item)
     out: dict[str, dict] = {}
     for iid, items in grouped.items():
@@ -2735,18 +2735,27 @@ def _build_mask_meta(product: str = "") -> dict:
 
     out: dict[str, dict] = {}
 
+    pending_aliases = []
+    normalized_steps = {}
+    for key, steps in step_map.items():
+        normalized_steps.setdefault(_re.sub(r"[_\s]+", " ", str(key)).strip().casefold(), steps)
+
     def _lookup_steps(tail_str: str) -> tuple[list[dict], str]:
         clean = _re.sub(r"_split$", "", tail_str, flags=_re.I).strip()
+        # Preserve real descriptions ending in reticle; strip producer suffix
+        # only when there is no exact Vehicle description.
+        if _step_desc_match_key(clean) not in step_map:
+            clean = _re.sub(r"_reticle$", "", clean, flags=_re.I).strip()
         key = _step_desc_match_key(clean)
         for cand_k in (key, key.replace("_", " "), key.replace(" ", "_")):
             if cand_k in step_map and step_map[cand_k]:
                 matched_desc = next((str(x.get("step_desc") or "").strip() for x in step_map[cand_k] if str(x.get("step_desc") or "").strip()), "") or clean
                 return step_map[cand_k], matched_desc
         norm_clean = _re.sub(r"[_\s]+", " ", clean).strip().casefold()
-        for k, v in step_map.items():
-            if _re.sub(r"[_\s]+", " ", str(k)).strip().casefold() == norm_clean:
-                matched_desc = next((str(x.get("step_desc") or "").strip() for x in v if str(x.get("step_desc") or "").strip()), "") or clean
-                return v, matched_desc
+        matched = normalized_steps.get(norm_clean)
+        if matched:
+            matched_desc = next((str(x.get("step_desc") or "").strip() for x in matched if str(x.get("step_desc") or "").strip()), "") or clean
+            return matched, matched_desc
         return [], clean
 
     for cand in candidates:
@@ -2809,6 +2818,7 @@ def _build_mask_meta(product: str = "") -> dict:
             "sub": "/".join(step_ids) if step_ids else step_desc_val,
         }
 
+        out[full] = entry
         for alias in _dedup_list([
             full,
             tail,
@@ -2816,12 +2826,19 @@ def _build_mask_meta(product: str = "") -> dict:
             f"MASK_{clean_tail}",
             f"{clean_tail}_Split",
             f"MASK_{clean_tail}_Split",
+            f"MASK_{clean_tail}_reticle",
+            f"MASK_{clean_tail}_reticle_Split",
+            f"MASK_{clean_tail.replace(' ', '_')}_reticle",
             clean_tail.replace(" ", "_"),
             clean_tail.replace("_", " "),
             f"MASK_{clean_tail.replace(' ', '_')}",
             f"MASK_{clean_tail.replace('_', ' ')}",
         ]):
-            out[alias] = entry
+            pending_aliases.append((alias, entry))
+
+    # A compatibility suffix must never override an actual Vehicle description.
+    for alias, entry in pending_aliases:
+        out.setdefault(alias, entry)
 
     return out
 
@@ -3440,6 +3457,7 @@ _RULEBOOK_FILES = {
     #   — INLINE_<item_desc> 측정 메타.
     "inline_matching": {
         "filename": "inline_matching.csv",
+        "legacy_filename": "inline_mathcing.csv",
         "cols": ["product", "step_id", "item_id", "item_desc", "step_desc", "matching_table"],
         "required": ["product", "step_id"],
     },
@@ -3485,10 +3503,11 @@ def _rulebook_path_for_base(kind: str, base: Path | None = None) -> Path:
         raise HTTPException(400, f"unknown rulebook: {kind}")
     root = base or _base_root()
     configured = _clean_rulebook_filename(_sch(kind).get("file_name"), meta["filename"])
-    primary = root / configured
+    from app_v2.modules.splittable.rulebook_repository import resolve_rulebook_file
+    primary = resolve_rulebook_file(root, configured)
     if configured != meta["filename"] or primary.exists() or not meta.get("legacy_filename"):
         return primary
-    legacy = root / str(meta.get("legacy_filename") or "")
+    legacy = resolve_rulebook_file(root, str(meta.get("legacy_filename") or ""))
     return legacy if legacy.exists() else primary
 
 

@@ -264,7 +264,7 @@ const matchStepLines=(kind,meta,{excludeNotNull=false}={})=>{
 };
 // 적용 공정 정보는 항목명을 덮어쓰지 않고 별도 step_id / step_desc 열로 보인다.
 // 복합 KNOB rule 은 두 열 모두 같은 rule_order 경계(`&`)를 유지한다.
-const matchProcessColumns=(kind,meta,{excludeNotNull=false}={})=>{
+const computeProcessColumns=(kind,meta,{excludeNotNull=false}={})=>{
   if(!kind||!meta)return {step_id:"",step_desc:""};
   const ids=[];const descs=[];const seenIds=new Set();const seenDescs=new Set();
   const push=(sid,desc)=>{
@@ -297,6 +297,25 @@ const matchProcessColumns=(kind,meta,{excludeNotNull=false}={})=>{
   if(!ids.length)(Array.isArray(meta?.step_ids)?meta.step_ids:[]).forEach(sid=>push(sid,fallbackDesc));
   if(!descs.length && fallbackDesc) push("", fallbackDesc);
   return {step_id:ids.join("\n"),step_desc:descs.join("\n")};
+};
+// Metadata objects are shared by the filter, snapshot, and row-render paths.
+// Keep the cache identity-based: a new metadata object must always recompute,
+// while repeated reads of the same immutable metadata avoid rebuilding groups.
+const processColumnsCache=new WeakMap();
+const matchProcessColumns=(kind,meta,{excludeNotNull=false}={})=>{
+  if(!kind||!meta)return {step_id:"",step_desc:""};
+  const metaType=typeof meta;
+  if(metaType!=="object"&&metaType!=="function"){
+    return computeProcessColumns(kind,meta,{excludeNotNull});
+  }
+  let byOption=processColumnsCache.get(meta);
+  if(!byOption){byOption=new Map();processColumnsCache.set(meta,byOption);}
+  const cacheKey=`${kind}\u0000${excludeNotNull?"1":"0"}`;
+  const cached=byOption.get(cacheKey);
+  if(cached)return cached;
+  const columns=computeProcessColumns(kind,meta,{excludeNotNull});
+  byOption.set(cacheKey,columns);
+  return columns;
 };
 // Vehicle_matching.csv 의 module 열이 유일한 원천이다. 그 열이 없으면 KNOB/VM 도
 // 빈 값이라 module 열 자체가 안 붙는다. INLINE 은 자기 CSV 에 module 이 없으므로

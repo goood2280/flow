@@ -246,7 +246,7 @@ _VIEW_CACHE_AUTO_MB_CACHE: tuple[float, float] | None = None
 _VIEW_CACHE_AUTO_MB_TTL = 60.0
 # v5: MASK Vehicle aliases are lookup-only and INLINE virtual rows use item_desc;
 # cached payloads built with older row catalogs must not survive deploy.
-_VIEW_DISK_CACHE_VERSION = 5
+_VIEW_DISK_CACHE_VERSION = 6
 _VIEW_DISK_CACHE_LOCK = threading.Lock()
 _VIEW_PRODUCT_SIG_CACHE: OrderedDict[tuple[str, ...], tuple[float, tuple]] = OrderedDict()
 _VIEW_PRODUCT_SIG_LOCK = threading.Lock()

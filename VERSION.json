@@ -1,7 +1,18 @@
 {
-  "version": "10.4.255",
+  "version": "10.4.256",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.256",
+      "date": "2026-09-11",
+      "tag": "fix",
+      "title": "SplitTable INLINE·MASK 공정 매칭 호환 및 반복 계산 개선",
+      "changes": [
+        "[INLINE 공정 정보] CSV 파일명 대소문자·기존 mathcing 철자와 항목 공백 변형에서 매칭 누락 → 정확한 파일을 우선하고 단일 대소문자 별칭·기존 파일명을 지원하며 item_desc 공백 별칭에도 CSV step_id와 선택적 step_desc 연결.",
+        "[MASK 공정 정보] 생성 컬럼의 _reticle 접미사로 Vehicle 공정 ID 누락 → 제품별 step_desc 매핑에 접미사 별칭을 연결하고 MASK 가상 행은 생성하지 않아 값 행 수 유지. 이전 화면 캐시도 무효화.",
+        "[적용 공정 정보 속도] 필터·화면·스냅샷에서 동일 공정 그룹 문자열을 반복 계산 → 메타 객체와 표시 옵션별 결과를 재사용하고 MASK 정규화 조회를 사전 인덱스로 변경."
+      ]
+    },
     {
       "version": "10.4.255",
       "date": "2026-09-11",

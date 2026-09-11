@@ -10,6 +10,15 @@ from core.utils import load_json, save_json
 
 logger = logging.getLogger("flow.splittable.rulebook")
 
+
+def resolve_rulebook_file(root: Path, filename: str) -> Path:
+    """Keep exact names authoritative; tolerate case variants on Linux too."""
+    target = root / filename
+    if target.exists() or not root.is_dir():
+        return target
+    matches = sorted(p for p in root.iterdir() if p.is_file() and p.name.casefold() == filename.casefold())
+    return matches[0] if len(matches) == 1 else target
+
 PLAN_DIR = PATHS.data_root / "splittable"
 PLAN_DIR.mkdir(parents=True, exist_ok=True)
 RULEBOOK_SCHEMA_FILE = PLAN_DIR / "rulebook_schema.json"
@@ -71,6 +80,7 @@ _RULEBOOK_FILES = {
     },
     "inline_matching": {
         "filename": "inline_matching.csv",
+        "legacy_filename": "inline_mathcing.csv",
         "cols": ["product", "step_id", "item_id", "item_desc", "step_desc", "matching_table"],
         "required": ["product", "step_id"],
     },
@@ -130,10 +140,10 @@ class RulebookRepository:
             raise HTTPException(400, f"unknown rulebook: {kind}")
         root = base or get_base_root()
         configured = self.clean_rulebook_filename(self.get_sch(kind).get("file_name"), meta["filename"])
-        primary = root / configured
+        primary = resolve_rulebook_file(root, configured)
         if configured != meta["filename"] or primary.exists() or not meta.get("legacy_filename"):
             return primary
-        legacy = root / str(meta.get("legacy_filename") or "")
+        legacy = resolve_rulebook_file(root, str(meta.get("legacy_filename") or ""))
         return legacy if legacy.exists() else primary
 
     def load_csv_rows(self, fp: Path) -> list[dict]:
