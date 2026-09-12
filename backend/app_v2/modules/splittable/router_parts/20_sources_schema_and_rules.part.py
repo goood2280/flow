@@ -1550,7 +1550,12 @@ def _row_value_ci(row: dict, col: str):
     for key, value in row.items():
         if str(key or "").strip().casefold() == wanted:
             return value
+    norm_wanted = _re.sub(r"[\s_]+", "_", wanted)
+    for key, value in row.items():
+        if _re.sub(r"[\s_]+", "_", str(key or "").strip().casefold()) == norm_wanted:
+            return value
     return None
+
 
 
 def _first_row_value(row: dict, *cols: str) -> str:
@@ -2543,7 +2548,8 @@ def _build_inline_meta(product: str = "") -> dict:
         }
         # Wide 테이블의 정식 이름은 INLINE_<item_desc>. item_id는 과거 물리
         # 컬럼을 위한 lookup alias일 뿐이며 없어도 현재 행을 버리지 않는다.
-        for key in _dedup_list([canonical_name, iid, canonical_name.replace(" ", "_")]):
+        clean_desc = _re.sub(r"^INLINE_", "", desc or "", flags=_re.I).strip()
+        for key in _dedup_list([canonical_name, clean_desc, iid, canonical_name.replace(" ", "_")]):
             grouped.setdefault(key, []).append(item)
     out: dict[str, dict] = {}
     for iid, items in grouped.items():
@@ -2575,6 +2581,7 @@ def _build_inline_meta(product: str = "") -> dict:
             "matching_tables": matching_tables,
             "step_id": step_ids[0] if len(step_ids) == 1 else "",
             "step_ids": step_ids,
+            "step_desc": function_steps[0] if len(function_steps) == 1 else "",
             "function_step": function_steps[0] if len(function_steps) == 1 else "",
             "function_steps": function_steps,
             "groups": dedup,
@@ -2599,6 +2606,8 @@ def _build_vm_meta(product: str = "") -> dict:
             "item_id",
             vm.get("feature_col", "feature_name"),
             "feature_name",
+            vm.get("item_desc_col", "item_desc"),
+            "item_desc",
         )
         if not step_desc or not item_id:
             continue
@@ -2608,7 +2617,8 @@ def _build_vm_meta(product: str = "") -> dict:
         name = f"{step_desc}_{item_id}"
         step_ids = _dedup_list([str(x.get("step_id") or "").strip() for x in steps])
         modules = _dedup_list([str(x.get("module") or "").strip() for x in steps])
-        grouped.setdefault(name, []).append({
+        clean_item_id = _re.sub(r"^VM_", "", item_id, flags=_re.I).strip()
+        item_entry = {
             "feature_name": name,
             "item_id": item_id,
             "step_desc": step_desc,
@@ -2618,7 +2628,9 @@ def _build_vm_meta(product: str = "") -> dict:
             "function_steps": [step_desc],
             "modules": modules,
             "module": modules[0] if len(modules) == 1 else "",
-        })
+        }
+        for key in _dedup_list([name, item_id, clean_item_id]):
+            grouped.setdefault(key, []).append(item_entry)
     out: dict[str, dict] = {}
     for fname, items in grouped.items():
         dedup = []
@@ -3143,6 +3155,8 @@ def _virtual_columns_for_prefix(product: str, prefix: str,
             def _canonical_name(key: str, meta: dict) -> str:
                 if pref == "INLINE":
                     return str(meta.get("item_desc") or meta.get("feature_name") or key).strip()
+                if pref == "VM":
+                    return str(meta.get("item_id") or meta.get("feature_name") or key).strip()
                 return str(meta.get("feature_name") or key).strip()
 
             # Metadata maps intentionally keep full/bare/item-id aliases for
@@ -3155,6 +3169,10 @@ def _virtual_columns_for_prefix(product: str, prefix: str,
                 meta = _step_label_meta_lookup(meta_map, column, pref)
                 if meta:
                     represented.add(_canonical_name(str(column), meta).casefold())
+                    if meta.get("item_id"):
+                        represented.add(str(meta.get("item_id")).casefold())
+                    if meta.get("feature_name"):
+                        represented.add(str(meta.get("feature_name")).casefold())
             emitted: set[str] = set()
             for key, meta in meta_map.items():
                 if not isinstance(meta, dict):

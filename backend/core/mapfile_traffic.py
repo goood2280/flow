@@ -823,4 +823,3 @@ def read_mapfile_text(filename: str) -> str:
         return raw.decode("utf-8-sig")
     except UnicodeDecodeError:
         return raw.decode("cp949", errors="replace")
-

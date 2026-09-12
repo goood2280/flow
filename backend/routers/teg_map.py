@@ -627,8 +627,8 @@ def mapfile_traffic_get(vehicle: str = Query(...), force: bool = False,
                         user=Depends(current_user)):
     """DB mapfile 폴더 내 제품코드* 파일들의 신호등 검증 현황 조회."""
     _require_product_access(user, vehicle)
-    from core import mapfile_traffic
-    return mapfile_traffic.inspect_mapfiles_for_product(vehicle, force=bool(force))
+    from core import mapfile_review
+    return mapfile_review.get_summary(vehicle)
 
 
 @router.get("/mapfile-sync-status")
@@ -639,12 +639,13 @@ def mapfile_sync_status_get(user=Depends(current_user)):
 
 
 @router.get("/mapfile-traffic/content")
-def mapfile_traffic_content_get(filename: str = Query(...), user=Depends(current_user)):
+def mapfile_traffic_content_get(filename: str = Query(...), vehicle: str = Query(...),
+                               version: str = "", user=Depends(current_user)):
     """Mapfile 검증 탭에서 열어보기 위한 mapfile 텍스트 원문 조회."""
-    from core import mapfile_traffic
+    _require_product_access(user, vehicle)
+    from core import mapfile_review
     try:
-        content = mapfile_traffic.read_mapfile_text(filename)
-        return {"ok": True, "filename": filename, "content": content}
+        return mapfile_review.open_version(vehicle, filename, version)
     except FileNotFoundError:
         raise HTTPException(404, f"파일을 찾을 수 없습니다: {filename}")
     except ValueError as exc:
@@ -652,3 +653,33 @@ def mapfile_traffic_content_get(filename: str = Query(...), user=Depends(current
     except Exception as exc:
         raise HTTPException(500, f"파일 읽기 오류: {exc}")
 
+
+class MapfileCommentReq(BaseModel):
+    vehicle: str
+    filename: str
+    version: str
+    text: str
+
+
+@router.get("/mapfile-traffic/comments")
+def mapfile_comments_get(vehicle: str, filename: str, version: str,
+                         user=Depends(current_user)):
+    _require_product_access(user, vehicle)
+    from core import mapfile_review
+    try:
+        return mapfile_review.version_comments(vehicle, filename, version)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@router.post("/mapfile-traffic/comments")
+def mapfile_comments_post(req: MapfileCommentReq, user=Depends(current_user)):
+    _require_product_access(user, req.vehicle)
+    from core import mapfile_review
+    try:
+        return mapfile_review.version_comments(req.vehicle, req.filename, req.version,
+                                              text=req.text, user=user)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))

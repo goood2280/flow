@@ -1,6 +1,6 @@
-"""Background daily scheduler for Mapfile traffic light verification.
+"""Background scheduler for Mapfile traffic light verification.
 
-Runs twice a day (e.g. at 06:00 and 18:00) to scan mapfiles in roots.get_db_root() / 'mapfile',
+Runs every five minutes to scan mapfiles in roots.get_db_root() / 'mapfile',
 verifying any newly added or modified files for registered product codes.
 """
 from __future__ import annotations
@@ -41,6 +41,8 @@ def run_mapfile_traffic_once(now: dt.datetime | None = None) -> dict:
         scanned_products += 1
         try:
             res = _mt.inspect_mapfiles_for_product(vehicle, force=False)
+            from core.mapfile_review import publish_snapshot
+            publish_snapshot(res)
             files = res.get("files") or []
             total_files += len(files)
             # count files that were newly verified (not cached)
@@ -103,7 +105,7 @@ def _seconds_until_next_run(now: dt.datetime | None = None) -> float:
 
 def _loop() -> None:
     while not _stop.is_set():
-        wait_s = _seconds_until_next_run()
+        wait_s = min(300.0, _seconds_until_next_run())
         while wait_s > 0 and not _stop.is_set():
             step = min(wait_s, 60.0)
             _stop.wait(step)
@@ -127,5 +129,5 @@ def start_scheduler() -> bool:
     _thread = threading.Thread(target=_loop, name="mapfile-traffic-scheduler", daemon=True)
     _thread.start()
     _started = True
-    logger.info("mapfile traffic scheduler started (06:00, 18:00 daily; file changes only)")
+    logger.info("mapfile traffic scheduler started (every 5 minutes; file changes only)")
     return True

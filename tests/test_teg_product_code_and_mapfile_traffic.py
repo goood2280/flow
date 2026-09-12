@@ -296,20 +296,25 @@ def test_routers_teg_map_endpoints(tmp_path):
             assert get_res["ok"] is True
             assert get_res["product_codes"]["VH_1"] == "CODE1"
 
-        # 3. GET /mapfile-traffic returns inspection result
-        with patch.object(mapfile_traffic._tc, "inspect") as mock_tc:
-            mock_tc.return_value = {
-                "flat": {"detected": "Horizontal"},
-                "teg": {"summary": {}, "targets": {}, "rows": []},
-            }
+        # 3. GET /mapfile-traffic returns the cached compact summary
+        with patch("core.mapfile_review.get_summary", return_value={
+            "ok": True, "vehicle": "VH_1", "product_code": "CODE1",
+            "summary": {"total_files": 1}, "files": [{"filename": "CODE1_a.txt"}],
+        }) as mock_summary:
             traffic_res = teg_router.mapfile_traffic_get(vehicle="VH_1", force=False, user=normal_user)
+            mock_summary.assert_called_once_with("VH_1")
             assert traffic_res["ok"] is True
             assert traffic_res["product_code"] == "CODE1"
             assert traffic_res["summary"]["total_files"] == 1
             assert traffic_res["files"][0]["filename"] == "CODE1_a.txt"
 
         # 4. GET /mapfile-traffic/content returns text
-        content_res = teg_router.mapfile_traffic_content_get(filename="CODE1_a.txt", user=normal_user)
+        with patch("core.mapfile_review.open_version", return_value={
+            "ok": True, "filename": "CODE1_a.txt", "signature": "v1", "content": "MAP 1",
+        }) as mock_open:
+            content_res = teg_router.mapfile_traffic_content_get(
+                vehicle="VH_1", filename="CODE1_a.txt", version="v1", user=normal_user)
+            mock_open.assert_called_once_with("VH_1", "CODE1_a.txt", "v1")
         assert content_res["ok"] is True
         assert content_res["content"] == "MAP 1"
 
@@ -591,7 +596,8 @@ def test_inspect_mapfiles_groups_excludes_root_and_includes_github_sync(tmp_path
     prod_file.write_text("PROD", encoding="utf-8")
 
     log_file = mapfile_dir / "download.log"
-    log_file.write_text("2026-09-10T18:00:00 [SUCCESS] 2 files", encoding="utf-8")
+    log_file.write_text(mapfile_traffic.dt.datetime.now().isoformat(timespec="seconds")
+                        + " [SUCCESS] 2 files", encoding="utf-8")
 
     cache_file = tmp_path / "cache.json"
 
@@ -619,5 +625,3 @@ def test_inspect_mapfiles_groups_excludes_root_and_includes_github_sync(tmp_path
         group_keys = [g["key"] for g in res["groups"]]
         assert group_keys == ["dev", "prod"]
         assert "root" not in group_keys
-
-

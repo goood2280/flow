@@ -882,8 +882,6 @@ def test_mask_reticle_suffix_matches_vehicle_without_adding_rows(tmp_path, monke
         assert entry["step_ids"] == ["A100"]
         assert entry["step_desc"] == "GATE ETCH"
         assert splittable._virtual_columns_for_prefix("ML_TABLE_PRODA", "MASK") == []
-
-
 def test_mask_vehicle_aliases_supply_step_id_without_becoming_virtual_rows(tmp_path, monkeypatch):
     from routers import splittable
 
@@ -917,3 +915,122 @@ def test_mask_real_reticle_description_wins_over_suffix_alias(tmp_path, monkeypa
     monkeypatch.setattr(splittable, "_sch", lambda kind: {})
     monkeypatch.setattr(splittable, "_mltable_schema_columns", lambda *args: [])
     assert splittable._build_mask_meta("ML_TABLE_PRODA")["MASK_GATE_reticle"]["step_ids"] == ["A200"]
+
+
+def test_inline_matching_with_item_desc_header_resolves_process_columns(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "inline_matching.csv").write_text(
+        "product,step_id,item_id,item_desc,step_desc\n"
+        "PRODA,CC942300,ITEM_1,1.0 STI,GATE_ETCH\n"
+        "PRODA,CC955100,ITEM_2,2.0 WELL,SPACER_CVD\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+
+    meta = splittable._build_inline_meta("ML_TABLE_PRODA")
+    assert "1.0 STI" in meta
+    assert meta["1.0 STI"]["step_id"] == "CC942300"
+    assert meta["1.0 STI"]["step_desc"] == "GATE_ETCH"
+    assert meta["1.0 STI"]["item_desc"] == "1.0 STI"
+
+    cols_sti = splittable._step_process_columns_for_param("INLINE_1.0 STI", {"inline": meta})
+    assert cols_sti == {"step_id": "CC942300", "step_desc": "GATE_ETCH"}
+
+    cols_well = splittable._step_process_columns_for_param("INLINE_2.0 WELL", {"inline": meta})
+    assert cols_well == {"step_id": "CC955100", "step_desc": "SPACER_CVD"}
+
+
+def test_inline_matching_with_spaced_item_desc_header(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "inline_matching.csv").write_text(
+        "product,step_id,item desc,step_desc\n"
+        "PRODA,CC942300,1.0 STI,GATE_ETCH\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+
+    meta = splittable._build_inline_meta("ML_TABLE_PRODA")
+    assert "1.0 STI" in meta
+    cols = splittable._step_process_columns_for_param("INLINE_1.0 STI", {"inline": meta})
+    assert cols == {"step_id": "CC942300", "step_desc": "GATE_ETCH"}
+
+
+def test_vm_matching_csv_resolves_process_columns_for_product_and_item_id(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc,module\n"
+        "PRODA,CC942300,GATE_ETCH,ETCH\n"
+        "PRODA,CC955100,SPACER_CVD,CVD\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "vm_matching.csv").write_text(
+        "step_desc,item_id\n"
+        "GATE_ETCH,1.0 STI\n"
+        "SPACER_CVD,2.0 WELL\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+
+    meta = splittable._build_vm_meta("ML_TABLE_PRODA")
+    assert "1.0 STI" in meta
+    assert "GATE_ETCH_1.0 STI" in meta
+    assert meta["1.0 STI"]["step_id"] == "CC942300"
+    assert meta["1.0 STI"]["step_desc"] == "GATE_ETCH"
+    assert meta["1.0 STI"]["module"] == "ETCH"
+
+    cols_sti = splittable._step_process_columns_for_param("VM_1.0 STI", {"vm": meta})
+    assert cols_sti == {"step_id": "CC942300", "step_desc": "GATE_ETCH"}
+
+    cols_compound = splittable._step_process_columns_for_param("VM_GATE_ETCH_1.0 STI", {"vm": meta})
+    assert cols_compound == {"step_id": "CC942300", "step_desc": "GATE_ETCH"}
+
+    cols_well = splittable._step_process_columns_for_param("VM_2.0 WELL", {"vm": meta})
+    assert cols_well == {"step_id": "CC955100", "step_desc": "SPACER_CVD"}
+
+
+def test_splittable_proda_inline_and_vm_applied_process_info(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "vehicle,product,step_id,step_desc\n"
+        "VH_PRODA,PRODA,CC942300,GATE_ETCH\n"
+        "VH_PRODA,PRODA,CC955100,SPACER_CVD\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "inline_matching.csv").write_text(
+        "product,step_id,item_id,item_desc,step_desc\n"
+        "PRODA,CC942300,ITEM_1,1.0 STI,GATE_ETCH\n"
+        "PRODA,CC955100,ITEM_2,2.0 WELL,SPACER_CVD\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "vm_matching.csv").write_text(
+        "step_desc,item_id\n"
+        "GATE_ETCH,1.0 STI\n"
+        "SPACER_CVD,2.0 WELL\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+
+    metas = splittable._step_label_metas("ML_TABLE_PRODA")
+    assert "inline" in metas
+    assert "vm" in metas
+
+    assert splittable._step_process_columns_for_param("INLINE_1.0 STI", metas) == {
+        "step_id": "CC942300", "step_desc": "GATE_ETCH",
+    }
+    assert splittable._step_process_columns_for_param("VM_1.0 STI", metas) == {
+        "step_id": "CC942300", "step_desc": "GATE_ETCH",
+    }
+    assert splittable._step_process_columns_for_param("INLINE_2.0 WELL", metas) == {
+        "step_id": "CC955100", "step_desc": "SPACER_CVD",
+    }
+    assert splittable._step_process_columns_for_param("VM_2.0 WELL", metas) == {
+        "step_id": "CC955100", "step_desc": "SPACER_CVD",
+    }

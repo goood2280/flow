@@ -6,12 +6,12 @@
       🟢 일치 / 🟡 확인필요(ΔX·ΔY 각 2 이내) / 🔴 불일치 / ⚪ 미등록 로 표시.
    오프셋(flat 기본·TEG별·회전 offset)은 ⚙️ 설정의 "TEG Mapfile 체크" 섹션에서 편집.
 */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { putJson, sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
-import ZoomPanSvg from "../../components/ZoomPanSvg";
 import { Button, Card, DataTable, EmptyState, LinkBtn, Pill, Select, TabStrip, Textarea } from "../../components/UXKit";
+import TegMapfileVersionComments from "./TegMapfileVersionComments";
 
 const API = "/api/teg-map";
 
@@ -2013,7 +2013,7 @@ function ExtensionMacroSettings({ canEdit, onSaved }) {
   );
 }
 
-export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false, initialText = "" }) {
+export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false, initialText = "", openedVersion = null }) {
   // 원문은 비제어(uncontrolled) — 수만 줄 붙여넣기 시 키 입력/paste 마다
   // 페이지 전체가 리렌더되던 버벅임 제거. 값은 ref 로만 추적, 검사 시점에 읽는다.
   const textRef = useRef(initialText || "");
@@ -2192,6 +2192,8 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false, ini
           </>
         )}
       </Card>
+
+      <TegMapfileVersionComments versionInfo={openedVersion} />
 
       {!res && <EmptyState icon="🔍" title="원문을 넣고 검사를 눌러주세요"
         hint="전체 Pattern 의 WF MAP 과 TEG 좌표 대조 결과가 표시됩니다" />}

@@ -102,6 +102,64 @@ ACTIONS = {
             }
         ),
     },
+    "yield_map.map": {
+        "description": "Read Yield Map / Wafer Map data including BIN distribution or shot metrics for a product, lot or wafer.",
+        "parameters": _object_schema(
+            {
+                "product": {"type": "string", "description": "Product name."},
+                "root_lot_id": {"type": "string", "default": ""},
+                "lot_id": {"type": "string", "default": ""},
+                "wafer_id": {"type": "string", "default": ""},
+                "bin_name": {"type": "string", "default": ""},
+                "kind": {"type": "string", "default": "yield"},
+            },
+            ["product"],
+        ),
+    },
+    "tracker.issues": {
+        "description": "List visible ET Tracker issues, status, priority, and monitored lots.",
+        "parameters": _object_schema(
+            {
+                "status": {"type": "string", "default": ""},
+                "category": {"type": "string", "default": ""},
+                "product": {"type": "string", "default": ""},
+                "q": {"type": "string", "default": ""},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+            }
+        ),
+    },
+    "tracker.issue": {
+        "description": "Read a single ET Tracker issue detail including lot ET measurements and comments.",
+        "parameters": _object_schema(
+            {
+                "issue_id": {"type": "string", "description": "Exact issue ID (e.g. ISS-...)."},
+            },
+            ["issue_id"],
+        ),
+    },
+    "watchlist.lots": {
+        "description": "List lots currently added to the user's Watchlist.",
+        "parameters": _object_schema({}),
+    },
+    "informs.recent": {
+        "description": "List recent process informs across fab modules.",
+        "parameters": _object_schema(
+            {
+                "product": {"type": "string", "default": ""},
+                "module": {"type": "string", "default": ""},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+            }
+        ),
+    },
+    "informs.by_lot": {
+        "description": "List process informs and threads for a specific lot or root lot.",
+        "parameters": _object_schema(
+            {
+                "lot_id": {"type": "string", "description": "Fab lot ID or root lot ID."},
+            },
+            ["lot_id"],
+        ),
+    },
 }
 
 
@@ -358,6 +416,143 @@ def execute_feature(action: str, params: dict | None, request: Any) -> dict:
         }
         if len(rows) > 200:
             tool["warnings"].append("표시는 최신 200개 요청으로 제한했습니다.")
+        return tool
+
+    if action == "yield_map.map":
+        from routers import yield_map
+        from core.auth import current_user
+        from fastapi import HTTPException
+        try:
+            user = current_user(request) if request else {"role": "admin", "username": "admin"}
+        except Exception:
+            user = {"role": "admin", "username": "admin"}
+        product = _text(params, "product", required=True)
+        root_lot_id = _text(params, "root_lot_id")
+        lot_id = _text(params, "lot_id")
+        wafer_id = _text(params, "wafer_id")
+        bin_name = _text(params, "bin_name")
+        kind = _text(params, "kind", default="yield") or "yield"
+        tool = _base_tool("yield_map", action, "/api/yield-map/map")
+        try:
+            data = yield_map.get_map(
+                product=product,
+                kind=kind,
+                root_lot_id=root_lot_id,
+                lot_id=lot_id,
+                wafer_id=wafer_id,
+                bin_name=bin_name,
+                user=user,
+            )
+            tool["map_data"] = data
+            rows = []
+            if isinstance(data.get("wafers"), list):
+                rows = [
+                    {"wafer_id": w.get("wafer_id") or w.get("name"), "bin": w.get("bin"), "yield": w.get("yield"), "total_dies": w.get("total_dies")}
+                    for w in data["wafers"] if isinstance(w, dict)
+                ]
+            elif isinstance(data.get("bins"), list):
+                rows = [
+                    {"bin_id": b.get("bin_id") or b.get("id"), "count": b.get("count"), "ratio": b.get("ratio"), "color": b.get("color")}
+                    for b in data["bins"] if isinstance(b, dict)
+                ]
+            elif isinstance(data.get("shots"), list):
+                rows = [
+                    {"shot": s.get("shot") or s.get("id"), "x": s.get("x"), "y": s.get("y"), "val": s.get("val")}
+                    for s in data["shots"][:100] if isinstance(s, dict)
+                ]
+            if not rows:
+                rows = [{"product": product, "root_lot_id": root_lot_id, "wafer_id": wafer_id, "bin_name": bin_name, "status": "loaded"}]
+            tool["table"] = _plain_table(rows)
+        except (HTTPException, FileNotFoundError, ValueError) as exc:
+            detail = exc.detail if hasattr(exc, "detail") else str(exc)
+            tool["warnings"].append(f"Yield Map 안내: {detail}")
+            tool["table"] = _plain_table([{"product": product, "root_lot_id": root_lot_id, "status": "설정 안내", "detail": detail}])
+        tool["context"] = {"product": product, "root_lot_id": root_lot_id, "lot_id": lot_id, "wafer_id": wafer_id, "bin_name": bin_name}
+        return tool
+
+    if action == "tracker.issues":
+        from routers import tracker
+        status = _text(params, "status")
+        category = _text(params, "category")
+        product = _text(params, "product")
+        q = _text(params, "q")
+        limit = _integer(params, "limit", 50, 1, 200)
+        data = tracker.list_issues(request=request, status=status, limit=limit)
+        raw_issues = data.get("issues") or []
+        filtered = []
+        for iss in raw_issues:
+            if category and str(iss.get("category") or "").casefold() != category.casefold():
+                continue
+            if product:
+                r_lots = [str(r).casefold() for r in (iss.get("root_lot_ids") or [])]
+                if not (product.casefold() in str(iss.get("summary") or "").casefold() or product.casefold() in str(iss.get("title") or "").casefold() or any(product.casefold() in r for r in r_lots)):
+                    continue
+            if q and not any(q.casefold() in str(iss.get(k) or "").casefold() for k in ("id", "title", "summary", "username")):
+                continue
+            filtered.append(iss)
+        columns = ["id", "title", "status", "priority", "category", "username", "summary", "updated_at"]
+        rows = [{col: iss.get(col) for col in columns} for iss in filtered]
+        tool = _base_tool("tracker", action, "/api/tracker/issues")
+        tool["table"] = _plain_table(rows, columns=columns)
+        tool["context"] = {"status": status, "category": category, "product": product, "count": len(filtered)}
+        return tool
+
+    if action == "tracker.issue":
+        from routers import tracker
+        issue_id = _text(params, "issue_id", required=True)
+        data = tracker.get_issue(request=request, issue_id=issue_id)
+        iss = data.get("issue") or {}
+        tool = _base_tool("tracker", action, "/api/tracker/issue")
+        tool["issue"] = iss
+        lots = iss.get("lots") or []
+        if lots:
+            tool["table"] = _plain_table(lots)
+        else:
+            tool["table"] = _plain_table([{"id": iss.get("id"), "title": iss.get("title"), "status": iss.get("status"), "category": iss.get("category"), "username": iss.get("username")}])
+        tool["context"] = {"issue_id": issue_id, "title": iss.get("title"), "status": iss.get("status")}
+        return tool
+
+    if action == "watchlist.lots":
+        from routers import watchlist
+        data = watchlist.list_watchlist_lots(request=request)
+        lots = data.get("lots") or []
+        rows = [{"lot_id": lot, "username": data.get("username")} for lot in lots]
+        tool = _base_tool("watchlist", action, "/api/watchlist/lots")
+        tool["table"] = _plain_table(rows, columns=["lot_id", "username"])
+        tool["context"] = {"watched_lots": lots, "count": len(lots)}
+        return tool
+
+    if action == "informs.recent":
+        from routers import informs
+        product = _text(params, "product")
+        module = _text(params, "module")
+        limit = _integer(params, "limit", 50, 1, 200)
+        data = informs.recent_roots(request=request, limit=limit)
+        raw_informs = data.get("informs") or []
+        filtered = []
+        for inf in raw_informs:
+            if product and str(inf.get("product") or "").casefold() != product.casefold():
+                continue
+            if module and str(inf.get("module") or "").casefold() != module.casefold():
+                continue
+            filtered.append(inf)
+        columns = ["id", "product", "lot_id", "module", "reason", "author", "created_at", "flow_status"]
+        rows = [{col: inf.get(col) for col in columns} for inf in filtered]
+        tool = _base_tool("informs", action, "/api/informs/recent")
+        tool["table"] = _plain_table(rows, columns=columns)
+        tool["context"] = {"product": product, "module": module, "count": len(filtered)}
+        return tool
+
+    if action == "informs.by_lot":
+        from routers import informs
+        lot_id = _text(params, "lot_id", required=True)
+        data = informs.by_lot(request=request, lot_id=lot_id)
+        informs_list = data.get("informs") or []
+        columns = ["id", "product", "lot_id", "module", "reason", "author", "created_at", "flow_status"]
+        rows = [{col: inf.get(col) for col in columns} for inf in informs_list]
+        tool = _base_tool("informs", action, "/api/informs/by-lot")
+        tool["table"] = _plain_table(rows, columns=columns)
+        tool["context"] = {"lot_id": lot_id, "count": len(rows)}
         return tool
 
     # _validate_params makes this unreachable and keeps dispatch exhaustive.

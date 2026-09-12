@@ -1015,7 +1015,7 @@ const PAGE_IDS=[
   ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","스플릿 테이블"],["lotmanage","랏 관리"],
   ["lotrequest","랏 배정/요청"],["lotlocation","랏 현위치 확인"],
   ["tracker","ET 추적"],["inform","인폼 로그"],["meeting","회의관리"],["calendar","변경점 관리"],
-  ["tablemap","테이블 맵"],
+  ["tablemap","테이블 맵"],["valve","매칭알람"],
   ["groups","그룹"],["messages","문의함"],["diagnosis","에이전트"],
 ];
 const PAGE_PRESETS=[

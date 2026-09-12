@@ -30,7 +30,7 @@ _TEG_MARKER_RE = re.compile(r"(?<![a-z])teg(?=$|[^a-z])|테그|맵파일|map\s*f
 _COORDINATE_RE = re.compile(r"좌표|coordinate|abs[_ -]?[xy]|radius|반경", re.I)
 _MAPFILE_RE = re.compile(r"맵파일|map\s*file", re.I)
 _TOKEN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]*")
-_LOT_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]{2,}\d[A-Za-z0-9]*(?:\.\d+)?(?![A-Za-z0-9_])")
+_LOT_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9]{3,}(?:\.[A-Za-z0-9]+)?(?![A-Za-z0-9_])")
 _TEG_FOLLOWUP_RE = re.compile(r"좌표|coordinate|abs[_ -]?[xy]|radius|반경|위치|어디|맵파일|map\s*file", re.I)
 
 
@@ -94,16 +94,31 @@ def _literal_in_text(name: str, text: str) -> bool:
 
 
 def _resolve_product(prompt: str, requested: str, context: dict, request: Any) -> tuple[str, list[str]]:
-    names = [str(row["vehicle"]).strip() for row in _catalog(request)]
+    from core.data_chat import product_candidates
+    catalog = _catalog(request)
+    names = [str(row["vehicle"]).strip() for row in catalog]
     by_folded: dict[str, list[str]] = {}
+    vehicle_map: dict[str, str] = {}
     for name in names:
-        by_folded.setdefault(name.casefold(), []).append(name)
+        if name not in by_folded.setdefault(name.casefold(), []):
+            by_folded[name.casefold()].append(name)
+        clean = re.sub(r"^VH_", "", name, flags=re.I)
+        if clean.casefold() != name.casefold() and name not in by_folded.setdefault(clean.casefold(), []):
+            by_folded[clean.casefold()].append(name)
+        vehicle_map[clean.upper()] = name
 
     if requested:
-        matches = by_folded.get(requested.casefold(), [])
+        matches = list(dict.fromkeys(by_folded.get(requested.casefold(), [])))
         return (matches[0], []) if len(matches) == 1 else ("", matches)
 
     mentioned = [name for name in names if _literal_in_text(name, prompt)]
+    if not mentioned:
+        cands = product_candidates(prompt, list(vehicle_map.keys()))
+        if len(cands) == 1:
+            mentioned = [vehicle_map[cands[0].upper()]]
+        elif len(cands) > 1:
+            return "", [vehicle_map[c.upper()] for c in cands]
+
     mentioned = list(dict.fromkeys(mentioned))
     if len(mentioned) == 1:
         return mentioned[0], []
@@ -172,7 +187,13 @@ def _resolve_one_teg(name: str, tegs: list[dict]) -> tuple[str, list[str]]:
     source_matches = list(dict.fromkeys(item for item in source_matches if item))
     if len(source_matches) == 1:
         return source_matches[0], []
-    return "", source_matches or displayed
+
+    prefix_matches = [str(row.get("teg") or "") for row in tegs
+                      if re.sub(r"^(?:TEG_|VH_)", "", str(row.get("teg") or ""), flags=re.I).casefold() == folded]
+    prefix_matches = list(dict.fromkeys(item for item in prefix_matches if item))
+    if len(prefix_matches) == 1:
+        return prefix_matches[0], []
+    return "", prefix_matches or source_matches or displayed
 
 
 def _prompt_teg_names(prompt: str, rows: list[dict]) -> list[str]:
@@ -200,7 +221,10 @@ def _unknown_teg_tokens(prompt: str, product: str, resolved_inputs: list[str]) -
 
 def _select_tegs(prompt: str, requested: list[str], context: dict, payload: dict) -> tuple[list[str], dict | None]:
     rows = [row for row in payload.get("tegs") or [] if isinstance(row, dict)]
-    inputs = requested or _prompt_teg_names(prompt, rows)
+    prompt_candidates = re.findall(r"\b([A-Za-z0-9_]+)\s+TEG\b", prompt, re.I)
+    inputs = requested or _prompt_teg_names(prompt, rows) or prompt_candidates
+    if not inputs:
+        inputs = _clean_tegs(context.get("teg_names"))
     if not inputs:
         inputs = _clean_tegs(context.get("teg_names"))
 

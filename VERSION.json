@@ -1,13 +1,50 @@
 {
-  "version": "10.4.256",
+  "version": "10.4.260",
   "codename": "flow",
   "release_notes": [
     {
-      "version": "10.4.256",
-      "date": "2026-09-11",
-      "tag": "fix",
-      "title": "SplitTable INLINE·MASK 공정 매칭 호환 및 반복 계산 개선",
+      "version": "10.4.260",
+      "date": "2026-09-12",
+      "tag": "feat",
+      "title": "Data Chat 전 기능(Yield Map/Tracker/Watchlist/Informs) 자연어 번역 확장 및 Persistent Live Feature Workspace 인플레이스 갱신 지원",
       "changes": [
+        "[데이터챗 작업창] 기능별 조회 시 대화 피드 아래로 창이 중복 복제되어 누적되고 일부 기능만 지원됨 → Yield Map/Tracker/Watchlist/Informs/대시보드 전 기능 자연어 도메인 번역 및 API 연동을 확장하고, 홈 화면 채팅 내에 단일 Live Feature Workspace를 도입하여 동일 기능 연속 질의 시 동일 작업창 내부에서 실시간 인플레이스 갱신 및 상태 피드백을 제공하도록 개선."
+      ]
+    },
+    {
+      "version": "10.4.259",
+      "date": "2026-09-12",
+      "tag": "feat",
+      "title": "Data Chat 관리자 발화 도메인 번역 해석 가이드 및 샘플 칩 제공",
+      "changes": [
+        "[데이터챗 관리자 가이드] 실무 발화 처리 시 시스템이 어떻게 해석했는지 피드백 부재 → 입력 발화를 도메인 규격(제품, Root Lot, 공정/Knob, 조건, 기능)으로 번역한 해석 가이드 카드를 모든 응답에 제공하고 홈 챗에 샘플 발화 칩을 추가하여 사용성 강화."
+      ]
+    },
+    {
+      "version": "10.4.258",
+      "date": "2026-09-12",
+      "tag": "feat",
+      "title": "Data Chat 반도체 도메인 규칙(Root Lot 5자리, In-Fab Lot, EVT/제품 별칭, 구어체 스플릿 배정, PC 커스텀 세트) 지원",
+      "changes": [
+        "[데이터챗] 실무 발화에서 Lot 접미사(.1)나 EVT 단계(prodA/product1), 구어체 스플릿 조건 및 커스텀 세트 요청 시 인식 오류 → Left 5 Root Lot 추출, in-fab 랏 유연 지원, 제품/EVT 별칭 매핑, PC CUSTOM SET/모듈 필터링, 대화형 스플릿 배정 및 TEG 위치 파싱 로직 확장으로 실무 질의 정상 처리."
+      ]
+    },
+    {
+      "version": "10.4.257",
+      "date": "2026-09-12",
+      "tag": "feat",
+      "title": "SplitTable INLINE item_desc 및 VM 적용공정정보 매칭 지원",
+      "changes": [
+        "[SplitTable 적용공정] INLINE/VM 항목에서 적용공정정보가 누락되거나 미매칭됨 → inline_matching.csv의 matching table 대신 item_desc 헤더 지원 및 공백 변형 처리, vm_matching.csv의 item_id 단위 매칭 및 Vehicle_matching 공정 확장을 통합하여 PRODA 등 INLINE/VM 열의 step_id/step_desc가 정상 표시되도록 개선."
+      ]
+    },
+    {
+      "version": "10.4.256",
+      "date": "2026-09-12",
+      "tag": "fix",
+      "title": "매칭알람 페이지 관리 위임 항목 추가 및 SplitTable INLINE·MASK 공정 매칭 호환 개선",
+      "changes": [
+        "[관리자 페이지 위임] 일반 사용자에게 매칭알람 편집 권한을 지정할 수 없음 → 위임 매트릭스에서 valve 항목 누락 → 매칭알람 열을 추가해 개별 위임 및 전체관리 프리셋에 반영.",
         "[INLINE 공정 정보] CSV 파일명 대소문자·기존 mathcing 철자와 항목 공백 변형에서 매칭 누락 → 정확한 파일을 우선하고 단일 대소문자 별칭·기존 파일명을 지원하며 item_desc 공백 별칭에도 CSV step_id와 선택적 step_desc 연결.",
         "[MASK 공정 정보] 생성 컬럼의 _reticle 접미사로 Vehicle 공정 ID 누락 → 제품별 step_desc 매핑에 접미사 별칭을 연결하고 MASK 가상 행은 생성하지 않아 값 행 수 유지. 이전 화면 캐시도 무효화.",
         "[적용 공정 정보 속도] 필터·화면·스냅샷에서 동일 공정 그룹 문자열을 반복 계산 → 메타 객체와 표시 옵션별 결과를 재사용하고 MASK 정규화 조회를 사전 인덱스로 변경."

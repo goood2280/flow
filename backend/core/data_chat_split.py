@@ -21,10 +21,10 @@ APPROVE = re.compile(r"^(?:승인(?:합니다|하겠습니다|하겠다|할게|�
 CANCEL = re.compile(r"^(?:취소|취소해|취소해줘|취소하겠다|취소합니다|반영하지마|승인하지마)[.!\s]*$")
 EDIT = re.compile(r"(?:스플릿|split).*(?:깔아|배정|수정|적용|설정|나눠|넣어)|S0.*S1", re.I)
 ASSIGNMENT = re.compile(
-    r"(?P<column>[\w.\-]+)\s*(?:Split|스플릿)\s*"
-    r"(?P<wafers>#[\d\s,#~\-]+?)\s*(?:은|는|을|를)?\s*S0\s*(?:으로|로)?\s*"
-    r"(?P<s0>[A-Za-z0-9_.:/\-]+)\s*(?:으로|로)?\s*[,;]?\s*"
-    r"나머지(?:는|은)?\s*S1\s*(?:으로|로)?\s*(?P<s1>[A-Za-z0-9_.:/\-]+)", re.I)
+    r"(?P<column>(?:\b\d+(?:\.\d+)?\s+)?[A-Za-z0-9_.\-]+)\s*(?:Split|스플릿)\s*"
+    r"(?:wafer|웨이퍼|#)?\s*(?P<wafers>[\d\s,#~\-]+?)\s*(?:은|는|을|를)?\s*"
+    r"(?:S0\s*(?:으로|로)?\s*)?(?P<s0>[A-Za-z0-9_.:/\-]+)\s*(?:넣고|깔고|배정하고|으로|로)?\s*[,;]?\s*"
+    r"나머지(?:는|은)?\s*(?:S1\s*(?:으로|로)?\s*)?(?P<s1>[A-Za-z0-9_.:/\-]+)", re.I)
 
 
 def _answer(message, context, *, table=None, approval=None, ok=True):
@@ -50,8 +50,9 @@ def _wafer_number(value):
 
 
 def _numbers(text):
+    text = re.sub(r"(?:wafer|웨이퍼|#)\s*", "", str(text).strip(), flags=re.I)
     numbers = []
-    for part in text.replace("#", "").split(","):
+    for part in text.split(","):
         match = re.fullmatch(r"\s*(\d+)\s*(?:[-~]\s*(\d+))?\s*", part)
         if not match:
             raise ValueError("wafer 목록은 #1,2,3 또는 #1~6 형식으로 알려 주세요.")
@@ -109,7 +110,7 @@ def _source_version(view, row):
 
 
 def _resolve_scope(text, context):
-    from core.data_chat import product_candidates
+    from core.data_chat import product_candidates, extract_lot_tokens, resolve_lot_scope
     from routers import splittable
     products = [p["name"] for p in splittable.list_products().get("products", []) if p.get("name")]
     matched = product_candidates(text, products)
@@ -127,12 +128,12 @@ def _resolve_scope(text, context):
                         if not product_candidates(p, products)]
     if unknown_products:
         raise ValueError("등록되지 않은 제품입니다: " + ", ".join(unknown_products))
-    lots = [s for s in re.findall(r"(?<![\w])([A-Za-z]{2,}\d[A-Za-z0-9]*(?:\.\d+)?)(?![\w])", prefix)
-            if not product_candidates(s, products)]
+    lots = extract_lot_tokens(prefix, products)
     if len(lots) > 1:
         raise ValueError("수정할 root lot을 하나만 지정해 주세요.")
-    root = lots[0].upper() if lots else context.get("root_lot_id", "")
-    if not root or "." in root or (matched and product != context.get("product") and not lots):
+    raw_lot = lots[0] if lots else str(context.get("root_lot_id") or "")
+    _, root = resolve_lot_scope(raw_lot)
+    if not root or (matched and product != context.get("product") and not lots):
         raise ValueError("수정할 root lot을 알려 주세요. ‘나머지’는 해당 root lot의 실제 wafer에만 적용됩니다.")
     return product, root
 

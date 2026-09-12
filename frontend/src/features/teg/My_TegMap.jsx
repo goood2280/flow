@@ -2279,16 +2279,23 @@ export default function My_TegMap({ user }) {
   const [imgShapes, setImgShapes] = useState(null); // /image/shapes 응답 (그림 격자 + 개발 격자)
   const [view, setView] = useState(() => entryQuery.get("view") === "traffic" ? "traffic" : "map");
   const [initialMapCheckText, setInitialMapCheckText] = useState("");
+  const [openedMapfileVersion, setOpenedMapfileVersion] = useState(null);
   const [productOpen, setProductOpen] = useState(false);
   const [geometryOpen, setGeometryOpen] = useState(false);
   // 같은 vehicle 의 config/기준 파일이 바뀌어도 자식의 vehicle prop 은 그대로다.
   // 명시적 revision 으로 Mapfile 생성 응답을 무효화한다.
   const [referenceRevision, setReferenceRevision] = useState(0);
 
-  const handleOpenCheckFromTraffic = (content) => {
+  const handleOpenCheckFromTraffic = (content, filename, versionInfo) => {
     setInitialMapCheckText(content);
+    setOpenedMapfileVersion(versionInfo || { vehicle, filename, signature: "" });
     setView("check");
   };
+
+  useEffect(() => {
+    setOpenedMapfileVersion(null);
+    setInitialMapCheckText("");
+  }, [vehicle]);
 
   const canEdit = user?.role === "admin" || (user?.page_manager || []).includes("teg");
   const isAdmin = user?.role === "admin";
@@ -2536,7 +2543,8 @@ export default function My_TegMap({ user }) {
                   { k: "inline", l: "Inline map setting · 관리자" },
                 ] : [])]} />
 
-      {view === "check" && <TegCheck vehicle={vehicle} refreshKey={referenceRevision} canEdit={canEdit} initialText={initialMapCheckText} />}
+      {view === "check" && <TegCheck vehicle={vehicle} refreshKey={referenceRevision} canEdit={canEdit}
+        initialText={initialMapCheckText} openedVersion={openedMapfileVersion} />}
       {view === "gen" && <TegGenerate vehicle={vehicle} refreshKey={referenceRevision} />}
       {view === "traffic" && <TegMapfileTraffic vehicle={vehicle} initialFilename={entryQuery.get("filename") || ""} onOpenCheck={handleOpenCheckFromTraffic} />}
       {view === "access" && isAdmin && <ProductAccessAdmin onSaved={loadVehicles} />}
