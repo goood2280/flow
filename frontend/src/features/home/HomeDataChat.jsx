@@ -30,6 +30,10 @@ const FEATURE_PAGE_MAP = {
   "dashboard.stuck_lots": "dashboard",
   "dashboard.charts": "dashboard",
   chart: "chartbuilder",
+  teg: "tegmap",
+  "teg.locations": "tegmap",
+  "teg.coordinates": "tegmap",
+  "teg.mapfiles": "tegmap",
 };
 
 const FEATURE_PAGE_NAMES = {
@@ -43,6 +47,7 @@ const FEATURE_PAGE_NAMES = {
   lot_management: "Lot 관리",
   dashboard: "대시보드",
   chart: "차트 빌더",
+  teg: "TEG Map",
 };
 
 function asText(value) {
@@ -127,20 +132,78 @@ function resultColumns(table, rows) {
   )))].map((key) => ({ key, label: key }));
 }
 
-function DataTable({ table }) {
+function downloadTableAsCsv(table, filename = "dataset.csv") {
   const rows = resultRows(table);
   const columns = resultColumns(table, rows);
-  const [page, setPage] = useState(0);
-  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  const safePage = Math.min(page, pages - 1);
-  const pageRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
-  const total = Number(table?.total ?? table?.row_count ?? rows.length);
+  if (!rows.length || !columns.length) return;
 
-  useEffect(() => setPage(0), [table]);
-  if (!rows.length || !columns.length) return null;
+  const headerRow = columns.map((col) => `"${String(col.label || col.key || "").replace(/"/g, '""')}"`).join(",");
+  const dataRows = rows.map((row) =>
+    columns.map((col, idx) => {
+      const val = asText(Array.isArray(row) ? row[idx] : row?.[col.key]);
+      return `"${val.replace(/"/g, '""')}"`;
+    }).join(",")
+  );
+
+  const csvContent = "\uFEFF" + [headerRow, ...dataRows].join("\r\n");
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", filename.endsWith(".csv") ? filename : `${filename}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function DataTable({ table, downloadName = "dataset", maxPreviewRows = 0, filterText = "" }) {
+  const allRows = resultRows(table);
+  const columns = resultColumns(table, allRows);
+  const [page, setPage] = useState(0);
+
+  // In-memory quick filter
+  const rows = useMemo(() => {
+    if (!filterText.trim()) return allRows;
+    const query = filterText.toLowerCase();
+    return allRows.filter((row) => {
+      if (row == null) return false;
+      if (typeof row === "object") {
+        return Object.values(row).some((val) => asText(val).toLowerCase().includes(query));
+      }
+      return asText(row).toLowerCase().includes(query);
+    });
+  }, [allRows, filterText]);
+
+  const total = Number(table?.total ?? table?.row_count ?? allRows.length);
+  const isCapped = maxPreviewRows > 0 && rows.length > maxPreviewRows;
+  const displayRows = isCapped ? rows.slice(0, maxPreviewRows) : rows;
+
+  const pages = Math.max(1, Math.ceil(displayRows.length / PAGE_SIZE));
+  const safePage = Math.min(page, pages - 1);
+  const pageRows = displayRows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+
+  useEffect(() => setPage(0), [table, filterText]);
+  if (!allRows.length || !columns.length) return null;
 
   return (
     <div className="home-data-chat__table-wrap">
+      <div className="home-data-chat__table-toolbar">
+        <div className="home-data-chat__table-meta">
+          <span className="home-data-chat__table-count">
+            {filterText ? `검색 결과 ${rows.length}행 (전체 ${total}행)` : `총 ${total}행`}
+            {isCapped && <span className="home-data-chat__table-capped-tag">미리보기 {maxPreviewRows}행</span>}
+          </span>
+        </div>
+        <button
+          type="button"
+          className="home-data-chat__download-btn"
+          onClick={() => downloadTableAsCsv(table, `${downloadName}_${Date.now()}.csv`)}
+          title="전체 데이터셋을 CSV(Excel 호환)로 다운로드합니다"
+        >
+          📥 CSV 다운로드
+        </button>
+      </div>
       <div className="home-data-chat__table-scroll">
         <table className="home-data-chat__table">
           <thead><tr>{columns.map((column) => <th key={column.key}>{column.label}</th>)}</tr></thead>
@@ -158,7 +221,7 @@ function DataTable({ table }) {
       {pages > 1 && (
         <div className="home-data-chat__pagination">
           <button type="button" disabled={safePage === 0} onClick={() => setPage((value) => Math.max(0, value - 1))} aria-label="이전 표 페이지">←</button>
-          <span>{safePage + 1} / {pages} · {total}행</span>
+          <span>{safePage + 1} / {pages} · {displayRows.length}행</span>
           <button type="button" disabled={safePage + 1 >= pages} onClick={() => setPage((value) => Math.min(pages - 1, value + 1))} aria-label="다음 표 페이지">→</button>
         </div>
       )}
@@ -212,25 +275,132 @@ function normalizeMessages(messages) {
     }));
 }
 
-function formatBubbleContent(content) {
-  if (typeof content !== "string") return content;
-  if (content.startsWith("[도메인 해석 가이드]") && content.includes("────────────────────────────────────────")) {
-    const [guidePart, ...rest] = content.split("────────────────────────────────────────");
-    const bodyPart = rest.join("────────────────────────────────────────").trim();
-    const guideLines = guidePart.replace("[도메인 해석 가이드]", "").trim();
-    return (
-      <div className="home-data-chat__guided-message">
-        <div className="home-data-chat__guide-card">
-          <div className="home-data-chat__guide-header">
-            <span className="home-data-chat__guide-badge">도메인 해석 가이드</span>
-          </div>
-          <div className="home-data-chat__guide-body">{guideLines}</div>
-        </div>
-        {bodyPart && <div className="home-data-chat__guided-body">{bodyPart}</div>}
+function ExecutionTraceCard({ trace, rawGuideText = "" }) {
+  if (!trace && !rawGuideText) return null;
+
+  const intent = trace?.intent;
+  const sources = Array.isArray(trace?.sources) ? trace.sources : [];
+  const steps = Array.isArray(trace?.steps) ? trace.steps : [];
+  const query = trace?.query;
+
+  return (
+    <div className="home-data-chat__trace-card" aria-label="의도 해석 및 실행 경로">
+      <div className="home-data-chat__trace-header">
+        <span className="home-data-chat__trace-badge">의도 해석 및 실행 경로 (Execution Trace)</span>
       </div>
-    );
+
+      {intent && (
+        <div className="home-data-chat__trace-section">
+          <span className="home-data-chat__trace-label">🎯 발화 의도:</span>
+          <span className="home-data-chat__trace-intent">{intent}</span>
+        </div>
+      )}
+
+      {sources.length > 0 && (
+        <div className="home-data-chat__trace-section">
+          <span className="home-data-chat__trace-label">🗄️ 데이터 원천:</span>
+          <div className="home-data-chat__trace-sources">
+            {sources.map((src, idx) => (
+              <span key={idx} className="home-data-chat__source-pill">{src}</span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {steps.length > 0 && (
+        <div className="home-data-chat__trace-section">
+          <span className="home-data-chat__trace-label">🧭 검색/실행 경로:</span>
+          <div className="home-data-chat__trace-breadcrumbs">
+            {steps.map((step, idx) => (
+              <span key={idx} className="home-data-chat__breadcrumb-item">
+                {idx > 0 && <span className="home-data-chat__breadcrumb-arrow">➔</span>}
+                <span className="home-data-chat__step-pill">{step}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {query && (
+        <div className="home-data-chat__trace-section">
+          <span className="home-data-chat__trace-label">💻 실행 쿼리/파라미터:</span>
+          <pre className="home-data-chat__trace-query"><code>{query}</code></pre>
+        </div>
+      )}
+
+      {!trace && rawGuideText && (
+        <div className="home-data-chat__guide-body">{rawGuideText}</div>
+      )}
+    </div>
+  );
+}
+
+function BubbleContent({ message, onExplore }) {
+  const content = message.content || "";
+  const tool = message.response?.tool;
+  const trace = tool?.execution_trace;
+
+  let displayBody = content;
+  let rawGuideText = "";
+
+  if (typeof content === "string") {
+    if (content.includes("────────────────────────────────────────")) {
+      const parts = content.split("────────────────────────────────────────");
+      rawGuideText = parts[0].replace("[도메인 해석 및 실행 경로 (Trace)]", "").replace("[도메인 해석 가이드]", "").trim();
+      displayBody = parts.slice(1).join("────────────────────────────────────────").trim();
+    } else if (content.startsWith("[도메인 해석 및 실행 경로 (Trace)]") || content.startsWith("[도메인 해석 가이드]")) {
+      rawGuideText = content;
+      displayBody = "";
+    }
   }
-  return content;
+
+  const table = tool?.table || tool?.split_view;
+  const relatedTegs = Array.isArray(tool?.related_tegs) ? tool.related_tegs : [];
+  const currentProduct = tool?.context?.product || "";
+
+  return (
+    <div className="home-data-chat__bubble-inner">
+      {(trace || rawGuideText) && (
+        <ExecutionTraceCard trace={trace} rawGuideText={rawGuideText} />
+      )}
+
+      {displayBody && (
+        <div className="home-data-chat__guided-body">{displayBody}</div>
+      )}
+
+      {table && (
+        <div className="home-data-chat__inline-data-preview">
+          <div className="home-data-chat__data-preview-bar">
+            <span className="home-data-chat__preview-title">📊 추출 데이터셋 미리보기</span>
+          </div>
+          <DataTable
+            table={table}
+            downloadName={tool?.feature || "extracted_data"}
+            maxPreviewRows={12}
+          />
+        </div>
+      )}
+
+      {relatedTegs.length > 0 && onExplore && (
+        <div className="home-data-chat__related-tegs-box">
+          <span className="home-data-chat__related-tegs-label">📍 {currentProduct || "제품"}의 다른 TEG 위치 확인하기 (클릭하여 탐색):</span>
+          <div className="home-data-chat__related-tegs-list">
+            {relatedTegs.map((tegName) => (
+              <button
+                key={tegName}
+                type="button"
+                className="home-data-chat__related-teg-chip"
+                onClick={() => onExplore(`${currentProduct} ${tegName} TEG 위치 보여줘`)}
+                title={`${currentProduct}의 ${tegName} TEG 위치를 즉시 조회합니다`}
+              >
+                {tegName}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 function featureInfo(feature, tool) {
@@ -257,6 +427,10 @@ function featureInfo(feature, tool) {
     "dashboard.stuck_lots": "📈",
     "dashboard.charts": "📈",
     chart: "📉",
+    teg: "📍",
+    "teg.locations": "📍",
+    "teg.coordinates": "📍",
+    "teg.mapfiles": "🗺️",
   };
   const titles = {
     splittable: "SplitTable 계획 배정 & 레시피",
@@ -281,6 +455,10 @@ function featureInfo(feature, tool) {
     "dashboard.stuck_lots": "대시보드 정체 랏",
     "dashboard.charts": "대시보드 차트 목록",
     chart: "데이터 차트",
+    teg: "TEG 위치 및 좌표 조회",
+    "teg.locations": "TEG 위치 조회",
+    "teg.coordinates": "TEG 좌표 조회",
+    "teg.mapfiles": "Mapfile 검증 현황",
   };
   const ctx = tool?.context || {};
   const subtitleParts = [
@@ -333,7 +511,77 @@ function ModelStatus() {
   );
 }
 
-function WorkspaceSplitTable({ tool }) {
+function WorkspaceTeg({ tool, filterText = "", onExplore }) {
+  const ctx = tool.context || {};
+  const table = tool.table;
+  const rows = resultRows(table);
+  const firstRow = rows[0] || {};
+  const product = ctx.product || tool.product || firstRow.product || "-";
+  const tegName = tool.teg || ctx.target_teg || firstRow.teg || (Array.isArray(ctx.teg_names) ? ctx.teg_names[0] : "-");
+  const relatedTegs = Array.isArray(tool.related_tegs) ? tool.related_tegs : [];
+
+  return (
+    <div className="home-workspace__teg-container">
+      <div className="home-workspace__meta-bar">
+        <span className="home-workspace__meta-item">제품: <strong>{product}</strong></span>
+        <span className="home-workspace__meta-item">클릭 확인 TEG: <strong>{tegName}</strong></span>
+        {tool.map_name && <span className="home-workspace__meta-item">Mapfile: <strong>{tool.map_name}</strong></span>}
+      </div>
+
+      <div className="home-workspace__card-grid">
+        <div className="home-workspace__card">
+          <div className="home-workspace__card-label">조회 제품</div>
+          <div className="home-workspace__card-value">{product}</div>
+        </div>
+        <div className="home-workspace__card">
+          <div className="home-workspace__card-label">확인한 TEG 키</div>
+          <div className="home-workspace__card-value is-highlight">{tegName}</div>
+        </div>
+        <div className="home-workspace__card">
+          <div className="home-workspace__card-label">검출된 위치 수</div>
+          <div className="home-workspace__card-value">{rows.length}개 위치</div>
+        </div>
+        <div className="home-workspace__card">
+          <div className="home-workspace__card-label">대표 좌표 (X, Y)</div>
+          <div className="home-workspace__card-value">
+            {firstRow.x !== undefined ? `(${firstRow.x}, ${firstRow.y})` : "-"}
+          </div>
+        </div>
+      </div>
+
+      {relatedTegs.length > 0 && onExplore && (
+        <div className="home-workspace__teg-picker">
+          <div className="home-workspace__picker-header">
+            <span>🖱️ 다른 TEG 클릭하여 바로 찾아가기:</span>
+          </div>
+          <div className="home-workspace__teg-chips">
+            {relatedTegs.map((teg) => (
+              <button
+                key={teg}
+                type="button"
+                className={`home-workspace__teg-btn${teg === tegName ? " is-active" : ""}`}
+                onClick={() => onExplore(`${product} ${teg} TEG 위치 보여줘`)}
+                title={`${product}의 ${teg} TEG 위치로 즉시 전환`}
+              >
+                {teg}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {table && (
+        <DataTable
+          table={table}
+          downloadName={`teg_${product}_${tegName}`}
+          filterText={filterText}
+        />
+      )}
+    </div>
+  );
+}
+
+function WorkspaceSplitTable({ tool, filterText = "", onDecision, onNavigate }) {
   const splitView = tool.split_view || tool.table;
   const ctx = tool.context || {};
   return (
@@ -345,23 +593,57 @@ function WorkspaceSplitTable({ tool }) {
         {tool.approval?.status === "pending" && (
           <span className="home-workspace__badge is-pending">승인 대기 중</span>
         )}
+        {onNavigate && (
+          <button
+            type="button"
+            className="home-workspace__mini-link-btn"
+            onClick={() => onNavigate("splittable")}
+            title="SplitTable 전체 편집기에서 직접 수정하기"
+          >
+            ✏️ SplitTable 전체 편집기로 수정 →
+          </button>
+        )}
       </div>
-      {splitView && <DataTable table={splitView} />}
+
+      {tool.approval?.status === "pending" && onDecision && (
+        <div className="home-workspace__quick-decision-banner">
+          <span>⚠️ 스플릿 계획 배정이 대기 중입니다. 지금 바로 승인하시겠습니까?</span>
+          <div className="home-workspace__actions-inline">
+            <button type="button" className="home-workspace__btn is-approve" onClick={() => onDecision("승인하겠다 진행하겠다")}>
+              승인하고 반영
+            </button>
+            <button type="button" className="home-workspace__btn is-cancel" onClick={() => onDecision("취소")}>
+              취소
+            </button>
+          </div>
+        </div>
+      )}
+
+      {splitView && (
+        <DataTable
+          table={splitView}
+          downloadName={`splittable_${ctx.product || "plan"}`}
+          filterText={filterText}
+        />
+      )}
     </div>
   );
 }
 
-function WorkspaceLocation({ tool }) {
+function WorkspaceLocation({ tool, filterText = "", onExplore }) {
   const ctx = tool.context || {};
   const table = tool.table;
   const rows = resultRows(table);
   const firstRow = rows[0] || {};
+  const prod = ctx.product || firstRow.product || "";
+  const rootLot = ctx.root_lot_id || firstRow.root_lot_id || "";
+
   return (
     <div className="home-workspace__location-container">
       <div className="home-workspace__card-grid">
         <div className="home-workspace__card">
           <div className="home-workspace__card-label">제품 / Root Lot</div>
-          <div className="home-workspace__card-value">{ctx.product || firstRow.product || "-"} · {ctx.root_lot_id || firstRow.root_lot_id || "-"}</div>
+          <div className="home-workspace__card-value">{prod || "-"} · {rootLot || "-"}</div>
         </div>
         <div className="home-workspace__card">
           <div className="home-workspace__card-label">현재 공정 (Step ID)</div>
@@ -376,12 +658,50 @@ function WorkspaceLocation({ tool }) {
           <div className="home-workspace__card-value">{firstRow.qty || firstRow.wafer_count || firstRow.wafers || firstRow.wafer_label || "-"} Wafers</div>
         </div>
       </div>
-      {table && <DataTable table={table} />}
+
+      {onExplore && prod && (
+        <div className="home-workspace__quick-explore-bar">
+          <span className="home-workspace__explore-label">연계 찾아가기:</span>
+          {rootLot && (
+            <button
+              type="button"
+              className="home-workspace__explore-chip"
+              onClick={() => onExplore(`${prod} ${rootLot} 수율 맵 보여줘`)}
+            >
+              🗺️ 수율 맵 보기
+            </button>
+          )}
+          {rootLot && (
+            <button
+              type="button"
+              className="home-workspace__explore-chip"
+              onClick={() => onExplore(`${prod} ${rootLot} 스플릿테이블 보여줘`)}
+            >
+              📋 스플릿 레시피 보기
+            </button>
+          )}
+          <button
+            type="button"
+            className="home-workspace__explore-chip"
+            onClick={() => onExplore(`${prod} TEG 위치 보여줘`)}
+          >
+            📍 TEG 위치 조회
+          </button>
+        </div>
+      )}
+
+      {table && (
+        <DataTable
+          table={table}
+          downloadName={`location_${prod}_${rootLot || "lots"}`}
+          filterText={filterText}
+        />
+      )}
     </div>
   );
 }
 
-function WorkspaceDashboard({ tool }) {
+function WorkspaceDashboard({ tool, filterText = "" }) {
   const table = tool.table;
   const rows = resultRows(table);
   const first = rows[0] || {};
@@ -412,12 +732,18 @@ function WorkspaceDashboard({ tool }) {
           )}
         </div>
       )}
-      {table && <DataTable table={table} />}
+      {table && (
+        <DataTable
+          table={table}
+          downloadName="dashboard_data"
+          filterText={filterText}
+        />
+      )}
     </div>
   );
 }
 
-function WorkspaceTracker({ tool }) {
+function WorkspaceTracker({ tool, filterText = "" }) {
   const table = tool.table;
   return (
     <div className="home-workspace__tracker-container">
@@ -434,12 +760,18 @@ function WorkspaceTracker({ tool }) {
           </div>
         </div>
       ) : null}
-      {table && <DataTable table={table} />}
+      {table && (
+        <DataTable
+          table={table}
+          downloadName="tracker_issues"
+          filterText={filterText}
+        />
+      )}
     </div>
   );
 }
 
-function WorkspaceYieldMap({ tool }) {
+function WorkspaceYieldMap({ tool, filterText = "" }) {
   const ctx = tool.context || {};
   const table = tool.table;
   return (
@@ -449,17 +781,32 @@ function WorkspaceYieldMap({ tool }) {
         {ctx.root_lot_id && <span className="home-workspace__meta-item">Root Lot: <strong>{ctx.root_lot_id}</strong></span>}
         {ctx.bin_name && <span className="home-workspace__meta-item">선택 BIN: <strong>{ctx.bin_name}</strong></span>}
       </div>
-      {table && <DataTable table={table} />}
+      {table && (
+        <DataTable
+          table={table}
+          downloadName={`yieldmap_${ctx.product || "data"}`}
+          filterText={filterText}
+        />
+      )}
     </div>
   );
 }
 
-function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onDecision, loading, onNavigate }) {
+function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onDecision, loading, onNavigate, onExplore }) {
   if (!workspace || !workspace.tool) return null;
   const { feature, tool, lastUpdated, isMutated } = workspace;
+  const [filterText, setFilterText] = useState("");
   const info = featureInfo(feature, tool);
   const targetPage = FEATURE_PAGE_MAP[feature] || FEATURE_PAGE_MAP[tool.action];
   const pageName = FEATURE_PAGE_NAMES[feature] || FEATURE_PAGE_NAMES[tool.action] || "전체 화면";
+
+  const isTegView = Boolean(
+    feature === "teg" ||
+    tool.action?.startsWith("teg") ||
+    tool.teg ||
+    tool.related_tegs?.length ||
+    (tool.action === "location" && tool.context?.target_teg)
+  );
 
   const notices = [
     tool.sources?.length ? `출처: ${tool.sources.map(asText).join(" · ")}` : "",
@@ -511,6 +858,27 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
         </div>
       </div>
 
+      <div className="home-workspace__filter-bar">
+        <span className="home-workspace__filter-icon">🔍</span>
+        <input
+          type="text"
+          className="home-workspace__filter-input"
+          placeholder="작업창 내부 실시간 필터/검색 (Step ID, 공정명, Knob, 값 등)..."
+          value={filterText}
+          onChange={(e) => setFilterText(e.target.value)}
+        />
+        {filterText && (
+          <button
+            type="button"
+            className="home-workspace__filter-clear"
+            onClick={() => setFilterText("")}
+            title="필터 지우기"
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
       <div className="home-workspace__body">
         {notices.length > 0 && (
           <div className="home-workspace__notices">
@@ -524,18 +892,20 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
           </div>
         )}
 
-        {feature === "splittable" || tool.action?.startsWith("splittable") ? (
-          <WorkspaceSplitTable tool={tool} />
+        {isTegView ? (
+          <WorkspaceTeg tool={tool} filterText={filterText} onExplore={onExplore} />
+        ) : feature === "splittable" || tool.action?.startsWith("splittable") ? (
+          <WorkspaceSplitTable tool={tool} filterText={filterText} onDecision={onDecision} onNavigate={onNavigate} />
         ) : feature === "location" || tool.action?.startsWith("lot_progress") ? (
-          <WorkspaceLocation tool={tool} />
+          <WorkspaceLocation tool={tool} filterText={filterText} onExplore={onExplore} />
         ) : feature === "dashboard" || tool.action?.startsWith("dashboard") ? (
-          <WorkspaceDashboard tool={tool} />
+          <WorkspaceDashboard tool={tool} filterText={filterText} />
         ) : feature === "tracker" || tool.action?.startsWith("tracker") ? (
-          <WorkspaceTracker tool={tool} />
+          <WorkspaceTracker tool={tool} filterText={filterText} />
         ) : feature === "yield_map" || tool.action?.startsWith("yield_map") ? (
-          <WorkspaceYieldMap tool={tool} />
+          <WorkspaceYieldMap tool={tool} filterText={filterText} />
         ) : tool.table ? (
-          <DataTable table={tool.table} />
+          <DataTable table={tool.table} filterText={filterText} />
         ) : null}
       </div>
     </aside>
@@ -555,12 +925,29 @@ export default function HomeDataChat({ user, onNavigate }) {
   const [activeWorkspace, setActiveWorkspace] = useState(null);
   const [workspaceOpen, setWorkspaceOpen] = useState(true);
   const [workspaceMaximized, setWorkspaceMaximized] = useState(false);
+  const [samplePrompts, setSamplePrompts] = useState({ pinned: [], successful: [] });
 
   const scrollRef = useRef(null);
   const requestVersionRef = useRef(0);
   const conversationGenerationRef = useRef(0);
   const conversationAbortRef = useRef(null);
   const mutationTimerRef = useRef(null);
+
+  const loadSamplePrompts = async () => {
+    try {
+      const data = await sf("/api/home-agent/sample-prompts");
+      if (data?.ok) {
+        setSamplePrompts({
+          pinned: Array.isArray(data.pinned) ? data.pinned : [],
+          successful: Array.isArray(data.successful) ? data.successful : [],
+        });
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    loadSamplePrompts();
+  }, []);
 
   useEffect(() => {
     requestVersionRef.current += 1;
@@ -755,6 +1142,14 @@ export default function HomeDataChat({ user, onNavigate }) {
         updatedAt: Date.now(),
       }));
       refreshConversations();
+
+      if (tool && !response?.error) {
+        sf("/api/home-agent/sample-prompts/record-success", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt: value, category: feature || "" }),
+        }).then(() => loadSamplePrompts()).catch(() => {});
+      }
     } catch (error) {
       if (requestVersionRef.current !== requestVersion) return;
       setChatState((current) => ({
@@ -806,35 +1201,63 @@ export default function HomeDataChat({ user, onNavigate }) {
                 <div className="home-data-chat__empty-desc">
                   반도체 실무 발화(Lot .1 표기, Left 5 Root Lot, EVT 제품 약칭, 구어체 스플릿 배정, 수율 맵, 트래커 이슈 등)를 자동 번역하여 우측 라이브 작업창에 실시간 반영합니다.
                 </div>
-                <div className="home-data-chat__sample-chips">
-                  <button type="button" className="home-data-chat__chip" onClick={() => setPrompt("PRODA A1001 지금 어디에 있어?")}>
-                    📍 PRODA A1001 위치 조회
-                  </button>
-                  <button type="button" className="home-data-chat__chip" onClick={() => setPrompt("prodA A1005.1 5.0 PC 스플릿 wafer 1~6 ABC 넣고 나머지는 ABB로 깔아줘")}>
-                    ✏️ 5.0 PC 스플릿 계획 배정
-                  </button>
-                  <button type="button" className="home-data-chat__chip" onClick={() => setPrompt("PRODA A1001 수율 맵 보여줘")}>
-                    🗺️ PRODA A1001 수율 맵
-                  </button>
-                  <button type="button" className="home-data-chat__chip" onClick={() => setPrompt("ET 트래커 이슈 목록 보여줘")}>
-                    🎯 ET 트래커 이슈 목록
-                  </button>
-                  <button type="button" className="home-data-chat__chip" onClick={() => setPrompt("prodA A1005.1 스플릿테이블 보여줘")}>
-                    📋 prodA A1005.1 KNOB 조회
-                  </button>
-                  <button type="button" className="home-data-chat__chip" onClick={() => setPrompt("prodA A1005.1 PC 커스텀 세트로 보여줘")}>
-                    ⚙️ prodA A1005.1 PC 커스텀 세트
-                  </button>
-                  <button type="button" className="home-data-chat__chip" onClick={() => setPrompt("내 관심 랏 보여줘")}>
-                    ⭐ 내 관심 랏 목록
-                  </button>
-                  <button type="button" className="home-data-chat__chip" onClick={() => setPrompt("최근 공정 인폼 보여줘")}>
-                    📢 최근 공정 인폼
-                  </button>
-                  <button type="button" className="home-data-chat__chip" onClick={() => setPrompt("대시보드 요약 보여줘")}>
-                    📊 대시보드 지표 요약
-                  </button>
+                <div className="home-data-chat__prompts-header">
+                  <span className="home-data-chat__prompts-title">📌 관리자 추천 및 고정 질문</span>
+                  {admin && onNavigate && (
+                    <button
+                      type="button"
+                      className="home-data-chat__manage-prompts-link"
+                      onClick={() => onNavigate("admin")}
+                      title="관리자 콘솔에서 데이터챗 추천 질문을 고정하거나 관리합니다"
+                    >
+                      ⚙️ 추천 질문 관리 →
+                    </button>
+                  )}
                 </div>
+                <div className="home-data-chat__sample-chips">
+                  {(samplePrompts.pinned?.length ? samplePrompts.pinned : [
+                    { id: "1", prompt: "PRODA A1001 위치 조회" },
+                    { id: "2", prompt: "PRODA TEG_GATE 위치 보여줘" },
+                    { id: "3", prompt: "prodA A1005.1 5.0 PC 스플릿 wafer 1~6 ABC 넣고 나머지는 ABB로 깔아줘" },
+                    { id: "4", prompt: "PRODA A1001 수율 맵 보여줘" },
+                    { id: "5", prompt: "ET 트래커 이슈 목록 보여줘" },
+                    { id: "6", prompt: "prodA A1005.1 스플릿테이블 보여줘" },
+                  ]).map((item) => (
+                    <button
+                      key={item.id || item.prompt}
+                      type="button"
+                      className="home-data-chat__chip is-pinned"
+                      onClick={() => setPrompt(item.prompt)}
+                    >
+                      📌 {item.prompt}
+                    </button>
+                  ))}
+                </div>
+
+                {samplePrompts.successful?.filter((s) => !samplePrompts.pinned?.some((p) => p.prompt.toLowerCase() === s.prompt.toLowerCase())).length > 0 && (
+                  <div className="home-data-chat__success-prompts-section">
+                    <div className="home-data-chat__prompts-header">
+                      <span className="home-data-chat__prompts-title">⚡ 최근 실제 성공한 질문</span>
+                    </div>
+                    <div className="home-data-chat__sample-chips">
+                      {samplePrompts.successful
+                        .filter((s) => !samplePrompts.pinned?.some((p) => p.prompt.toLowerCase() === s.prompt.toLowerCase()))
+                        .slice(0, 8)
+                        .map((item) => (
+                          <button
+                            key={item.id || item.prompt}
+                            type="button"
+                            className="home-data-chat__chip is-success"
+                            onClick={() => setPrompt(item.prompt)}
+                            title={`실제 ${item.count || 1}회 성공한 질의 (클릭하여 질문 입력)`}
+                          >
+                            ⚡ {item.prompt}
+                            {item.count > 1 && <span className="home-data-chat__chip-count">({item.count}회)</span>}
+                          </button>
+                        ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
             {chatState.messages.map((message) => {
@@ -845,7 +1268,9 @@ export default function HomeDataChat({ user, onNavigate }) {
 
               return (
                 <article key={message.id} className={`home-data-chat__message is-${message.role}${message.error ? " is-error" : ""}`}>
-                  <div className="home-data-chat__bubble">{formatBubbleContent(message.content)}</div>
+                  <div className="home-data-chat__bubble">
+                    <BubbleContent message={message} onExplore={(query) => submit(null, query)} />
+                  </div>
 
                   {message.role === "assistant" && msgTool && (
                     <div className="home-data-chat__message-footer">
@@ -901,7 +1326,7 @@ export default function HomeDataChat({ user, onNavigate }) {
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
-              placeholder="반도체 실무 발화로 질문하세요 (예: PRODA A1001 수율 맵, prodA A1005.1 스플릿 레시피)"
+              placeholder="반도체 실무 발화로 질문하세요 (예: PRODA A1001 수율 맵, prodA A1005.1 스플릿 레시피, PRODA TEG 위치)"
               rows={1}
               maxLength={API_HISTORY_CHARS}
               disabled={loading || conversationLoading}
@@ -920,6 +1345,7 @@ export default function HomeDataChat({ user, onNavigate }) {
             onDecision={(value) => submit(null, value)}
             loading={loading}
             onNavigate={onNavigate}
+            onExplore={(query) => submit(null, query)}
           />
         )}
       </div>

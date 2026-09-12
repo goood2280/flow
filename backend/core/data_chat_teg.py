@@ -290,6 +290,9 @@ def _locations(product: str, names: list[str], payload: dict, context: dict) -> 
             "teg_h": raw.get("teg_h"),
             "direction": raw.get("flat_zone"),
         })
+    all_tegs = [str(r.get("teg") or "").strip() for r in (payload.get("tegs") or []) if r.get("teg")]
+    related = [t for t in dict.fromkeys(all_tegs) if t not in names][:12]
+
     tool = {
         "feature": "teg",
         "action": "teg.locations",
@@ -298,6 +301,7 @@ def _locations(product: str, names: list[str], payload: dict, context: dict) -> 
             "columns": ["product", "teg", "ebeam_x", "ebeam_y", "teg_w", "teg_h", "direction"],
             "total": len(rows),
         },
+        "related_tegs": related,
         "sources": ["TEG 위치조회 · Teg_location"],
         "warnings": [],
     }

@@ -493,7 +493,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["llm_cfg","LLM 설정"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["chat_prompts","데이터챗 추천 질문"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["llm_cfg","LLM 설정"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -1003,6 +1003,9 @@ export default function My_Admin({user}){
 
       {/* v8.8.14: Activity dashboard (admin only) */}
       {tab==="activity_dash"&&isAdmin&&<ActivityDashboardPanel/>}
+
+      {/* 데이터챗 추천 질문 관리 (admin only) */}
+      {tab==="chat_prompts"&&isAdmin&&<ChatPromptsPanel/>}
       </TabBoundary>
     </div>);
 }
@@ -1376,6 +1379,231 @@ function ActiveUserBarChart({data,period}){
       </div>
     </div>
   </div>);
+}
+
+// ── 데이터챗 추천 질문 관리 패널 ──
+function ChatPromptsPanel(){
+  const [data, setData] = useState({ pinned: [], successful: [] });
+  const [loading, setLoading] = useState(false);
+  const [newText, setNewText] = useState("");
+  const [newCategory, setNewCategory] = useState("추천");
+  const [actionBusy, setActionBusy] = useState(false);
+  const [filter, setFilter] = useState("");
+
+  const load = () => {
+    setLoading(true);
+    sf("/api/home-agent/sample-prompts")
+      .then(d => {
+        setData({
+          pinned: d.all_pinned || d.pinned || [],
+          successful: d.recent_success || d.successful || [],
+        });
+      })
+      .catch(e => toast.error("추천 질문 로드 실패: " + e.message))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const handlePin = (text, category = "추천", pinned = true) => {
+    if (!text || actionBusy) return;
+    setActionBusy(true);
+    sf("/api/home-agent/sample-prompts/pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, category, pinned })
+    })
+      .then(() => {
+        toast.ok(pinned ? `"${text}" 질문을 홈 챗에 고정했습니다.` : `"${text}" 질문의 고정을 해제했습니다.`);
+        load();
+      })
+      .catch(e => toast.error("처리 실패: " + e.message))
+      .finally(() => setActionBusy(false));
+  };
+
+  const handleDelete = (id, text) => {
+    if (!confirm(`"${text}" 질문을 삭제하시겠습니까?`)) return;
+    setActionBusy(true);
+    const param = id ? `id=${encodeURIComponent(id)}` : `text=${encodeURIComponent(text)}`;
+    sf(`/api/home-agent/sample-prompts?${param}`, { method: "DELETE" })
+      .then(() => {
+        toast.ok("삭제되었습니다.");
+        load();
+      })
+      .catch(e => toast.error("삭제 실패: " + e.message))
+      .finally(() => setActionBusy(false));
+  };
+
+  const handleAdd = () => {
+    const t = newText.trim();
+    if (!t) return;
+    handlePin(t, newCategory.trim() || "추천", true);
+    setNewText("");
+  };
+
+  const filteredPinned = (data.pinned || []).filter(p => !filter || (p.text && p.text.toLowerCase().includes(filter.toLowerCase())));
+  const filteredSuccess = (data.successful || []).filter(s => !filter || (s.text && s.text.toLowerCase().includes(filter.toLowerCase())));
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* 상단 가이드 및 새로고침 */}
+      <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: "16px 20px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
+              💬 데이터챗 추천 질문 관리 (Home Data Chat)
+              <Pill tone="accent" size="sm">Admin Only</Pill>
+            </div>
+            <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4, lineHeight: 1.5 }}>
+              홈 화면의 Data Chat에 노출되는 추천 질문을 관리합니다. 사용자가 실제로 질문하여 성공한 질의들이 자동으로 누적(⚡)되며, 관리자가 [📌 홈 챗에 고정]하여 최우선 추천 예제로 노출할 수 있습니다.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="text"
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              placeholder="질문 검색..."
+              style={{ padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13, width: 160 }}
+            />
+            <Button variant="subtle" onClick={load} disabled={loading}>{loading ? "새로고침 중..." : "↻ 새로고침"}</Button>
+          </div>
+        </div>
+
+        {/* 새 질문 직접 등록 */}
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>➕ 새 추천 질문 등록:</span>
+          <input
+            type="text"
+            value={newText}
+            onChange={e => setNewText(e.target.value)}
+            placeholder="예: D8001 제품의 최근 10개 LOT 현위치 알려줘"
+            onKeyDown={e => { if (e.key === "Enter" && !e.nativeEvent?.isComposing && e.keyCode !== 229) handleAdd(); }}
+            style={{ flex: 1, minWidth: 260, padding: "7px 12px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13 }}
+          />
+          <input
+            type="text"
+            value={newCategory}
+            onChange={e => setNewCategory(e.target.value)}
+            placeholder="카테고리"
+            style={{ width: 110, padding: "7px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13 }}
+          />
+          <Button variant="primary" onClick={handleAdd} disabled={actionBusy || !newText.trim()}>📌 고정 질문으로 등록</Button>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        {/* 좌측: 📌 관리자 고정 질문 */}
+        <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: "16px 18px", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+              <span>📌</span> 관리자 고정 질문 ({filteredPinned.length}개)
+              <span style={{ fontSize: 12, color: "var(--ok,#22c55e)", fontWeight: 500 }}>홈 챗 최우선 노출</span>
+            </div>
+          </div>
+
+          <div style={{ flex: 1, maxHeight: 520, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+            {filteredPinned.length === 0 && (
+              <div style={{ padding: "30px 10px", textAlign: "center", color: "var(--text-secondary)", fontSize: 13 }}>
+                고정된 질문이 없습니다. 오른쪽 실제 질문 목록에서 [📌 고정]을 누르거나 위에서 새로 등록하세요.
+              </div>
+            )}
+            {filteredPinned.map((p, idx) => (
+              <div key={p.id || idx} style={{ padding: "10px 12px", background: "var(--bg-primary)", borderRadius: 8, border: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)", lineHeight: 1.4 }}>
+                    {p.text}
+                  </div>
+                  <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                    <button
+                      onClick={() => handlePin(p.text, p.category, false)}
+                      disabled={actionBusy}
+                      title="고정 해제"
+                      style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--text-secondary)", fontSize: 12, cursor: "pointer" }}
+                    >
+                      고정 해제
+                    </button>
+                    <button
+                      onClick={() => handleDelete(p.id, p.text)}
+                      disabled={actionBusy}
+                      title="완전 삭제"
+                      style={{ padding: "3px 7px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--danger,#ef4444)", fontSize: 12, cursor: "pointer" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", flexWrap: "wrap" }}>
+                  <Pill tone="accent" size="sm">{p.category || "추천"}</Pill>
+                  {p.count != null && <span>성공 횟수: <b>{p.count}</b>회</span>}
+                  {p.pinned_by && <span>고정자: {p.pinned_by}</span>}
+                  {p.last_used && <span>최근: {p.last_used.slice(0, 16).replace("T", " ")}</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 우측: ⚡ 실제 성공한 질문 이력 */}
+        <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: "16px 18px", display: "flex", flexDirection: "column" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
+              <span>⚡</span> 실제 성공 질문 이력 ({filteredSuccess.length}개)
+              <span style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 400 }}>자동 누적된 질의</span>
+            </div>
+          </div>
+
+          <div style={{ flex: 1, maxHeight: 520, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
+            {filteredSuccess.length === 0 && (
+              <div style={{ padding: "30px 10px", textAlign: "center", color: "var(--text-secondary)", fontSize: 13 }}>
+                아직 사용자가 성공한 질문 기록이 없습니다. 홈 챗에서 질문을 실행하면 자동으로 누적됩니다.
+              </div>
+            )}
+            {filteredSuccess.map((s, idx) => {
+              const isAlreadyPinned = (data.pinned || []).some(p => p.text === s.text);
+              return (
+                <div key={s.id || idx} style={{ padding: "10px 12px", background: "var(--bg-primary)", borderRadius: 8, border: "1px solid var(--border)", display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)", lineHeight: 1.4 }}>
+                      {s.text}
+                    </div>
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      {isAlreadyPinned ? (
+                        <Pill tone="ok" size="sm">고정됨</Pill>
+                      ) : (
+                        <button
+                          onClick={() => handlePin(s.text, s.category || "실제질의", true)}
+                          disabled={actionBusy}
+                          style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 600 }}
+                        >
+                          📌 홈 챗에 고정
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleDelete(s.id, s.text)}
+                        disabled={actionBusy}
+                        title="완전 삭제"
+                        style={{ padding: "3px 7px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--danger,#ef4444)", fontSize: 12, cursor: "pointer" }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: "var(--text-secondary)", flexWrap: "wrap" }}>
+                    <span>성공 횟수: <b style={{ color: "var(--accent)" }}>{s.count || 1}</b>회</span>
+                    {s.last_used && <span>마지막 실행: {s.last_used.slice(0, 16).replace("T", " ")}</span>}
+                    {s.category && <Pill tone="neutral" size="sm">{s.category}</Pill>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function ActivityDashboardPanel(){

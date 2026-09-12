@@ -213,32 +213,38 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
   };
 
   return (
-    <main className="home-page">
-      <BrandLogo size="home" />
-      <section className="home-welcome">
-        <div className="home-welcome__title">
-          {user?.username || "user"}님, 안녕하세요
-        </div>
-        <HomeAlertsSection onNavigate={open} user={user} />
-      </section>
+    <main className={`home-page${admin ? " has-admin-chat" : ""}`}>
+      <div className="home-top-section">
+        <BrandLogo size="home" />
+        <section className="home-welcome">
+          <div className="home-welcome__title">
+            {user?.username || "user"}님, 안녕하세요
+          </div>
+          <HomeAlertsSection onNavigate={open} user={user} />
+        </section>
+      </div>
+
       {admin && <HomeDataChat user={user} onNavigate={open} />}
-      {orderedCards.length ? (
-        <div className="home-feature-grid">
-          {orderedCards.map((tab) => (
-            <FeatureCard
-              key={tab.key}
-              tab={tab}
-              favorite={favoriteSet.has(tab.key)}
-              onFavorite={toggleFavorite}
-              onOpen={open}
-            />
-          ))}
-        </div>
-      ) : (
-        <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>
-          사용 가능한 기능이 없습니다. 관리자에게 권한을 요청해주세요.
-        </div>
-      )}
+
+      <div className="home-bottom-section">
+        {orderedCards.length ? (
+          <div className="home-feature-grid">
+            {orderedCards.map((tab) => (
+              <FeatureCard
+                key={tab.key}
+                tab={tab}
+                favorite={favoriteSet.has(tab.key)}
+                onFavorite={toggleFavorite}
+                onOpen={open}
+              />
+            ))}
+          </div>
+        ) : (
+          <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>
+            사용 가능한 기능이 없습니다. 관리자에게 권한을 요청해주세요.
+          </div>
+        )}
+      </div>
     </main>
   );
 }

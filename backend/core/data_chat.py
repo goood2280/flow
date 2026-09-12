@@ -79,22 +79,172 @@ def _inline_chart(text, context):
     return reply("같은 조회 결과에 차트 설정을 적용했습니다.", tool={"feature": "chart", "chart_result": chart, "sources": ["대화에서 조회한 데이터"]}, context=context)
 
 
+def extract_execution_trace(prompt: str, result: dict) -> dict:
+    """Generate structured data provenance and execution trace metadata."""
+    context = result.get("context") or {}
+    tool = result.get("tool") or {}
+    feature = tool.get("feature") or tool.get("action") or context.get("last_action") or context.get("last_feature") or ""
+    product = context.get("product") or ""
+    clean_prod = re.sub(r"^(?:ML_TABLE_|VH_)", "", product, flags=re.I)
+    root = context.get("root_lot_id") or ""
+    lot_id = context.get("lot_id") or context.get("fab_lot_id") or root
+
+    action_label = "데이터 조회"
+    intent_label = f"{clean_prod or '시스템'} 관련 데이터 조회"
+
+    trace = {
+        "feature": feature,
+        "action": action_label,
+        "intent": intent_label,
+        "product": clean_prod or product,
+        "lot_id": lot_id,
+        "sources": [],
+        "steps": [],
+        "query": "",
+    }
+
+    if "location" in str(feature) or "lot_progress" in str(feature):
+        trace["action"] = "Lot 현위치 및 공정 진도 조회"
+        trace["intent"] = f"{clean_prod or '지정'} 랏({root or lot_id})의 실시간 재공 위치 및 최신 공정 진행 상태 파악"
+        trace["sources"] = ["WIP Location Cache DB", "WIP_LOCATION.csv"]
+        trace["steps"] = [
+            f"제품 확인: {clean_prod or 'PRODA'}",
+            f"Root Lot Left 5 추출: {root or lot_id}",
+            "WIP 캐시 테이블 검색",
+            "웨이퍼별 최신 진행 공정 집계",
+        ]
+        trace["query"] = f"SELECT * FROM wip_location WHERE product = '{clean_prod}' AND (lot_id = '{lot_id}' OR root_lot_id = '{root}')"
+    elif "splittable" in str(feature):
+        custom = context.get("custom_name") or ""
+        trace["action"] = "스플릿 계획 배정 및 레시피 조회"
+        trace["intent"] = f"{clean_prod or '지정'} 랏({root or lot_id})의 SplitTable Knob 레시피 및 조건 배정"
+        trace["sources"] = [f"ML_TABLE_{clean_prod or 'PRODA'}", "ppid_knob.csv", "Vehicle_matching.csv"]
+        trace["steps"] = [
+            f"스플릿테이블 로드: ML_TABLE_{clean_prod or 'PRODA'}",
+            f"대상 랏 필터: {root or lot_id}",
+            f"조회 항목: {'PC 커스텀 세트' if custom else 'KNOB 전체 및 웨이퍼 계획'}",
+            "S0/S1 배정 규칙 적용 및 검증",
+        ]
+        trace["query"] = f"view_split(product='{clean_prod or 'PRODA'}', root_lot_id='{root or lot_id}', prefix='KNOB'{f', custom_name=\"{custom}\"' if custom else ''})"
+    elif "teg" in str(feature):
+        veh = product if "VH_" in product else f"VH_{clean_prod or 'PRODB'}"
+        teg_names = context.get("teg_names") or ["TEG"]
+        trace["action"] = "TEG 위치 조회"
+        trace["intent"] = f"{clean_prod or '지정'} 제품의 TEG({', '.join(teg_names)}) shot 기준 상대 좌표 및 배치 확인"
+        trace["sources"] = ["Vehicle_matching.csv", f"{veh}.map (Mapfile)"]
+        trace["steps"] = [
+            f"제품-Vehicle 매핑: {clean_prod or 'PRODB'} → {veh}",
+            f"Mapfile 파싱: {veh}.map",
+            f"TEG 선택 및 검색: {', '.join(teg_names)}",
+            "Shot 중심 상대좌표 (mm) 및 Die 격자 위치 산출",
+        ]
+        trace["query"] = f"teg_map.coordinates(product='{veh}', tegs={teg_names})"
+    elif "yield_map" in str(feature):
+        trace["action"] = "수율 맵 (Wafer Map) 조회"
+        trace["intent"] = f"{clean_prod or '지정'} 랏({root or lot_id})의 Wafer별 수율 분포 및 결함 빈 맵 시각화"
+        trace["sources"] = [f"ML_TABLE_{clean_prod or 'PRODA'}", "BIN_TABLE / Yield DB"]
+        trace["steps"] = [
+            f"제품: {clean_prod or 'PRODA'}",
+            f"대상 랏: {root or lot_id}",
+            "BIN 분류 및 Wafer별 수율 집계",
+            "Shot Map / Wafer Map 렌더링 데이터 생성",
+        ]
+        trace["query"] = f"yield_map.get_map(product='{clean_prod or 'PRODA'}', root_lot_id='{root or lot_id}')"
+    elif "tracker" in str(feature):
+        trace["action"] = "ET 트래커 이슈 조회"
+        trace["intent"] = "공정 ET 모니터링 이슈 및 이상 랏 목록 점검"
+        trace["sources"] = ["ET_TRACKER_DB", "tracker_issues.json"]
+        trace["steps"] = [
+            "ET 트래커 이슈 저장소 연결",
+            f"활성 이슈 및 모니터링 랏 필터{f' (제품: {clean_prod})' if clean_prod else ''}",
+            "우선순위 및 미해결 항목 추출",
+        ]
+        trace["query"] = f"tracker.list_issues({f'product=\"{clean_prod}\"' if clean_prod else ''})"
+    elif "watchlist" in str(feature):
+        trace["action"] = "관심 랏 모니터링"
+        trace["intent"] = "사용자 등록 관심 랏의 실시간 위치 및 공정 상태 확인"
+        trace["sources"] = ["user_watchlist.json", "WIP Status Cache"]
+        trace["steps"] = [
+            "사용자 관심 랏 레지스트리 조회",
+            "등록 랏별 최신 공정 진도 및 이상 여부 조인",
+        ]
+        trace["query"] = "watchlist.get_watchlist(user)"
+    elif "informs" in str(feature):
+        trace["action"] = "공정 모듈 인폼 조회"
+        trace["intent"] = f"공정 모듈 알림 및 랏({lot_id or root}) 엔지니어 인폼 히스토리 추적"
+        trace["sources"] = ["inform_messages.db", "inform_threads.json"]
+        trace["steps"] = [
+            "공정 모듈 인폼 스레드 검색",
+            f"최신 변경점 알림 추출{f' (대상 랏: {lot_id})' if lot_id else ''}",
+        ]
+        trace["query"] = f"informs.list({f'lot_id=\"{lot_id}\"' if lot_id else 'limit=20'})"
+    elif "dashboard" in str(feature):
+        trace["action"] = "대시보드 지표 요약"
+        trace["intent"] = "재공(WIP), 정체 랏, 수율/TAT 핵심 제조 운영 지표 종합 요약"
+        trace["sources"] = ["Dashboard Metric Cache", "stuck_lots.json"]
+        trace["steps"] = [
+            "대시보드 실시간 메트릭 로드",
+            "TAT, DPML, WIP 및 정체 랏 지표 집계",
+        ]
+        trace["query"] = "dashboard.summary()"
+    else:
+        trace["sources"] = ["Flow System DB"]
+        trace["steps"] = ["자연어 질의 분석", f"기능 실행: {feature or '데이터 조회'}"]
+        trace["query"] = f"{feature}()"
+
+    return trace
+
+
+def compact_text_prose(text: str) -> str:
+    """Condense lengthy comma-separated step/wafer listings or multi-line enumerations into a clean 1-2 line summary."""
+    clean = text.strip()
+    if "WIP 현재 공정:" in clean:
+        match = re.search(r"^(.*?)(?:의\s*WIP\s*현재\s*공정[:\s]+)(.*?)(?:[.]\s*조회\s*결과\s*(\d+)행입니다)?$", clean, re.DOTALL)
+        if match:
+            target = match.group(1).strip()
+            steps_raw = match.group(2).strip()
+            count = match.group(3) or ""
+            steps = [s.strip() for s in steps_raw.split(",") if s.strip()]
+            first_step = steps[0] if steps else ""
+            last_step = steps[-1] if len(steps) > 1 else ""
+            total_str = f"총 {count}건" if count else f"총 {len(steps)}건"
+            
+            step_highlight = f"**{first_step}**"
+            if last_step and last_step != first_step:
+                step_highlight += f" ~ **{last_step}**"
+            
+            return f"{target}의 현재 WIP 공정 진행: {step_highlight} ({total_str}). 상세 데이터는 아래 테이블 및 우측 작업창에서 확인하거나 다운로드할 수 있습니다."
+
+    # Multi-line numbered listing compaction (5+ items)
+    numbered_lines = re.findall(r"^\s*\d+[.)]\s*(.+)$", clean, re.M)
+    if len(numbered_lines) >= 5:
+        first_item = numbered_lines[0]
+        last_item = numbered_lines[-1]
+        header = clean.split("\n")[0] if not clean.startswith("1.") else "조회 결과"
+        return f"{header}: 총 {len(numbered_lines)}개 항목이 추출되었습니다 ({first_item} ~ {last_item}). 상세 데이터는 아래 추출 데이터셋 및 라이브 작업창에서 확인하거나 다운로드할 수 있습니다."
+
+    return clean
+
+
 def build_interpretation_guide(prompt: str, result: dict) -> str:
-    """Construct domain translation and guidance summary for administrator requests."""
+    """Construct domain translation, query execution trace and provenance for administrator requests."""
     text = prompt.strip()
     if re.search(r"^(?:가이드|도움말|help|사용법|발화\s*가이드|샘플\s*가이드|admin\s*가이드)$", text, re.I):
         return (
             "[도메인 해석 가이드]\n"
-            "Flow Data Chat은 관리자의 실무 발화를 반도체 도메인 규격으로 자동 번역하여 실행합니다:\n\n"
+            "Flow Data Chat은 관리자의 실무 발화를 반도체 도메인 규격으로 자동 번역하고 실행 경로를 추적합니다:\n\n"
             "1. 랏 현재 위치 / 진도 확인\n"
             "   • 발화: \"PRODA A1001 지금 어디에 있어?\"\n"
-            "   • 해석: 제품 PRODA + Root Lot A1001(Left 5) → WIP 공정 위치 조회\n\n"
+            "   • 해석: 제품 PRODA + Root Lot A1001(Left 5) → WIP 공정 위치 조회\n"
+            "   • 쿼리 원천: WIP_LOCATION Cache DB\n\n"
             "2. SplitTable 계획 배정\n"
             "   • 발화: \"prodA A1005.1 5.0 PC 스플릿 wafer 1~6 ABC 넣고 나머지는 ABB로 깔아줘\"\n"
-            "   • 해석: prodA(양산 EVT1), A1005.1(In-Fab .1 접미사), 5.0 PC(공정 Knob), Wafer 조건 파싱 및 계획 배정\n\n"
+            "   • 해석: prodA(양산 EVT1), A1005.1(In-Fab .1 접미사), 5.0 PC(공정 Knob), Wafer 조건 파싱 및 계획 배정\n"
+            "   • 쿼리 원천: ML_TABLE_PRODA, ppid_knob.csv\n\n"
             "3. TEG 위치 / 맵파일 확인\n"
             "   • 발화: \"prodB GATE TEG 어디있는지 보여줘\"\n"
-            "   • 해석: prodB → Vehicle VH_PRODB, GATE TEG → TEG_GATE 좌표/Shot 위치 조회\n\n"
+            "   • 해석: prodB → Vehicle VH_PRODB, GATE TEG → TEG_GATE 좌표/Shot 위치 조회\n"
+            "   • 쿼리 원천: Vehicle_matching.csv, VH_PRODB.map\n\n"
             "4. 스플릿테이블 및 커스텀 세트 조회\n"
             "   • 발화: \"prodA A1005.1 스플릿테이블 보여줘\" (KNOB 전체 조회)\n"
             "   • 발화: \"prodA A1005.1 PC CUSTOM SET 스플릿테이블 보여줘\" / \"PC 커스텀 세트로 보여줘\" (PC 모듈 6대 공정 일괄 조회)\n\n"
@@ -204,6 +354,7 @@ def build_interpretation_guide(prompt: str, result: dict) -> str:
     if not line1 and not line2 and not line3:
         return ""
 
+    trace = extract_execution_trace(text, result)
     guide_lines = ["[도메인 해석 가이드]"]
     if line1:
         guide_lines.append("• " + " | ".join(line1))
@@ -211,15 +362,30 @@ def build_interpretation_guide(prompt: str, result: dict) -> str:
         guide_lines.append("• " + " | ".join(line2))
     if line3:
         guide_lines.append("• " + " | ".join(line3))
+
+    # 실행 경로 및 데이터 원천 가시화
+    if trace.get("sources"):
+        guide_lines.append(f"• 데이터 원천: {', '.join(trace['sources'])}")
+    if trace.get("steps"):
+        guide_lines.append(f"• 실행 경로: {' → '.join(trace['steps'])}")
+    if trace.get("query"):
+        guide_lines.append(f"• 실행 쿼리: {trace['query']}")
+
     guide_lines.append("────────────────────────────────────────\n")
     return "\n".join(guide_lines)
 
 
 def _finish(prompt: str, result: dict, context: dict) -> dict:
     remembered = _remember(result, context)
+    trace = extract_execution_trace(prompt, remembered)
+    if "tool" in remembered and isinstance(remembered["tool"], dict):
+        remembered["tool"]["execution_trace"] = trace
+
+    raw_reply = str(remembered.get("reply") or "")
     guide = build_interpretation_guide(prompt, remembered)
-    if guide and not str(remembered.get("reply") or "").startswith("[도메인 해석 가이드]"):
-        remembered["reply"] = guide + str(remembered.get("reply") or "")
+    if guide and not raw_reply.startswith("[도메인 해석 가이드]"):
+        compact_body = compact_text_prose(raw_reply)
+        remembered["reply"] = guide + compact_body
         if "interpretation" in remembered and isinstance(remembered["interpretation"], dict):
             remembered["interpretation"]["guide"] = guide
     return remembered

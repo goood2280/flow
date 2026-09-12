@@ -138,3 +138,53 @@ def test_data_chat_intent_and_guide_routing(monkeypatch):
     assert out_inf["ok"] is True
     assert "인폼" in out_inf["reply"]
     assert out_inf["tool"]["feature"] == "informs"
+
+
+def test_execution_trace_and_compact_prose(monkeypatch):
+    request = object()
+    monkeypatch.setattr(splittable, "list_products", lambda: {"products": [{"name": "PRODA"}]})
+    monkeypatch.setattr(yield_map, "get_map", lambda **kw: {"ok": True, "wafers": [{"wafer_id": "1", "yield": 99.1}]})
+
+    out = data_chat.execute("PRODA A1001 수율 맵 보여줘", {}, request)
+    assert out["ok"] is True
+    tool = out["tool"]
+    assert "execution_trace" in tool
+    trace = tool["execution_trace"]
+    assert trace["intent"]
+    assert len(trace["sources"]) > 0
+    assert len(trace["steps"]) > 0
+    assert trace["query"]
+    assert "수율 맵" in trace["action"]
+
+    # Compact prose verification
+    long_prose = "총 120개 랏이 검색되었습니다:\n1. A1001 - STEP_01\n2. A1002 - STEP_02\n3. A1003 - STEP_03\n4. A1004 - STEP_04\n5. A1005 - STEP_05\n6. A1006 - STEP_06"
+    compacted = data_chat.compact_text_prose(long_prose)
+    assert "1. A1001" not in compacted
+    assert "추출 데이터셋 및 라이브 작업창" in compacted
+
+
+def test_teg_related_and_trace(monkeypatch):
+    import types
+    request = types.SimpleNamespace(state=types.SimpleNamespace(user={"username": "admin", "role": "admin"}))
+    from core import teg_map, data_chat_teg
+
+    monkeypatch.setattr(splittable, "list_products", lambda: {"products": [{"name": "PRODA"}]})
+    monkeypatch.setattr(data_chat_teg, "_catalog", lambda req: [{"vehicle": "PRODA"}])
+    fake_payload = {
+        "vehicle": "VH_PRODA",
+        "tegs": [
+            {"teg": "TEG_GATE", "ebeam_x": 1.2, "ebeam_y": 3.4},
+            {"teg": "TEG_CONTACT", "ebeam_x": 2.2, "ebeam_y": 4.4},
+            {"teg": "TEG_VIA", "ebeam_x": 3.2, "ebeam_y": 5.4},
+        ],
+    }
+    monkeypatch.setattr(teg_map, "map_payload", lambda p: fake_payload)
+
+    out = data_chat.execute("PRODA TEG_GATE 위치 보여줘", {}, request)
+    assert out["ok"] is True
+    tool = out["tool"]
+    assert "execution_trace" in tool
+    assert tool["execution_trace"]["action"] == "TEG 위치 조회"
+    assert "related_tegs" in tool
+    assert "TEG_CONTACT" in tool["related_tegs"]
+
