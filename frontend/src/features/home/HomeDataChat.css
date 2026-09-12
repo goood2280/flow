@@ -1,7 +1,8 @@
 .home-data-chat {
   display: flex;
+  width: 100%;
   min-height: 520px;
-  height: min(72vh, 720px);
+  height: min(74vh, 780px);
   margin: 0 0 24px;
   overflow: hidden;
   flex-direction: column;
@@ -13,7 +14,7 @@
 }
 
 .home-data-chat.has-workspace {
-  height: min(80vh, 840px);
+  height: min(82vh, 880px);
 }
 
 .home-data-chat__body {
@@ -34,8 +35,9 @@
 }
 
 .home-data-chat.has-workspace .home-data-chat__chat-pane {
-  flex: 0 0 42%;
-  max-width: 480px;
+  flex: 0 0 35%;
+  min-width: 360px;
+  max-width: 560px;
   border-right: 1px solid var(--border-subtle, var(--border));
 }
 
@@ -48,7 +50,7 @@
   display: flex;
   flex-direction: column;
   flex: 1;
-  min-width: 420px;
+  min-width: 480px;
   min-height: 0;
   background: var(--bg-primary);
   overflow: hidden;
@@ -459,17 +461,17 @@
 .home-data-chat__empty-desc {
   color: var(--text-secondary);
   font-size: 12.5px;
-  max-width: 540px;
-  line-height: 1.5;
+  max-width: 780px;
+  line-height: 1.55;
 }
 
 .home-data-chat__sample-chips {
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 6px;
-  margin-top: 8px;
-  max-width: 680px;
+  gap: 8px;
+  margin-top: 10px;
+  max-width: 980px;
 }
 
 .home-data-chat__chip {
