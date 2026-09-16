@@ -409,9 +409,16 @@ def test_vm_process_info_preserves_underscores_and_vehicle_module(monkeypatch, t
     meta = splittable._build_vm_meta("ML_TABLE_PRODA")
     assert meta["GATE_ETCH_ITEM_1"]["module"] == "GATE"
     assert meta["GATE_ETCH_ITEM_1"]["item_id"] == "ITEM_1"
+    assert meta["ITEM_1"]["parameter_name"] == "GATE_ETCH_ITEM_1"
+    assert splittable._virtual_columns_for_prefix("ML_TABLE_PRODA", "VM") == [
+        "VM_GATE_ETCH_ITEM_1"
+    ]
     assert splittable._step_process_columns_for_param("VM_GATE_ETCH_ITEM_1", {"vm": meta}) == {
         "step_id": "A100", "step_desc": "GATE_ETCH",
     }
+    assert splittable._export_param_display_name(
+        "ITEM_1", "VM_GATE_ETCH_ITEM_1"
+    ) == "GATE_ETCH_ITEM_1"
 
 
 def test_fab_process_info_uses_fab_name_and_selected_product_vehicle_step(monkeypatch, tmp_path):

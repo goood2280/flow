@@ -2621,6 +2621,9 @@ def _build_vm_meta(product: str = "") -> dict:
         clean_item_id = _re.sub(r"^VM_", "", item_id, flags=_re.I).strip()
         item_entry = {
             "feature_name": name,
+            # All lookup aliases point back to the actual VM parameter tail.
+            # item_id is matching metadata, not the SplitTable row name.
+            "parameter_name": name,
             "item_id": item_id,
             "step_desc": step_desc,
             "step_id": step_ids[0] if len(step_ids) == 1 else "",
@@ -2645,10 +2648,12 @@ def _build_vm_meta(product: str = "") -> dict:
         step_ids = _dedup_list([sid for x in dedup for sid in (x.get("step_ids") or [])])
         step_desc = next((x.get("step_desc") for x in dedup if x.get("step_desc")), "") or fname
         item_id = next((x.get("item_id") for x in dedup if x.get("item_id")), "")
+        parameter_name = next((x.get("parameter_name") for x in dedup if x.get("parameter_name")), "") or fname
         function_steps = _dedup_list([x["function_step"] for x in dedup if x.get("function_step")])
         modules = _dedup_list([mod for x in dedup for mod in (x.get("modules") or [])])
         out[fname] = {
             "feature_name": fname,
+            "parameter_name": parameter_name,
             "item_id": item_id,
             "step_desc": step_desc,
             "step_id": step_ids[0] if len(step_ids) == 1 else "",
@@ -3205,7 +3210,7 @@ def _virtual_columns_for_prefix(product: str, prefix: str,
                 if pref == "INLINE":
                     return str(meta.get("item_desc") or meta.get("feature_name") or key).strip()
                 if pref == "VM":
-                    return str(meta.get("item_id") or meta.get("feature_name") or key).strip()
+                    return str(meta.get("parameter_name") or meta.get("feature_name") or key).strip()
                 return str(meta.get("feature_name") or key).strip()
 
             # Metadata maps intentionally keep full/bare/item-id aliases for

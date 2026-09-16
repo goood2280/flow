@@ -723,6 +723,11 @@ def _export_param_display_name(name: str, raw_column: str = "") -> str:
     if not raw:
         return ""
     source = str(raw_column or "").strip() or raw
+    # VM display names are derived from the data key, never from a metadata
+    # alias such as item_id.  Only the leading VM_ marker is removed.
+    if _re.match(r"^VM_", source, flags=_re.I):
+        vm_name = _re.sub(r"^VM_", "", source, flags=_re.I).strip()
+        return vm_name or source
     is_knob = bool(_re.match(r"^KNOB_", source, flags=_re.I) or _re.match(r"^KNOB_", raw, flags=_re.I))
     out = _re.sub(r"^[A-Za-z]+_", "", raw)
     if is_knob:

@@ -13,6 +13,12 @@ const server = await createServer({
 try {
   const snapshot = await server.ssrLoadModule("/src/components/SplitTableSnapshotView.jsx");
   const splitTable = await server.ssrLoadModule("/src/features/splittable/My_SplitTable.jsx");
+  assert.equal(
+    snapshot.splitParamDisplayName("ITEM_1", "VM_GATE_ETCH_ITEM_1"),
+    "GATE_ETCH_ITEM_1",
+    "VM item labels keep the raw parameter tail instead of the item_id display alias",
+  );
+  assert.equal(snapshot.splitParamDisplayName("VM_1.0 STI"), "1.0 STI");
   const normalizedLookup = splitTable.buildNormalizedLookup({
     " KNOB_Recipe_A ": { id: 1 },
     knob_recipe_b: { id: 2 },

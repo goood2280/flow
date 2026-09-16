@@ -28,6 +28,13 @@ export function splitParamDisplayName(name, rawParam) {
   const raw = String(name ?? "").trim();
   if (!raw) return "";
   const source = String(rawParam ?? "").trim() || raw;
+  // VM labels must follow the physical/virtual parameter key exactly.  The
+  // metadata display value can be an item_id alias, but that alias is lookup
+  // data and must never replace the item label shown to the user.
+  if (/^VM_/i.test(source)) {
+    const vmName = source.replace(/^VM_/i, "").trim();
+    return vmName || source;
+  }
   const stripSplit = /^(?:KNOB|MASK)_/i.test(source) || /^(?:KNOB|MASK)_/i.test(raw);
   let out = raw.replace(/^[A-Za-z]+_/, "");
   if (stripSplit) out = out.replace(/_Split$/i, "");

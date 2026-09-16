@@ -1,7 +1,17 @@
 {
-  "version": "10.4.273",
+  "version": "10.4.274",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.274",
+      "date": "2026-09-16",
+      "tag": "fix",
+      "title": "SplitTable VM 원본 항목명 보존",
+      "changes": [
+        "[VM 항목명] vm_matching의 item_id 별칭이 행 이름을 덮어씀 → 원본 VM 파라미터명을 별도로 보존하고 화면·CSV·XLSX에서는 앞의 VM_만 제거해 표시하며 이전 이름을 담은 화면 캐시를 갱신.",
+        "[적용 공정 정보] VM 항목명과 매칭 메타를 분리해 항목 열은 원본 이름을 유지하고 공정 정보는 step_id·step_desc 두 열로만 제공."
+      ]
+    },
     {
       "version": "10.4.273",
       "date": "2026-09-16",
