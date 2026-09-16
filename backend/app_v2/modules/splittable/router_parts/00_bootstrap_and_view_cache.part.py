@@ -56,7 +56,10 @@ from core.utils import (
     csv_response, csv_writer_bytes, download_content_disposition, download_filename,
 )
 from core.splittable_sets_cache import invalidate as invalidate_splittable_sets_cache
-from app_v2.modules.splittable.rulebook_repository import RulebookRepository
+from app_v2.modules.splittable.rulebook_repository import (
+    RulebookRepository,
+    repair_unquoted_product_list_row,
+)
 from app_v2.modules.splittable.rulebook_service import RulebookService
 
 rulebook_repo = RulebookRepository()

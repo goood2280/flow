@@ -1003,6 +1003,56 @@ def test_inline_matching_with_item_desc_header_resolves_process_columns(tmp_path
     assert cols_well == {"step_id": "CC955100", "step_desc": "SPACER_CVD"}
 
 
+def test_inline_matching_uses_multi_product_cell_for_each_selected_product(tmp_path, monkeypatch):
+    from app_v2.modules.splittable.rulebook_repository import RulebookRepository
+    from routers import splittable
+
+    quoted = tmp_path / "quoted"
+    quoted.mkdir()
+    (quoted / "inline_matching.csv").write_text(
+        'product,step_id,item_id,item_desc,step_desc\n'
+        '"proda,prodb",A100,ITEM_1,CD GATE,MEASURE\n'
+        'prodc,C100,ITEM_2,CD OTHER,OTHER\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    monkeypatch.setattr(splittable, "_base_root", lambda: quoted)
+
+    for product in ("ML_TABLE_PRODA", "ML_TABLE_PRODB"):
+        entry = splittable._build_inline_meta(product)["CD GATE"]
+        assert entry["step_ids"] == ["A100"]
+        assert entry["step_desc"] == "MEASURE"
+    assert "CD GATE" not in splittable._build_inline_meta("ML_TABLE_PRODC")
+
+    # Tolerate the field form seen in manually maintained CSVs as well.  The
+    # unquoted product comma must not shift step_id/item/description columns.
+    unquoted = tmp_path / "unquoted"
+    unquoted.mkdir()
+    inline_path = unquoted / "inline_matching.csv"
+    inline_path.write_text(
+        "product,step_id,item_id,item_desc,step_desc\n"
+        "proda,prodb,A200,ITEM_3,CD SHARED,SHARED_MEASURE\n",
+        encoding="utf-8",
+    )
+    splittable._CSV_ROWS_CACHE.clear()
+    monkeypatch.setattr(splittable, "_base_root", lambda: unquoted)
+
+    for product in ("ML_TABLE_PRODA", "ML_TABLE_PRODB"):
+        entry = splittable._build_inline_meta(product)["CD SHARED"]
+        assert entry["step_ids"] == ["A200"]
+        assert entry["item_id"] == "ITEM_3"
+        assert entry["step_desc"] == "SHARED_MEASURE"
+
+    stored = RulebookRepository().load_csv_rows(inline_path)[0]
+    assert stored == {
+        "product": "proda,prodb",
+        "step_id": "A200",
+        "item_id": "ITEM_3",
+        "item_desc": "CD SHARED",
+        "step_desc": "SHARED_MEASURE",
+    }
+
+
 def test_inline_matching_with_spaced_item_desc_header(tmp_path, monkeypatch):
     from routers import splittable
 

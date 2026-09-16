@@ -1457,6 +1457,7 @@ def _load_csv_rows(fp: Path) -> list[dict]:
             reader = csv_mod.DictReader(f)
             rows = []
             for row in reader:
+                row = repair_unquoted_product_list_row(row, reader.fieldnames)
                 clean = {}
                 for col_key, value in (row or {}).items():
                     if col_key is None:

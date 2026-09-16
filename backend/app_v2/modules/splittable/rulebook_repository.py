@@ -11,6 +11,44 @@ from core.utils import load_json, save_json
 logger = logging.getLogger("flow.splittable.rulebook")
 
 
+def repair_unquoted_product_list_row(row: dict, fieldnames: list[str] | None) -> dict:
+    """Recover a product list whose commas were not CSV-quoted.
+
+    A valid CSV stores a multi-product cell as ``"proda,prodb"``.  Some field
+    files contain ``proda,prodb`` without quotes, so DictReader shifts every
+    later field and places the final values under the ``None`` overflow key.
+    When a product column is present, the overflow count tells us exactly how
+    many leading product tokens must be joined back together.
+    """
+    if not isinstance(row, dict):
+        return row
+    extras = row.get(None)
+    fields = list(fieldnames or [])
+    if not isinstance(extras, list) or not extras or not fields:
+        return row
+    product_idx = next((
+        idx for idx, name in enumerate(fields)
+        if str(name or "").lstrip("\ufeff").strip().casefold() == "product"
+    ), None)
+    if product_idx is None:
+        return row
+    values = [row.get(name) for name in fields] + list(extras)
+    shift = len(extras)
+    repaired = {}
+    for idx, name in enumerate(fields):
+        if idx < product_idx:
+            repaired[name] = values[idx]
+        elif idx == product_idx:
+            repaired[name] = ",".join(
+                str(value or "").strip()
+                for value in values[idx:idx + shift + 1]
+                if str(value or "").strip()
+            )
+        else:
+            repaired[name] = values[idx + shift]
+    return repaired
+
+
 def resolve_rulebook_file(root: Path, filename: str) -> Path:
     """Keep exact names authoritative; tolerate case variants on Linux too."""
     target = root / filename
@@ -152,7 +190,11 @@ class RulebookRepository:
             return []
         try:
             with open(fp, "r", encoding="utf-8-sig") as f:
-                return list(csv.DictReader(f))
+                reader = csv.DictReader(f)
+                return [
+                    repair_unquoted_product_list_row(row, reader.fieldnames)
+                    for row in reader
+                ]
         except Exception as e:
             logger.warning(f"Failed to read rulebook csv: {fp} - {e}")
             return []

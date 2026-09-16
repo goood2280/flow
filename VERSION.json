@@ -1,7 +1,17 @@
 {
-  "version": "10.4.272",
+  "version": "10.4.273",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.273",
+      "date": "2026-09-16",
+      "tag": "fix",
+      "title": "INLINE 복수 제품 매칭과 product 열 복구",
+      "changes": [
+        "[INLINE 공정정보] inline_matching.csv의 product 셀에 proda,prodb처럼 여러 제품이 있으면 선택 제품별로 같은 INLINE step_id·step_desc를 가져오도록 회귀 검증 추가.",
+        "[CSV 호환] 복수 product 값이 따옴표 없이 저장된 현장 CSV도 뒤 열이 밀리지 않게 product 셀을 복구해 step_id·item_desc·step_desc 전체를 정상 조회."
+      ]
+    },
     {
       "version": "10.4.272",
       "date": "2026-09-16",
