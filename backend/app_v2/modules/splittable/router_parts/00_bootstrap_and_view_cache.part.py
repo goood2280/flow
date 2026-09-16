@@ -2534,6 +2534,25 @@ def _has_known_prefixed_columns(all_data_cols) -> bool:
     return False
 
 
+def _parse_custom_columns(custom_cols: str) -> list[str]:
+    """Decode ad-hoc columns without treating commas inside names as separators.
+
+    Current clients send a JSON array.  Keep the legacy comma-delimited format
+    for older deployed frontends that can only represent comma-free names.
+    """
+    raw = str(custom_cols or "").strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            decoded = None
+        if isinstance(decoded, list):
+            return _clean_custom_columns(decoded)
+    return _clean_custom_columns(raw.split(","))
+
+
 def _select_columns(all_data_cols, custom_name: str, prefix: str, max_fallback: int = 50,
                     custom_cols: str = ""):
     """Multi-prefix ("KNOB,MASK") or ALL or custom-name/custom-cols based column selection.
@@ -2543,8 +2562,9 @@ def _select_columns(all_data_cols, custom_name: str, prefix: str, max_fallback: 
       - 변경: custom 에 저장된 column 명을 있는 그대로 반환. view_split 이 null row 를
               자연스럽게 생성 (컬럼이 실제 df 에 없으면 모든 셀이 None, 컬럼명은 유지).
       - 빈 리스트면 기존 폴백 (상위 max_fallback) 유지.
-    v8.8.33: `custom_cols` 쉼표 구분 문자열 지원 — 저장된 set 없이도 체크만 한 컬럼을 전송해
-             즉시 view 에 반영. custom_name 보다 우선 (ad-hoc 입력 우선).
+    v8.8.33: `custom_cols`로 저장 없이 체크만 한 컬럼을 즉시 view에 반영.
+    v10.4.272: JSON 배열을 우선 사용해 MASK step_desc/컬럼명 내부 쉼표를 보존.
+               구버전 클라이언트의 쉼표 구분 문자열도 계속 허용한다.
     v10.0.8: prefix 를 지정했는데 매칭 컬럼이 하나도 없으면 예전에는 상위 N개를 그대로
              돌려줘서 **다른 prefix 컬럼이 섞여 나왔다** (ET 선택인데 KNOB/VM 행이 보임).
              원천이 prefix 체계를 쓰고 있으면 빈 결과가 정답이므로 폴백하지 않는다.
@@ -2552,7 +2572,7 @@ def _select_columns(all_data_cols, custom_name: str, prefix: str, max_fallback: 
     """
     # ad-hoc custom_cols 우선
     if custom_cols:
-        return _clean_custom_columns(custom_cols.split(","))
+        return _parse_custom_columns(custom_cols)
     if custom_name:
         try:
             cfp, _clean_name = _custom_file_path_for_name(custom_name)

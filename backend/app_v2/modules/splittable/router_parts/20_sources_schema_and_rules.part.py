@@ -2752,7 +2752,7 @@ def _build_mask_meta(product: str = "") -> dict:
     for key, steps in step_map.items():
         normalized_steps.setdefault(_re.sub(r"[_\s]+", " ", str(key)).strip().casefold(), steps)
 
-    def _lookup_steps(tail_str: str) -> tuple[list[dict], str]:
+    def _lookup_exact(tail_str: str) -> tuple[list[dict], str]:
         clean = _re.sub(r"_split$", "", tail_str, flags=_re.I).strip()
         # Preserve real descriptions ending in reticle; strip producer suffix
         # only when there is no exact Vehicle description.
@@ -2770,6 +2770,43 @@ def _build_mask_meta(product: str = "") -> dict:
             return matched, matched_desc
         return [], clean
 
+    def _lookup_steps(tail_str: str) -> tuple[list[dict], list[str]]:
+        """Resolve one MASK label, including comma-delimited composite labels.
+
+        Exact matching wins so a real Vehicle step_desc containing a comma is
+        kept as one description.  Only an unmatched MASK tail is interpreted as
+        a list, which is how combined MASK columns encode several steps.
+        """
+        exact_steps, exact_desc = _lookup_exact(tail_str)
+        if exact_steps:
+            return exact_steps, [exact_desc]
+        parts = [part.strip() for part in _re.split(r"[,，、]", exact_desc) if part.strip()]
+        if len(parts) <= 1:
+            return [], [exact_desc] if exact_desc else []
+        combined_steps: list[dict] = []
+        descriptions: list[str] = []
+        seen_steps: set[tuple[str, str, str]] = set()
+        for part in parts:
+            part_steps, part_desc = _lookup_exact(part)
+            descriptions.extend(
+                str(item.get("step_desc") or "").strip()
+                for item in part_steps
+                if str(item.get("step_desc") or "").strip()
+            )
+            if not part_steps:
+                descriptions.append(part_desc or part)
+            for item in part_steps:
+                marker = (
+                    str(item.get("step_id") or "").strip().casefold(),
+                    str(item.get("step_desc") or "").strip().casefold(),
+                    str(item.get("module") or "").strip().casefold(),
+                )
+                if marker in seen_steps:
+                    continue
+                seen_steps.add(marker)
+                combined_steps.append(item)
+        return combined_steps, _dedup_list(descriptions)
+
     for cand in candidates:
         if not cand:
             continue
@@ -2783,7 +2820,8 @@ def _build_mask_meta(product: str = "") -> dict:
         if not clean_tail:
             continue
 
-        matched_steps, step_desc_val = _lookup_steps(clean_tail)
+        matched_steps, step_desc_values = _lookup_steps(clean_tail)
+        step_desc_val = ", ".join(step_desc_values) or clean_tail
         step_ids = _dedup_list([str(x.get("step_id") or "").strip() for x in matched_steps if str(x.get("step_id") or "").strip()])
         modules = _dedup_list([str(x.get("module") or "").strip() for x in matched_steps if str(x.get("module") or "").strip()])
 
@@ -2806,14 +2844,21 @@ def _build_mask_meta(product: str = "") -> dict:
                     "modules": [mod] if mod else [],
                     "function_step": desc,
                 })
-        else:
+        matched_desc_keys = {
+            str(group.get("step_desc") or "").strip().casefold()
+            for group in groups
+            if str(group.get("step_desc") or "").strip()
+        }
+        for desc in step_desc_values or [step_desc_val]:
+            if desc.casefold() in matched_desc_keys:
+                continue
             groups.append({
-                "step_desc": step_desc_val,
+                "step_desc": desc,
                 "step_id": "",
                 "step_ids": [],
                 "module": "",
                 "modules": [],
-                "function_step": step_desc_val,
+                "function_step": desc,
             })
 
         entry = {
@@ -2822,7 +2867,7 @@ def _build_mask_meta(product: str = "") -> dict:
             "step_id": step_ids[0] if len(step_ids) == 1 else "",
             "step_ids": step_ids,
             "function_step": step_desc_val,
-            "function_steps": [step_desc_val],
+            "function_steps": step_desc_values or [step_desc_val],
             "module": modules[0] if len(modules) == 1 else "",
             "modules": modules,
             "groups": groups,
@@ -3081,7 +3126,10 @@ def _step_process_columns_for_param(param: str, metas: dict,
             if sid and sid.casefold() not in seen_ids:
                 seen_ids.add(sid.casefold())
                 ids.append(sid)
-    if fallback_desc and fallback_desc.casefold() not in seen_descs:
+    # groups carry the authoritative per-step descriptions.  A composite MASK
+    # fallback ("A, B") must not be appended as a third synthetic description
+    # after groups already supplied A and B individually.
+    if not descs and fallback_desc and fallback_desc.casefold() not in seen_descs:
         descs.append(fallback_desc)
     return {"step_id": "\n".join(ids), "step_desc": "\n".join(descs)}
 

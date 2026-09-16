@@ -819,6 +819,67 @@ def test_mask_process_columns_resolves_step_id_and_module_from_vehicle_matching(
     assert cols == {"step_id": "PH210300", "step_desc": "GATE_PHOTO"}
 
 
+def test_mask_composite_step_desc_keeps_every_comma_delimited_step(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        "product,step_id,step_desc,module\n"
+        "proda,A100,PHOTO_LITHO,PHOTO\n"
+        "proda,A200,PHOTO_ETCH,ETCH\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    monkeypatch.setattr(
+        splittable,
+        "_mltable_schema_columns",
+        lambda *args, **kwargs: ["MASK_PHOTO_LITHO, PHOTO_ETCH"],
+    )
+
+    meta = splittable._build_mask_meta("ML_TABLE_PRODA")
+    entry = meta["MASK_PHOTO_LITHO, PHOTO_ETCH"]
+
+    assert entry["step_desc"] == "PHOTO_LITHO, PHOTO_ETCH"
+    assert entry["step_ids"] == ["A100", "A200"]
+    assert [group["step_desc"] for group in entry["groups"]] == ["PHOTO_LITHO", "PHOTO_ETCH"]
+    assert splittable._step_process_columns_for_param(
+        "MASK_PHOTO_LITHO, PHOTO_ETCH", {"mask": meta}
+    ) == {"step_id": "A100\nA200", "step_desc": "PHOTO_LITHO\nPHOTO_ETCH"}
+
+
+def test_mask_real_step_desc_with_comma_wins_before_composite_split(tmp_path, monkeypatch):
+    from routers import splittable
+
+    (tmp_path / "Vehicle_matching.csv").write_text(
+        'product,step_id,step_desc,module\nproda,A100,"ETCH, CLEAN",ETCH\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+    monkeypatch.setattr(
+        splittable, "_mltable_schema_columns", lambda *args, **kwargs: ["MASK_ETCH, CLEAN"]
+    )
+
+    entry = splittable._build_mask_meta("ML_TABLE_PRODA")["MASK_ETCH, CLEAN"]
+
+    assert entry["step_desc"] == "ETCH, CLEAN"
+    assert entry["step_ids"] == ["A100"]
+    assert [group["step_desc"] for group in entry["groups"]] == ["ETCH, CLEAN"]
+
+
+def test_custom_mask_column_json_preserves_comma_in_column_name():
+    from routers import splittable
+
+    encoded = '["MASK_PHOTO_LITHO, PHOTO_ETCH","MASK_GATE"]'
+    columns = ["MASK_PHOTO_LITHO, PHOTO_ETCH", "MASK_GATE", "MASK_UNUSED"]
+
+    assert splittable._select_columns(columns, "", "", custom_cols=encoded) == columns[:2]
+    key = splittable._split_view_cache_key(
+        "ML_TABLE_PRODA", "A1001", "1,2", "", "", "all", "all", "", encoded
+    )
+    assert key[-1] == '["MASK_PHOTO_LITHO, PHOTO_ETCH","MASK_GATE"]'
+
+
 def test_mask_process_columns_fallback_when_not_in_vehicle_matching(tmp_path, monkeypatch):
     from routers import splittable
 

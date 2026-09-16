@@ -1691,7 +1691,9 @@ def _split_view_cache_key(product: str, root_lot_id: str, wafer_ids: str, prefix
                           custom_name: str, view_mode: str, history_mode: str,
                           fab_lot_id: str, custom_cols: str) -> tuple:
     canonical_product = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip()
-    cleaned_custom_cols = ",".join(_clean_custom_columns(str(custom_cols or "").split(","))) if custom_cols else ""
+    cleaned_custom_cols = json.dumps(
+        _parse_custom_columns(custom_cols), ensure_ascii=False, separators=(",", ":")
+    ) if custom_cols else ""
     return (
         canonical_product,
         str(root_lot_id or "").strip(),
