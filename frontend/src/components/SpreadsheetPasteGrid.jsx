@@ -49,6 +49,7 @@ export default function SpreadsheetPasteGrid({
   minRows=DEFAULT_MIN_ROWS,
   maxRows=DEFAULT_MAX_ROWS,
   maxHeight=365,
+  borderRadius=7,
   minTableWidth=560,
 }){
   const names=(columns||[]).map(String);
@@ -82,7 +83,7 @@ export default function SpreadsheetPasteGrid({
     commit(next);
   };
 
-  return <div style={{overflow:"auto",maxHeight,border:"1px solid var(--border)",borderRadius:7,background:"var(--bg-primary)"}}>
+  return <div style={{overflow:"auto",maxHeight,border:"1px solid var(--border)",borderRadius,background:"var(--bg-primary)"}}>
     <table aria-label={ariaLabel} style={{width:"100%",minWidth:minTableWidth,tableLayout:"fixed",borderCollapse:"separate",borderSpacing:0,fontSize:12}}>
       <colgroup>{showRowNumbers&&<col style={{width:42}}/>}{names.map(name=><col key={name} style={name===colorColumn?{width:"34%"}:undefined}/>)}</colgroup>
       <thead><tr>

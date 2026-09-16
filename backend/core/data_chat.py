@@ -20,7 +20,9 @@ def _remember(result, previous):
         state["table"] = tool["table"]
     if "chart_result" in tool:
         state["chart_result"] = tool["chart_result"]
-    elif tool.get("feature") not in {None, "chart"}:
+        if tool.get("feature") == "chart":
+            state.pop("pending_report_id", None)
+    elif tool.get("feature") not in {None, "chart", "report.template"}:
         state.pop("chart_result", None)
         state.pop("definition_code", None)
     if tool.get("definition_code"):
@@ -125,7 +127,8 @@ def extract_execution_trace(prompt: str, result: dict) -> dict:
             f"조회 항목: {'PC 커스텀 세트' if custom else 'KNOB 전체 및 웨이퍼 계획'}",
             "S0/S1 배정 규칙 적용 및 검증",
         ]
-        trace["query"] = f"view_split(product='{clean_prod or 'PRODA'}', root_lot_id='{root or lot_id}', prefix='KNOB'{f', custom_name=\"{custom}\"' if custom else ''})"
+        custom_arg = f', custom_name="{custom}"' if custom else ""
+        trace["query"] = f"view_split(product='{clean_prod or 'PRODA'}', root_lot_id='{root or lot_id}', prefix='KNOB'{custom_arg})"
     elif "teg" in str(feature):
         veh = product if "VH_" in product else f"VH_{clean_prod or 'PRODB'}"
         teg_names = context.get("teg_names") or ["TEG"]
@@ -159,7 +162,8 @@ def extract_execution_trace(prompt: str, result: dict) -> dict:
             f"활성 이슈 및 모니터링 랏 필터{f' (제품: {clean_prod})' if clean_prod else ''}",
             "우선순위 및 미해결 항목 추출",
         ]
-        trace["query"] = f"tracker.list_issues({f'product=\"{clean_prod}\"' if clean_prod else ''})"
+        product_arg = f'product="{clean_prod}"' if clean_prod else ""
+        trace["query"] = f"tracker.list_issues({product_arg})"
     elif "watchlist" in str(feature):
         trace["action"] = "관심 랏 모니터링"
         trace["intent"] = "사용자 등록 관심 랏의 실시간 위치 및 공정 상태 확인"
@@ -177,7 +181,8 @@ def extract_execution_trace(prompt: str, result: dict) -> dict:
             "공정 모듈 인폼 스레드 검색",
             f"최신 변경점 알림 추출{f' (대상 랏: {lot_id})' if lot_id else ''}",
         ]
-        trace["query"] = f"informs.list({f'lot_id=\"{lot_id}\"' if lot_id else 'limit=20'})"
+        lot_arg = f'lot_id="{lot_id}"' if lot_id else "limit=20"
+        trace["query"] = f"informs.list({lot_arg})"
     elif "dashboard" in str(feature):
         trace["action"] = "대시보드 지표 요약"
         trace["intent"] = "재공(WIP), 정체 랏, 수율/TAT 핵심 제조 운영 지표 종합 요약"
@@ -400,17 +405,26 @@ def execute(prompt, context, request, history=None):
 
     context = deepcopy({key: value for key, value in context.items() if key in {
         "definition_code", "columns", "product", "root_lot_id", "lot_id", "fab_lot_id", "custom_name", "table", "chart_result", "last_action", "last_feature", "params",
-        "pending_split_id", "split_instruction", "teg_names", "teg_product", "teg_context",
+        "pending_split_id", "split_instruction", "pending_report_id", "report_template_id", "teg_names", "teg_product", "teg_context",
     }})
+    from core import data_chat_report
+    report_result = data_chat_report.handle(text, context, request)
+    if report_result is not None:
+        return _finish(text, report_result, context)
     from core import data_chat_split
     split_result = data_chat_split.handle(text, context, request)
     if split_result is not None:
         return _finish(text, split_result, context)
-    from core import data_chat_teg
-    teg_result = data_chat_teg.dispatch(text, context, request)
-    if teg_result is not None:
-        return _finish(text, teg_result, context)
     visual = bool(re.search(r"차트|그래프|[xy]\s*축|폰트|font|글꼴|높이|너비|범례|색상|막대|산점|꺾은선|키워|줄여|크게|작게", text, re.I))
+    # A column named ``teg`` or ``radius`` in an already displayed TEG table
+    # is a chart axis, not a new TEG lookup. Keep the same-screen artifact
+    # editing path ahead of the domain dispatcher in that case.
+    chart_followup = visual and bool(context.get("definition_code") or context.get("chart_result") or context.get("table"))
+    from core import data_chat_teg
+    if not chart_followup:
+        teg_result = data_chat_teg.dispatch(text, context, request)
+        if teg_result is not None:
+            return _finish(text, teg_result, context)
     feature_explicit = bool(re.search(r"랏\s*관리|lot\s*manage|대시보드|dashboard|스플릿|splittable|split\s*table|위치|어디", text, re.I))
     if visual and not feature_explicit and context.get("last_action") != "dashboard.charts" and not context.get("definition_code") and (context.get("chart_result") or context.get("table")):
         try:
@@ -503,6 +517,8 @@ def _feature_plan(text, context, history, features):
     from routers import splittable
     from core import llm_adapter
     folded = text.lower()
+    if context.get("definition_code") and re.search(r"차트|그래프|chart|[xy]\s*축|폰트|font|글꼴|높이|너비|범례|색상|막대|산점|꺾은선|키워|줄여|크게|작게|q\d|sql|추출", folded) and not re.search(r"랏\s*관리|lot\s*manage|대시보드|dashboard|스플릿|splittable|위치|어디", folded):
+        return "", {}
     params = dict(context.get("params") or {})
     if context.get("product"):
         params["product"] = context["product"]
@@ -684,7 +700,7 @@ def _execute_data(prompt, context, request):
     lot_tokens = extract_lot_tokens(text, products=None)
     location = bool(re.search(r"어디|위치|현재\s*공정|지금.*공정", folded))
     split = bool(re.search(r"스플릿|split\s*table|splittable|custom\s*set|커스텀|knob|노브", folded))
-    chart_task = bool(re.search(r"차트|chart|그래프|[xy]\s*축|font|폰트|글꼴|q\d|root[ _-]*lot|tkout_time|sql|추출", folded))
+    chart_task = bool(re.search(r"차트|chart|그래프|[xy]\s*축|font|폰트|글꼴|높이|너비|범례|색상|막대|산점|꺾은선|키워|줄여|크게|작게|q\d|root[ _-]*lot|tkout_time|sql|추출", folded))
     if code and chart_task and not (split or location):
         parsed = parse_chart_builder_definition(code)
         run_requested = bool(re.search(r"실행|추출|조회해|그려|생성|보여", folded))

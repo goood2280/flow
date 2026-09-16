@@ -13,6 +13,7 @@ const definitions = [
   { key: "dashboard", label: "대시보드", icon: "📊", group: "data", layout: "analysis", scrollMode: "locked", helpId: "dashboard", defaultEnabled: true, load: () => import("../pages/My_Dashboard") },
   { key: "splittable", label: "스플릿 테이블", icon: "🗂️", group: "data", layout: "explorer", helpId: "splittable", defaultEnabled: true, subtabs: [{ key: "view", label: "View" }, { key: "history", label: "History" }], load: () => import("../pages/My_SplitTable") },
   { key: "lotmanage", label: "랏 관리", icon: "🏷️", group: "data", layout: "explorer", helpId: "lotmanage", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_LotManagement") },
+  { key: "productwiki", label: "제품_Wiki", icon: "📖", group: "data", layout: "workboard", helpId: "productwiki", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_ProductWiki") },
   { key: "ramcache", label: "캐시 관리", icon: "🧠", group: "data", layout: "admin", helpId: "ramcache", defaultEnabled: false, load: () => import("../pages/My_RamCache") },
   { key: "matchfill", label: "매칭 채우기", icon: "🧩", group: "data", layout: "workflow", helpId: "matchfill", defaultEnabled: false, load: () => import("../pages/My_MatchFill") },
 

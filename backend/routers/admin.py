@@ -152,7 +152,7 @@ LLM_ALLOWED_PROVIDERS = set(LLM_PROVIDER_DEFAULTS)
 LLM_NAMED_PRESETS: List[Dict[str, Any]] = [
     {
         "key": "gemma4_internal", "label": "Gemma4 (사내)",
-        "description": "Gemma4-260430 · 관리자 전용 · 최근 60초 공용 30회. URL·credential key·Send-System-Name을 별도로 저장합니다.",
+        "description": "Gemma4-260430 · 관리자 전용 · 최근 60초 공용 25회. URL·credential key·Send-System-Name을 별도로 저장합니다.",
         "provider": "gemma4", "model": "Gemma4-260430", "auth_mode": "dep_ticket",
         "format": "openai", "timeout_s": 60, "is_default": False,
     },

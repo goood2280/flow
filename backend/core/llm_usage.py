@@ -1,4 +1,4 @@
-"""Shared sliding-window budget: at most 30 provider attempts per 60 seconds."""
+"""Shared sliding-window budget: at most 25 provider attempts per 60 seconds."""
 from contextlib import contextmanager
 import json
 import math
@@ -11,6 +11,7 @@ from core.utils import save_json
 
 _LOCK = threading.Lock()
 WINDOW_SECONDS = 60
+MAX_MINUTE_CALLS = 25
 
 
 def _path():
@@ -19,9 +20,9 @@ def _path():
 
 def minute_limit():
     try:
-        return max(0, min(30, int(os.environ.get("FLOW_LLM_MINUTE_CALL_LIMIT", "30"))))
+        return max(0, min(MAX_MINUTE_CALLS, int(os.environ.get("FLOW_LLM_MINUTE_CALL_LIMIT", str(MAX_MINUTE_CALLS)))))
     except ValueError:
-        return 30
+        return MAX_MINUTE_CALLS
 
 
 def _read(path, now):
@@ -77,7 +78,7 @@ def snapshot():
     try:
         now = time.time()
         attempts = _read(_path(), now)
-        retry = max(1, math.ceil(attempts[0] + WINDOW_SECONDS - now)) if attempts and len(attempts) >= limit else 0
+        retry = max(1, math.ceil(attempts[len(attempts) - limit] + WINDOW_SECONDS - now)) if limit and len(attempts) >= limit else (WINDOW_SECONDS if not limit else 0)
         return {"minute_call_limit": limit, "minute_calls_used": len(attempts),
                 "minute_calls_remaining": max(0, limit - len(attempts)),
                 "window_seconds": WINDOW_SECONDS, "retry_after_s": retry}
@@ -94,8 +95,9 @@ def reserve_attempt():
         with _store_lock(path):
             now = time.time()
             attempts = _read(path, now)
-            if len(attempts) >= minute_limit():
-                retry = max(1, math.ceil(attempts[0] + WINDOW_SECONDS - now)) if attempts else WINDOW_SECONDS
+            limit = minute_limit()
+            if len(attempts) >= limit:
+                retry = max(1, math.ceil(attempts[len(attempts) - limit] + WINDOW_SECONDS - now)) if limit else WINDOW_SECONDS
                 return f"llm minute call limit reached; retry after {retry}s"
             save_json(path, {"attempts": [*attempts, now]})
         return ""

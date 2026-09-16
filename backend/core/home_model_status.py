@@ -1,6 +1,6 @@
 """Status without endpoints, credentials or provider response bodies."""
 import time
-from core import llm_adapter
+from core import llm_adapter, llm_usage
 
 
 def snapshot():
@@ -17,4 +17,4 @@ def snapshot():
         status, message = "connected", "최근 모델 응답을 확인했습니다."
     return {"status": status, "message": message, "model": cfg.get("model", ""),
             "provider": cfg.get("provider", ""), "last_check_at": health.get("last_check_at", 0),
-            "last_latency_ms": health.get("last_latency_ms", 0)}
+            "last_latency_ms": health.get("last_latency_ms", 0), "usage": llm_usage.snapshot()}

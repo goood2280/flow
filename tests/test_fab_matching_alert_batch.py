@@ -2,6 +2,8 @@ import csv
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from core import fab_matching_alerts as alerts
 from core import valve_step_advisor
 
@@ -32,6 +34,101 @@ def _write_csv(path, columns, rows):
         writer = csv.DictWriter(fp, fieldnames=columns)
         writer.writeheader()
         writer.writerows(rows)
+
+
+@pytest.mark.parametrize("name_column", ["product", "vehicle", "mask"])
+def test_shared_product_steps_are_known_to_both_products(tmp_path, monkeypatch, name_column):
+    _write_csv(tmp_path / alerts.VEHICLE_MATCHING_FILE,
+               [name_column, "step_id", "step_desc"], [
+                   {name_column: " prodA . prodB ", "step_id": "S1", "step_desc": "ETCH"},
+                   {name_column: "prodA", "step_id": "S2", "step_desc": "CLEAN"},
+               ])
+    monkeypatch.setattr(alerts, "PATHS", SimpleNamespace(db_root=tmp_path))
+    monkeypatch.setattr(alerts, "load_cfg", lambda: {"step_exceptions": []})
+    observations = [{"step_id": step, "ppid": "", "rows": 1, "n_lots": 1}
+                    for step in ["S1", "S2", "S3"]]
+    for product, expected in [("PRODA", ["S3"]), ("prodb", ["S2", "S3"]),
+                              ("prod", ["S1", "S2", "S3"])]:
+        produced = alerts._alerts_for_product(
+            {"product": product, "path": str(tmp_path), "root": "FAB"}, observations, [], [])
+        assert [row["step_id"] for row in produced if row["type"] == "unmatched_step"] == expected
+
+
+def test_vehicle_fallback_is_per_row_and_explicit_product_takes_precedence():
+    rows = [
+        {"product": "prodA", "vehicle": "legacy", "step_id": "S1", "step_desc": "ETCH"},
+        {"product": "", "vehicle": "prodA.prodB", "step_id": "S2", "step_desc": "CLEAN"},
+        {"product": "prodB", "vehicle": "prodA", "step_id": "S3", "step_desc": "PHOTO"},
+    ]
+    assert alerts._step_desc_from_rows(rows, "prodA", "S2") == "CLEAN"
+    assert alerts._step_desc_from_rows(rows, "prodA", "S3") == ""
+
+
+@pytest.mark.parametrize("name_column", ["product", "vehicle", "mask"])
+def test_match_step_writes_existing_columns_only(tmp_path, monkeypatch, name_column):
+    path = tmp_path / alerts.VEHICLE_MATCHING_FILE
+    columns = [name_column, "step_id", "step_desc", "module"]
+    _write_csv(path, columns, [])
+    monkeypatch.setattr(alerts, "PATHS", SimpleNamespace(db_root=tmp_path))
+    monkeypatch.setattr(alerts, "list_alerts", lambda: {"alerts": [
+        {"id": "new", "type": "unmatched_step", "product": "prodA", "step_id": "S1"}]})
+    monkeypatch.setattr(alerts, "_post_write", lambda *_args: {})
+    monkeypatch.setattr(alerts, "_append_decision", lambda _row: None)
+    monkeypatch.setattr(alerts, "request_scan", lambda: {})
+    alerts.apply_batch([{"id": "new", "type": "match_step", "step_desc": "ETCH"}])
+    after_columns, rows = alerts._read_csv(path)
+    assert after_columns == columns
+    assert rows == [{name_column: "prodA", "step_id": "S1", "step_desc": "ETCH", "module": ""}]
+
+
+def test_batch_rejects_shared_product_duplicate_without_writing(tmp_path, monkeypatch):
+    path = tmp_path / alerts.VEHICLE_MATCHING_FILE
+    _write_csv(path, ["product", "step_id", "step_desc"], [
+        {"product": "prodA.prodB", "step_id": "S1", "step_desc": "ETCH"}])
+    original = path.read_bytes()
+    monkeypatch.setattr(alerts, "PATHS", SimpleNamespace(db_root=tmp_path))
+    monkeypatch.setattr(alerts, "list_alerts", lambda: {"alerts": [
+        {"id": "stale", "type": "unmatched_step", "product": "prodB", "step_id": "S1"}]})
+    with pytest.raises(ValueError, match="이미 등록된 매칭"):
+        alerts.apply_batch([{"id": "stale", "type": "match_step", "step_desc": "CLEAN"}])
+    assert path.read_bytes() == original
+
+
+def test_ppid_classification_resolves_shared_step_and_preserves_header_casing(tmp_path, monkeypatch):
+    _write_csv(tmp_path / alerts.VEHICLE_MATCHING_FILE, ["product", "step_id", "step_desc"], [
+        {"product": "prodA.prodB", "step_id": "S1", "step_desc": "ETCH"}])
+    path = tmp_path / alerts.PPID_KNOB_FILE
+    columns = ["Feature_Name", "Function_Step", "Rule_Order", "Operator", "Value", "Category", "Use"]
+    _write_csv(path, columns, [dict(zip(columns, ["KNOB", "ETCH", "RO", "eq", "", "STD", "true"]))])
+    monkeypatch.setattr(alerts, "PATHS", SimpleNamespace(db_root=tmp_path))
+    monkeypatch.setattr(alerts, "list_alerts", lambda: {"alerts": [
+        {"id": "ppid", "type": "ro_ppid", "product": "prodB", "step_id": "S1", "ppid": "PP_NEW"}]})
+    monkeypatch.setattr(alerts, "_post_write", lambda *_args: {})
+    monkeypatch.setattr(alerts, "_append_decision", lambda _row: None)
+    monkeypatch.setattr(alerts, "request_scan", lambda: {})
+    alerts.apply_batch([{"id": "ppid", "type": "classify_ppid", "category": "NEW"}])
+    after_columns, rows = alerts._read_csv(path)
+    assert after_columns == columns
+    assert rows[0] == dict(zip(columns, ["KNOB", "ETCH", "R1", "eq", "PP_NEW", "NEW", "true"]))
+    assert alerts._mapping_context("prodB")["features_by_step"]["etch"]["KNOB"]["rules"][0]["value"] == "PP_NEW"
+
+
+@pytest.mark.parametrize("kind,filename,columns,extra", [
+    ("match_step", alerts.VEHICLE_MATCHING_FILE, ["product", "step_id"], {"step_desc": "ETCH"}),
+    ("classify_ppid", alerts.PPID_KNOB_FILE, ["feature_name", "value"], {"category": "A"}),
+    ("add_mask", alerts.MASK_INFO_FILE, ["reticle_id"], {"mask": "prodA"}),
+])
+def test_batch_rejects_missing_required_columns_without_schema_change(
+        tmp_path, monkeypatch, kind, filename, columns, extra):
+    path = tmp_path / filename
+    _write_csv(path, columns, [])
+    original = path.read_bytes()
+    alert_type = {"match_step": "unmatched_step", "classify_ppid": "ro_ppid", "add_mask": "missing_reticle"}[kind]
+    monkeypatch.setattr(alerts, "PATHS", SimpleNamespace(db_root=tmp_path))
+    monkeypatch.setattr(alerts, "list_alerts", lambda: {"alerts": [{"id": "new", "type": alert_type}]})
+    with pytest.raises(ValueError, match="열을 추가할 수 없습니다"):
+        alerts.apply_batch([{"id": "new", "type": kind, **extra}])
+    assert path.read_bytes() == original
 
 
 def test_batch_groups_versions_and_resolves_ppid_from_new_step(tmp_path, monkeypatch):
@@ -463,6 +560,29 @@ def test_saved_exception_hides_matching_steps_before_the_next_fab_scan(tmp_path,
     rows = alerts.list_alerts()["alerts"]
 
     assert [row["step_id"] for row in rows] == ["S2"]
+
+
+def test_shared_product_mapping_hides_stored_false_alarm_and_unblocks_ppid(tmp_path, monkeypatch):
+    _isolate_state(tmp_path, monkeypatch)
+    monkeypatch.setattr(alerts, "PATHS", SimpleNamespace(db_root=tmp_path))
+    _write_csv(tmp_path / alerts.VEHICLE_MATCHING_FILE, ["product", "step_id", "step_desc"], [
+        {"product": "prodA.prodB", "step_id": "S1", "step_desc": "ETCH"}])
+    monkeypatch.setattr(alerts, "_acks", dict)
+    monkeypatch.setattr(alerts, "_decided_ids", dict)
+    monkeypatch.setattr(alerts, "_recommendations", dict)
+    common = {"product": "prodB", "vehicle": "prodB", "step_id": "S1"}
+    monkeypatch.setattr(alerts, "_load_state", lambda: {
+        "alerts_by_product": {"PRODB": [
+            {**common, "id": "stale", "type": "unmatched_step"},
+            {**common, "id": "ppid", "type": "ro_ppid", "blocked_by_step": True},
+            {**common, "id": "missing", "type": "unmatched_step", "step_id": "S2"},
+        ]}, "products": [],
+    })
+    monkeypatch.setattr(alerts, "load_cfg", lambda: {"step_exceptions": []})
+    rows = {row["id"]: row for row in alerts.list_alerts()["alerts"]}
+    assert set(rows) == {"ppid", "missing"}
+    assert rows["ppid"]["step_desc"] == "ETCH"
+    assert rows["ppid"]["blocked_by_step"] is False
 
 
 def test_normalize_step_exceptions_keeps_the_four_supported_columns():

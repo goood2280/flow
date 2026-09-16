@@ -26,7 +26,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
   const[busy,setBusy]=useState(false);
   const[testBusy,setTestBusy]=useState(false);
   const[testPrompt,setTestPrompt]=useState("연결 확인입니다. 정상 수신했다면 확인완료 라고만 답하세요.");
-  const[policy,setPolicy]=useState({mode:"poc",admin_only:true,error_explanation_enabled:false,minute_call_limit:30});
+  const[policy,setPolicy]=useState({mode:"poc",admin_only:true,error_explanation_enabled:false,minute_call_limit:25});
   const[showToken,setShowToken]=useState(false);
   const cleanProvider=(provider)=>{
     const p=(provider||"generic").toString().trim();
@@ -207,7 +207,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
       POC 동안 LLM 실행은 관리자 요청에만 허용됩니다. 번역·런타임 오류 해석에는 LLM을 사용하지 않습니다. 데이터 검색·랏 위치·차트·SQL·추출에만 사용합니다. 연결 정보가 없는 provider는 계속 비활성 상태입니다.
     </div>
     <div style={{padding:"8px 10px",marginBottom:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:13,color:"var(--text-secondary)"}}>
-      정책 · 관리자 전용 · 오류 해석 꺼짐 · 최근 60초 공용 한도 {policy.minute_call_limit ?? 30}회
+      정책 · 관리자 전용 · 오류 해석 꺼짐 · 최근 60초 공용 한도 {policy.minute_call_limit ?? 25}회
       {policy.minute_calls_used!=null&&` · 최근 60초 ${policy.minute_calls_used}회 사용 / ${policy.minute_calls_remaining}회 남음`}
       {" · Sliding Window · 연결 확인·재시도도 횟수에 포함"}
     </div>

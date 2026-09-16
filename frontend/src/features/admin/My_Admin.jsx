@@ -493,7 +493,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["chat_prompts","데이터챗 추천 질문"],["mail_cfg","메일 API"],["qa","QA 점검"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["llm_cfg","LLM 설정"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["llm_cfg","LLM 설정"],["chat_prompts","데이터챗 추천 질문"],["qa","QA 점검"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -1015,7 +1015,7 @@ export default function My_Admin({user}){
 // 저장 즉시 /api/admin/page-admins 로 POST.
 // v9.0.3: 메시지 기능은 "문의함" 용어로 정리.
 const PAGE_IDS=[
-  ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","스플릿 테이블"],["lotmanage","랏 관리"],
+  ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","스플릿 테이블"],["lotmanage","랏 관리"],["productwiki","제품 위키"],
   ["lotrequest","랏 배정/요청"],["lotlocation","랏 현위치 확인"],
   ["tracker","ET 추적"],["inform","인폼 로그"],["meeting","회의관리"],["calendar","변경점 관리"],
   ["tablemap","테이블 맵"],["valve","매칭알람"],
@@ -1023,7 +1023,7 @@ const PAGE_IDS=[
 ];
 const PAGE_PRESETS=[
   {key:"read",label:"조회만",pages:[]},
-  {key:"ops",label:"운영관리",pages:["filebrowser","splittable","lotmanage","lotrequest","inform","tracker","calendar","meeting"]},
+  {key:"ops",label:"운영관리",pages:["filebrowser","splittable","lotmanage","productwiki","lotrequest","inform","tracker","calendar","meeting"]},
   {key:"all",label:"전체관리",pages:CANONICAL_PAGE_IDS},
 ];
 

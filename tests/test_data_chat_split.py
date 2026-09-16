@@ -150,6 +150,28 @@ def test_concurrent_approval_writes_one_batch(scenario):
     assert len(splittable._load_plan_data("PRODA")["history"]) == 8
 
 
+def test_old_preview_button_cannot_approve_new_proposal(scenario):
+    _, request = scenario
+    first = ask(COMMAND, {}, request)
+    second = ask(COMMAND.replace("ABB", "CCC"), first["context"], request)
+    stale = ask("승인 " + first["tool"]["approval"]["id"], second["context"], request)
+    assert not stale["ok"]
+    assert not splittable._plan_history_path("PRODA").exists()
+    current = ask("승인 " + second["tool"]["approval"]["id"], second["context"], request)
+    assert current["ok"]
+    assert splittable._load_plan_data("PRODA")["plans"]["LOT01|7|KNOB_M1_Split"]["value"] == "CCC"
+
+
+@pytest.mark.parametrize("text", [".", "!", ",", "...", " ", "승인하지 말고 설명해줘"])
+def test_punctuation_and_non_decisions_are_not_approval(scenario, monkeypatch, text):
+    from core import llm_adapter
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+    _, request = scenario
+    preview = ask(COMMAND, {}, request)
+    ask(text, preview["context"], request)
+    assert not splittable._plan_history_path("PRODA").exists()
+
+
 def test_real_http_preview_approve_and_unauthorized(scenario):
     app = FastAPI()
     @app.middleware("http")

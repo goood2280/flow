@@ -1,5 +1,6 @@
 from core import data_chat, llm_adapter, data_chat_features
 from routers import filebrowser, splittable
+import pytest
 
 
 def offline(monkeypatch):
@@ -50,3 +51,33 @@ def test_split_missing_lot_keeps_selected_product(monkeypatch):
     assert out["context"]["product"] == "PRODUCTA0"
     assert out["context"]["last_action"] == "splittable"
     assert out["tool"]["missing"] == ["lot"]
+
+
+@pytest.mark.parametrize("prompt,field,value", [("높이 600으로 바꿔줘", "height", 600), ("너비 900으로 바꿔줘", "width", 900)])
+def test_definition_appearance_followup_stays_on_chart(monkeypatch, prompt, field, value):
+    offline(monkeypatch)
+    monkeypatch.setattr(data_chat_features, "execute_feature", lambda *a: pytest.fail("switched back to old feature"))
+    monkeypatch.setattr(filebrowser, "chart_builder_run", lambda *a, **k: pytest.fail("appearance edit reran data"))
+    code = "Q1\nTABLE = ET\nPRODUCT = PRODUCTA0\nSQL = SELECT lot, qty\n\nCHART\nTYPE = bar\nX = lot\nY = qty\n"
+    points = [{"x": "AZ11", "y": 12}]
+    context = {"last_action": "lot_management.table", "definition_code": code,
+               "columns": ["lot", "qty"], "chart_result": {"type": "bar", "x": "lot", "y": "qty", "points": points}}
+    result = data_chat.execute(prompt, context, None)
+    assert result["tool"]["feature"] == "chart"
+    assert result["tool"]["chart_result"][field] == value
+    assert result["tool"]["chart_result"]["points"] == points
+
+
+def test_teg_table_axis_name_is_not_routed_back_to_teg(monkeypatch):
+    offline(monkeypatch)
+    monkeypatch.setattr(data_chat_features, "execute_feature", lambda *a: pytest.fail("chart follow-up became feature lookup"))
+    context = {
+        "last_action": "teg.coordinates",
+        "table": {"rows": [{"teg": "TEG_GATE", "teg_w": 2.4}], "columns": ["teg", "teg_w"]},
+        "chart_result": {},
+        "product": "VH_PRODA",
+        "teg_names": ["TEG_GATE"],
+    }
+    result = data_chat.execute("x축 teg y축 teg_w 막대 차트 그려줘", context, None)
+    assert result["tool"]["feature"] == "chart"
+    assert result["tool"]["chart_result"]["points"] == [{"x": "TEG_GATE", "y": 2.4}]

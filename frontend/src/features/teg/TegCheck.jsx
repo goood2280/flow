@@ -11,6 +11,7 @@ import { putJson, sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
 import { Button, Card, DataTable, EmptyState, LinkBtn, Pill, Select, TabStrip, Textarea } from "../../components/UXKit";
+import ZoomPanSvg from "../../components/ZoomPanSvg";
 import TegMapfileVersionComments from "./TegMapfileVersionComments";
 
 const API = "/api/teg-map";

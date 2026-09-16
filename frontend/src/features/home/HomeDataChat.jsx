@@ -30,6 +30,7 @@ const FEATURE_PAGE_MAP = {
   "dashboard.stuck_lots": "dashboard",
   "dashboard.charts": "dashboard",
   chart: "chartbuilder",
+  "report.template": "templatereport",
   teg: "tegmap",
   "teg.locations": "tegmap",
   "teg.coordinates": "tegmap",
@@ -47,6 +48,7 @@ const FEATURE_PAGE_NAMES = {
   lot_management: "Lot 관리",
   dashboard: "대시보드",
   chart: "차트 빌더",
+  "report.template": "Template Report",
   teg: "TEG Map",
 };
 
@@ -254,6 +256,8 @@ function responseContext(previous, response) {
   if (table) next.table = table;
   if (tool.chart_result && typeof tool.chart_result === "object") next.chart_result = tool.chart_result;
   if (tool.definition_code) next.definition_code = tool.definition_code;
+  if (tool.template_code) next.template_code = tool.template_code;
+  if (tool.report_template && typeof tool.report_template === "object") next.report_template = tool.report_template;
   return next;
 }
 
@@ -427,6 +431,7 @@ function featureInfo(feature, tool) {
     "dashboard.stuck_lots": "📈",
     "dashboard.charts": "📈",
     chart: "📉",
+    "report.template": "📝",
     teg: "📍",
     "teg.locations": "📍",
     "teg.coordinates": "📍",
@@ -455,6 +460,7 @@ function featureInfo(feature, tool) {
     "dashboard.stuck_lots": "대시보드 정체 랏",
     "dashboard.charts": "대시보드 차트 목록",
     chart: "데이터 차트",
+    "report.template": "리포트 템플릿 초안",
     teg: "TEG 위치 및 좌표 조회",
     "teg.locations": "TEG 위치 조회",
     "teg.coordinates": "TEG 좌표 조회",
@@ -506,7 +512,8 @@ function ModelStatus() {
     <div className="home-data-chat__model-bar">
       <span>현재 모델 · {model.model || labels[model.status] || "확인 중"}</span>
       {model.model && <span>{labels[model.status] || "확인 불가"}</span>}
-      <button type="button" onClick={() => refresh(true)} disabled={checking}>{checking ? "검사 중…" : "연결 검사"}</button>
+      <button type="button" onClick={() => refresh(true)} disabled={checking || Number(model.usage?.minute_calls_remaining) <= 0}>{checking ? "검사 중…" : "연결 검사"}</button>
+      {model.usage && <span>분당 잔여 {model.usage.minute_calls_remaining ?? "—"}/{model.usage.minute_call_limit ?? "—"}</span>}
     </div>
   );
 }
@@ -793,10 +800,11 @@ function WorkspaceYieldMap({ tool, filterText = "" }) {
 }
 
 function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onDecision, loading, onNavigate, onExplore }) {
+  const [filterText, setFilterText] = useState("");
   if (!workspace || !workspace.tool) return null;
   const { feature, tool, lastUpdated, isMutated } = workspace;
-  const [filterText, setFilterText] = useState("");
   const info = featureInfo(feature, tool);
+  const approvalId = asText(tool.approval?.id).trim();
   const targetPage = FEATURE_PAGE_MAP[feature] || FEATURE_PAGE_MAP[tool.action];
   const pageName = FEATURE_PAGE_NAMES[feature] || FEATURE_PAGE_NAMES[tool.action] || "전체 화면";
 
@@ -834,12 +842,12 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
         </div>
 
         <div className="home-workspace__header-right">
-          {tool.approval?.status === "pending" && (
+          {tool.approval?.status === "pending" && approvalId && (
             <div className="home-workspace__actions-inline">
-              <button type="button" className="home-workspace__btn is-approve" disabled={loading} onClick={() => onDecision("승인하겠다 진행하겠다")}>
+              <button type="button" className="home-workspace__btn is-approve" disabled={loading} onClick={() => onDecision(`승인 ${tool.approval.id}`)}>
                 승인하고 반영
               </button>
-              <button type="button" className="home-workspace__btn is-cancel" disabled={loading} onClick={() => onDecision("취소")}>
+              <button type="button" className="home-workspace__btn is-cancel" disabled={loading} onClick={() => onDecision(`취소 ${tool.approval.id}`)}>
                 취소
               </button>
             </div>
@@ -847,6 +855,11 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
           {targetPage && onNavigate && (
             <button type="button" className="home-workspace__tool-btn" onClick={() => onNavigate(targetPage)} title={`${pageName} 페이지로 이동`}>
               ↗ {pageName}
+            </button>
+          )}
+          {feature === "chart" && onExplore && (
+            <button type="button" className="home-workspace__tool-btn" disabled={loading} onClick={() => onExplore("이 차트로 리포트 템플릿 만들어줘")}>
+              📝 리포트 템플릿 초안
             </button>
           )}
           <button type="button" className="home-workspace__tool-btn" onClick={onMaximize} title={isMaximized ? "분할 보기" : "전체 창으로 확대"}>
@@ -884,6 +897,19 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
           <div className="home-workspace__notices">
             {notices.map((notice) => <div key={notice}>{notice}</div>)}
           </div>
+        )}
+
+        {tool.report_template && (
+          <details className="home-workspace__report-template" style={{ width: "100%", boxSizing: "border-box" }}>
+            <summary>리포트 템플릿 초안</summary>
+            <div><strong>{tool.report_template.name || "Template Report"}</strong> · {(tool.report_template.pages || []).length || 1}페이지</div>
+            {(tool.report_template.pages || []).map((page, index) => (
+              <div key={page.id || index}>
+                {index + 1}. {page.title || `Page ${index + 1}`} · {(page.slots || []).filter((slot) => slot.kind === "chart" || !slot.kind).map((slot) => slot.chart_name || slot.chart_label || slot.chart_id || "차트").join(", ") || "차트 없음"}
+              </div>
+            ))}
+            {tool.template_code && <pre style={{ maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{tool.template_code}</pre>}
+          </details>
         )}
 
         {tool.chart_result && (
@@ -932,6 +958,7 @@ export default function HomeDataChat({ user, onNavigate }) {
   const conversationGenerationRef = useRef(0);
   const conversationAbortRef = useRef(null);
   const mutationTimerRef = useRef(null);
+  const submitLockRef = useRef(false);
 
   const loadSamplePrompts = async () => {
     try {
@@ -958,6 +985,7 @@ export default function HomeDataChat({ user, onNavigate }) {
     setConversations([]);
     setConversationError("");
     setConversationLoading(false);
+    submitLockRef.current = false;
     setPrompt("");
     setChatState(loadChatState(username));
     setActiveWorkspace(null);
@@ -1028,7 +1056,13 @@ export default function HomeDataChat({ user, onNavigate }) {
             isMutated: false,
           });
           setWorkspaceOpen(true);
+        } else {
+          setActiveWorkspace(null);
+          setWorkspaceOpen(false);
         }
+      } else {
+        setActiveWorkspace(null);
+        setWorkspaceOpen(false);
       }
     } catch (error) {
       if (generation === conversationGenerationRef.current && error?.name !== "AbortError") setConversationError("대화를 불러오지 못했습니다.");
@@ -1062,6 +1096,7 @@ export default function HomeDataChat({ user, onNavigate }) {
     setConversationLoading(false);
     setConversationError("");
     setLoading(false);
+    submitLockRef.current = false;
     setPrompt("");
     setActiveWorkspace(null);
     try { sessionStorage.removeItem(storageKeys(username).chartTransfer); } catch {}
@@ -1084,7 +1119,8 @@ export default function HomeDataChat({ user, onNavigate }) {
   const submit = async (event, decision = "") => {
     event?.preventDefault();
     const value = (decision || prompt).trim();
-    if (!admin || !value || loading || conversationLoading) return;
+    if (!admin || !value || loading || conversationLoading || submitLockRef.current) return;
+    submitLockRef.current = true;
 
     const requestVersion = requestVersionRef.current + 1;
     requestVersionRef.current = requestVersion;
@@ -1127,6 +1163,9 @@ export default function HomeDataChat({ user, onNavigate }) {
           };
         });
         setWorkspaceOpen(true);
+      } else if (decision) {
+        setActiveWorkspace(null);
+        setWorkspaceOpen(false);
       }
 
       setChatState((current) => ({
@@ -1143,7 +1182,7 @@ export default function HomeDataChat({ user, onNavigate }) {
       }));
       refreshConversations();
 
-      if (tool && !response?.error) {
+      if (tool && response?.ok !== false && !response?.error) {
         sf("/api/home-agent/sample-prompts/record-success", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1165,6 +1204,7 @@ export default function HomeDataChat({ user, onNavigate }) {
       refreshConversations();
     } finally {
       if (requestVersionRef.current === requestVersion) setLoading(false);
+      if (requestVersionRef.current === requestVersion) submitLockRef.current = false;
     }
   };
 
@@ -1293,12 +1333,12 @@ export default function HomeDataChat({ user, onNavigate }) {
                         </div>
                       )}
 
-                      {msgTool.approval?.status === "pending" && (
+                      {msgTool.approval?.status === "pending" && asText(msgTool.approval?.id).trim() && (
                         <div className="home-data-chat__actions" aria-label="스플릿 변경 승인">
-                          <button type="button" disabled={loading} onClick={() => submit(null, "승인하겠다 진행하겠다")}>
+                          <button type="button" disabled={loading} onClick={() => submit(null, `승인 ${msgTool.approval.id}`)}>
                             승인하고 반영
                           </button>
-                          <button type="button" disabled={loading} onClick={() => submit(null, "취소")}>
+                          <button type="button" disabled={loading} onClick={() => submit(null, `취소 ${msgTool.approval.id}`)}>
                             취소
                           </button>
                         </div>

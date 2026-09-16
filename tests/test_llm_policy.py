@@ -8,18 +8,65 @@ from core import llm_adapter
 from routers import llm, s3_ingest, template_report
 
 
-def test_shared_minute_budget_never_exceeds_30_concurrent_attempts(monkeypatch):
+def test_shared_minute_budget_never_exceeds_25_concurrent_attempts(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from core import llm_usage
     monkeypatch.delenv("FLOW_LLM_MINUTE_CALL_LIMIT", raising=False)
     with ThreadPoolExecutor(max_workers=8) as pool:
         outcomes = list(pool.map(lambda _: llm_usage.reserve_attempt(), range(50)))
-    assert outcomes.count("") == 30
-    assert llm_usage.snapshot()["minute_calls_used"] == 30
+    assert outcomes.count("") == 25
+    assert llm_usage.snapshot()["minute_calls_used"] == 25
     assert llm_usage.snapshot()["minute_calls_remaining"] == 0
     assert "limit reached" in llm_usage.reserve_attempt()
     # A new process reads the same state; there is no in-memory quota reset.
-    assert len(llm_usage._read(llm_usage._path(), llm_usage.time.time())) == 30
+    assert len(llm_usage._read(llm_usage._path(), llm_usage.time.time())) == 25
+
+
+@pytest.mark.parametrize("configured,expected", [("30", 25), ("100", 25), ("bad", 25), ("8", 8), ("-1", 0)])
+def test_minute_budget_configuration_cannot_exceed_cap(monkeypatch, configured, expected):
+    from core import llm_usage
+    monkeypatch.setenv("FLOW_LLM_MINUTE_CALL_LIMIT", configured)
+    assert llm_usage.minute_limit() == expected
+
+
+def test_lowered_budget_waits_until_enough_reservations_expire(monkeypatch):
+    from core import llm_usage
+    monkeypatch.setattr(llm_usage.time, "time", lambda: 1000.0)
+    assert llm_usage.reserve_attempt() == ""
+    monkeypatch.setattr(llm_usage.time, "time", lambda: 1010.0)
+    assert llm_usage.reserve_attempt() == ""
+    monkeypatch.setenv("FLOW_LLM_MINUTE_CALL_LIMIT", "1")
+    assert llm_usage.snapshot()["retry_after_s"] == 60
+    assert "retry after 60s" in llm_usage.reserve_attempt()
+    monkeypatch.setattr(llm_usage.time, "time", lambda: 1060.0)
+    assert "retry after 10s" in llm_usage.reserve_attempt()
+    monkeypatch.setattr(llm_usage.time, "time", lambda: 1070.0)
+    assert llm_usage.reserve_attempt() == ""
+
+
+def test_three_processes_share_one_provider_budget(tmp_path, monkeypatch):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    counter = tmp_path / "shared.json"
+    script = """from pathlib import Path
+import sys
+from core import llm_usage
+llm_usage._path = lambda: Path(sys.argv[1])
+print(sum(llm_usage.reserve_attempt() == '' for _ in range(15)))
+"""
+    env = {**os.environ, "PYTHONPATH": str(Path(llm_adapter.__file__).resolve().parents[1]),
+           "FLOW_LLM_MINUTE_CALL_LIMIT": "25"}
+    workers = [subprocess.Popen([sys.executable, "-c", script, str(counter)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env) for _ in range(3)]
+    accepted = 0
+    for worker in workers:
+        output, error = worker.communicate(timeout=30)
+        assert worker.returncode == 0, error
+        accepted += int(output.strip())
+    assert accepted == 25
+    assert len(json.loads(counter.read_text("utf-8"))["attempts"]) == 25
 
 
 def test_minute_budget_slides_and_fails_closed_if_corrupt(monkeypatch):
@@ -137,6 +184,16 @@ def test_llm_adapter_allows_connected_provider_for_admin_request(monkeypatch):
     assert result["ok"] is True
     assert result["text"] == "allowed"
     assert calls == [True]
+
+
+def test_template_assistant_request_is_allowed_by_task_policy(monkeypatch):
+    monkeypatch.setattr(llm_adapter, "_raw_config", _connected_config)
+    monkeypatch.setattr(llm_adapter.urllib.request, "urlopen", lambda *a, **k: _Response())
+    llm_adapter.reset_llm_health()
+    with llm_adapter.request_execution_scope({"username": "admin", "role": "admin"}, "/api/template-report/assistant"):
+        assert llm_adapter.complete("make a report")["ok"]
+    with llm_adapter.request_execution_scope({"username": "admin", "role": "admin"}, "/api/unapproved-task"):
+        assert not llm_adapter.complete("unapproved")["meta"]["invoked"]
 
 
 def test_error_explain_endpoint_never_calls_llm(monkeypatch):

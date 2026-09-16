@@ -33,8 +33,8 @@ def test_ppid_scan_proposes_product_step_and_vehicle_desc_in_configured_order(mo
     from core import matching_fill as matching
 
     store = {"settings": {}, "proposals": {}}
-    knob_columns = ["feature_name", "function_step", "value"]
-    knob_rows = [{"feature_name": "10.0 CONTACT", "function_step": "CONTACT", "value": "PP_A"}]
+    knob_columns = ["feature_name", "function_step", "value", "product", "step_id", "step_desc"]
+    knob_rows = [{"feature_name": "10.0 CONTACT", "function_step": "CONTACT", "value": "PP_A", "product": "", "step_id": "", "step_desc": ""}]
     vehicle_columns = ["product", "step_id", "step_desc"]
     vehicle_rows = [
         {"product": "PRODB", "step_id": "S10", "step_desc": "EARLY"},
@@ -71,8 +71,8 @@ def test_mask_scan_proposes_product_step_and_vehicle_desc(monkeypatch):
     from core import matching_fill as matching
 
     store = {"settings": {}, "proposals": {}}
-    mask_columns = ["reticle_id", "mask_version"]
-    mask_rows = [{"reticle_id": "RET_A", "mask_version": "M3"}]
+    mask_columns = ["reticle_id", "mask_version", "product", "step_id", "step_desc"]
+    mask_rows = [{"reticle_id": "RET_A", "mask_version": "M3", "product": "", "step_id": "", "step_desc": ""}]
     vehicle_columns = ["product", "step_id", "step_desc"]
     vehicle_rows = [{"product": "PRODA", "step_id": "S20", "step_desc": "PHOTO"}]
     monkeypatch.setattr(
@@ -100,19 +100,89 @@ def test_mask_scan_proposes_product_step_and_vehicle_desc(monkeypatch):
     assert step_desc["rows"][0]["scoped"] == ["PRODA · S20 · PHOTO"]
 
 
+def test_mask_native_two_column_schema_fills_existing_mask_with_product(monkeypatch):
+    from core import matching_fill as matching
+
+    store = {"settings": {}, "proposals": {}}
+    mask_columns = ["reticle_id", "mask"]
+    mask_rows = [{"reticle_id": "RET_A", "mask": ""}]
+    vehicle_columns = ["vehicle", "step_id", "step_desc"]
+    vehicle_rows = [{"vehicle": "PRODA", "step_id": "S20", "step_desc": "PHOTO"}]
+    monkeypatch.setattr(matching, "_read_csv", lambda target: (
+        (vehicle_columns, vehicle_rows) if target == "vehicle" else (mask_columns, mask_rows)
+    ))
+    monkeypatch.setattr(matching, "list_products", lambda target: ["PRODA"])
+    monkeypatch.setattr(matching, "_fab_reticle_step_index", lambda *args, **kwargs: {"ret_a": ["S20"]})
+    monkeypatch.setattr(matching, "settings", lambda: {"prefix_rules": [], "module_rules": [], "max_files_per_product": 0})
+    monkeypatch.setattr(matching, "_load_store", lambda: store)
+    monkeypatch.setattr(matching, "_save_store", lambda data: None)
+
+    proposal = matching.scan("mask", column="mask")
+    assert proposal["rows"][0]["proposed"] == "PRODA"
+    assert proposal["add_column"] is False
+
+
+def test_vehicle_only_schema_fills_existing_vehicle_column(monkeypatch):
+    from core import matching_fill as matching
+
+    store = {"settings": {}, "proposals": {}}
+    columns = ["vehicle", "step_id"]
+    rows = [{"vehicle": "", "step_id": "S20"}]
+    monkeypatch.setattr(matching, "_read_csv", lambda target: (columns, rows))
+    monkeypatch.setattr(matching, "list_products", lambda target: ["PRODA"])
+    monkeypatch.setattr(matching, "_product_key_index", lambda *args, **kwargs: {("S20",)})
+    monkeypatch.setattr(matching, "settings", lambda: {"prefix_rules": [], "module_rules": [], "max_files_per_product": 0})
+    monkeypatch.setattr(matching, "_load_store", lambda: store)
+    monkeypatch.setattr(matching, "_save_store", lambda data: None)
+
+    proposal = matching.scan("vehicle", column="vehicle")
+    assert proposal["rows"][0]["proposed"] == "PRODA"
+    assert matching.get_proposal("vehicle", "vehicle") is proposal
+    assert proposal["column"] == "vehicle"
+
+
+@pytest.mark.parametrize("target,column,filename,source", [
+    ("mask", "mask", "mask_info.csv", "reticle_id,mask\nRET_A,\n"),
+    ("vehicle", "vehicle", "Vehicle_matching.csv", "vehicle,step_id,step_desc\n,S20,PHOTO\n"),
+])
+def test_native_product_column_scan_apply_preserves_schema(monkeypatch, tmp_path, target, column, filename, source):
+    from core import matching_fill as matching
+    from core import valve_alerts
+
+    path = tmp_path / filename
+    path.write_text(source, encoding="utf-8")
+    store = {"settings": {}, "proposals": {}}
+    monkeypatch.setattr(matching, "_db_root", lambda: tmp_path)
+    monkeypatch.setattr(matching, "list_products", lambda _target: ["PRODA", "PRODB"])
+    monkeypatch.setattr(matching, "_fab_reticle_step_index", lambda *args: {"ret_a": ["S20"]})
+    monkeypatch.setattr(matching, "_product_key_index", lambda *args: {("S20",)})
+    monkeypatch.setattr(matching, "settings", lambda: {"prefix_rules": [], "module_rules": [], "max_files_per_product": 0})
+    monkeypatch.setattr(matching, "_load_store", lambda: store)
+    monkeypatch.setattr(matching, "_save_store", lambda _data: None)
+    monkeypatch.setattr(valve_alerts, "_after_write", lambda *args: {})
+    original_columns, _ = matching._read_csv(target)
+    proposal = matching.scan(target, column=column)
+    result = matching.apply_proposal(target, column=column, expected_scanned_at=proposal["scanned_at"])
+    columns, rows = matching._read_csv(target)
+    assert columns == original_columns
+    assert rows[0][column] == "PRODA, PRODB"
+    assert result["added_column"] is False
+    assert matching.get_proposal(target, column)["applied"] is True
+
+
 def test_mask_target_reads_and_applies_mask_info_csv(monkeypatch, tmp_path):
     from core import matching_fill as matching
     from core import valve_alerts
 
     mask_info = tmp_path / "mask_info.csv"
     legacy_mask = tmp_path / "mask.csv"
-    mask_info.write_text("reticle_id,mask\nRET_A,MASK_A\n", encoding="utf-8")
+    mask_info.write_text("reticle_id,mask,product\nRET_A,MASK_A,\n", encoding="utf-8")
     legacy_mask.write_text("reticle_id,mask\nLEGACY,OLD\n", encoding="utf-8")
     monkeypatch.setattr(matching, "_db_root", lambda: tmp_path)
 
     columns, rows = matching._read_csv("mask")
     assert matching.TARGETS["mask"]["file"] == "mask_info.csv"
-    assert columns == ["reticle_id", "mask"]
+    assert columns == ["reticle_id", "mask", "product"]
     assert rows[0]["reticle_id"] == "RET_A"
 
     proposal = {
@@ -121,7 +191,7 @@ def test_mask_target_reads_and_applies_mask_info_csv(monkeypatch, tmp_path):
         "file": "mask_info.csv",
         "scanned_at": "2026-09-03T09:00:00",
         "applied": False,
-        "add_column": True,
+        "add_column": False,
         "rows": [{
             "i": 0, "status": "fill", "current": "", "proposed": "PRODA",
         }],
@@ -135,9 +205,64 @@ def test_mask_target_reads_and_applies_mask_info_csv(monkeypatch, tmp_path):
 
     columns, rows = matching._read_csv("mask")
     assert result["file"] == "mask_info.csv"
-    assert columns == ["product", "reticle_id", "mask"]
+    assert columns == ["reticle_id", "mask", "product"]
     assert rows[0]["product"] == "PRODA"
     assert legacy_mask.read_text(encoding="utf-8") == "reticle_id,mask\nLEGACY,OLD\n"
+
+
+def test_vehicle_lookup_treats_dotted_product_cell_as_two_products(monkeypatch):
+    from core import matching_fill as matching
+
+    monkeypatch.setattr(matching, "_read_csv", lambda target: (
+        ["product", "step_id", "step_desc"],
+        [{"product": "PRODA.PRODB", "step_id": "S10", "step_desc": "CONTACT"}],
+    ))
+    exact, fallback = matching._vehicle_step_desc_lookup()
+
+    assert exact[("proda", "s10")] == ("CONTACT", 0)
+    assert exact[("prodb", "s10")] == ("CONTACT", 0)
+    assert fallback == {}
+
+
+def test_apply_rejects_stale_proposal_for_missing_column(monkeypatch, tmp_path):
+    from core import matching_fill as matching
+
+    source = tmp_path / "mask_info.csv"
+    source.write_text("reticle_id,mask\nRET_A,MASK_A\n", encoding="utf-8")
+    proposal = {
+        "target": "mask", "column": "product", "file": source.name,
+        "scanned_at": "2026-09-03T09:00:00", "applied": False,
+        "rows": [{"i": 0, "status": "fill", "current": "", "proposed": "PRODA"}],
+    }
+    monkeypatch.setattr(matching, "get_proposal", lambda *args, **kwargs: proposal)
+    monkeypatch.setattr(matching, "_csv_path", lambda *args, **kwargs: source)
+
+    with pytest.raises(ValueError, match="열이 없어"):
+        matching.apply_proposal("mask", column="product", expected_scanned_at=proposal["scanned_at"])
+    assert source.read_text(encoding="utf-8") == "reticle_id,mask\nRET_A,MASK_A\n"
+
+
+def test_apply_preserves_mixed_case_header_and_marks_canonical_proposal(monkeypatch, tmp_path):
+    from core import matching_fill as matching
+    from core import valve_alerts
+
+    source = tmp_path / "Vehicle_matching.csv"
+    source.write_text("Product,step_id\n, S20\n", encoding="utf-8")
+    proposal = {
+        "target": "vehicle", "column": "product", "file": source.name,
+        "scanned_at": "2026-09-03T09:00:00", "applied": False,
+        "rows": [{"i": 0, "status": "fill", "current": "", "proposed": "PRODA"}],
+    }
+    store = {"proposals": {"vehicle:product": proposal}}
+    monkeypatch.setattr(matching, "get_proposal", lambda *args, **kwargs: proposal)
+    monkeypatch.setattr(matching, "_csv_path", lambda *args, **kwargs: source)
+    monkeypatch.setattr(matching, "_load_store", lambda: store)
+    monkeypatch.setattr(valve_alerts, "_after_write", lambda *args, **kwargs: {})
+    monkeypatch.setattr(matching, "_save_store", lambda data: None)
+
+    matching.apply_proposal("vehicle", column="product", expected_scanned_at=proposal["scanned_at"])
+    assert source.read_text(encoding="utf-8") == "Product,step_id\nPRODA, S20\n"
+    assert store["proposals"]["vehicle:product"]["applied"] is True
 
 
 def test_stale_mask_csv_proposal_is_hidden(monkeypatch):

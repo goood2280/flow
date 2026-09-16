@@ -100,6 +100,7 @@ export function canAccessTab(user, userTabs, tabKey) {
   // 랏 관리는 SplitTable의 LOT/CUSTOM/plan 흐름을 확장한 데이터 화면이다.
   // 기존 배포 사용자가 권한 재저장 전에도 기존 splittable 권한으로 접근한다.
   if (tabKey === "lotmanage" && granted.includes("splittable")) return true;
+  if (tabKey === "productwiki" && (isPageAdmin(user, tabKey) || granted.includes("splittable") || granted.includes("lotmanage"))) return true;
   // 차트생성은 기존 Dashboard/FileBrowser 권한 사용자가 권한 재저장 전에도 이용한다.
   if (tabKey === "chartbuilder" && (granted.includes("dashboard") || granted.includes("filebrowser"))) return true;
   // Template Report는 저장된 ChartBuilder 코드를 재사용한다. 기존 차트생성

@@ -1792,14 +1792,14 @@ def _chart_assistant_deterministic_operations(
             elif not day:
                 raise HTTPException(400, "변경할 root lot 값을 알려 주세요.")
 
-    width = explicit_size(("width", "넓이", "가로"))
+    width = explicit_size(("width", "넓이", "너비", "가로"))
     height = explicit_size(("height", "높이", "세로"))
     grow = any(word in folded for word in ("키워", "늘려", "크게", "확대"))
     shrink = any(word in folded for word in ("줄여", "작게", "축소"))
-    size_context = not font_context and any(word in folded for word in ("차트", "그래프", "width", "height", "넓이", "높이", "가로", "세로"))
+    size_context = not font_context and any(word in folded for word in ("차트", "그래프", "width", "height", "넓이", "너비", "높이", "가로", "세로"))
     if width is not None:
         set_chart("width", width)
-    elif size_context and (grow or shrink) and any(word in folded for word in ("width", "넓이", "가로")):
+    elif size_context and (grow or shrink) and any(word in folded for word in ("width", "넓이", "너비", "가로")):
         base = int(chart.get("width") or 1100)
         set_chart("width", round(base * (1.2 if grow else 0.8)))
     if height is not None:
@@ -1808,7 +1808,7 @@ def _chart_assistant_deterministic_operations(
         base = int(chart.get("height") or 600)
         set_chart("height", round(base * (1.2 if grow else 0.8)))
     if size_context and (grow or shrink) and width is None and height is None and not any(
-        word in folded for word in ("width", "height", "넓이", "높이", "가로", "세로")
+        word in folded for word in ("width", "height", "넓이", "너비", "높이", "가로", "세로")
     ):
         set_chart("width", round(int(chart.get("width") or 1100) * (1.2 if grow else 0.8)))
         set_chart("height", round(int(chart.get("height") or 600) * (1.2 if grow else 0.8)))

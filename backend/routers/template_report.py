@@ -39,6 +39,7 @@ from pydantic import BaseModel
 from core.auth import current_user, require_page_manager
 from core.chart_builder_definition import ChartBuilderDefinitionError, linked_chart_color_pairs, parse_chart_builder_definition
 from core.paths import PATHS
+from core.file_transaction import file_transaction
 from core.report_variables import (
     ReportVariableError,
     extract_variables,
@@ -793,6 +794,13 @@ def _save_slot(slot: TemplateSlotReq, page_index: int, history: dict, history_by
 
 @router.post("/templates")
 def save_template(req: TemplateSaveReq, user=Depends(current_user)):
+    return _save_template(req, user)
+
+
+def _save_template(req: TemplateSaveReq, user: dict, *, operation_id: str = ""):
+    """Canonical save; chat operation IDs are supplied only by server proposals."""
+    if operation_id and not re.fullmatch(r"[0-9a-f]{32}", operation_id):
+        raise HTTPException(400, "잘못된 Template 승인 ID입니다.")
     requested_name = _clean_text(req.name, 120)
     if not requested_name:
         raise HTTPException(400, "Template 이름을 입력해 주세요.")
@@ -801,8 +809,14 @@ def save_template(req: TemplateSaveReq, user=Depends(current_user)):
 
     history = _chart_history()
     history_by_name = _chart_history_by_name(history)
-    with _STORE_LOCK:
+    with file_transaction(STORE_FILE), _STORE_LOCK:
         rows = _load_templates()
+        if operation_id:
+            applied = next((row for row in rows if row.get("chat_operation_id") == operation_id), None)
+            if applied:
+                if applied.get("created_by") != user.get("username"):
+                    raise HTTPException(403, "본인이 승인한 Template만 확인할 수 있습니다.")
+                return {"ok": True, "template": _public_template(applied)}
         existing = next((row for row in rows if str(row.get("id")) == str(req.id)), None)
         if existing and user.get("role") != "admin" and existing.get("created_by") != user.get("username"):
             raise HTTPException(403, "작성자 또는 관리자만 이 Template을 수정할 수 있습니다.")
@@ -873,6 +887,8 @@ def save_template(req: TemplateSaveReq, user=Depends(current_user)):
             "updated_by": str(user.get("username") or ""),
             "updated_at": now,
         }
+        if operation_id or (existing or {}).get("chat_operation_id"):
+            saved["chat_operation_id"] = operation_id or existing["chat_operation_id"]
         rows = [saved if str(row.get("id")) == template_id else row for row in rows]
         if not existing:
             rows.append(saved)
@@ -882,7 +898,7 @@ def save_template(req: TemplateSaveReq, user=Depends(current_user)):
 
 @router.delete("/templates/{template_id}")
 def delete_template(template_id: str, user=Depends(current_user)):
-    with _STORE_LOCK:
+    with file_transaction(STORE_FILE), _STORE_LOCK:
         rows = _load_templates()
         target = next((row for row in rows if str(row.get("id")) == str(template_id)), None)
         if not target:

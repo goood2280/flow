@@ -1,10 +1,10 @@
 /* My_MatchFill.jsx — 매칭 테이블 product / step / module 채우기.
  *
- * Vehicle_matching / Inline_matching 의 `product` 열을 raw DB(FAB/INLINE) 제품 폴더
+ * Vehicle_matching / Inline_matching 의 기존 product/vehicle 열을 raw DB(FAB/INLINE) 제품 폴더
  * 스캔으로 채운다. vm_matching 은 product 를 채우지 않는다 — 제품 귀속과 module 은
  * Vehicle_matching.csv 가 step_desc 로 이미 정해 두므로 그쪽 module 을 그대로 가져온다.
  * PPID → FAB 공정은 ppid_knob.value를 FAB.ppid와 대조해 product/step_id를 찾고,
- * Vehicle_matching에서 같은 제품·step_id의 step_desc를 별도 열로 보강한다.
+ * Vehicle_matching에서 같은 제품·step_id의 step_desc를 찾아 기존 열만 채운다.
  * MASK → FAB 공정은 mask_info.reticle_id를 FAB.reticle_id와 같은 방식으로 대조한다.
  * 검사는 파일을 건드리지 않고 **제안**만 만들며, 관리자가 행 단위로 확인한 뒤
  * 전체 Before/After 확인창의 최종 확인을 눌렀을 때만 CSV 가 바뀐다.
@@ -256,7 +256,8 @@ export default function My_MatchFill({ user }) {
   // (제품 귀속은 Vehicle_matching.csv 가 step_desc 로 이미 정한다).
   // 아래 effect 의 의존성이라 참조가 매 렌더 바뀌지 않게 memo 한다.
   const fillColumns = useMemo(
-    () => current?.fill_columns || ["product", "module"],
+    () => (current?.fill_columns || ["product", "module"])
+      .filter(key => (current?.columns || []).some(c => String(c).trim().toLowerCase() === key.toLowerCase())),
     [current],
   );
   // module 원천: step 번호 구간표(step_range) vs Vehicle_matching step_desc.
@@ -280,12 +281,13 @@ export default function My_MatchFill({ user }) {
   // 대상이 바뀌어 지금 고른 열을 그 대상에서 못 채우면 허용된 첫 열로 되돌린다
   // (vm_matching 을 고른 채 product 탭에 남아 있으면 검사가 400 으로 떨어진다).
   useEffect(() => {
-    if (current && !fillColumns.includes(column)) setColumn(fillColumns[0] || "module");
+    if (current && !fillColumns.includes(column)) setColumn(fillColumns[0] || "");
   }, [current, fillColumns, column]);
 
   useEffect(() => {
     setSkip([]);
     setApplyPreview(null);
+    if (!column) { setProposal(null); return undefined; }
     sf(`${API}/proposal?target=${encodeURIComponent(active)}&column=${encodeURIComponent(column)}`)
       .then(d => setProposal(d.proposal || null))
       .catch(() => setProposal(null));
@@ -328,7 +330,7 @@ export default function My_MatchFill({ user }) {
       proposal_scanned_at: applyPreview.scannedAt,
     })
       .then(d => {
-        toast.ok(`${d.file} ${d.changed}행 반영됨${d.added_column ? ` (${applyPreview.column} 열 새로 생성)` : ""}`);
+        toast.ok(`${d.file} ${d.changed}행 반영됨`);
         setProposal(p => (p ? { ...p, applied: true } : p));
         setApplyPreview(null);
         loadTargets();
@@ -403,6 +405,8 @@ export default function My_MatchFill({ user }) {
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
           <span style={{ fontWeight: 900 }}>채울 열</span>
           {[["product", fabProcessMatch ? `product (FAB ${fabKeyLabel})` : "product (DB 스캔)"],
+            ["vehicle", "vehicle (DB 스캔)"],
+            ["mask", "mask (FAB RETICLE 제품명)"],
             ["step_id", `step_id (FAB ${fabKeyLabel})`],
             ["step_desc", "step_desc (Vehicle matching)"],
             ["module", byStepDesc ? "module (Vehicle_matching step_desc)" : "module (step 번호 구간)"]]
@@ -426,8 +430,7 @@ export default function My_MatchFill({ user }) {
               <b style={{ fontFamily: "monospace" }}>{current.file}</b>
               <Pill tone={current.csv_exists ? "ok" : "bad"}>{current.csv_exists ? `${current.csv_rows}행` : "CSV 없음"}</Pill>
               <Pill tone={hasCurrentColumn ? "ok" : "warn"}>
-                {hasCurrentColumn
-                  ? `${column} 열 있음` : `${column} 열 없음 — 맨 왼쪽에 생성`}
+                {hasCurrentColumn ? `${column} 열 있음` : "지원되는 채울 열 없음"}
               </Pill>
               {fabProcessMatch ? (
                 <span style={{ color: "var(--text-secondary)", fontSize: 13 }}>
@@ -453,7 +456,7 @@ export default function My_MatchFill({ user }) {
                   기준: <b style={{ fontFamily: "monospace" }}>step_id</b> 앞 2글자 + 뒤 번호 구간 (DB 는 읽지 않습니다)
                 </span>
               )}
-              <Btn variant="primary" disabled={!canManage || scanning || !current.csv_exists}
+              <Btn variant="primary" disabled={!canManage || scanning || !current.csv_exists || !column}
                 style={{ marginLeft: "auto" }} onClick={runScan}>
                 {scanning ? "검사 중..." : "검사 실행"}
               </Btn>
@@ -558,7 +561,6 @@ export default function My_MatchFill({ user }) {
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <span style={{ color: "var(--text-secondary)", fontSize: 13 }}>
                 반영 대상 <b style={{ fontFamily: "monospace", color: "var(--text-primary)" }}>{applyRows.length}</b>행
-                {proposal.add_column ? ` · ${column} 열을 맨 왼쪽에 새로 만듭니다` : ""}
               </span>
               <Btn variant="ghost" disabled={!canManage} onClick={discard} style={{ marginLeft: "auto" }}>제안 폐기</Btn>
               <Btn variant="primary" disabled={!canManage || applying || proposal.applied || applyRows.length === 0}

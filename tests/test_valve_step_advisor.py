@@ -4,6 +4,22 @@ from types import SimpleNamespace
 from core import valve_step_advisor as advisor
 
 
+def test_shared_product_candidates_stay_within_requested_product(tmp_path, monkeypatch):
+    path = tmp_path / "Vehicle_matching.csv"
+    with path.open("w", encoding="utf-8", newline="") as fp:
+        writer = csv.DictWriter(fp, fieldnames=["vehicle", "product", "step_id", "step_desc"])
+        writer.writeheader()
+        writer.writerows([
+            {"vehicle": "legacy", "product": "prodA.prodB", "step_id": "S1", "step_desc": "ETCH"},
+            {"vehicle": "prodA.prodB", "product": "", "step_id": "S2", "step_desc": "CLEAN"},
+            {"vehicle": "prodA.prodB", "product": "prodC", "step_id": "S3", "step_desc": "PHOTO"},
+        ])
+    monkeypatch.setattr(advisor, "PATHS", SimpleNamespace(db_root=tmp_path))
+    for product in ["prodA", "PRODB"]:
+        assert [row["step_id"] for row in advisor.matched_steps("prodA.prodB", product)] == ["S1", "S2"]
+    assert advisor.matched_steps("prodA.prodB", "prodD") == []
+
+
 def _patch_recommendation_io(monkeypatch, signatures):
     monkeypatch.setattr(advisor, "get_record", lambda *_args: None)
     monkeypatch.setattr(advisor, "put_record", lambda _rec: None)

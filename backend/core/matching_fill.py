@@ -49,7 +49,7 @@ TARGETS: dict[str, dict[str, Any]] = {
         "db_roots": ("1.RAWDATA_DB_FAB", "1.RAWDATA_DB", "FAB"),
         "keys": ("step_id",),
         "id_cols": ("vehicle", "step_id", "step_desc"),
-        "fill_columns": ("product", "module"),
+        "fill_columns": ("product", "vehicle", "module"),
         "module_source": "step_range",
     },
     "inline": {
@@ -87,7 +87,7 @@ TARGETS: dict[str, dict[str, Any]] = {
             "reticle_id", "mask_version", "mask_vendor", "photo_step",
             "product", "step_id", "step_desc",
         ),
-        "fill_columns": ("product", "step_id", "step_desc"),
+        "fill_columns": ("product", "mask", "step_id", "step_desc"),
         "match_source": "fab_reticle",
     },
     "vm": {
@@ -115,7 +115,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 # 채울 수 있는 열. PPID 대상은 FAB에서 product/step_id를 찾은 뒤 Vehicle에서
 # step_desc를 보강한다. module은 기존 step 번호 구간표/Vehicle 이름 매칭을 쓴다.
-FILL_COLUMNS = ("product", "step_id", "step_desc", "module")
+FILL_COLUMNS = ("product", "vehicle", "mask", "step_id", "step_desc", "module")
 MODULE_COL = "module"
 # step_id = 앞 영문자 + 숫자(6자리 관행) + 꼬리. 구간 판정은 숫자 부분만 본다.
 _STEP_RE = re.compile(r"^\s*([A-Za-z]+)\s*(\d+)")
@@ -487,7 +487,14 @@ def _vehicle_step_desc_lookup() -> tuple[dict[tuple[str, str], tuple[str, int]],
     for order, row in enumerate(rows):
         sid = _row_value_ci(row, "step_id")
         desc = _row_value_ci(row, "step_desc")
-        products = [x.strip() for x in re.split(r"[,;|]+", _row_value_ci(row, PRODUCT_COL)) if x.strip()]
+        # Product cells are product-name sets.  Some rulebooks use dots rather
+        # than commas (e.g. ``PRODA.PRODB``), so treat both as delimiters.
+        product_raw = _row_value_ci(row, PRODUCT_COL)
+        # Legacy Vehicle mappings may store product names in `vehicle`.
+        # An explicit product value always wins over that fallback.
+        if not product_raw:
+            product_raw = _row_value_ci(row, "vehicle")
+        products = [x.strip() for x in re.split(r"[.,;|]+", product_raw) if x.strip()]
         if not sid:
             continue
         sid_key = sid.casefold()
@@ -529,7 +536,7 @@ def _scan_fab_process(target: str, spec: dict, cols: list[str], rows: list[dict]
         values: list[str] = []
         seen: set[str] = set()
         for match in matches:
-            value = str(match.get(column) or "").strip()
+            value = str(match.get("product" if target == "mask" and column == "mask" else column) or "").strip()
             key = value.casefold()
             if value and key not in seen:
                 seen.add(key)
@@ -563,7 +570,9 @@ def _scan_fab_process(target: str, spec: dict, cols: list[str], rows: list[dict]
         "file": spec["file"],
         "keys": [csv_keys[0]],
         "products": products,
-        "add_column": column not in cols,
+        # Matching rulebooks are fixed-schema inputs.  Never offer to create a
+        # metadata column as a side effect of a scan.
+        "add_column": False,
         "rows": out_rows,
         "counts": counts,
         "scanned_at": _now(),
@@ -623,6 +632,8 @@ def scan(target: str, username: str = "", column: str = "product") -> dict:
     cols, rows = _read_csv(target)
     if not cols:
         raise FileNotFoundError(f"{spec['file']} 을 찾을 수 없습니다 ({_db_root()})")
+    if not _resolve_column(cols, column):
+        raise ValueError(f"{spec['file']} 에 {column} 열이 없어 채울 수 없습니다")
     if str(spec.get("match_source") or "") == "fab_ppid":
         return _scan_ppid_fab(target, spec, cols, rows, username, column)
     if str(spec.get("match_source") or "") == "fab_reticle":
@@ -655,7 +666,8 @@ def scan(target: str, username: str = "", column: str = "product") -> dict:
     counts = {"fill": 0, "change": 0, "same": 0, "miss": 0}
     for i, row in enumerate(rows):
         key = tuple(str(row.get(k) or "").strip() for k in keys)
-        current = str(row.get(PRODUCT_COL) or "").strip()
+        output_column = "vehicle" if column == "vehicle" else PRODUCT_COL
+        current = _row_value_ci(row, output_column) if _resolve_column(cols, output_column) else ""
         scoped = _rule_products(row.get(step_col) or "", target, rules) if step_col else None
         candidates = [p for p in (scoped if scoped is not None else products)]
         hits = []
@@ -687,10 +699,11 @@ def scan(target: str, username: str = "", column: str = "product") -> dict:
 
     proposal = {
         "target": target,
+        "column": column,
         "file": spec["file"],
         "keys": list(keys),
         "products": products,
-        "add_column": PRODUCT_COL not in cols,
+        "add_column": False,
         "rows": out_rows,
         "counts": counts,
         "scanned_at": _now(),
@@ -699,7 +712,7 @@ def scan(target: str, username: str = "", column: str = "product") -> dict:
     }
     with _lock:
         store = _load_store()
-        store.setdefault("proposals", {})[_proposal_key(target, PRODUCT_COL)] = proposal
+        store.setdefault("proposals", {})[_proposal_key(target, column)] = proposal
         _save_store(store)
     return proposal
 
@@ -744,7 +757,7 @@ def _scan_module(target: str, spec: dict, cols: list[str], rows: list[dict], use
         "file": spec["file"],
         "keys": ["step_id"],
         "products": [],
-        "add_column": MODULE_COL not in cols,
+        "add_column": False,
         "rows": out_rows,
         "counts": counts,
         "scanned_at": _now(),
@@ -808,7 +821,7 @@ def _scan_module_by_vehicle(target: str, spec: dict, cols: list[str], rows: list
         "file": spec["file"],
         "keys": ["step_desc"],
         "products": [],
-        "add_column": MODULE_COL not in cols,
+        "add_column": False,
         "rows": out_rows,
         "counts": counts,
         "scanned_at": _now(),
@@ -853,12 +866,13 @@ def discard(target: str, column: str = "product") -> None:
 # ────────────────────────────────────────── 반영 (관리자)
 def apply_proposal(target: str, username: str = "", skip_rows: Iterable[int] | None = None,
                    column: str = "product", expected_scanned_at: str = "") -> dict:
-    """관리자 확인이 끝난 제안을 CSV 에 쓴다. 대상 열이 없으면 **맨 왼쪽**에 만든다."""
+    """관리자 확인이 끝난 제안을 CSV 에 쓴다 (기존 열만)."""
     if column not in FILL_COLUMNS:
         raise ValueError(f"알 수 없는 열: {column}")
     if column not in target_fill_columns(target):
         raise ValueError(f"{target} 대상에는 {column} 열을 채울 수 없습니다")
-    proposal = get_proposal(target, column)
+    proposal_column = column
+    proposal = get_proposal(target, proposal_column)
     if not proposal:
         raise LookupError("반영할 제안이 없습니다. 먼저 검사를 실행하세요.")
     if proposal.get("applied"):
@@ -872,14 +886,9 @@ def apply_proposal(target: str, username: str = "", skip_rows: Iterable[int] | N
 
     with _lock:
         cols, rows = _read_csv_preserving(fp)
-        if column not in cols:
-            cols = [column] + cols               # 없으면 제일 왼쪽에 새로 만든다
-            for r in rows:
-                r.setdefault(column, "")
-        if target in {"ppid", "mask"}:
-            # 세 열을 어느 순서로 반영해도 최종 CSV 헤더는 항상 같은 순서다.
-            front = [name for name in (PRODUCT_COL, "step_id", "step_desc") if name in cols]
-            cols = front + [name for name in cols if name not in front]
+        actual_column = _resolve_column(cols, column)
+        if not actual_column:
+            raise ValueError(f"{proposal['file']} 에 {column} 열이 없어 반영할 수 없습니다")
         selected = []
         for item in proposal.get("rows") or []:
             i = int(item.get("i", -1))
@@ -887,7 +896,7 @@ def apply_proposal(target: str, username: str = "", skip_rows: Iterable[int] | N
                 continue
             if item.get("status") in ("miss", "same"):
                 continue
-            actual = _row_value_ci(rows[i], column)
+            actual = _row_value_ci(rows[i], actual_column)
             expected = str(item.get("current") or "").strip()
             if actual != expected:
                 raise ValueError(
@@ -897,14 +906,14 @@ def apply_proposal(target: str, username: str = "", skip_rows: Iterable[int] | N
             selected.append((i, item))
         changed = 0
         for i, item in selected:
-            rows[i][column] = item.get("proposed") or ""
+            rows[i][actual_column] = item.get("proposed") or ""
             changed += 1
         _write_csv_atomic(fp, cols, rows)
         note = f"[매칭 {column} 채우기] {proposal['file']} {changed}행 반영"
         post = _after_write(fp, username or "flow", note)
 
         store = _load_store()
-        cur = (store.get("proposals") or {}).get(_proposal_key(target, column))
+        cur = (store.get("proposals") or {}).get(_proposal_key(target, proposal_column))
         if cur:
             cur["applied"] = True
             cur["applied_at"] = _now()
@@ -914,4 +923,4 @@ def apply_proposal(target: str, username: str = "", skip_rows: Iterable[int] | N
             _save_store(store)
 
     return {"ok": True, "file": proposal["file"], "changed": changed,
-            "added_column": bool(proposal.get("add_column")), **post}
+            "added_column": False, **post}

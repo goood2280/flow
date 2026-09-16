@@ -171,7 +171,7 @@ def include_router_modules(app: FastAPI, routers_dir: Path, logger,
     # cannot silently change which routers ship.
     # Flow-i is temporarily parked outside setup.py. Keep legacy files left by
     # an in-place deployment from being discovered and loaded accidentally.
-    _UNUSED_ROUTERS = {"aipd_bridge", "agent", "flowi_learning"}
+    _UNUSED_ROUTERS = {"aipd_bridge", "agent", "flowi_learning", "home_agent"}
     disabled = {
         name.strip()
         for name in os.environ.get("FLOW_DISABLED_ROUTERS", "ml").split(",")

@@ -9,9 +9,8 @@ module makes Flow authoritative instead:
 * a PPID without an explicit rule for the step's function step becomes
   ``ro_ppid`` and can be added to ``ppid_knob.csv`` from the existing page;
 * a FAB ``reticle_id`` absent from ``mask_info.csv`` becomes ``missing_reticle``
-  and can be added there with its mask name.  Reticle identity is global even
-  when matching-fill adds product/step metadata columns, so the alert remains
-  keyed by reticle_id alone and merged across products.
+  and can be added with its product name in the existing mask column. Reticle
+  identity is global, so alerts merge across products. CSV headers stay intact.
 
 The public shape deliberately matches the old valve-alert API so bookmarked
 URLs and the page permission key (``valve``) do not need a migration.
@@ -60,9 +59,7 @@ PLAN_DIR = PATHS.data_root / "splittable"
 
 PPID_KNOB_FILE = "ppid_knob.csv"
 VEHICLE_MATCHING_FILE = "Vehicle_matching.csv"
-# reticle_id → mask 이름 룰북. reticle_id/mask가 정본 열이고 매칭채우기가
-# product/step_id/step_desc 메타데이터 열을 덧붙일 수 있다. 알람 키는 제품이 아니라
-# 전역 reticle_id 하나로 잡는다.
+# reticle_id → 제품명(mask) 룰북. 기존 열을 유지하며 전역 reticle_id로 판정한다.
 MASK_INFO_FILE = "mask_info.csv"
 MASK_INFO_COLUMNS = ["reticle_id", "mask"]
 
@@ -243,6 +240,19 @@ def _norm(value: Any) -> str:
     if text.upper().startswith("ML_TABLE_"):
         text = text[len("ML_TABLE_"):]
     return text.upper()
+
+
+def _product_names(value: Any) -> set[str]:
+    """A dotted product cell lists products sharing the same mapping."""
+    return {_norm(part) for part in re.split(r"[.,;|]+", str(value or "")) if part.strip()}
+
+
+def _vehicle_row_matches(row: dict, product: str) -> bool:
+    lookup = {str(key).strip().casefold(): value for key, value in row.items()}
+    # An explicit product cell scopes the row; vehicle is the legacy fallback.
+    names = next((str(lookup.get(key) or "").strip() for key in ("product", "vehicle", "mask")
+                  if str(lookup.get(key) or "").strip()), "")
+    return bool(_product_names(names) & _product_names(product))
 
 
 def _read_csv(path: Path) -> tuple[list[str], list[dict]]:
@@ -517,10 +527,9 @@ def _rule_matches_ppid(ppid: str, operator: str, expected: str) -> bool:
 def _mapping_context(product: str) -> dict:
     _, vehicle_rows = _read_csv(Path(PATHS.db_root) / VEHICLE_MATCHING_FILE)
     _, knob_rows = _read_csv(Path(PATHS.db_root) / PPID_KNOB_FILE)
-    product_key = _norm(product)
-    associated = [r for r in vehicle_rows if _norm(r.get("product")) == product_key]
-    if not associated:
-        associated = [r for r in vehicle_rows if _norm(r.get("vehicle")) == product_key]
+    vehicle_rows = [{key.strip().casefold(): value for key, value in row.items()} for row in vehicle_rows]
+    knob_rows = [{key.strip().casefold(): value for key, value in row.items()} for row in knob_rows]
+    associated = [r for r in vehicle_rows if _vehicle_row_matches(r, product)]
     vehicles = sorted({str(r.get("vehicle") or "").strip() for r in associated if r.get("vehicle")})
     vehicle = vehicles[0] if len(vehicles) == 1 else str(product)
     step_map: dict[str, str] = {}
@@ -1039,16 +1048,19 @@ def list_alerts() -> dict:
     decided = _decided_ids()
     recs = _recommendations()
     mapping_by_product: dict[str, dict] = {}
+    visible_alerts = []
     for alert in alerts:
         # A step decision is visible immediately, before the worker reaches the
         # product again.  This also unlocks its PPID rows for same-session rule
         # classification without making the operating API rescan FAB.
-        if alert.get("type") == "ro_ppid":
+        if alert.get("type") in {"ro_ppid", "unmatched_step"}:
             product_key = _norm(alert.get("product") or alert.get("vehicle"))
             context = mapping_by_product.get(product_key)
             if context is None:
                 context = _mapping_context(alert.get("product") or alert.get("vehicle") or "")
                 mapping_by_product[product_key] = context
+            if alert.get("type") == "unmatched_step" and alert.get("step_id") in context["step_map"]:
+                continue
             step_desc = str(context["step_map"].get(alert.get("step_id")) or "").strip()
             if step_desc:
                 alert["step_desc"] = step_desc
@@ -1061,6 +1073,8 @@ def list_alerts() -> dict:
             alert["recommendation"] = recs.get(
                 f"{alert.get('vehicle') or ''}|{alert.get('step_id') or ''}"
             )
+        visible_alerts.append(alert)
+    alerts = visible_alerts
     alerts.sort(key=lambda a: (
         1 if a.get("decision") else 0,
         1 if a.get("status") != "active" else 0,
@@ -1158,13 +1172,10 @@ def _post_write(path: Path, actor: str, note: str) -> dict:
 
 
 def _step_desc_from_rows(rows: list[dict], product: str, step_id: str) -> str:
-    product_key = _norm(product)
-    associated = [row for row in rows if _norm(row.get("product")) == product_key]
-    if not associated:
-        associated = [row for row in rows if _norm(row.get("vehicle")) == product_key]
+    associated = [row for row in rows if _vehicle_row_matches(row, product)]
     for row in associated:
-        if str(row.get("step_id") or "").strip() == step_id:
-            return str(row.get("step_desc") or row.get("function_step") or "").strip()
+        if str(row.get(_csv_column(list(row), "step_id")) or "").strip() == step_id:
+            return str(row.get(_csv_column(list(row), "step_desc", "function_step")) or "").strip()
     return ""
 
 
@@ -1176,6 +1187,13 @@ def _csv_column(columns: list[str], *names: str) -> str:
         if found:
             return found
     return ""
+
+
+def _require_column(columns: list[str], filename: str, *names: str) -> str:
+    column = _csv_column(columns, *names)
+    if not column:
+        raise ValueError(f"{filename}: {' / '.join(names)} 열이 없습니다. 기존 CSV에 열을 추가할 수 없습니다")
+    return column
 
 
 def _plan_product(product: Any) -> str:
@@ -1191,10 +1209,7 @@ def _row_applies_to_product(row: dict, product: str, product_col: str) -> bool:
     raw = str(row.get(product_col) or "").strip()
     if not raw:
         return True
-    wanted = _norm(product)
-    return wanted in {
-        _norm(value) for value in re.split(r"[,;|]+", raw) if str(value or "").strip()
-    }
+    return bool(_product_names(raw) & _product_names(product))
 
 
 def _plan_knob_anomaly_id(product: str, feature: str, plan: str, actual: str) -> str:
@@ -1216,7 +1231,7 @@ def _plan_knob_context(knob_columns: list[str], knob_rows: list[dict],
     category_col = _csv_column(knob_columns, "category") or "category"
     step_desc_col = _csv_column(knob_columns, "step_desc")
     function_step_col = _csv_column(knob_columns, "function_step")
-    product_col = _csv_column(knob_columns, "product")
+    product_col = _csv_column(knob_columns, "product", "vehicle", "mask")
     step_id_col = _csv_column(knob_columns, "step_id")
 
     def row_step(row: dict) -> str:
@@ -1263,11 +1278,9 @@ def _plan_knob_context(knob_columns: list[str], knob_rows: list[dict],
             if value and value.casefold() not in {item.casefold() for item in direct_step_ids}:
                 direct_step_ids.append(value)
     if selected_step and not direct_step_ids:
-        wanted_product = _norm(product)
         for row in vehicle_rows:
-            row_product = row.get("product") or row.get("vehicle")
             row_desc = row.get("step_desc") or row.get("function_step")
-            if _norm(row_product) != wanted_product or str(row_desc or "").strip().casefold() != selected_step.casefold():
+            if not _vehicle_row_matches(row, product) or str(row_desc or "").strip().casefold() != selected_step.casefold():
                 continue
             step_id = str(row.get("step_id") or "").strip()
             if step_id and step_id.casefold() not in {item.casefold() for item in direct_step_ids}:
@@ -1460,20 +1473,13 @@ def apply_plan_knob_anomalies(item_ids: list[str], note: str, username: str = ""
     with _write_lock:
         columns, rows = _read_csv(knob_path)
         _vehicle_columns, vehicle_rows = _read_csv(vehicle_path)
-        if not columns:
-            columns = ["feature_name", "function_step", "rule_order", "operator", "value", "category"]
-        for column in ("feature_name", "rule_order", "operator", "value", "category", "product", "step_id", "step_desc"):
-            if column not in columns:
-                columns.append(column)
-        feature_col = _csv_column(columns, "feature_name") or "feature_name"
-        value_col = _csv_column(columns, "value", "ppid") or "value"
-        category_col = _csv_column(columns, "category") or "category"
-        order_col = _csv_column(columns, "rule_order") or "rule_order"
-        operator_col = _csv_column(columns, "operator") or "operator"
-        product_col = _csv_column(columns, "product") or "product"
-        step_id_col = _csv_column(columns, "step_id") or "step_id"
-        step_desc_col = _csv_column(columns, "step_desc") or "step_desc"
-        function_step_col = _csv_column(columns, "function_step")
+        feature_col = _require_column(columns, knob_path.name, "feature_name")
+        value_col = _require_column(columns, knob_path.name, "value", "ppid")
+        category_col = _require_column(columns, knob_path.name, "category")
+        order_col = _require_column(columns, knob_path.name, "rule_order")
+        operator_col = _require_column(columns, knob_path.name, "operator")
+        product_col = _csv_column(columns, "product", "vehicle", "mask")
+        function_step_col = _require_column(columns, knob_path.name, "function_step", "step_desc")
 
         for item in selected:
             product = str(item.get("product") or "").strip()
@@ -1518,12 +1524,10 @@ def apply_plan_knob_anomalies(item_ids: list[str], note: str, username: str = ""
                     operator_col: "eq",
                     value_col: actual,
                     category_col: plan,
-                    product_col: _plan_product(product),
-                    step_id_col: ",".join(step_ids),
-                    step_desc_col: step_desc,
+                    function_step_col: step_desc,
                 })
-                if function_step_col:
-                    new_row[function_step_col] = step_desc
+                if product_col:
+                    new_row[product_col] = _plan_product(product)
                 if "use" in columns:
                     new_row["use"] = "true"
                 if ro_position is not None:
@@ -1614,29 +1618,22 @@ def apply_batch(changes: list[dict], note: str = "", username: str = "") -> dict
         vehicle_columns, vehicle_rows = _read_csv(vehicle_path)
         knob_columns, knob_rows = _read_csv(knob_path)
         mask_columns, mask_rows = _read_csv(mask_path)
-        if not mask_columns:
-            mask_columns = list(MASK_INFO_COLUMNS)
         mask_reticle_column = _mask_info_column(mask_columns, "reticle_id")
         mask_value_column = _mask_info_column(mask_columns, "mask")
-        if not mask_reticle_column:
-            mask_reticle_column = "reticle_id"
-            mask_columns.append(mask_reticle_column)
-        if not mask_value_column:
-            mask_value_column = "mask"
-            mask_columns.append(mask_value_column)
-        if not vehicle_columns:
-            vehicle_columns = ["vehicle", "product", "step_id", "step_desc"]
-        if not knob_columns:
-            knob_columns = ["feature_name", "function_step", "rule_order", "operator", "value", "category"]
-        for column in ("vehicle", "product", "step_id", "step_desc"):
-            if column not in vehicle_columns:
-                vehicle_columns.append(column)
-        fs_col = "function_step" if "function_step" in knob_columns else "step_desc"
-        if fs_col not in knob_columns:
-            knob_columns.append(fs_col)
-        for column in ("feature_name", "rule_order", "operator", "value", "category"):
-            if column not in knob_columns:
-                knob_columns.append(column)
+        # Validate only files this batch writes. Never extend pipeline schemas.
+        kinds = {kind for kind, _, _ in normalized}
+        if "match_step" in kinds:
+            product_col = _require_column(vehicle_columns, vehicle_path.name, "product", "vehicle", "mask")
+            vehicle_col = _csv_column(vehicle_columns, "vehicle")
+            step_col = _require_column(vehicle_columns, vehicle_path.name, "step_id")
+            desc_col = _require_column(vehicle_columns, vehicle_path.name, "step_desc", "function_step")
+        if "classify_ppid" in kinds:
+            fs_col = _require_column(knob_columns, knob_path.name, "function_step", "step_desc")
+            knob_cols = {column: _require_column(knob_columns, knob_path.name, column)
+                         for column in ("feature_name", "rule_order", "operator", "value", "category")}
+        if "add_mask" in kinds:
+            mask_reticle_column = _require_column(mask_columns, mask_path.name, "reticle_id")
+            mask_value_column = _require_column(mask_columns, mask_path.name, "mask")
 
         step_changes = 0
         ppid_changes = 0
@@ -1651,13 +1648,15 @@ def apply_batch(changes: list[dict], note: str = "", username: str = "") -> dict
             product = str(alert.get("product") or "").strip()
             step_id = str(alert.get("step_id") or "").strip()
             duplicate = next((row for row in vehicle_rows
-                              if _norm(row.get("product")) == _norm(product)
-                              and str(row.get("step_id") or "").strip() == step_id), None)
+                              if _vehicle_row_matches(row, product)
+                              and str(row.get(step_col) or "").strip() == step_id), None)
             if duplicate:
                 raise ValueError(f"이미 등록된 매칭: {product} {step_id} → {duplicate.get('step_desc')}")
             new_row = {column: "" for column in vehicle_columns}
-            new_row.update({"vehicle": vehicle, "product": product,
-                            "step_id": step_id, "step_desc": step_desc})
+            if vehicle_col:
+                new_row[vehicle_col] = vehicle
+            new_row.update({product_col: product or vehicle,
+                            step_col: step_id, desc_col: step_desc})
             vehicle_rows.append(new_row)
             step_changes += 1
             result = {"alert_id": alert["id"], "type": kind, "file": vehicle_path.name,
@@ -1683,28 +1682,30 @@ def apply_batch(changes: list[dict], note: str = "", username: str = "") -> dict
             feature = str(raw.get("feature_name") or alert.get("feature_name") or "").strip()
             same_step = [row for row in knob_rows if str(row.get(fs_col) or "").strip() == step_desc]
             if not feature:
-                feature = str((same_step[0].get("feature_name") if same_step else step_desc) or step_desc).strip()
+                feature = str((same_step[0].get(knob_cols["feature_name"]) if same_step else step_desc) or step_desc).strip()
             same_indexes = [i for i, row in enumerate(knob_rows)
-                            if str(row.get("feature_name") or "").strip() == feature]
+                            if str(row.get(knob_cols["feature_name"]) or "").strip() == feature]
             duplicate = next((knob_rows[i] for i in same_indexes
-                              if str(knob_rows[i].get("rule_order") or "").strip().upper() != "RO"
-                              and str(knob_rows[i].get("value") or "").strip() == ppid), None)
+                              if str(knob_rows[i].get(knob_cols["rule_order"]) or "").strip().upper() != "RO"
+                              and str(knob_rows[i].get(knob_cols["value"]) or "").strip() == ppid), None)
             if duplicate:
                 raise ValueError(f"이미 등록된 룰: {feature} {duplicate.get('rule_order')} {ppid}")
             max_rule = 0
             ro_position = None
             for index in same_indexes:
-                order = str(knob_rows[index].get("rule_order") or "").strip().upper()
+                order = str(knob_rows[index].get(knob_cols["rule_order"]) or "").strip().upper()
                 if order == "RO":
                     ro_position = index if ro_position is None else min(ro_position, index)
                 elif order.startswith("R") and order[1:].isdigit():
                     max_rule = max(max_rule, int(order[1:]))
             rule_order = f"R{max_rule + 1}"
             new_row = {column: "" for column in knob_columns}
-            new_row.update({"feature_name": feature, fs_col: step_desc, "rule_order": rule_order,
-                            "operator": "eq", "value": ppid, "category": category})
-            if "use" in knob_columns:
-                new_row["use"] = "true"
+            new_row.update({knob_cols["feature_name"]: feature, fs_col: step_desc,
+                            knob_cols["rule_order"]: rule_order, knob_cols["operator"]: "eq",
+                            knob_cols["value"]: ppid, knob_cols["category"]: category})
+            use_col = _csv_column(knob_columns, "use")
+            if use_col:
+                new_row[use_col] = "true"
             if ro_position is not None:
                 knob_rows.insert(ro_position, new_row)
             elif same_indexes:
@@ -1726,7 +1727,7 @@ def apply_batch(changes: list[dict], note: str = "", username: str = "") -> dict
                 continue
             mask = str(raw.get("mask") or "").strip()
             if not mask:
-                raise ValueError(f"mask(마스크 이름)가 비어있습니다: {alert.get('id')}")
+                raise ValueError(f"mask(제품명)가 비어있습니다: {alert.get('id')}")
             reticle_id = str(alert.get("reticle_id") or "").strip()
             if not reticle_id:
                 raise ValueError(f"reticle_id 가 비어있습니다: {alert.get('id')}")

@@ -31,6 +31,18 @@ def _isolate(tmp_path, monkeypatch):
     return plan_dir
 
 
+@pytest.mark.parametrize("product", ["ML_TABLE_PRODA", "prodB"])
+def test_plan_context_resolves_dotted_product_rule_and_step(product):
+    columns = ["product", "feature_name", "function_step", "value", "category"]
+    rows = [{"product": "prodA.prodB", "feature_name": "KNOB", "function_step": "ETCH",
+             "value": "PLAN_A", "category": "PLAN_A"}]
+    vehicle_rows = [{"product": "prodA.prodB", "step_id": "S1", "step_desc": "ETCH"},
+                    {"product": "prodC", "step_id": "S2", "step_desc": "ETCH"}]
+    context = alerts._plan_knob_context(columns, rows, vehicle_rows, product, "KNOB", "PLAN_A", "NEW")
+    assert context["ready"] is True
+    assert context["step_ids"] == ["S1"]
+
+
 def test_plan_anomalies_group_duplicate_notifications_and_ignore_stale_plan(tmp_path, monkeypatch):
     plan_dir = _isolate(tmp_path, monkeypatch)
     _write_csv(
@@ -75,7 +87,7 @@ def test_plan_anomalies_group_duplicate_notifications_and_ignore_stale_plan(tmp_
     assert item["mode"] == "add" and item["ready"] is True
 
 
-def test_apply_plan_anomaly_adds_versioned_product_step_rule(tmp_path, monkeypatch):
+def test_apply_plan_anomaly_preserves_rulebook_schema(tmp_path, monkeypatch):
     plan_dir = _isolate(tmp_path, monkeypatch)
     knob_path = tmp_path / alerts.PPID_KNOB_FILE
     _write_csv(
@@ -108,13 +120,13 @@ def test_apply_plan_anomaly_adds_versioned_product_step_rule(tmp_path, monkeypat
     assert result["count"] == 1
     assert result["results"][0]["change_mode"] == "add"
     columns, rows = alerts._read_csv(knob_path)
-    assert columns[-3:] == ["product", "step_id", "step_desc"]
+    assert columns == ["feature_name", "function_step", "rule_order", "operator", "value", "category"]
     added = next(row for row in rows if row["value"] == "PP_BAD")
     assert added == {
         "feature_name": "5.0 PC", "function_step": "PC_ETCH", "rule_order": "R1",
         "operator": "eq", "value": "PP_BAD", "category": "PLAN_A",
-        "product": "PRODA", "step_id": "S20", "step_desc": "PC_ETCH",
     }
+    assert result["results"][0]["step_ids"] == ["S20"]
     assert len(versions) == 1 and "실제 진행을 plan으로 분류" in versions[0][2]
     assert decisions[0]["action"] == "plan_knob"
     assert decisions[0]["detail"] == "실제 진행을 plan으로 분류"

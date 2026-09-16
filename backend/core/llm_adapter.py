@@ -79,6 +79,7 @@ _DATA_TASK_PATHS = (
     "/api/filebrowser/root-parquet-view", "/api/filebrowser/download",
     "/api/llm/test", "/api/llm/flowi/verify",
     "/api/home-agent/probe",
+    "/api/template-report/assistant",
 )
 
 ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
@@ -131,7 +132,7 @@ def execution_policy_snapshot() -> Dict[str, Any]:
         "admin_only": _POC_ADMIN_ONLY,
         "request_admin": is_admin,
         "error_explanation_enabled": _ERROR_EXPLANATION_ENABLED,
-        "allowed_tasks": ["splittable", "location", "chart", "sql", "extract"],
+        "allowed_tasks": ["splittable", "location", "chart", "sql", "extract", "report"],
         **llm_usage.snapshot(),
     }
 

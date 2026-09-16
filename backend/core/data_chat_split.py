@@ -17,7 +17,7 @@ from core.paths import PATHS
 from core.utils import load_json, save_json
 
 TTL_SECONDS = 1800
-APPROVE = re.compile(r"^(?:승인(?:합니다|하겠습니다|하겠다|할게|해|하고)?|진행(?:합니다|하겠습니다|하겠다|해|해줘)?|반영(?:해|해줘)?|네|예|[\s,.!])+[.!]?$", re.I)
+APPROVE = re.compile(r"^(?=.*(?:승인|진행|반영|네|예))(?:승인(?:합니다|하겠습니다|하겠다|할게|해|하고)?|진행(?:합니다|하겠습니다|하겠다|해|해줘)?|반영(?:해|해줘)?|네|예|[\s,.!])+[.!]?$", re.I)
 CANCEL = re.compile(r"^(?:취소|취소해|취소해줘|취소하겠다|취소합니다|반영하지마|승인하지마)[.!\s]*$")
 EDIT = re.compile(r"(?:스플릿|split).*(?:깔아|배정|수정|적용|설정|나눠|넣어)|S0.*S1", re.I)
 ASSIGNMENT = re.compile(
@@ -232,6 +232,11 @@ def _decide(text, context, request, user):
 
 def handle(text, context, request):
     """Return None when unrelated; all writes require authenticated admin approval."""
+    tagged = re.fullmatch(r"(승인|취소)\s+([0-9a-f]{32})", text)
+    if tagged:
+        if tagged[2] != context.get("pending_split_id"):
+            return _answer("현재 미리보기와 다른 승인 요청입니다. 최신 변경안을 확인해 주세요.", context, ok=False)
+        text = tagged[1]
     decision = APPROVE.fullmatch(text) or CANCEL.fullmatch(text)
     editing = EDIT.search(text)
     if context.get("split_instruction") and re.search(r"TEG|좌표|위치|대시보드|차트|취소", text, re.I) and not editing:
@@ -252,6 +257,7 @@ def handle(text, context, request):
         instruction = text if editing else text + " " + context["split_instruction"]
         if editing:
             context.pop("pending_split_id", None)
+            context.pop("pending_report_id", None)
         context["split_instruction"] = instruction
         return _preview(instruction, context, request, user)
     except (ValueError, HTTPException) as exc:

@@ -155,10 +155,11 @@ def matched_steps(vehicle: str, product: str = "") -> list[dict]:
 
     FAB 직접 검사는 한 제품에 vehicle이 여러 개면 알람의 ``vehicle``에
     제품명을 넣는다. 그 경우 vehicle 일치만 보면 후보가 0개가 되므로,
-    product가 있으면 해당 제품 행을 우선하고 product가 빈 기존 행은
-    vehicle 일치일 때만 포함한다. 제품 범위 행이 전혀 없을 때만 기존
-    vehicle 일치로 폴백한다.
+    product가 있으면 해당 제품 행을 우선하고, product가 빈 기존 행은
+    vehicle의 제품명으로 찾는다. 점으로 연결한 제품명은 각각 판정한다.
     """
+    from core.fab_matching_alerts import _product_names, _vehicle_row_matches
+
     fp = Path(PATHS.db_root) / "Vehicle_matching.csv"
     if not fp.exists():
         return []
@@ -171,22 +172,14 @@ def matched_steps(vehicle: str, product: str = "") -> list[dict]:
                 if step_id and desc:
                     rows.append({"step_id": step_id, "step_desc": desc,
                                  "product": str(r.get("product") or "").strip(),
-                                 "vehicle": str(r.get("vehicle") or "").strip()})
+                                 "vehicle": str(r.get("vehicle") or r.get("mask") or "").strip()})
     except OSError as e:
         logger.warning("[step_advisor] Vehicle_matching.csv 읽기 실패: %s", e)
         return []
 
-    vehicle_key = vehicle.casefold()
-    product_key = product.casefold()
-    if product_key:
-        scoped = [
-            row for row in rows
-            if row["product"].casefold() == product_key
-            or (not row["product"] and row["vehicle"].casefold() == vehicle_key)
-        ]
-        if scoped:
-            return scoped
-    return [row for row in rows if row["vehicle"].casefold() == vehicle_key]
+    if product.strip():
+        return [row for row in rows if _vehicle_row_matches(row, product)]
+    return [row for row in rows if _product_names(row["vehicle"]) & _product_names(vehicle)]
 
 
 def matched_fingerprint(vehicle: str, product: str = "") -> str:

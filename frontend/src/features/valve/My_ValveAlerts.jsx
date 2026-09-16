@@ -2,7 +2,7 @@
    - 개발 worker가 FAB 제품을 하나씩 순회하며 처음 보는 step_id/ppid/reticle_id를 표시한다.
    - step_id는 Vehicle_matching.csv, ppid는 ppid_knob.csv, reticle_id는 mask_info.csv에
      엔지니어 판정으로 반영한다 (reticle_id→mask 규칙은 전 제품 공용이며
-     매칭채우기가 product/step_id/step_desc 메타데이터를 보강할 수 있다).
+     mask에는 제품명을 입력하며 기존 CSV 열을 유지한다).
    - 판정 이력(누가/언제/무엇으로) + 반영불필요 상태를 관리한다.
 */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -962,7 +962,7 @@ export default function My_ValveAlerts({ user }) {
             columns={["status", "products", "reticle_id", "step_ids", "discovery", "mask"]}
             sourceRows={maskCsvRows}
             aliases={{ "reticle": "reticle_id", "마스크": "mask" }}
-            columnLabels={{ status: "상태", products: "발견 제품", reticle_id: "RETICLE ID", step_ids: "발견 step", discovery: "발견 근거", mask: "mask 이름" }}
+            columnLabels={{ status: "상태", products: "발견 제품", reticle_id: "RETICLE ID", step_ids: "발견 step", discovery: "발견 근거", mask: "mask 제품명" }}
             editableColumn="mask"
             disabled={!canManage || !!busy}
             onRowsChange={rows => updateDecisionValues(editableMaskAlerts, rows, "mask")}

@@ -257,6 +257,7 @@ CANONICAL_PAGE_IDS = (
     "lotrequest",
     "splittable",
     "lotmanage",
+    "productwiki",
     "tracker",
     "inform",
     "meeting",
