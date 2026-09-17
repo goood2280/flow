@@ -1,0 +1,77 @@
+import datetime as dt
+
+import polars as pl
+
+from core import lot_tracker
+from routers import lot_tracker as lot_tracker_router
+
+
+def test_lot_tracker_exact_lot_history_dpml_and_reference_eta(monkeypatch):
+    rows = [
+        {"lot_id": "A.1", "step_id": "S0", "tkout_time": dt.datetime(2026, 9, 1, 0)},
+        {"lot_id": "A.1", "step_id": "S0", "tkout_time": dt.datetime(2026, 9, 1, 12)},
+        {"lot_id": "A.1", "step_id": "S1", "tkout_time": dt.datetime(2026, 9, 3, 12)},
+        {"lot_id": "A.10", "step_id": "S2", "tkout_time": dt.datetime(2026, 9, 10)},
+        {"lot_id": "R.1", "step_id": "S0", "tkout_time": dt.datetime(2026, 8, 1)},
+        {"lot_id": "R.1", "step_id": "S1", "tkout_time": dt.datetime(2026, 8, 3)},
+        {"lot_id": "R.1", "step_id": "S2", "tkout_time": dt.datetime(2026, 8, 6)},
+    ]
+    desc = {"S0": "00.0 PHOTO START", "S1": "01.0 LITHO MASK", "S2": "02.0 ET"}
+    monkeypatch.setattr(lot_tracker, "_product_candidates", lambda lot_id, product: ["P"])
+    monkeypatch.setattr(lot_tracker, "scan_long_fab", lambda product, db_root: pl.DataFrame(rows).lazy())
+    monkeypatch.setattr(lot_tracker, "lookup_lot_progress", lambda **kw: [])
+    monkeypatch.setattr(lot_tracker, "describe_step", lambda sid, product: {"step_desc": desc[sid]})
+
+    result = lot_tracker.track_lot("a.1", "r.1", "s2")
+    assert result["ok"] is True
+    assert [p["step_id"] for p in result["lot"]["points"]] == ["S0", "S1"]
+    assert result["lot"]["points"][0]["tkout_time"] == "2026-09-01T12:00:00"
+    assert result["lot"]["points"][0]["step_label"] == "00.0"
+    assert result["lot"]["dpml"] == 1.0
+    assert result["lot"]["mask_layer_count"] == 2
+    assert result["lot"]["mask_basis"] == "litho_photo"
+    assert result["forecast"]["eta"] == "2026-09-06T12:00:00"
+    assert result["forecast"]["remaining_days"] == 3.0
+
+
+def test_lot_tracker_unmatched_reference_step_has_no_eta(monkeypatch):
+    current = [{"step_id": "S1", "tkout_time": "2026-09-01T00:00:00", "elapsed_days": 0}]
+    reference = [{"step_id": "S0", "step_desc": "00.0", "tkout_time": "2026-08-01T00:00:00"},
+                 {"step_id": "S2", "step_desc": "02.0", "tkout_time": "2026-08-04T00:00:00"}]
+    forecast = lot_tracker.predict(current, reference, "S2")
+    assert forecast["eta"] is None
+    assert forecast["basis"]
+
+
+def test_dpml_counts_distinct_photo_layers_not_numeric_gap():
+    points = [
+        {"step_desc": "02.0 PHOTO", "mask_layer": 2, "elapsed_days": 0},
+        {"step_desc": "02.5 PHOTO REWORK", "mask_layer": 2, "elapsed_days": 1},
+        {"step_desc": "09.0 LITHO", "mask_layer": 9, "elapsed_days": 6},
+        {"step_desc": "10.0 ET", "mask_layer": 10, "elapsed_days": 8},
+    ]
+    summary = lot_tracker.mask_layer_summary(points)
+    assert summary["mask_layer_count"] == 2
+    assert summary["mask_layers"] == [2, 9]
+    assert summary["dpml"] == 4.0
+
+
+def test_dpml_counts_unnumbered_photo_step_by_step_id():
+    points = [
+        {"step_id": "P1", "step_desc": "PHOTO COAT", "mask_layer": None, "elapsed_days": 0},
+        {"step_id": "P2", "step_desc": "LITHO EXPOSURE", "mask_layer": None, "elapsed_days": 5},
+    ]
+    summary = lot_tracker.mask_layer_summary(points)
+    assert summary["mask_layers"] == ["P1", "P2"]
+    assert summary["dpml"] == 2.5
+
+
+def test_lot_tracker_endpoint_enforces_tab_access(monkeypatch):
+    monkeypatch.setattr(lot_tracker_router, "current_user", lambda request: {"username": "u", "role": "user", "tabs": "dashboard"})
+    monkeypatch.setattr(lot_tracker_router, "is_page_manager", lambda user, page: False)
+    try:
+        lot_tracker_router.get_lot_tracker(object(), "A.1", "", "", "")
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 403
+    else:
+        raise AssertionError("missing LOT Tracker permission must be rejected")

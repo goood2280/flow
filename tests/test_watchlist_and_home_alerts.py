@@ -111,6 +111,30 @@ def test_lot_management_save_emits_each_alert_once_per_recipient(tmp_path, monke
     assert emitted.count(("lot_step_threshold_reached", "group_user")) == 1
 
 
+def test_my_lots_uses_persisted_product_name_instead_of_hashed_filename(tmp_path, monkeypatch):
+    table_dir = tmp_path / "tables"
+    table_dir.mkdir()
+    hashed_name = lot_management._key("ML_TABLE_PRODA")
+    (table_dir / f"{hashed_name}.json").write_text(json.dumps({
+        "product": "ML_TABLE_PRODA",
+        "columns": lot_management.DEFAULT_COLUMNS,
+        "rows": [{
+            "id": "row-1",
+            "values": {"lot_id": "LOT-100", "purpose": "monitor"},
+        }],
+    }), encoding="utf-8")
+
+    monkeypatch.setattr(lot_management, "TABLE_DIR", table_dir)
+    monkeypatch.setattr(lot_management, "current_user", lambda request: {"username": "tester"})
+    monkeypatch.setattr(wl, "get_user_watchlist", lambda username: ["LOT-100"])
+    monkeypatch.setattr(lot_management, "_with_latest_cache_fields", lambda doc: doc)
+
+    result = lot_management.get_my_lots(object())
+
+    assert result["rows"][0]["product"] == "ML_TABLE_PRODA"
+    assert result["rows"][0]["product"] != hashed_name
+
+
 def test_watchlist_router(tmp_path, monkeypatch):
     test_file = tmp_path / "user_watchlist.json"
     monkeypatch.setattr(wl, "WATCHLIST_FILE", test_file)

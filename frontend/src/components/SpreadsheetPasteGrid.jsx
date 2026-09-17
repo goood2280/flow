@@ -1,5 +1,9 @@
+import { useState, useRef, useEffect } from "react";
+
 const DEFAULT_MIN_ROWS=10;
 const DEFAULT_MAX_ROWS=200;
+const VIRTUAL_ROW_HEIGHT=33;
+const VIRTUAL_OVERSCAN=10;
 
 function text(value){return value==null?"":String(value);}
 function blankRow(columns){return Object.fromEntries(columns.map(column=>[column,"" ]));}
@@ -46,6 +50,7 @@ export default function SpreadsheetPasteGrid({
   renderPinnedCell,
   showRowNumbers=true,
   disabled=false,
+  cellTextColor="#000000",
   minRows=DEFAULT_MIN_ROWS,
   maxRows=DEFAULT_MAX_ROWS,
   maxHeight=365,
@@ -83,12 +88,38 @@ export default function SpreadsheetPasteGrid({
     commit(next);
   };
 
-  return <div style={{overflow:"auto",maxHeight,border:"1px solid var(--border)",borderRadius,background:"var(--bg-primary)"}}>
+  const containerRef = useRef(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(maxHeight);
+
+  useEffect(() => {
+    if (containerRef.current) {
+      setViewportHeight(containerRef.current.clientHeight || maxHeight);
+    }
+  }, [maxHeight]);
+
+  const onScroll = event => {
+    setScrollTop(event.currentTarget.scrollTop);
+  };
+
+  const totalRows = (rows || []).length;
+  const isVirtualized = totalRows > 30;
+  const rawStart = isVirtualized ? Math.max(0, Math.floor(scrollTop / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN) : 0;
+  const safeStartIndex = Math.min(rawStart, Math.max(0, totalRows - 1));
+  const rawEnd = isVirtualized ? Math.ceil((scrollTop + viewportHeight) / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN : totalRows;
+  const safeEndIndex = Math.min(totalRows, Math.max(safeStartIndex, rawEnd));
+
+  const topHeight = isVirtualized ? safeStartIndex * VIRTUAL_ROW_HEIGHT : 0;
+  const bottomHeight = isVirtualized ? Math.max(0, (totalRows - safeEndIndex) * VIRTUAL_ROW_HEIGHT) : 0;
+  const visibleRows = isVirtualized ? rows.slice(safeStartIndex, safeEndIndex) : (rows || []);
+  const colSpan = (showRowNumbers ? 1 : 0) + names.length;
+
+  return <div ref={containerRef} onScroll={onScroll} style={{overflow:"auto",maxHeight,border:"1px solid var(--border)",borderRadius,background:"var(--bg-primary)"}}>
     <table aria-label={ariaLabel} style={{width:"100%",minWidth:minTableWidth,tableLayout:"fixed",borderCollapse:"separate",borderSpacing:0,fontSize:12}}>
       <colgroup>{showRowNumbers&&<col style={{width:42}}/>}{names.map(name=><col key={name} style={name===colorColumn?{width:"34%"}:undefined}/>)}</colgroup>
       <thead><tr>
-        {showRowNumbers&&<th aria-label="행 번호" style={{position:"sticky",top:0,zIndex:2,padding:"8px 6px",textAlign:"center",background:"var(--bg-tertiary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>#</th>}
-        {names.map(name=><th key={name} style={{position:"sticky",top:0,zIndex:2,padding:"8px 9px",textAlign:"left",background:"var(--bg-tertiary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{columnLabels[name]||name}</th>)}
+        {showRowNumbers&&<th aria-label="행 번호" style={{position:"sticky",top:0,zIndex:2,padding:"8px 6px",textAlign:"center",background:"var(--bg-tertiary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",color:cellTextColor,fontWeight:600}}>#</th>}
+        {names.map(name=><th key={name} style={{position:"sticky",top:0,zIndex:2,padding:"8px 9px",textAlign:"left",background:"var(--bg-tertiary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:cellTextColor,fontWeight:600}}>{columnLabels[name]||name}</th>)}
       </tr></thead>
       <tbody>
       {pinned.map((row,rowIndex)=><tr key={`pinned-${row.__key||rowIndex}`}>
@@ -96,16 +127,22 @@ export default function SpreadsheetPasteGrid({
         {names.map(name=><td key={name} style={{padding:0,borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)",background:"var(--surface-selected)"}}>
           {renderPinnedCell
             ? renderPinnedCell({row,rowIndex,column:name})
-            : <div style={{padding:"7px 9px",color:"var(--text-secondary)",fontFamily:"monospace",fontSize:12}}>{text(row?.[name])}</div>}
+            : <div style={{padding:"7px 9px",color:cellTextColor,fontFamily:"monospace",fontSize:12,fontWeight:500}}>{text(row?.[name])}</div>}
         </td>)}
       </tr>)}
-      {rows.map((row,rowIndex)=><tr key={rowIndex}>
-        {showRowNumbers&&<th scope="row" style={{padding:"7px 6px",textAlign:"center",fontWeight:500,color:"var(--text-secondary)",background:"var(--bg-secondary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>{pinned.length+rowIndex+1}</th>}
-        {names.map((name,columnIndex)=><td key={name} style={{position:"relative",padding:0,borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>
-          {name===colorColumn&&text(row[name]).trim()&&<span aria-hidden="true" style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",width:13,height:13,borderRadius:3,background:row[name],border:"1px solid #94a3b8",pointerEvents:"none"}}/>}
-          <input aria-label={`${pinned.length+rowIndex+1}행 ${columnLabels[name]||name}`} value={row[name]||""} disabled={disabled} readOnly={readOnly.has(name)} onChange={event=>updateCell(rowIndex,name,event.target.value)} onPaste={event=>paste(event,rowIndex,columnIndex)} spellCheck={false} placeholder={rowIndex===0?text(placeholders[name]):""} style={{width:"100%",boxSizing:"border-box",border:0,borderRadius:0,outlineOffset:-2,background:readOnly.has(name)?"var(--bg-secondary)":"transparent",color:readOnly.has(name)?"var(--text-secondary)":"var(--text-primary)",padding:name===colorColumn&&text(row[name]).trim()?"7px 9px 7px 29px":"7px 9px",fontFamily:"monospace",fontSize:12}}/>
-        </td>)}
-      </tr>)}</tbody>
+      {topHeight > 0 && <tr style={{ height: topHeight, pointerEvents: "none" }}><td colSpan={colSpan} style={{ padding: 0, border: 0, height: topHeight }} /></tr>}
+      {visibleRows.map((row,index)=>{
+        const actualIndex = isVirtualized ? safeStartIndex + index : index;
+        return <tr key={actualIndex}>
+          {showRowNumbers&&<th scope="row" style={{padding:"7px 6px",textAlign:"center",fontWeight:600,color:cellTextColor,background:"var(--bg-secondary)",borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>{pinned.length+actualIndex+1}</th>}
+          {names.map((name,columnIndex)=><td key={name} style={{position:"relative",padding:0,borderRight:"1px solid var(--border)",borderBottom:"1px solid var(--border)"}}>
+            {name===colorColumn&&text(row[name]).trim()&&<span aria-hidden="true" style={{position:"absolute",left:8,top:"50%",transform:"translateY(-50%)",width:13,height:13,borderRadius:3,background:row[name],border:"1px solid #94a3b8",pointerEvents:"none"}}/>}
+            <input aria-label={`${pinned.length+actualIndex+1}행 ${columnLabels[name]||name}`} value={row[name]||""} disabled={disabled} readOnly={readOnly.has(name)} onChange={event=>updateCell(actualIndex,name,event.target.value)} onPaste={event=>paste(event,actualIndex,columnIndex)} spellCheck={false} placeholder={actualIndex===0?text(placeholders[name]):""} style={{width:"100%",boxSizing:"border-box",border:0,borderRadius:0,outlineOffset:-2,background:readOnly.has(name)?"var(--bg-secondary)":"transparent",color:cellTextColor,fontWeight:500,padding:name===colorColumn&&text(row[name]).trim()?"7px 9px 7px 29px":"7px 9px",fontFamily:"monospace",fontSize:12}}/>
+          </td>)}
+        </tr>;
+      })}
+      {bottomHeight > 0 && <tr style={{ height: bottomHeight, pointerEvents: "none" }}><td colSpan={colSpan} style={{ padding: 0, border: 0, height: bottomHeight }} /></tr>}
+      </tbody>
     </table>
   </div>;
 }

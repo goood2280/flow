@@ -15,12 +15,15 @@ const LIGHTS = {
   gray: { label: "대기", color: "#6b7280", bg: "rgba(107,114,128,.08)", icon: "⚪" },
 };
 
-function TrafficPill({ light, prefix = "" }) {
+function TrafficPill({ light, prefix = "", mismatchCount }) {
   const item = LIGHTS[light] || LIGHTS.gray;
+  const hasMismatchCount = mismatchCount !== null && mismatchCount !== undefined
+    && Number.isFinite(Number(mismatchCount));
+  const count = Number(mismatchCount || 0);
   return <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px",
     borderRadius: 12, fontSize: 11, fontWeight: 700, color: item.color, background: item.bg,
     border: `1px solid ${item.color}`, whiteSpace: "nowrap" }}>
-    {item.icon} {prefix}{item.label}
+    {item.icon} {prefix}{item.label}{light === "red" && hasMismatchCount ? ` ${count}건` : ""}
   </span>;
 }
 
@@ -74,9 +77,9 @@ function MapfileTable({ files, openingKey, initialFilename, onOpen }) {
               {opening ? "여는 중…" : <>{file.filename} <span style={{ whiteSpace: "nowrap" }}>상세보기 →</span></>}
             </button>
           </td>
-          <td style={{ padding: "8px 10px" }}><TrafficPill light={file.traffic_light} /></td>
-          <td style={{ padding: "8px 10px" }}><TrafficPill light={file.sl?.light} /></td>
-          <td style={{ padding: "8px 10px" }}><TrafficPill light={file.main?.light} /></td>
+          <td style={{ padding: "8px 10px" }}><TrafficPill light={file.traffic_light} mismatchCount={file.mismatch_count} /></td>
+          <td style={{ padding: "8px 10px" }}><TrafficPill light={file.sl?.light} mismatchCount={file.sl?.red} /></td>
+          <td style={{ padding: "8px 10px" }}><TrafficPill light={file.main?.light} mismatchCount={file.main?.red} /></td>
           <td style={{ padding: "8px 10px", fontFamily: "monospace" }} title={file.signature || ""}>
             {shortVersion(file.signature)}
           </td>
@@ -100,7 +103,7 @@ export default function TegMapfileTraffic({ vehicle, onOpenCheck, initialFilenam
   const requestRef = useRef({ id: 0, controller: null });
   const openRequestRef = useRef({ id: 0, controller: null });
 
-  const loadTraffic = useCallback(async ({ quiet = false } = {}) => {
+  const loadTraffic = useCallback(async ({ quiet = false, force = false } = {}) => {
     if (!vehicle) return;
     requestRef.current.controller?.abort();
     const controller = new AbortController();
@@ -108,7 +111,9 @@ export default function TegMapfileTraffic({ vehicle, onOpenCheck, initialFilenam
     requestRef.current = { id, controller };
     if (!quiet) setLoading(true);
     try {
-      const result = await sf(`${API}/mapfile-traffic?vehicle=${encodeURIComponent(vehicle)}`, { signal: controller.signal });
+      const query = new URLSearchParams({ vehicle });
+      if (force) query.set("force", "true");
+      const result = await sf(`${API}/mapfile-traffic?${query.toString()}`, { signal: controller.signal });
       if (requestRef.current.id === id) setData(result);
     } catch (error) {
       if (!controller.signal.aborted && requestRef.current.id === id) {
@@ -173,7 +178,11 @@ export default function TegMapfileTraffic({ vehicle, onOpenCheck, initialFilenam
   return <div style={{ display: "grid", gap: 14 }}>
     <Card title="GitHub 주기검사" right={<div style={{ display: "flex", gap: 8, alignItems: "center" }}>
       {data?.refreshing && <Pill tone="info">백그라운드 갱신 중</Pill>}
-      <TrafficPill light={data?.overall_light} prefix="전체 " />
+      <TrafficPill light={data?.overall_light} prefix="전체 " mismatchCount={data?.summary?.mismatch_count} />
+      <Button size="sm" disabled={loading || data?.refreshing} onClick={() => loadTraffic({ force: true })}
+        title={`${data?.product_code || vehicle} 제품코드의 Mapfile을 캐시와 관계없이 다시 검사합니다.`}>
+        {data?.refreshing ? "재검사 중…" : "수동 재검사"}
+      </Button>
       <Button size="sm" disabled={loading} onClick={() => loadTraffic()}>
         {loading ? "조회 중…" : "새로고침"}
       </Button>
@@ -189,7 +198,7 @@ export default function TegMapfileTraffic({ vehicle, onOpenCheck, initialFilenam
       hint="백그라운드 검사가 끝나면 자동으로 표시됩니다." />}
     {groups.map(group => <Card key={group.key || group.label}
       title={`${group.label || group.key} · ${group.files?.length || 0}개`}
-      right={<TrafficPill light={group.overall_light} />}>
+      right={<TrafficPill light={group.overall_light} mismatchCount={group.summary?.mismatch_count} />}>
       {group.files?.length
         ? <MapfileTable files={group.files} openingKey={openingKey} initialFilename={initialFilename} onOpen={openInCheck} />
         : <div style={{ color: "var(--muted)", fontSize: 12 }}>Mapfile이 없습니다.</div>}

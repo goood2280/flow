@@ -92,7 +92,8 @@ def test_sample_3_teg_location(monkeypatch):
     res = data_chat.execute("prodB GATE TEG 어디있는지 보여줘", {}, request)
     assert res["ok"] is True, res
     assert res["tool"].get("action") == "teg.locations"
-    assert res["context"].get("product") == "VH_PRODB"
+    assert res["context"].get("product") == "PRODB"
+    assert res["context"].get("teg_product") == "VH_PRODB"
     assert "TEG_GATE" in res["context"].get("teg_names", [])
 
 
@@ -149,4 +150,3 @@ def test_domain_translation_guide(monkeypatch):
     assert "[도메인 해석 가이드]" in loc_res["reply"]
     assert "A1001" in loc_res["reply"]
     assert "랏 현재 위치 및 공정 진도 확인" in loc_res["reply"]
-

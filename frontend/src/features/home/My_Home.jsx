@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import BrandLogo from "../../components/BrandLogo";
-import { isAdmin as isAdminUser, visibleTabsFor } from "../../lib/permissions";
+import { canAccessTab, isAdmin as isAdminUser, visibleTabsFor } from "../../lib/permissions";
 import HomeAlertsSection from "./HomeAlertsSection";
 import HomeDataChat from "./HomeDataChat";
 import { preloadPage } from "../../app/pageManifest";
@@ -168,6 +168,7 @@ function FeatureCard({ tab, favorite, onFavorite, onOpen }) {
 
 export default function My_Home({ onNavigate, user, visibleTabs }) {
   const admin = isAdminUser(user);
+  const canUseFlowi = canAccessTab(user, admin ? "__all__" : (user?.tabs || ""), "flowi");
   const tabs = Array.isArray(visibleTabs)
     ? visibleTabs
     : visibleTabsFor(user, admin ? "__all__" : (user?.tabs || ""));
@@ -175,10 +176,18 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
   const open = onNavigate || (() => {});
   const username = user?.username || "guest";
   const [favorites, setFavorites] = useState(() => readFavorites(username));
+  const [flowiOpen, setFlowiOpen] = useState(false);
+  const [flowiProbeKey, setFlowiProbeKey] = useState(0);
 
   useEffect(() => {
     setFavorites(readFavorites(username));
+    setFlowiOpen(false);
   }, [username]);
+
+  const toggleFlowi = () => {
+    if (!flowiOpen) setFlowiProbeKey((key) => key + 1);
+    setFlowiOpen(!flowiOpen);
+  };
 
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
   const favoriteRank = useMemo(() => (
@@ -213,7 +222,7 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
   };
 
   return (
-    <main className={`home-page${admin ? " has-admin-chat" : ""}`}>
+    <main className={`home-page${canUseFlowi ? " has-admin-chat" : ""}`}>
       <div className="home-top-section">
         <BrandLogo size="home" />
         <section className="home-welcome">
@@ -221,10 +230,30 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
             {user?.username || "user"}님, 안녕하세요
           </div>
           <HomeAlertsSection onNavigate={open} user={user} />
+          {canUseFlowi && (
+            <button
+              type="button"
+              className={`home-flowi-connect${flowiOpen ? " is-open" : ""}`}
+              aria-expanded={flowiOpen}
+              aria-controls="home-flowi-chat"
+              onClick={toggleFlowi}
+            >
+              <span className="home-flowi-connect__mark" aria-hidden="true">Flow-i</span>
+              <span className="home-flowi-connect__copy">
+                <strong>{flowiOpen ? "Flow-i 닫기" : "Flow-i 연결"}</strong>
+                <small>{flowiOpen ? "대화창이 연결되어 있습니다" : "질문을 시작하면 연결 상태를 한 번 확인합니다"}</small>
+              </span>
+              <span className="home-flowi-connect__arrow" aria-hidden="true">{flowiOpen ? "−" : "→"}</span>
+            </button>
+          )}
         </section>
       </div>
 
-      {admin && <HomeDataChat user={user} onNavigate={open} />}
+      {canUseFlowi && flowiOpen && (
+        <div id="home-flowi-chat" className="home-flowi-panel">
+          <HomeDataChat user={user} onNavigate={open} enabled probeKey={flowiProbeKey} />
+        </div>
+      )}
 
       <div className="home-bottom-section">
         {orderedCards.length ? (

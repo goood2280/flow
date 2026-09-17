@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { FlowPlotlyChart } from "../../components/PlotlyChart";
 import { sf } from "../../lib/api";
 import "./HomeDataChat.css";
+import TegChatMaps from "./TegChatMaps";
 
 const PAGE_SIZE = 50;
 const API_HISTORY_MESSAGES = 20;
@@ -286,6 +287,7 @@ function ExecutionTraceCard({ trace, rawGuideText = "" }) {
   const sources = Array.isArray(trace?.sources) ? trace.sources : [];
   const steps = Array.isArray(trace?.steps) ? trace.steps : [];
   const query = trace?.query;
+  const illustrativeQuery = trace?.illustrative_query;
 
   return (
     <div className="home-data-chat__trace-card" aria-label="의도 해석 및 실행 경로">
@@ -313,7 +315,7 @@ function ExecutionTraceCard({ trace, rawGuideText = "" }) {
 
       {steps.length > 0 && (
         <div className="home-data-chat__trace-section">
-          <span className="home-data-chat__trace-label">🧭 검색/실행 경로:</span>
+            <span className="home-data-chat__trace-label">🧭 실행 설명:</span>
           <div className="home-data-chat__trace-breadcrumbs">
             {steps.map((step, idx) => (
               <span key={idx} className="home-data-chat__breadcrumb-item">
@@ -332,6 +334,12 @@ function ExecutionTraceCard({ trace, rawGuideText = "" }) {
         </div>
       )}
 
+      {illustrativeQuery && !query && (
+        <details className="home-data-chat__trace-section">
+          <summary>설명용 예시 (실제 SQL 아님)</summary>
+          <pre className="home-data-chat__trace-query"><code>{illustrativeQuery}</code></pre>
+        </details>
+      )}
       {!trace && rawGuideText && (
         <div className="home-data-chat__guide-body">{rawGuideText}</div>
       )}
@@ -339,10 +347,31 @@ function ExecutionTraceCard({ trace, rawGuideText = "" }) {
   );
 }
 
+function RoutingTraceCard({ trace }) {
+  if (!trace || typeof trace !== "object") return null;
+  const bindings = trace.bindings && typeof trace.bindings === "object" ? trace.bindings : {};
+  const sources = Array.isArray(trace.sources) ? trace.sources : [];
+  const missing = Array.isArray(trace.missing) ? trace.missing : [];
+  return (
+    <details className="home-data-chat__routing-trace" open>
+      <summary>라우팅 해석 <span>{trace.rule_title || trace.rule_id || trace.route || "확인"}</span></summary>
+      <div className="home-data-chat__routing-trace-body">
+        {trace.normalized_question && <div><b>정규화된 질문</b><span>{trace.normalized_question}</span></div>}
+        {(trace.route || trace.action) && <div><b>경로</b><span>{[trace.route, trace.action].filter(Boolean).join(" · ")}</span></div>}
+        {Object.keys(bindings).length > 0 && <div><b>바인딩</b><span>{Object.entries(bindings).map(([key, value]) => `${key}=${asText(value)}`).join(" · ")}</span></div>}
+        {sources.length > 0 && <div><b>원천</b><span>{sources.join(" · ")}</span></div>}
+        {missing.length > 0 && <div className="is-missing"><b>추가 입력</b><span>{missing.join(" · ")}</span></div>}
+        {trace.status && <div><b>상태</b><span>{trace.status}</span></div>}
+      </div>
+    </details>
+  );
+}
+
 function BubbleContent({ message, onExplore }) {
   const content = message.content || "";
   const tool = message.response?.tool;
   const trace = tool?.execution_trace;
+  const routingTrace = message.response?.routing_trace;
 
   let displayBody = content;
   let rawGuideText = "";
@@ -367,6 +396,8 @@ function BubbleContent({ message, onExplore }) {
       {(trace || rawGuideText) && (
         <ExecutionTraceCard trace={trace} rawGuideText={rawGuideText} />
       )}
+
+      <RoutingTraceCard trace={routingTrace} />
 
       {displayBody && (
         <div className="home-data-chat__guided-body">{displayBody}</div>
@@ -403,6 +434,32 @@ function BubbleContent({ message, onExplore }) {
           </div>
         </div>
       )}
+
+      <TegChatMaps maps={tool?.teg_maps} />
+    </div>
+  );
+}
+
+function BatchContent({ response, onExplore, onOpenWorkspace }) {
+  const questions = Array.isArray(response?.questions) ? response.questions : [];
+  if (!questions.length) return null;
+  return (
+    <div className="home-data-chat__batch" aria-label="여러 질문 결과">
+      <div className="home-data-chat__batch-summary">질문 {response.batch?.completed ?? 0}/{response.batch?.total ?? questions.length}개 처리됨</div>
+      {questions.map((item, index) => {
+        const child = item?.response && typeof item.response === "object" ? item.response : {};
+        const status = item?.status || "deferred";
+        return (
+          <section className={`home-data-chat__batch-item is-${status}`} key={`${index}-${item?.question || "question"}`}>
+            <div className="home-data-chat__batch-question"><span>{index + 1}</span>{item?.question || "질문"}<b>{status === "completed" ? "완료" : status === "needs_input" ? "입력 필요" : status === "failed" ? "실패" : "대기"}</b></div>
+            {item?.reason && <div className="home-data-chat__batch-reason">{item.reason}</div>}
+            {(child.reply || child.answer || child.tool) && <BubbleContent message={{ content: answerText(child), response: child }} onExplore={onExplore} />}
+            {child.tool && onOpenWorkspace && (child.tool.feature || child.tool.chart_result || child.tool.table) && (
+              <button type="button" className="home-data-chat__batch-workspace-btn" onClick={() => onOpenWorkspace(child.tool)}>🖥️ 작업창 열기</button>
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }
@@ -482,11 +539,12 @@ function featureInfo(feature, tool) {
   };
 }
 
-function ModelStatus() {
+function ModelStatus({ refreshKey = 0, probeKey = 0, turnUsage = null }) {
   const [model, setModel] = useState({});
   const [checking, setChecking] = useState(false);
   const active = useRef(true);
   const busy = useRef(false);
+  const lastProbeKey = useRef(0);
   const refresh = async (probe = false) => {
     if (busy.current) return;
     busy.current = true;
@@ -503,17 +561,28 @@ function ModelStatus() {
   };
   useEffect(() => {
     active.current = true;
-    refresh();
+    if (probeKey && lastProbeKey.current !== probeKey) {
+      lastProbeKey.current = probeKey;
+      refresh(true);
+    } else {
+      refresh();
+    }
     const timer = setInterval(() => refresh(), 30000);
     return () => { active.current = false; clearInterval(timer); };
-  }, []);
+  }, [probeKey, refreshKey]);
   const labels = { connected: "연결됨", disconnected: "연결 끊김", disabled: "사용 안 함", unconfigured: "미설정" };
+  const status = checking ? "checking" : (model.status || "unknown");
+  const modelName = [model.provider, model.model].filter(Boolean).join(" · ") || "확인 중";
   return (
     <div className="home-data-chat__model-bar">
-      <span>현재 모델 · {model.model || labels[model.status] || "확인 중"}</span>
-      {model.model && <span>{labels[model.status] || "확인 불가"}</span>}
+      <span className="home-data-chat__model-name">현재 모델 · <strong>{modelName}</strong></span>
+      <span className={`home-data-chat__connection is-${status}`} role="status" title={model.message || "모델 연결 상태"}>
+        <i aria-hidden="true" />
+        {checking ? "검사 중" : (labels[model.status] || "확인 필요")}
+      </span>
       <button type="button" onClick={() => refresh(true)} disabled={checking || Number(model.usage?.minute_calls_remaining) <= 0}>{checking ? "검사 중…" : "연결 검사"}</button>
-      {model.usage && <span>분당 잔여 {model.usage.minute_calls_remaining ?? "—"}/{model.usage.minute_call_limit ?? "—"}</span>}
+      {turnUsage && <span className="home-data-chat__usage">이번 턴 {turnUsage.llm_calls_used ?? 0}/{turnUsage.llm_call_limit ?? 6} · 잔여 {turnUsage.llm_calls_remaining ?? "—"}</span>}
+      {(model.usage || turnUsage) && <span>분당 잔여 {(model.usage || turnUsage).minute_calls_remaining ?? "—"}/{(model.usage || turnUsage).minute_call_limit ?? "—"}</span>}
     </div>
   );
 }
@@ -576,6 +645,8 @@ function WorkspaceTeg({ tool, filterText = "", onExplore }) {
           </div>
         </div>
       )}
+
+      <TegChatMaps maps={tool.teg_maps} />
 
       {table && (
         <DataTable
@@ -853,7 +924,22 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
             </div>
           )}
           {targetPage && onNavigate && (
-            <button type="button" className="home-workspace__tool-btn" onClick={() => onNavigate(targetPage)} title={`${pageName} 페이지로 이동`}>
+            <button
+              type="button"
+              className="home-workspace__tool-btn"
+              onClick={() => {
+                if (targetPage === "dashboard" && tool?.context?.split_col) {
+                  try {
+                    sessionStorage.setItem("flow:dashboard:initial_split", JSON.stringify({
+                      product: tool.context.product || "",
+                      split_col: tool.context.split_col || "",
+                    }));
+                  } catch {}
+                }
+                onNavigate(targetPage);
+              }}
+              title={`${pageName} 페이지로 이동`}
+            >
               ↗ {pageName}
             </button>
           )}
@@ -938,9 +1024,8 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
   );
 }
 
-export default function HomeDataChat({ user, onNavigate }) {
+export default function HomeDataChat({ user, onNavigate, enabled = false, probeKey = 0 }) {
   const username = user?.username || "guest";
-  const admin = user?.role === "admin";
   const [prompt, setPrompt] = useState("");
   const [chatState, setChatState] = useState(() => loadChatState(username));
   const [loading, setLoading] = useState(false);
@@ -952,6 +1037,8 @@ export default function HomeDataChat({ user, onNavigate }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(true);
   const [workspaceMaximized, setWorkspaceMaximized] = useState(false);
   const [samplePrompts, setSamplePrompts] = useState({ pinned: [], successful: [] });
+  const [turnUsage, setTurnUsage] = useState(null);
+  const [modelRefreshKey, setModelRefreshKey] = useState(0);
 
   const scrollRef = useRef(null);
   const requestVersionRef = useRef(0);
@@ -992,7 +1079,7 @@ export default function HomeDataChat({ user, onNavigate }) {
   }, [username]);
 
   useEffect(() => {
-    if (!admin) return undefined;
+    if (!enabled) return undefined;
     let active = true;
     const generation = conversationGenerationRef.current;
     const controller = new AbortController();
@@ -1015,7 +1102,7 @@ export default function HomeDataChat({ user, onNavigate }) {
       controller.abort();
       if (conversationAbortRef.current === controller) conversationAbortRef.current = null;
     };
-  }, [admin, username]);
+  }, [enabled, username]);
 
   const refreshConversations = async () => {
     const generation = conversationGenerationRef.current;
@@ -1119,7 +1206,7 @@ export default function HomeDataChat({ user, onNavigate }) {
   const submit = async (event, decision = "") => {
     event?.preventDefault();
     const value = (decision || prompt).trim();
-    if (!admin || !value || loading || conversationLoading || submitLockRef.current) return;
+    if (!enabled || !value || loading || conversationLoading || submitLockRef.current) return;
     submitLockRef.current = true;
 
     const requestVersion = requestVersionRef.current + 1;
@@ -1142,7 +1229,8 @@ export default function HomeDataChat({ user, onNavigate }) {
         body: JSON.stringify({ conversation_id: chatState.conversationId, prompt: value, top_k: 1, context: requestContext, history: requestHistory }),
       });
       if (requestVersionRef.current !== requestVersion) return;
-
+      if (response?.usage && typeof response.usage === "object") setTurnUsage(response.usage);
+      setModelRefreshKey((value) => value + 1);
       const tool = response?.tool && typeof response.tool === "object" ? response.tool : null;
       const feature = tool?.feature || (tool?.chart_result ? "chart" : (tool?.table ? "table" : null));
 
@@ -1173,7 +1261,7 @@ export default function HomeDataChat({ user, onNavigate }) {
         conversationId: response?.conversation_id || current.conversationId,
         context: responseContext(current.context, response),
         messages: [...current.messages, {
-          id: `${Date.now()}-assistant`,
+          id: response?.message_id || `${Date.now()}-assistant`,
           role: "assistant",
           content: answerText(response),
           response: withoutContext(response),
@@ -1208,13 +1296,13 @@ export default function HomeDataChat({ user, onNavigate }) {
     }
   };
 
-  if (!admin) return null;
+  if (!enabled) return null;
 
   const hasActiveWorkspace = workspaceOpen && activeWorkspace && activeWorkspace.tool;
 
   return (
     <section className={`home-data-chat${hasActiveWorkspace ? " has-workspace" : ""}`} aria-label="데이터 채팅">
-      <ModelStatus key={username} />
+      <ModelStatus key={username} refreshKey={modelRefreshKey} probeKey={probeKey} turnUsage={turnUsage} />
       <div className="home-data-chat__conversation-bar">
         <select value={chatState.conversationId} onChange={(event) => selectConversation(event.target.value)} disabled={conversationLoading || loading} aria-label="저장된 대화 선택">
           <option value={chatState.conversationId}>{conversations.find((item) => item.id === chatState.conversationId)?.title || "새 대화"}</option>
@@ -1237,51 +1325,13 @@ export default function HomeDataChat({ user, onNavigate }) {
           <div className="home-data-chat__conversation" ref={scrollRef} aria-live="polite">
             {chatState.messages.length === 0 && (
               <div className="home-data-chat__empty-wrap">
-                <div className="home-data-chat__empty-title">Flow 데이터 어시스턴트</div>
-                <div className="home-data-chat__empty-desc">
-                  반도체 실무 발화(Lot .1 표기, Left 5 Root Lot, EVT 제품 약칭, 구어체 스플릿 배정, 수율 맵, 트래커 이슈 등)를 자동 번역하여 우측 라이브 작업창에 실시간 반영합니다.
-                </div>
-                <div className="home-data-chat__prompts-header">
-                  <span className="home-data-chat__prompts-title">📌 관리자 추천 및 고정 질문</span>
-                  {admin && onNavigate && (
-                    <button
-                      type="button"
-                      className="home-data-chat__manage-prompts-link"
-                      onClick={() => onNavigate("admin")}
-                      title="관리자 콘솔에서 데이터챗 추천 질문을 고정하거나 관리합니다"
-                    >
-                      ⚙️ 추천 질문 관리 →
-                    </button>
-                  )}
-                </div>
-                <div className="home-data-chat__sample-chips">
-                  {(samplePrompts.pinned?.length ? samplePrompts.pinned : [
-                    { id: "1", prompt: "PRODA A1001 위치 조회" },
-                    { id: "2", prompt: "PRODA TEG_GATE 위치 보여줘" },
-                    { id: "3", prompt: "prodA A1005.1 5.0 PC 스플릿 wafer 1~6 ABC 넣고 나머지는 ABB로 깔아줘" },
-                    { id: "4", prompt: "PRODA A1001 수율 맵 보여줘" },
-                    { id: "5", prompt: "ET 트래커 이슈 목록 보여줘" },
-                    { id: "6", prompt: "prodA A1005.1 스플릿테이블 보여줘" },
-                  ]).map((item) => (
-                    <button
-                      key={item.id || item.prompt}
-                      type="button"
-                      className="home-data-chat__chip is-pinned"
-                      onClick={() => setPrompt(item.prompt)}
-                    >
-                      📌 {item.prompt}
-                    </button>
-                  ))}
-                </div>
-
-                {samplePrompts.successful?.filter((s) => !samplePrompts.pinned?.some((p) => p.prompt.toLowerCase() === s.prompt.toLowerCase())).length > 0 && (
+                {samplePrompts.successful?.length > 0 && (
                   <div className="home-data-chat__success-prompts-section">
                     <div className="home-data-chat__prompts-header">
                       <span className="home-data-chat__prompts-title">⚡ 최근 실제 성공한 질문</span>
                     </div>
                     <div className="home-data-chat__sample-chips">
                       {samplePrompts.successful
-                        .filter((s) => !samplePrompts.pinned?.some((p) => p.prompt.toLowerCase() === s.prompt.toLowerCase()))
                         .slice(0, 8)
                         .map((item) => (
                           <button
@@ -1302,6 +1352,12 @@ export default function HomeDataChat({ user, onNavigate }) {
             )}
             {chatState.messages.map((message) => {
               const msgTool = message.response?.tool;
+              const tegCandidateGroups = Array.isArray(msgTool?.teg_candidates)
+                ? msgTool.teg_candidates.filter((group) => group && Array.isArray(group.candidates) && group.candidates.length)
+                : [];
+              const splitCandidateGroups = Array.isArray(msgTool?.split_candidates)
+                ? msgTool.split_candidates.filter((group) => group && Array.isArray(group.candidates) && group.candidates.length)
+                : [];
               const msgFeature = msgTool?.feature || (msgTool?.chart_result ? "chart" : (msgTool?.table ? "table" : null));
               const info = msgFeature ? featureInfo(msgFeature, msgTool) : null;
               const isCurrent = activeWorkspace && activeWorkspace.tool === msgTool;
@@ -1309,9 +1365,12 @@ export default function HomeDataChat({ user, onNavigate }) {
               return (
                 <article key={message.id} className={`home-data-chat__message is-${message.role}${message.error ? " is-error" : ""}`}>
                   <div className="home-data-chat__bubble">
-                    <BubbleContent message={message} onExplore={(query) => submit(null, query)} />
+                     {Array.isArray(message.response?.questions) && message.response.questions.length > 0
+                       ? <BatchContent response={message.response} onExplore={(query) => submit(null, query)} onOpenWorkspace={focusWorkspace} />
+                       : <BubbleContent message={message} onExplore={(query) => submit(null, query)} />}
                   </div>
 
+                  {message.response?.usage && <div className="home-data-chat__usage">이번 요청 LLM {message.response.usage.llm_calls_used}회 차감 / 최대 {message.response.usage.llm_call_limit}회 · 당시 분당 잔여 {message.response.usage.minute_calls_remaining}회</div>}
                   {message.role === "assistant" && msgTool && (
                     <div className="home-data-chat__message-footer">
                       {info && (
@@ -1332,6 +1391,40 @@ export default function HomeDataChat({ user, onNavigate }) {
                           </span>
                         </div>
                       )}
+
+                      {splitCandidateGroups.map((group, groupIndex) => (
+                        <div className="home-data-chat__candidate-group" key={`split-cand-${groupIndex}`}>
+                          <span>{group.title || "Split 조건을 선택하세요"}</span>
+                          <div className="home-data-chat__actions" aria-label="Split 후보 선택">
+                            {group.candidates.map((cand, candIdx) => {
+                              const label = cand.label || cand.value || cand;
+                              const promptText = cand.prompt || cand.value || cand;
+                              return (
+                                <button
+                                  type="button"
+                                  key={`cand-${candIdx}`}
+                                  disabled={loading}
+                                  onClick={() => submit(null, promptText)}
+                                >
+                                  {label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+
+                      {tegCandidateGroups.map((group, groupIndex) => (
+                        <div className="home-data-chat__candidate-group" key={`${asText(group.requested)}-${groupIndex}`}>
+                          <span>{group.requested ? `“${asText(group.requested)}” 후보를 선택하세요` : "TEG 후보를 선택하세요"}</span>
+                          <div className="home-data-chat__actions" aria-label="TEG 후보 선택">
+                            {group.candidates.map((candidate) => {
+                              const name = asText(candidate).trim();
+                              return name ? <button type="button" key={name} disabled={loading} onClick={() => submit(null, name)}>{name}</button> : null;
+                            })}
+                          </div>
+                        </div>
+                      ))}
 
                       {msgTool.approval?.status === "pending" && asText(msgTool.approval?.id).trim() && (
                         <div className="home-data-chat__actions" aria-label="스플릿 변경 승인">
@@ -1354,7 +1447,6 @@ export default function HomeDataChat({ user, onNavigate }) {
               </article>
             )}
           </div>
-
           <form onSubmit={submit} className="home-data-chat__composer">
             <textarea
               value={prompt}
@@ -1366,7 +1458,7 @@ export default function HomeDataChat({ user, onNavigate }) {
                   event.currentTarget.form?.requestSubmit();
                 }
               }}
-              placeholder="반도체 실무 발화로 질문하세요 (예: PRODA A1001 수율 맵, prodA A1005.1 스플릿 레시피, PRODA TEG 위치)"
+              placeholder="실제 DB의 제품명과 Lot·공정 조건으로 질문하세요"
               rows={1}
               maxLength={API_HISTORY_CHARS}
               disabled={loading || conversationLoading}
@@ -1374,6 +1466,7 @@ export default function HomeDataChat({ user, onNavigate }) {
             />
             <button type="submit" disabled={loading || conversationLoading || !prompt.trim()} aria-label="메시지 보내기">↑</button>
           </form>
+          <div className="home-data-chat__composer-help">여러 질문은 줄바꿈 또는 물음표(?)로 나누세요 · 한 번에 최대 4개</div>
         </div>
 
         {hasActiveWorkspace && (

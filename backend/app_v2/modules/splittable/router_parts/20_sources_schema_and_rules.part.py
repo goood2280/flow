@@ -1640,6 +1640,8 @@ def _product_step_map_by_desc(product: str, base: Path | None = None) -> dict[st
             bucket = step_map.setdefault(k, [])
             if not any(str(x.get("step_id") or "").strip().casefold() == step_id.casefold() for x in bucket):
                 bucket.append(item)
+    for bucket in step_map.values():
+        bucket.sort(key=lambda item: _step_id_sort_key(item.get("step_id")))
     return step_map
 
 
@@ -1966,7 +1968,12 @@ def _build_knob_meta(product: str = "") -> dict:
             "value": value,
             "operator": (r.get(km.get("operator_col", "operator")) or "").strip(),
             "category": (r.get(km.get("category_col", "category")) or "").strip(),
-            "step_ids": direct_ids or [str(x.get("step_id") or "").strip() for x in matched_steps if str(x.get("step_id") or "").strip()],
+            "step_ids": _sorted_step_ids(
+                direct_ids or [
+                    str(x.get("step_id") or "").strip()
+                    for x in matched_steps if str(x.get("step_id") or "").strip()
+                ]
+            ),
             "modules": [str(x.get("module") or "").strip() for x in matched_steps if str(x.get("module") or "").strip()],
         })
 
@@ -2114,10 +2121,9 @@ def _step_canonical_stage(desc: str, sid: str = "") -> float:
     return 99.0
 
 
-def _step_order_rank_from_meta(meta: dict, seq_rank: dict[str, int]):
-    """메타가 가리키는 step 중 가장 뒤 공정을 대표 rank로 반환한다."""
+def _step_ids_from_meta(meta: dict) -> list[str]:
     if not isinstance(meta, dict):
-        return None, ""
+        return []
     step_ids: list[str] = []
     for group in meta.get("groups") if isinstance(meta.get("groups"), list) else []:
         if not isinstance(group, dict):
@@ -2132,7 +2138,14 @@ def _step_order_rank_from_meta(meta: dict, seq_rank: dict[str, int]):
     sid = str(meta.get("step_id") or "").strip()
     if sid:
         step_ids.append(sid)
-    ranked = [(seq_rank.get(raw.upper()), raw.upper()) for raw in _dedup_list(step_ids)]
+    return _sorted_step_ids(step_ids)
+
+
+def _step_order_rank_from_meta(meta: dict, seq_rank: dict[str, int]):
+    """메타가 가리키는 step 중 가장 뒤 공정을 대표 rank로 반환한다."""
+    if not isinstance(meta, dict):
+        return None, ""
+    ranked = [(seq_rank.get(raw.upper()), raw.upper()) for raw in _step_ids_from_meta(meta)]
     ranked = [(rank, raw) for rank, raw in ranked if rank is not None]
     if ranked:
         return max(ranked, key=lambda item: item[0])
@@ -2246,8 +2259,32 @@ def _split_step_order_context(product: str) -> dict:
                 prefix_steps.setdefault(m.group(1).upper(), []).append((int(m.group(2)), rank))
         for steps in prefix_steps.values():
             steps.sort()
+        # Applied-process display order and FAB progress order are separate
+        # contracts.  The visible rows use natural step_id order (including
+        # INLINE-only and suffixed IDs), while progress shading keeps the
+        # authoritative route ranks above.
+        explicit_meta_maps = {
+            "KNOB": _build_knob_meta(product) or {},
+            "INLINE": _build_inline_meta(product) or {},
+            "VM": _build_vm_meta(product) or {},
+            "FAB": _build_fab_meta(product) or {},
+            "MASK": _build_mask_meta(product) or {},
+        }
+        display_step_ids = [
+            str(r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
+            for r in matching
+        ]
+        for meta_map in explicit_meta_maps.values():
+            for meta in meta_map.values():
+                display_step_ids.extend(_step_ids_from_meta(meta))
+        display_seq_rank = {
+            sid.upper(): index
+            for index, sid in enumerate(_sorted_step_ids(display_step_ids))
+        }
         param_rank: dict[str, int] = {}
         param_step: dict[str, str] = {}
+        progress_rank_candidates: dict[str, int] = {}
+        progress_param_step: dict[str, str] = {}
 
         # FAB/MASK 등 별도 matching CSV가 없는 prefix는 ML_TABLE 컬럼명과
         # Vehicle step_desc/module의 stage 추론 결과로 먼저 등록한다.
@@ -2264,21 +2301,23 @@ def _split_step_order_context(product: str) -> dict:
             # MASK는 자체 step_id/matching 원천이 없으므로 이름만 보고 공정을 만들지 않는다.
             if pref in {"KNOB", "INLINE", "VM", "MASK"}:
                 continue
+            inferred_meta = _inferred_stage_meta(product, pref)
             _register_step_order_meta(
-                param_rank, param_step, _inferred_stage_meta(product, pref), pref, seq_rank,
+                param_rank, param_step, inferred_meta, pref, display_seq_rank,
+            )
+            _register_step_order_meta(
+                progress_rank_candidates, progress_param_step, inferred_meta, pref, seq_rank,
             )
 
         # 명시적 matching 메타는 추론값보다 우선한다. KNOB 메타 안에는 매칭 CSV에
         # 없는 컬럼의 추론 fallback도 함께 들어 있어 KNOB 전체를 한 번에 처리한다.
-        for pref, meta_builder in (
-            ("KNOB", _build_knob_meta),
-            ("INLINE", _build_inline_meta),
-            ("VM", _build_vm_meta),
-            ("FAB", _build_fab_meta),
-            ("MASK", _build_mask_meta),
-        ):
+        for pref, meta_map in explicit_meta_maps.items():
             _register_step_order_meta(
-                param_rank, param_step, meta_builder(product) or {}, pref, seq_rank,
+                param_rank, param_step, meta_map, pref, display_seq_rank,
+                overwrite=True,
+            )
+            _register_step_order_meta(
+                progress_rank_candidates, progress_param_step, meta_map, pref, seq_rank,
                 overwrite=True,
             )
         # When f_step exists, only parameters whose representative step is in
@@ -2286,8 +2325,8 @@ def _split_step_order_context(product: str) -> dict:
         # step IDs remain visible at the bottom but cannot falsely move the
         # per-wafer "last filled step" boundary.
         progress_param_rank = {
-            name: rank for name, rank in param_rank.items()
-            if not route_steps or str(param_step.get(name) or "").upper() in route_steps
+            name: rank for name, rank in progress_rank_candidates.items()
+            if not route_steps or str(progress_param_step.get(name) or "").upper() in route_steps
         }
         ctx = {"seq_rank": seq_rank, "prefix_steps": prefix_steps,
                "param_rank": param_rank, "param_step": param_step,
@@ -2509,9 +2548,8 @@ def _build_inline_meta(product: str = "") -> dict:
     base = _base_root()
     rows = _load_csv_rows(_rulebook_path_for_base("inline_matching", base))
     im = _sch("inline_matching")
-    # INLINE의 step_id와 step_desc는 모두 inline_matching.csv가 원천이다.
+    # INLINE의 step_id, step_desc, module은 모두 inline_matching.csv가 원천이다.
     # Vehicle_matching에는 INLINE step_id 설명이 없을 수 있으므로 역조회하지 않는다.
-    # module도 해당 CSV에 없으므로 빈 값으로 유지한다.
     grouped: dict[str, list[dict]] = {}
     p_col = im.get("product_col", "product")
     has_product_col = any(
@@ -2534,6 +2572,7 @@ def _build_inline_meta(product: str = "") -> dict:
         func_step = _first_row_value(
             r, im.get("step_desc_col", "step_desc"), "step_desc", "function_step"
         )
+        module = _first_row_value(r, im.get("module_col", "module"), "module")
         canonical_name = desc or iid
         if not canonical_name or not sid:
             continue
@@ -2545,7 +2584,7 @@ def _build_inline_meta(product: str = "") -> dict:
             "matching_table": matching_table,
             "function_step": func_step,
             "step_desc": func_step,
-            "module": "",
+            "module": module,
         }
         # Wide 테이블의 정식 이름은 INLINE_<item_desc>. item_id는 과거 물리
         # 컬럼을 위한 lookup alias일 뿐이며 없어도 현재 행을 버리지 않는다.
@@ -2562,7 +2601,8 @@ def _build_inline_meta(product: str = "") -> dict:
                 continue
             seen.add(key)
             dedup.append(item)
-        step_ids = _dedup_list([x["step_id"] for x in dedup if x.get("step_id")])
+        dedup.sort(key=lambda item: _step_id_sort_key(item.get("step_id")))
+        step_ids = _sorted_step_ids([x["step_id"] for x in dedup if x.get("step_id")])
         item_desc = next((x.get("item_desc") for x in dedup if x.get("item_desc")), "") or iid
         function_steps = _dedup_list([x["function_step"] for x in dedup if x.get("function_step")])
         process_ids = [x["process_id"] for x in dedup if x.get("process_id")]
@@ -2946,7 +2986,7 @@ def _step_label_meta_lookup(meta_map: dict, param: str, prefix: str) -> dict:
 def _step_label_group_ids(group: dict) -> list[str]:
     ids = group.get("step_ids") if isinstance(group, dict) else None
     if isinstance(ids, list):
-        return [str(v or "").strip() for v in ids if str(v or "").strip()]
+        return _sorted_step_ids(ids)
     sid = str((group or {}).get("step_id") or "").strip()
     return [sid] if sid else []
 
@@ -3018,7 +3058,10 @@ def _step_label_item_lines(meta: dict) -> list[str]:
     if not out:
         for sid in ((meta or {}).get("step_ids") or []):
             push(sid, fallback_item)
-    return out
+    return sorted(
+        out,
+        key=lambda line: _step_id_sort_key(str(line).split(" | ", 1)[0]),
+    )
 
 
 def _step_label_metas(product: str) -> dict:
@@ -3092,7 +3135,7 @@ def _step_process_columns_for_param(param: str, metas: dict,
                 if sid and sid.casefold() not in seen_ids:
                     seen_ids.add(sid.casefold())
                     ids.append(sid)
-        return {"step_id": "\n".join(ids), "step_desc": "\n".join(descs)}
+        return {"step_id": "\n".join(_sorted_step_ids(ids)), "step_desc": "\n".join(descs)}
 
     meta_key = {
         "inline_matching": "inline",
@@ -3137,7 +3180,7 @@ def _step_process_columns_for_param(param: str, metas: dict,
     # after groups already supplied A and B individually.
     if not descs and fallback_desc and fallback_desc.casefold() not in seen_descs:
         descs.append(fallback_desc)
-    return {"step_id": "\n".join(ids), "step_desc": "\n".join(descs)}
+    return {"step_id": "\n".join(_sorted_step_ids(ids)), "step_desc": "\n".join(descs)}
 
 
 def _build_step_process_columns(product: str, selected: list[str],
@@ -3530,7 +3573,7 @@ _RULEBOOK_FILES = {
     "inline_matching": {
         "filename": "inline_matching.csv",
         "legacy_filename": "inline_mathcing.csv",
-        "cols": ["product", "step_id", "item_id", "item_desc", "step_desc", "matching_table"],
+        "cols": ["product", "step_id", "item_id", "item_desc", "step_desc", "module", "matching_table"],
         "required": ["product", "step_id"],
     },
     #   vm_matching.csv: (step_desc, item_id) — VM_<step_desc>_<item_id>, step_id 는 Vehicle_matching.csv 에서 확장.

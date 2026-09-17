@@ -104,10 +104,55 @@ def test_step_order_interleaves_mapped_prefixes_and_leaves_mask_unranked(monkeyp
         ),
     )
 
-    # f_step이 없을 때는 기존 Vehicle_matching 행 순서를 유지한다.
-    assert ordered == ["FAB_F", "KNOB_K", "INLINE_I", "VM_V", "MASK_M"]
+    # 적용공정 표시 순서는 CSV 행 순서가 아니라 step_id 숫자 순서를 쓴다.
+    assert ordered == ["KNOB_K", "INLINE_I", "FAB_F", "VM_V", "MASK_M"]
     assert context["param_step"]["FAB_F"] == "ST300"
     assert "MASK_M" not in context["param_rank"]
+    splittable._STEP_ORDER_CTX_CACHE.clear()
+
+
+def test_step_order_uses_numeric_body_for_multi_step_knob_and_inline(monkeypatch):
+    from routers import splittable
+
+    splittable._STEP_ORDER_CTX_CACHE.clear()
+    monkeypatch.setattr(splittable, "_s0_sop_catalog", lambda: {})
+    monkeypatch.setattr(splittable, "_load_knob_step_matching_rows", lambda *args, **kwargs: [
+        {"product": "P1", "step_id": "AA101000", "step_desc": "LATE"},
+        {"product": "P1", "step_id": "AA100000", "step_desc": "EARLY"},
+    ])
+    monkeypatch.setattr(splittable, "_sch", lambda name: {
+        "product_col": "product", "step_id_col": "step_id", "step_desc_col": "step_desc",
+    } if name == "step_matching" else {})
+    monkeypatch.setattr(splittable, "_load_prefixes", lambda: ["KNOB", "INLINE"])
+    monkeypatch.setattr(splittable, "_mltable_schema_columns", lambda *args, **kwargs: [
+        "KNOB_EARLY", "INLINE_MIDDLE", "KNOB_LATE",
+    ])
+    monkeypatch.setattr(splittable, "_inferred_stage_meta", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_build_knob_meta", lambda *args, **kwargs: {
+        "EARLY": {"groups": [{"step_ids": ["AA100001EC", "AA100000"]}]},
+        "LATE": {"groups": [{"step_ids": ["AA101000"]}]},
+    })
+    monkeypatch.setattr(splittable, "_build_inline_meta", lambda *args, **kwargs: {
+        "MIDDLE": {"groups": [{"step_ids": ["AA100500"]}]},
+    })
+    monkeypatch.setattr(splittable, "_build_vm_meta", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_build_fab_meta", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_build_mask_meta", lambda *args, **kwargs: {})
+
+    context = splittable._split_step_order_context("P1")
+    source = ["KNOB_LATE", "INLINE_MIDDLE", "KNOB_EARLY"]
+    ordered = sorted(
+        source,
+        key=lambda column: splittable._step_order_sort_key(
+            column, column, context["param_rank"],
+        ),
+    )
+
+    assert splittable._sorted_step_ids(
+        ["AA101000", "AA100001EC", "AA100000"],
+    ) == ["AA100000", "AA100001EC", "AA101000"]
+    assert ordered == ["KNOB_EARLY", "INLINE_MIDDLE", "KNOB_LATE"]
+    assert context["param_step"]["KNOB_EARLY"] == "AA100001EC"
     splittable._STEP_ORDER_CTX_CACHE.clear()
 
 
@@ -183,7 +228,7 @@ def test_fab_missing_greys_only_f_step_tracked_parameters(monkeypatch):
     assert progress["by_wafer"]["1"]["not_reached"] == ["KNOB_MAPPED"]
 
 
-def test_split_table_unmatched_steps_do_not_move_grey_boundary():
+def test_split_table_unmatched_knob_without_step_id_uses_empty_split_grey_boundary():
     source = (
         Path(__file__).parents[1]
         / "frontend"
@@ -193,9 +238,28 @@ def test_split_table_unmatched_steps_do_not_move_grey_boundary():
         / "My_SplitTable.jsx"
     ).read_text(encoding="utf-8")
 
+    assert "const rowHasMappedStep=viewRows.map" in source
     assert "trackedProgressParams" in source
     assert "if(rowTracksStepProgress[ri])lastFilledRowByCol[ci]=ri" in source
-    assert "if(!rowTracksStepProgress[ri])return false" in source
+    assert "return isKnobProgressRow(row?._param)&&!any" in source
+    assert "if(!rowHasMappedStep[ri])return false" not in source
+    assert "const progressNotReached=rowTracksStepProgress[ri]&&" in source
+
+
+def test_split_table_applied_process_requires_step_id_for_knob():
+    source = (
+        Path(__file__).parents[1]
+        / "frontend"
+        / "src"
+        / "features"
+        / "splittable"
+        / "My_SplitTable.jsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'const hasAppliedProcessColumns=(kind,columns)=>{' in source
+    assert 'if(kind==="knob_ppid")return Boolean(stepId);' in source
+    assert 'return hasAppliedProcessColumns(kind,columns);' in source
+    assert 'const hasProcess=hasAppliedProcessColumns(kind,columns);' in source
 
 
 def test_split_table_process_columns_cache_is_identity_and_option_keyed():
@@ -392,6 +456,53 @@ def test_inline_process_info_keeps_steps_without_vehicle_description(monkeypatch
     assert splittable._step_process_columns_for_param("INLINE_CD", {"inline": meta}) == {
         "step_id": "A100\nA200", "step_desc": "INLINE_ETCH",
     }
+
+
+def test_inline_process_info_uses_module_from_inline_matching(monkeypatch, tmp_path):
+    from routers import splittable
+
+    (tmp_path / "inline_matching.csv").write_text(
+        "product,step_id,item_id,item_desc,step_desc,module\n"
+        "proda,A100,ITEM_1,CD,INLINE_ETCH,METRO\n"
+        "proda,A200,ITEM_2,CD,INLINE_MEASURE,METRO\n"
+        "proda,A300,ITEM_3,MIXED,INLINE_A,METRO\n"
+        "proda,A400,ITEM_4,MIXED,INLINE_B,PHOTO\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+
+    meta = splittable._build_inline_meta("ML_TABLE_PRODA")
+
+    assert meta["CD"]["module"] == "METRO"
+    assert meta["CD"]["modules"] == ["METRO"]
+    assert [group["module"] for group in meta["CD"]["groups"]] == ["METRO", "METRO"]
+    assert meta["MIXED"]["module"] == ""
+    assert meta["MIXED"]["modules"] == ["METRO", "PHOTO"]
+
+
+def test_inline_process_info_sorts_step_ids_naturally(monkeypatch, tmp_path):
+    from routers import splittable
+
+    (tmp_path / "inline_matching.csv").write_text(
+        "product,step_id,item_id,item_desc,step_desc\n"
+        "proda,AA101000,ITEM,CD,LATE\n"
+        "proda,AA100001EC,ITEM,CD,EARLY_SUFFIX\n"
+        "proda,AA100000,ITEM,CD,EARLY\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_sch", lambda kind: {})
+
+    meta = splittable._build_inline_meta("ML_TABLE_PRODA")
+
+    assert meta["CD"]["step_ids"] == ["AA100000", "AA100001EC", "AA101000"]
+    assert [group["step_id"] for group in meta["CD"]["groups"]] == [
+        "AA100000", "AA100001EC", "AA101000",
+    ]
+    assert splittable._step_process_columns_for_param("INLINE_CD", {"inline": meta})["step_id"] == (
+        "AA100000\nAA100001EC\nAA101000"
+    )
 
 
 def test_vm_process_info_preserves_underscores_and_vehicle_module(monkeypatch, tmp_path):

@@ -628,7 +628,7 @@ def mapfile_traffic_get(vehicle: str = Query(...), force: bool = False,
     """DB mapfile 폴더 내 제품코드* 파일들의 신호등 검증 현황 조회."""
     _require_product_access(user, vehicle)
     from core import mapfile_review
-    return mapfile_review.get_summary(vehicle)
+    return mapfile_review.get_summary(vehicle, force=force)
 
 
 @router.get("/mapfile-sync-status")

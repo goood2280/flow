@@ -31,8 +31,12 @@ def publish_snapshot(result: dict) -> dict:
             "filename", "rel_path", "signature", "dc_type", "dc_label",
             "traffic_light", "verified_at", "status", "error", "mtime")}
         row["checked_at"] = entry.get("verified_at", "")
-        row["sl"] = {"light": (entry.get("sl") or {}).get("light", "gray")}
-        row["main"] = {"light": (entry.get("main") or {}).get("light", "gray")}
+        sl = entry.get("sl") or {}
+        main = entry.get("main") or {}
+        summary = entry.get("summary") or {}
+        row["sl"] = {"light": sl.get("light", "gray"), "red": int(sl.get("red") or 0)}
+        row["main"] = {"light": main.get("light", "gray"), "red": int(main.get("red") or 0)}
+        row["mismatch_count"] = int(summary.get("red") or row["sl"]["red"] + row["main"]["red"])
         reasons = list(dict.fromkeys(str(issue.get("reason") or issue.get("status") or "")
                                    for issue in entry.get("issues", [])))
         row["comment"] = str(entry.get("error") or " · ".join(filter(None, reasons[:3]))
@@ -53,15 +57,15 @@ def publish_snapshot(result: dict) -> dict:
     return snapshot
 
 
-def _refresh(vehicle: str) -> None:
+def _refresh(vehicle: str, force: bool = False) -> None:
     path = _path("traffic_snapshots", vehicle)
     try:
         # Other workers/processes recheck freshness after acquiring this lock.
         with file_transaction(path):
             previous = load_json(path, {}) or {}
-            if time.time() - previous.get("checked_epoch", 0) < REFRESH_SECONDS:
+            if not force and time.time() - previous.get("checked_epoch", 0) < REFRESH_SECONDS:
                 return
-            result = traffic.inspect_mapfiles_for_product(vehicle)
+            result = traffic.inspect_mapfiles_for_product(vehicle, force=force)
             publish_snapshot(result)
     except Exception:
         traffic.logger.exception("Background Mapfile refresh failed for %s", vehicle)
@@ -76,14 +80,15 @@ def _refresh(vehicle: str) -> None:
             _pending.discard(str(path))
 
 
-def get_summary(vehicle: str) -> dict:
+def get_summary(vehicle: str, force: bool = False) -> dict:
     path = _path("traffic_snapshots", vehicle)
     snapshot = load_json(path, {}) or {}
     key = str(path)
     with _guard:
-        if time.time() - snapshot.get("checked_epoch", 0) >= REFRESH_SECONDS and key not in _pending:
+        needs_refresh = force or time.time() - snapshot.get("checked_epoch", 0) >= REFRESH_SECONDS
+        if needs_refresh and key not in _pending:
             _pending.add(key)
-            _pool.submit(_refresh, vehicle)
+            _pool.submit(_refresh, vehicle, force)
         refreshing = key in _pending
     # Read only tiny version-specific comment summaries, never the Mapfile or
     # unbounded comment history. Keep comments fresh without rerunning inspection.

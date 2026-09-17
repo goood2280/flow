@@ -1,7 +1,7 @@
 """Data Chat sample prompt APIs, independent of retired Flow-i routers."""
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
-from core.auth import current_user
+from core.auth import current_user, require_admin
 
 router = APIRouter(prefix="/api/home-agent", tags=["chat-prompts"])
 
@@ -20,19 +20,18 @@ class PinPromptRequest(BaseModel):
 
 
 @router.get("/sample-prompts")
-def get_sample_prompts(request: Request):
-    """Return pinned questions and successful questions."""
+def get_sample_prompts(request: Request, admin=Depends(require_admin)):
+    """Return pinned questions and this user's successful questions."""
     from core import chat_prompts
-    return chat_prompts.get_sample_prompts()
+    return chat_prompts.get_sample_prompts(user=admin["username"])
 
 
 @router.post("/sample-prompts/record-success")
-def record_prompt_success(request: Request, body: RecordSuccessRequest):
+def record_prompt_success(request: Request, body: RecordSuccessRequest, admin=Depends(require_admin)):
     """Record a successfully answered query."""
     from core import chat_prompts
-    me = current_user(request) or {}
     q = (body.prompt or body.text or "").strip()
-    return chat_prompts.record_success(q, user=me.get("username") or "", category=body.category or "")
+    return chat_prompts.record_success(q, user=admin["username"], category=body.category or "")
 
 
 @router.post("/sample-prompts/pin")

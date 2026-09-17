@@ -141,6 +141,77 @@ def test_vehicle_only_schema_fills_existing_vehicle_column(monkeypatch):
     assert proposal["column"] == "vehicle"
 
 
+def test_inline_scan_matches_raw_item_id_by_item_desc_alias(monkeypatch):
+    from core import matching_fill as matching
+
+    store = {"settings": {}, "proposals": {}}
+    columns = ["product", "step_id", "item_id", "item_desc", "module"]
+    rows = [{
+        "product": "", "step_id": "AA100500", "item_id": "ITEM_5",
+        "item_desc": "5.0 PC", "module": "",
+    }]
+    captured = {}
+    monkeypatch.setattr(matching, "_read_csv", lambda target: (columns, rows))
+    monkeypatch.setattr(matching, "list_products", lambda target: ["PRODA"])
+
+    def product_index(target, product, keys, limit, wanted):
+        captured["wanted"] = wanted
+        return {("AA100500", "5.0 PC")}
+
+    monkeypatch.setattr(matching, "_product_key_index", product_index)
+    monkeypatch.setattr(matching, "settings", lambda: {
+        "prefix_rules": [], "module_rules": [], "max_files_per_product": 0,
+    })
+    monkeypatch.setattr(matching, "_load_store", lambda: store)
+    monkeypatch.setattr(matching, "_save_store", lambda data: None)
+
+    proposal = matching.scan("inline", column="product")
+
+    assert ("AA100500", "ITEM_5") in captured["wanted"]
+    assert ("AA100500", "5.0 PC") in captured["wanted"]
+    assert proposal["rows"][0]["proposed"] == "PRODA"
+    assert proposal["rows"][0]["keys"]["item_id"] == "5.0 PC / ITEM_5"
+
+
+def test_inline_module_scan_accepts_spaced_case_variant_headers_without_db_scan(monkeypatch):
+    from core import matching_fill as matching
+
+    store = {"settings": {}, "proposals": {}}
+    columns = ["Product", "Step ID", "Item ID", "Module"]
+    rows = [{"Product": "PRODA", "Step ID": "AA100500", "Item ID": "ITEM_5", "Module": ""}]
+    monkeypatch.setattr(matching, "_read_csv", lambda target: (columns, rows))
+    monkeypatch.setattr(matching, "settings", lambda: {
+        "prefix_rules": [],
+        "module_rules": [{"prefix": "AA", "breaks": [{"from": 100000, "module": "PC"}]}],
+        "max_files_per_product": 0,
+    })
+    monkeypatch.setattr(matching, "list_products", lambda target: pytest.fail("module scan must not read DB"))
+    monkeypatch.setattr(matching, "_load_store", lambda: store)
+    monkeypatch.setattr(matching, "_save_store", lambda data: None)
+
+    proposal = matching.scan("inline", column="module")
+
+    assert proposal["counts"] == {"fill": 1, "change": 0, "same": 0, "miss": 0}
+    assert proposal["rows"][0]["proposed"] == "PC"
+
+
+def test_inline_product_index_falls_back_across_mixed_parquet_schemas(monkeypatch, tmp_path):
+    from core import matching_fill as matching
+
+    step_only = tmp_path / "step_only.parquet"
+    full = tmp_path / "full.parquet"
+    pl.DataFrame({"step_id": ["AA100500"]}).write_parquet(step_only)
+    pl.DataFrame({"step_id": ["AA100500"], "item_id": ["5.0 PC"]}).write_parquet(full)
+    monkeypatch.setattr(matching, "_product_files", lambda *args, **kwargs: [step_only, full])
+
+    index = matching._product_key_index(
+        "inline", "PRODA", ("step_id", "item_id"), wanted={("AA100500", "5.0 PC")},
+    )
+
+    assert ("AA100500", "*") in index
+    assert ("AA100500", "5.0 PC") in index
+
+
 @pytest.mark.parametrize("target,column,filename,source", [
     ("mask", "mask", "mask_info.csv", "reticle_id,mask\nRET_A,\n"),
     ("vehicle", "vehicle", "Vehicle_matching.csv", "vehicle,step_id,step_desc\n,S20,PHOTO\n"),

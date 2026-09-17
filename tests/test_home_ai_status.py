@@ -87,6 +87,16 @@ def test_non_admin_forbidden(monkeypatch):
         assert response.status_code == 403
 
 
+def test_flowi_permission_can_read_status(monkeypatch):
+    from core import auth
+    user = {"username": "flow-user", "role": "user", "tabs": "flowi"}
+    monkeypatch.setattr(auth, "current_user", lambda request: user)
+    monkeypatch.setattr(data_chat.flowi_gate, "access_allowed", lambda me: me == user)
+    app = FastAPI()
+    app.include_router(data_chat.router)
+    assert TestClient(app).get("/api/home-agent/status").status_code == 200
+
+
 def test_planner_receives_reference_only_context(monkeypatch):
     from core import data_chat as service, data_chat_features
     monkeypatch.setattr(llm_adapter, "is_available", lambda: True)

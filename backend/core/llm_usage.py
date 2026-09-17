@@ -1,5 +1,6 @@
 """Shared sliding-window budget: at most 25 provider attempts per 60 seconds."""
 from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import math
 import os
@@ -12,6 +13,22 @@ from core.utils import save_json
 _LOCK = threading.Lock()
 WINDOW_SECONDS = 60
 MAX_MINUTE_CALLS = 25
+_TURN_USAGE = ContextVar("flow_llm_turn_usage", default=None)
+
+
+@contextmanager
+def turn_budget(limit=6):
+    """A shared counter for all provider attempts inside one home request."""
+    existing = _TURN_USAGE.get()
+    if existing is not None:
+        yield existing
+        return
+    usage = {"llm_calls_used": 0, "llm_call_limit": max(0, min(6, int(limit)))}
+    token = _TURN_USAGE.set(usage)
+    try:
+        yield usage
+    finally:
+        _TURN_USAGE.reset(token)
 
 
 def _path():
@@ -93,6 +110,9 @@ def reserve_attempt():
     try:
         path = _path()
         with _store_lock(path):
+            turn = _TURN_USAGE.get()
+            if turn is not None and turn["llm_calls_used"] >= turn["llm_call_limit"]:
+                return "llm request call limit reached; split the remaining questions into a new request"
             now = time.time()
             attempts = _read(path, now)
             limit = minute_limit()
@@ -100,6 +120,8 @@ def reserve_attempt():
                 retry = max(1, math.ceil(attempts[len(attempts) - limit] + WINDOW_SECONDS - now)) if limit else WINDOW_SECONDS
                 return f"llm minute call limit reached; retry after {retry}s"
             save_json(path, {"attempts": [*attempts, now]})
+            if turn is not None:
+                turn["llm_calls_used"] += 1
         return ""
     except Exception:
         return "llm usage counter unavailable; no provider call was sent"

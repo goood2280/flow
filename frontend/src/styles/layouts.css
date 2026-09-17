@@ -187,6 +187,67 @@
   line-height: 1.35;
 }
 
+.flow-app button.home-flowi-connect {
+  width: 100%;
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-3);
+  background: var(--surface-panel);
+  color: var(--text-strong);
+  box-shadow: var(--shadow-flyout);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.flow-app button.home-flowi-connect:hover,
+.flow-app button.home-flowi-connect:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.flow-app button.home-flowi-connect:active { transform: translateY(1px); }
+
+.home-flowi-connect__mark {
+  min-width: 58px;
+  padding: 7px 9px;
+  border-radius: var(--radius-2);
+  background: var(--accent);
+  color: var(--text-on-accent);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-bold);
+  text-align: center;
+}
+
+.home-flowi-connect__copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.home-flowi-connect__copy strong { font-size: var(--font-size-body); }
+.home-flowi-connect__copy small { color: var(--text-muted); }
+.home-flowi-connect__arrow { margin-left: auto; color: var(--accent); font-size: 22px; }
+
+.home-flowi-panel {
+  transform-origin: top center;
+  animation: home-flowi-reveal 260ms cubic-bezier(.2, .8, .2, 1) both;
+}
+
+@keyframes home-flowi-reveal {
+  from { opacity: 0; transform: translateY(-12px) scale(.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home-flowi-panel { animation: none; }
+}
+
 .home-feature-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));

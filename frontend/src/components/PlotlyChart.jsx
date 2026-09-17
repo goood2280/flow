@@ -119,6 +119,7 @@ export function FlowPlotlyChart({
   // 그려진 뒤 실제 그림 영역 좌표를 올려 준다 — 아래에 붙는 표를 눈금과 같은
   // 자리에 맞추려면 plotly 가 automargin 으로 정한 최종 여백을 알아야 한다.
   onGeometry = null,
+  geometryOverlay = null,
 }) {
   const points = Array.isArray(chart?.points) ? chart.points : [];
   // 사전 계산된 5수 요약(min/q1/median/q3/max). flow-i 는 원 측정값 대신 이 형태로
@@ -455,6 +456,7 @@ export function FlowPlotlyChart({
             : { l: 64, r: 22, t: title && !hideTitle ? 48 : 20, b: 56 },
           hovermode: "closest",
           dragmode: "pan",
+          shapes: geometryOverlay?.shapes || [],
           clickmode: enableHighlight ? "event+select" : "event",
           // 원 차트에는 축이 없다. 이때 xaxis/yaxis 키를 undefined 로 "넣어" 두면
           // plotly 의 cleanLayout 이 layout.xaxis.anchor 를 읽다가 터진다(빈 차트).
@@ -478,6 +480,7 @@ export function FlowPlotlyChart({
               linewidth: axisLineWidth,
               mirror: false,
               automargin: true,
+              ...(geometryOverlay ? { range: geometryOverlay.xRange, constrain: "domain" } : {}),
             },
             yaxis: {
               title: { text: axisYLabel, font: { size: Number(cfg?.y_font_size||chart?.y_font_size)||axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
@@ -492,6 +495,7 @@ export function FlowPlotlyChart({
               linewidth: axisLineWidth,
               mirror: false,
               automargin: true,
+              ...(geometryOverlay ? { range: geometryOverlay.yRange, scaleanchor: "x", scaleratio: 1 } : {}),
             },
           }),
           legend: legendPosition==="right"

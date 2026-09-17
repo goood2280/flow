@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, Component } from "react";
 import { PermissionGroupRow, DownloadHistoryRow } from "./AdminExpandableRows";
 import Loading from "../../components/Loading";
+import Modal from "../../components/Modal";
 import { PageHeader, TabStrip, Button, Banner, Pill, statusPalette, chartPalette } from "../../components/UXKit";
 import { toast } from "../../components/Toast";
 import { PROCESS_AREAS, areaColor } from "../../constants/processAreas";
@@ -8,6 +9,9 @@ import { sf, dl, postJson, userLabel, userMatches } from "../../lib/api";
 import { SUB_TABS, TABS } from "../../config";
 // v9.2.x: 에이전트 탭 재편 — Semantic layer 편집기와 LLM 설정을 관리 탭으로 이관.
 import SemanticLayerPanel from "../../components/agent/SemanticLayerPanel";
+import ProductSemanticPanel from "../productwiki/ProductSemanticPanel";
+import ProductAdminPanel from "./ProductAdminPanel";
+import FlowiRoutesPanel from "./FlowiRoutesPanel";
 import LlmTab from "../../components/agent/LlmTab";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
@@ -493,7 +497,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["llm_cfg","LLM 설정"],["chat_prompts","데이터챗 추천 질문"],["qa","QA 점검"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["qa","QA 점검"],["product_admin","제품 공정·시맨틱"],["flowi_learning","Flow-i 학습"],["llm_cfg","LLM 설정"],["chat_prompts","데이터챗 추천 질문"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -975,6 +979,12 @@ export default function My_Admin({user}){
       {/* Groups (admin only) — v8.5.0 */}
       {tab==="groups"&&<GroupsPanel allUsers={users} isAdmin={isAdmin} currentUser={user}/>}
 
+      {/* Product Admin: Structure & Semantics (admin only) */}
+      {tab==="product_admin"&&isAdmin&&<ProductAdminPanel user={user}/>}
+
+      {/* Flow-i Learning & Skills (admin only) */}
+      {tab==="flowi_learning"&&isAdmin&&<div style={{display:"grid",gap:16}}><FlowiRoutesPanel/><ProductSemanticPanel admin/><DbReferencePanel/></div>}
+
       {/* Categories (admin only) */}
       {tab==="categories"&&isAdmin&&<CategoryPanel/>}
 
@@ -1123,10 +1133,12 @@ const FLOWI_LEARNING_SECTIONS=[
   {k:"filedocs",l:"파일 설명"},
 ];
 const FLOWI_LEARNING_SIMPLE_SECTIONS=[
+  {k:"curation",l:"대화 큐레이션 & 스킬 관리"},
   {k:"quick",l:"간편 학습"},
   {k:"semantic",l:"고급 Semantic layer"},
   {k:"fewshot",l:"답변 예시"},
   {k:"filedocs",l:"파일 설명"},
+  {k:"dbreference",l:"DB 참조 지식"},
 ];
 
 function QuickSemanticLearningPanel(){
@@ -1160,8 +1172,633 @@ function QuickSemanticLearningPanel(){
   </div>;
 }
 
+// 설정된 DB 파일·스키마를 읽어 Flow-i가 참고할 기본 문서를 만든다.
+// 행 데이터는 읽지 않으며, 제품 정보가 없으면 Flow-i가 사람에게 확인을 요청한다.
+function DbReferencePanel(){
+  const [status,setStatus]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState("");
+  const [showPreview,setShowPreview]=useState(false);
+  const load=()=>{
+    setError("");
+    sf("/api/flowi-learning/db-reference").then(setStatus).catch(e=>setError(e.message||"상태를 불러오지 못했습니다."));
+  };
+  useEffect(()=>{load();},[]);
+  const generate=()=>{
+    if(busy)return;
+    setBusy(true);setError("");
+    sf("/api/flowi-learning/db-reference/generate",{method:"POST"})
+      .then(d=>{setStatus(d);toast.ok("실제 DB 기반 기본 MD를 생성했습니다.");})
+      .catch(e=>setError(e.message||"기본 MD 생성에 실패했습니다."))
+      .finally(()=>setBusy(false));
+  };
+  const card={background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:10,padding:16};
+  const generated=status?.exists;
+  return <div style={{...card,marginBottom:16}}>
+    <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+      <div style={{minWidth:0}}>
+        <div style={{fontSize:15,fontWeight:800}}>실제 DB 기반 Semantic 기본 지식</div>
+        <div style={{fontSize:13,color:"var(--text-secondary)",lineHeight:1.5,marginTop:5,maxWidth:760}}>
+          설정된 DB 디렉터리의 파일·스키마만 읽어 <code>DB/confidential/flowi_db_reference.md</code>에 저장합니다. 행 데이터는 읽지 않으며, Flow-i가 이 문서를 참고하고 제품 정보가 없으면 사람에게 확인을 요청합니다.
+        </div>
+      </div>
+      <div style={{display:"flex",gap:8,flexShrink:0}}>
+        <Button variant="subtle" onClick={load} disabled={busy}>상태 새로고침</Button>
+        <Button variant="primary" onClick={generate} disabled={busy}>{busy?"실제 DB 읽는 중…":"실제 DB 기반 기본 MD 생성"}</Button>
+      </div>
+    </div>
+    {error&&<div style={{marginTop:12,padding:"8px 10px",borderRadius:6,border:`1px solid ${BAD.fg}66`,background:BAD.bg,color:BAD.fg,fontSize:13}}>{error}</div>}
+    <div style={{display:"flex",gap:14,flexWrap:"wrap",marginTop:12,paddingTop:10,borderTop:"1px solid var(--border)",fontSize:13,color:"var(--text-secondary)"}}>
+      <span>상태: <b style={{color:generated?OK.fg:WARN.fg}}>{generated?"생성됨":"아직 생성되지 않음"}</b></span>
+      {status?.product_count!=null&&<span>제품 {status.product_count}개</span>}
+      {status?.file_count!=null&&<span>파일 {status.file_count}개</span>}
+      {status?.updated_at&&<span>생성 시각 {String(status.updated_at).replace("T"," ").slice(0,19)}</span>}
+      {status?.path&&<span style={{fontFamily:"monospace",wordBreak:"break-all"}}>경로: {status.path}</span>}
+    </div>
+    {status?.preview&&<div style={{marginTop:12}}>
+      <button type="button" onClick={()=>setShowPreview(v=>!v)} style={{padding:"5px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:13,cursor:"pointer"}}>
+        {showPreview?"미리보기 접기":"생성 문서 미리보기"}
+      </button>
+      {showPreview&&<pre style={{margin:"8px 0 0",padding:12,borderRadius:7,background:"var(--bg-tertiary)",border:"1px solid var(--border)",maxHeight:300,overflow:"auto",whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.5}}>{status.preview}</pre>}
+    </div>}
+  </div>;
+}
+
+function ConversationSkillCurationPanel(){
+  const[subTab,setSubTab]=useState("conversations");
+  const[conversations,setConversations]=useState([]);
+  const[convLoading,setConvLoading]=useState(false);
+  const[convFilter,setConvFilter]=useState("");
+  const[selectedConvId,setSelectedConvId]=useState(null);
+  const[convDetail,setConvDetail]=useState(null);
+  const[detailLoading,setDetailLoading]=useState(false);
+
+  const[skills,setSkills]=useState([]);
+  const[skillsLoading,setSkillsLoading]=useState(false);
+  const[skillFilter,setSkillFilter]=useState("");
+
+  const[modalOpen,setModalOpen]=useState(false);
+  const[modalMode,setModalMode]=useState("create");
+  const[modalForm,setModalForm]=useState({
+    id:"",
+    title:"",
+    procedure:"",
+    feature:"table",
+    action:"",
+    shared:true,
+    auto:false,
+  });
+  const[saving,setSaving]=useState(false);
+
+  const loadConversations=()=>{
+    setConvLoading(true);
+    sf("/api/flowi-learning/conversations?limit=100")
+      .then(d=>setConversations(d.conversations||[]))
+      .catch(e=>toast.error(e.message||"대화 목록 로드 실패"))
+      .finally(()=>setConvLoading(false));
+  };
+
+  const loadSkills=()=>{
+    setSkillsLoading(true);
+    sf("/api/flowi-learning/skills")
+      .then(d=>setSkills(d.skills||[]))
+      .catch(e=>toast.error(e.message||"스킬 목록 로드 실패"))
+      .finally(()=>setSkillsLoading(false));
+  };
+
+  useEffect(()=>{
+    loadConversations();
+    loadSkills();
+  },[]);
+
+  useEffect(()=>{
+    if(!selectedConvId){
+      setConvDetail(null);
+      return;
+    }
+    setDetailLoading(true);
+    sf(`/api/flowi-learning/conversations/${selectedConvId}`)
+      .then(d=>setConvDetail(d))
+      .catch(e=>toast.error(e.message||"대화 상세 로드 실패"))
+      .finally(()=>setDetailLoading(false));
+  },[selectedConvId]);
+
+  const handleDraftSkill=(convId,msgId,fallbackTitle,fallbackProc)=>{
+    sf(`/api/flowi-learning/skills/draft/${convId}/${msgId}`)
+      .then(d=>{
+        const draft=d.draft||{};
+        setModalForm({
+          id:"",
+          title:draft.title||fallbackTitle||"",
+          procedure:draft.procedure||fallbackProc||"",
+          feature:draft.feature||"table",
+          action:draft.action||"",
+          shared:true,
+          auto:false,
+        });
+        setModalMode("create");
+        setModalOpen(true);
+      })
+      .catch(()=>{
+        setModalForm({
+          id:"",
+          title:fallbackTitle||"",
+          procedure:fallbackProc||"",
+          feature:"table",
+          action:"",
+          shared:true,
+          auto:false,
+        });
+        setModalMode("create");
+        setModalOpen(true);
+      });
+  };
+
+  const handleOpenCreateDirect=()=>{
+    setModalForm({
+      id:"",
+      title:"",
+      procedure:"",
+      feature:"table",
+      action:"",
+      shared:true,
+      auto:false,
+    });
+    setModalMode("create");
+    setModalOpen(true);
+  };
+
+  const handleOpenEditSkill=(skill)=>{
+    setModalForm({
+      id:skill.id,
+      title:skill.title||"",
+      procedure:skill.procedure||"",
+      feature:skill.feature||"table",
+      action:skill.action||"",
+      shared:skill.shared===1||skill.shared===true,
+      auto:skill.auto===1||skill.auto===true,
+    });
+    setModalMode("edit");
+    setModalOpen(true);
+  };
+
+  const handleSaveModal=()=>{
+    if(!modalForm.title.trim()||!modalForm.procedure.trim()){
+      toast.warn("제목과 절차(프롬프트)를 입력하세요.");
+      return;
+    }
+    setSaving(true);
+    if(modalMode==="create"){
+      sf("/api/flowi-learning/skills/curate",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          title:modalForm.title.trim(),
+          procedure:modalForm.procedure.trim(),
+          feature:modalForm.feature||"table",
+          action:modalForm.action||"",
+          shared:!!modalForm.shared,
+          auto:!!modalForm.auto,
+        })
+      })
+        .then(()=>{
+          toast.ok("스킬이 등록되었습니다.");
+          setModalOpen(false);
+          loadSkills();
+          setSubTab("skills");
+        })
+        .catch(e=>toast.error(e.message||"스킬 저장 실패"))
+        .finally(()=>setSaving(false));
+    }else{
+      sf("/api/flowi-learning/skills/update",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({
+          skill_id:modalForm.id,
+          title:modalForm.title.trim(),
+          procedure:modalForm.procedure.trim(),
+          shared:!!modalForm.shared,
+        })
+      })
+        .then(()=>{
+          toast.ok("스킬이 수정되었습니다.");
+          setModalOpen(false);
+          loadSkills();
+        })
+        .catch(e=>toast.error(e.message||"스킬 수정 실패"))
+        .finally(()=>setSaving(false));
+    }
+  };
+
+  const handleDeleteSkill=(skill)=>{
+    if(!window.confirm(`'${skill.title}' 스킬을 삭제하시겠습니까?`))return;
+    sf("/api/flowi-learning/skills/delete",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({skill_id:skill.id})
+    })
+      .then(()=>{
+        toast.ok("스킬이 삭제되었습니다.");
+        loadSkills();
+      })
+      .catch(e=>toast.error(e.message||"삭제 실패"));
+  };
+
+  const filteredConversations=conversations.filter(c=>{
+    if(!convFilter.trim())return true;
+    const q=convFilter.toLowerCase();
+    return (c.username||"").toLowerCase().includes(q)||(c.title||"").toLowerCase().includes(q)||(c.id||"").toLowerCase().includes(q);
+  });
+
+  const filteredSkills=skills.filter(s=>{
+    if(!skillFilter.trim())return true;
+    const q=skillFilter.toLowerCase();
+    return (s.title||"").toLowerCase().includes(q)||(s.procedure||"").toLowerCase().includes(q)||(s.owner||"").toLowerCase().includes(q);
+  });
+
+  const th={textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:13,borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"};
+  const td={padding:"8px 12px",borderBottom:"1px solid var(--border)",fontSize:13,verticalAlign:"top"};
+  const inp={padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,boxSizing:"border-box"};
+
+  return (
+    <div style={{display:"grid",gap:14}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+        <div style={{display:"flex",gap:6,background:"var(--bg-secondary)",padding:4,borderRadius:8,border:"1px solid var(--border)"}}>
+          <button
+            type="button"
+            onClick={()=>setSubTab("conversations")}
+            style={{
+              padding:"6px 14px",
+              borderRadius:6,
+              border:"none",
+              cursor:"pointer",
+              fontWeight:subTab==="conversations"?700:500,
+              background:subTab==="conversations"?"var(--accent, #3b82f6)":"transparent",
+              color:subTab==="conversations"?"#fff":"var(--text-secondary)",
+              fontSize:13,
+            }}
+          >
+            💬 사용자 대화 & 큐레이션 ({conversations.length})
+          </button>
+          <button
+            type="button"
+            onClick={()=>setSubTab("skills")}
+            style={{
+              padding:"6px 14px",
+              borderRadius:6,
+              border:"none",
+              cursor:"pointer",
+              fontWeight:subTab==="skills"?700:500,
+              background:subTab==="skills"?"var(--accent, #3b82f6)":"transparent",
+              color:subTab==="skills"?"#fff":"var(--text-secondary)",
+              fontSize:13,
+            }}
+          >
+            ✨ 등록된 스킬 ({skills.length})
+          </button>
+        </div>
+        <div style={{display:"flex",gap:8}}>
+          {subTab==="conversations"&&(
+            <Button variant="subtle" onClick={loadConversations} disabled={convLoading}>
+              {convLoading?"새로고침 중...":"대화 새로고침"}
+            </Button>
+          )}
+          {subTab==="skills"&&(
+            <>
+              <Button variant="subtle" onClick={loadSkills} disabled={skillsLoading}>새로고침</Button>
+              <Button variant="primary" onClick={handleOpenCreateDirect}>＋ 새 스킬 직접 등록</Button>
+            </>
+          )}
+        </div>
+      </div>
+
+      <Banner tone="info">
+        <b>💡 Flow-i 스킬화 & 자동 학습 안내</b>:
+        관리자는 모든 사용자의 Flow-i 대화를 조회하여 유용한 분석 패턴을 공용 스킬로 즉시 큐레이션할 수 있습니다.
+        또한 여러 사용자를 통해 유사한 질문이 <b>20회 이상</b> 성공적으로 사용되면 시스템이 <b>[자동 스킬]</b>로 자동 등록합니다.
+      </Banner>
+
+      {/* SUBTAB 1: CONVERSATIONS */}
+      {subTab==="conversations"&&(
+        <div style={{display:"grid",gridTemplateColumns:"360px minmax(0, 1fr)",gap:14,minHeight:560}}>
+          {/* Conversation List */}
+          <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+            <div style={{padding:12,borderBottom:"1px solid var(--border)"}}>
+              <input
+                value={convFilter}
+                onChange={e=>setConvFilter(e.target.value)}
+                placeholder="사용자명 또는 대화 제목 검색..."
+                style={{...inp,width:"100%"}}
+              />
+            </div>
+            <div style={{flex:1,overflowY:"auto",maxHeight:540}}>
+              {filteredConversations.length===0&&(
+                <div style={{padding:24,textAlign:"center",color:"var(--text-secondary)",fontSize:13}}>
+                  대화 기록이 없습니다.
+                </div>
+              )}
+              {filteredConversations.map(c=>{
+                const isSel=selectedConvId===c.id;
+                return (
+                  <div
+                    key={c.id}
+                    onClick={()=>setSelectedConvId(c.id)}
+                    style={{
+                      padding:"10px 14px",
+                      borderBottom:"1px solid var(--border)",
+                      cursor:"pointer",
+                      background:isSel?"var(--bg-tertiary)":"transparent",
+                      borderLeft:isSel?"4px solid var(--accent, #3b82f6)":"4px solid transparent",
+                      transition:"background 0.15s",
+                    }}
+                  >
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:4}}>
+                      <Pill tone="accent" size="sm">{c.username||"익명"}</Pill>
+                      <span style={{fontSize:11,color:"var(--text-secondary)"}}>
+                        {(c.updated_at||"").slice(0,16).replace("T"," ")}
+                      </span>
+                    </div>
+                    <div style={{fontSize:13,fontWeight:600,color:"var(--text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                      {c.title||"새 대화"}
+                    </div>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:4}}>
+                      <span style={{fontSize:11,color:"var(--text-secondary)"}}>
+                        메시지 {c.message_count||0}개
+                      </span>
+                      <span style={{fontSize:11,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+                        {c.id?.slice(0,8)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Conversation Detail & Curate */}
+          <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+            {!selectedConvId?(
+              <div style={{padding:40,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>
+                👈 왼쪽 목록에서 대화를 선택하면 상세 내용과 스킬화 옵션을 확인할 수 있습니다.
+              </div>
+            ):detailLoading?(
+              <div style={{padding:40,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>
+                대화 내용을 불러오는 중...
+              </div>
+            ):(
+              <div style={{display:"flex",flexDirection:"column",height:"100%"}}>
+                <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-tertiary)",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                  <div>
+                    <div style={{fontSize:15,fontWeight:700}}>
+                      {convDetail?.conversation?.title||convDetail?.title||"대화 상세"}
+                    </div>
+                    <div style={{fontSize:12,color:"var(--text-secondary)",marginTop:2}}>
+                      작성자: <b>{convDetail?.conversation?.username||convDetail?.username||"-"}</b> ·
+                      최종 갱신: {String(convDetail?.conversation?.updated_at||convDetail?.updated_at||"").slice(0,16).replace("T"," ")}
+                    </div>
+                  </div>
+                  <Pill tone="info" size="sm">ID: {selectedConvId?.slice(0,10)}</Pill>
+                </div>
+
+                <div style={{flex:1,overflowY:"auto",padding:16,display:"flex",flexDirection:"column",gap:14,maxHeight:500}}>
+                  {(convDetail?.messages||[]).length===0?(
+                    <div style={{textAlign:"center",color:"var(--text-secondary)",padding:20}}>메시지가 없습니다.</div>
+                  ):(
+                    (convDetail?.messages||[]).map((m,idx)=>{
+                      const isUser=m.role==="user";
+                      const prevUserMsg=!isUser&&idx>0?convDetail.messages[idx-1]:null;
+                      const promptForSkill=prevUserMsg?.content||"";
+                      return (
+                        <div
+                          key={m.id||idx}
+                          style={{
+                            alignSelf:isUser?"flex-end":"flex-start",
+                            maxWidth:"88%",
+                            borderRadius:10,
+                            padding:"10px 14px",
+                            background:isUser?"var(--accent, #3b82f6)":"var(--bg-primary)",
+                            color:isUser?"#ffffff":"var(--text-primary)",
+                            border:isUser?"none":"1px solid var(--border)",
+                            boxShadow:"0 1px 2px rgba(0,0,0,0.05)",
+                          }}
+                        >
+                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:4}}>
+                            <span style={{fontSize:11,fontWeight:700,opacity:0.8}}>
+                              {isUser?"👤 사용자":"🤖 Flow-i"}
+                            </span>
+                            {!isUser&&(
+                              <button
+                                type="button"
+                                onClick={()=>handleDraftSkill(selectedConvId,m.id,promptForSkill,promptForSkill)}
+                                style={{
+                                  padding:"3px 8px",
+                                  borderRadius:5,
+                                  border:"1px solid var(--accent, #3b82f6)",
+                                  background:"var(--bg-secondary)",
+                                  color:"var(--accent, #3b82f6)",
+                                  fontSize:11,
+                                  fontWeight:600,
+                                  cursor:"pointer",
+                                  display:"flex",
+                                  alignItems:"center",
+                                  gap:4,
+                                }}
+                                title="이 질의/답변을 공용 스킬로 등록"
+                              >
+                                ⭐ 스킬화
+                              </button>
+                            )}
+                          </div>
+                          <div style={{fontSize:13,lineHeight:1.5,whiteSpace:"pre-wrap",wordBreak:"break-word"}}>
+                            {m.content}
+                          </div>
+                          {m.tool_payload&&(
+                            <div style={{marginTop:6,padding:"6px 8px",borderRadius:6,background:"var(--bg-tertiary)",fontSize:11,color:"var(--text-secondary)",fontFamily:"monospace"}}>
+                              도구: {m.tool_payload.feature} / {m.tool_payload.action||"-"}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* SUBTAB 2: SKILLS LIST */}
+      {subTab==="skills"&&(
+        <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,marginBottom:12,flexWrap:"wrap"}}>
+            <input
+              value={skillFilter}
+              onChange={e=>setSkillFilter(e.target.value)}
+              placeholder="스킬 제목, 실행 규칙, 등록자 검색..."
+              style={{...inp,width:300}}
+            />
+            <div style={{fontSize:12,color:"var(--text-secondary)"}}>
+              총 {filteredSkills.length}개의 스킬 등록됨
+            </div>
+          </div>
+          <div style={{overflowX:"auto"}}>
+            <table style={{width:"100%",borderCollapse:"collapse"}}>
+              <thead>
+                <tr>
+                  {["유형","스킬 제목","실행 규칙 / 질문 패턴","연계 도구","공유","등록자","수정 시각","작업"].map(h=>(
+                    <th key={h} style={th}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filteredSkills.length===0?(
+                  <tr>
+                    <td colSpan={8} style={{...td,textAlign:"center",color:"var(--text-secondary)",padding:30}}>
+                      등록된 스킬이 없습니다.
+                    </td>
+                  </tr>
+                ):(
+                  filteredSkills.map(s=>{
+                    const isAuto=s.auto===1||s.auto===true;
+                    return (
+                      <tr key={s.id}>
+                        <td style={td}>
+                          {isAuto?(
+                            <Pill tone="violet" size="sm">자동 스킬</Pill>
+                          ):(
+                            <Pill tone="ok" size="sm">큐레이션</Pill>
+                          )}
+                        </td>
+                        <td style={{...td,fontWeight:700,color:"var(--text-primary)"}}>
+                          {s.title}
+                        </td>
+                        <td style={{...td,maxWidth:320,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={s.procedure}>
+                          {s.procedure}
+                        </td>
+                        <td style={td}>
+                          <span style={{fontFamily:"monospace",fontSize:12}}>
+                            {s.feature}{s.action?` · ${s.action}`:""}
+                          </span>
+                        </td>
+                        <td style={td}>
+                          {s.shared?<Pill tone="accent" size="sm">전체 공유</Pill>:<Pill tone="neutral" size="sm">개인</Pill>}
+                        </td>
+                        <td style={td}>{s.owner||"-"}</td>
+                        <td style={{...td,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>
+                          {String(s.updated_at||"").slice(0,16).replace("T"," ")}
+                        </td>
+                        <td style={{...td,whiteSpace:"nowrap"}}>
+                          <div style={{display:"flex",gap:6}}>
+                            <Button variant="ghost" onClick={()=>handleOpenEditSkill(s)}>수정</Button>
+                            <Button variant="danger" onClick={()=>handleDeleteSkill(s)}>삭제</Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* CURATE / EDIT MODAL */}
+      <Modal
+        open={modalOpen}
+        onClose={()=>!saving&&setModalOpen(false)}
+        title={modalMode==="create"?"⭐ 새 스킬 등록 (큐레이션)":"✏️ 스킬 정보 수정"}
+        width={560}
+      >
+        <div style={{display:"grid",gap:14,padding:"12px 0"}}>
+          <div>
+            <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>
+              스킬 제목 *
+            </label>
+            <input
+              value={modalForm.title}
+              onChange={e=>setModalForm(d=>({...d,title:e.target.value}))}
+              placeholder="예: PRODA 5.0 PC 선두랏 조회"
+              style={{...inp,width:"100%"}}
+            />
+          </div>
+
+          <div>
+            <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>
+              질문 패턴 / 실행 절차 *
+            </label>
+            <textarea
+              value={modalForm.procedure}
+              onChange={e=>setModalForm(d=>({...d,procedure:e.target.value}))}
+              placeholder="사용자가 입력할 질의 내용 또는 처리 절차"
+              rows={4}
+              style={{...inp,width:"100%",resize:"vertical"}}
+            />
+          </div>
+
+          {modalMode==="create"&&(
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+              <div>
+                <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>
+                  연계 기능 (Feature)
+                </label>
+                <input
+                  value={modalForm.feature}
+                  onChange={e=>setModalForm(d=>({...d,feature:e.target.value}))}
+                  placeholder="table, chart, tracker 등"
+                  style={{...inp,width:"100%"}}
+                />
+              </div>
+              <div>
+                <label style={{display:"block",fontSize:13,fontWeight:600,marginBottom:5}}>
+                  연계 액션 (Action)
+                </label>
+                <input
+                  value={modalForm.action}
+                  onChange={e=>setModalForm(d=>({...d,action:e.target.value}))}
+                  placeholder="선택 사항"
+                  style={{...inp,width:"100%"}}
+                />
+              </div>
+            </div>
+          )}
+
+          <div style={{display:"flex",alignItems:"center",gap:16,marginTop:4}}>
+            <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,cursor:"pointer"}}>
+              <input
+                type="checkbox"
+                checked={modalForm.shared}
+                onChange={e=>setModalForm(d=>({...d,shared:e.target.checked}))}
+              />
+              모든 사용자에게 공용 스킬로 공개
+            </label>
+            {modalMode==="create"&&(
+              <label style={{display:"flex",alignItems:"center",gap:6,fontSize:13,cursor:"pointer",color:"var(--text-secondary)"}}>
+                <input
+                  type="checkbox"
+                  checked={modalForm.auto}
+                  onChange={e=>setModalForm(d=>({...d,auto:e.target.checked}))}
+                />
+                자동 스킬 태그 지정
+              </label>
+            )}
+          </div>
+
+          <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:14}}>
+            <Button variant="subtle" onClick={()=>setModalOpen(false)} disabled={saving}>취소</Button>
+            <Button variant="primary" onClick={handleSaveModal} disabled={saving}>
+              {saving?"저장 중...":modalMode==="create"?"스킬 등록 완료":"수정 저장"}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  );
+}
+
 function FlowiLearningPanel(){
-  const[section,setSection]=useState("quick");
+  const[section,setSection]=useState("curation");
   const[fewshots,setFewshots]=useState([]);
   const[fileDocs,setFileDocs]=useState([]);
   const[fsDraft,setFsDraft]=useState({term:"",answer:""});
@@ -1197,6 +1834,7 @@ function FlowiLearningPanel(){
   const inp={padding:"6px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,boxSizing:"border-box"};
   return(<div style={{display:"grid",gap:16}}>
     <TabStrip active={section} onChange={setSection} items={FLOWI_LEARNING_SIMPLE_SECTIONS}/>
+    {section==="curation"&&<ConversationSkillCurationPanel/>}
     {section==="quick"&&<QuickSemanticLearningPanel/>}
     {section==="semantic"&&<SemanticLayerPanel/>}
     {section==="fewshot"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
@@ -1259,6 +1897,7 @@ function FlowiLearningPanel(){
         </table>
       </div>
     </div>}
+    {section==="dbreference"&&<DbReferencePanel/>}
     {msg&&<Banner tone="warn">{msg}</Banner>}
   </div>);
 }

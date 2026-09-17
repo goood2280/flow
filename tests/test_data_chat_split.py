@@ -66,6 +66,17 @@ def test_preview_approval_persists_plans_and_history_once(scenario):
     assert len(splittable._load_plan_data("PRODA")["history"]) == 8
 
 
+def test_selected_semantic_scope_is_retained_in_preview_and_history(scenario):
+    _, request = scenario
+    scope = [{"kind": "structures", "module": "PC", "path": "eSD", "step_ids": ["A10"], "reference_id": "reviewed"}]
+    preview = ask(COMMAND, {"product": "PRODA", "confirmed_product": "PRODA", "semantic_scope": scope, "semantic_split_prompt": "PC eSD split"}, request)
+    assert preview["ok"]
+    assert preview["tool"]["table"]["rows"][0]["대상 구조"] == "PC / eSD"
+    proposal = json.loads(split._proposal_path(preview["context"]["pending_split_id"]).read_text(encoding="utf-8"))
+    assert proposal["semantic_scope"] == scope
+    assert "reviewed" in proposal["reason"]
+
+
 @pytest.mark.parametrize("decision", ["취소", "취소해줘", "승인하지마"])
 def test_cancel_never_writes(scenario, decision):
     _, request = scenario

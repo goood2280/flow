@@ -430,7 +430,24 @@ function WipSplitPanel({ user }) {
       .finally(() => setLoading(false));
   };
   useEffect(() => {
-    fetchData("", binSize, "", axis, lotType);
+    let initProduct = "";
+    let initSplitCol = "";
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      initProduct = urlParams.get("product") || "";
+      initSplitCol = urlParams.get("split_col") || "";
+      if (!initSplitCol) {
+        const stored = JSON.parse(sessionStorage.getItem("flow:dashboard:initial_split") || "null");
+        if (stored) {
+          initProduct = initProduct || stored.product || "";
+          initSplitCol = stored.split_col || "";
+          sessionStorage.removeItem("flow:dashboard:initial_split");
+        }
+      }
+    } catch {}
+    if (initProduct) setProduct(initProduct);
+    if (initSplitCol) setSplitCol(initSplitCol);
+    fetchData(initProduct, binSize, initSplitCol, axis, lotType);
     // SplitTable·LOT 관리와 동일한 실제 ML_TABLE_* 파일 카탈로그를 제품 정본으로 쓴다.
     sf("/api/splittable/products").then(d => {
       const rows=(d.products||[]).map(p=>String(p?.name||"").replace(/^ML_TABLE_/i,"").trim()).filter(Boolean);

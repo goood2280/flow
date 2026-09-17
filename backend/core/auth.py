@@ -259,6 +259,7 @@ CANONICAL_PAGE_IDS = (
     "lotmanage",
     "productwiki",
     "tracker",
+    "lottracker",
     "inform",
     "meeting",
     "calendar",

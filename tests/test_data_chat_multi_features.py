@@ -153,7 +153,8 @@ def test_execution_trace_and_compact_prose(monkeypatch):
     assert trace["intent"]
     assert len(trace["sources"]) > 0
     assert len(trace["steps"]) > 0
-    assert trace["query"]
+    assert trace["query"] or trace["illustrative_query"]
+    assert trace["provenance"] == "tool_result"
     assert "수율 맵" in trace["action"]
 
     # Compact prose verification
@@ -187,4 +188,3 @@ def test_teg_related_and_trace(monkeypatch):
     assert tool["execution_trace"]["action"] == "TEG 위치 조회"
     assert "related_tegs" in tool
     assert "TEG_CONTACT" in tool["related_tegs"]
-

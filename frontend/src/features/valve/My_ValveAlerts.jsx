@@ -509,29 +509,7 @@ function discoveryText(alert) {
    - 동일 AREA를 필수 조건으로 두고 PPID → EQP → 설비모델 순으로 고르며,
    - step_desc는 선택된 step_id의 Vehicle_matching.csv 행에서 가져온다.
    판정 입력칸에 값을 넣어주는 보조일 뿐, 반영은 사람이 누른다. */
-const METHOD_LABEL = {
-  ai: "AI 판단", ppid: "동일 PPID", eqp_id: "동일 EQP",
-  eqp_model: "동일 설비모델", area: "동일 AREA",
-  signature: "FAB 근거", distance: "step_id 근접", none: "근거 없음",
-};
 
-function recommendationText(alert) {
-  const r = alert.recommendation;
-  if (!r) return "추천 대기";
-  const confidence = r.llm?.applied ? ` · AI ${Math.round((Number(r.confidence) || 0) * 100)}%` : "";
-  const picked = r.picked_step_id ? ` · ${r.picked_step_id}` : "";
-  return `${r.step_desc || "-"} · ${METHOD_LABEL[r.method] || r.method || "근거 없음"}${picked}${confidence}`;
-}
-
-function matchingEvidenceText(alert, extraCols) {
-  return [
-    alert.eqp_id && `eqp_id ${alert.eqp_id}`,
-    alert.eqp_model && `eqp_model ${alert.eqp_model}`,
-    alert.area && `area ${alert.area}`,
-    (alert.ppids || []).length && `ppid ${(alert.ppids || []).join(", ")}`,
-    ...extraCols.map(column => alert[column] && `${column} ${alert[column]}`),
-  ].filter(Boolean).join(" · ");
-}
 
 export default function My_ValveAlerts({ user }) {
   const [data, setData] = useState(null);
@@ -543,7 +521,7 @@ export default function My_ValveAlerts({ user }) {
   const [selectedPlanAnomalies, setSelectedPlanAnomalies] = useState({});
   const [busy, setBusy] = useState("");
   const [loading, setLoading] = useState(true);
-  const [selectedProduct, setSelectedProduct] = useState("");
+  const [selectedProduct, setSelectedProduct] = useState(null);
   const canManage = canManagePage(user, "valve");
 
   const load = async () => {
@@ -633,10 +611,15 @@ export default function My_ValveAlerts({ user }) {
     return latest;
   }, [decisions]);
   useEffect(() => {
-    if (selectedProduct && !products.some(product => productMatches(product, selectedProduct))) {
-      setSelectedProduct("");
+    if (!products.length) return;
+    if (selectedProduct === null) {
+      const firstWithAlerts = products.find(p => (productCounts[p] || 0) > 0) || products[0] || "";
+      setSelectedProduct(firstWithAlerts);
+    } else if (selectedProduct && !products.some(product => productMatches(product, selectedProduct))) {
+      const fallback = products.find(p => (productCounts[p] || 0) > 0) || products[0] || "";
+      setSelectedProduct(fallback);
     }
-  }, [products, selectedProduct]);
+  }, [products, productCounts, selectedProduct]);
   useEffect(() => {
     const current = new Set(planAnomalies.map(item => item.id));
     setSelectedPlanAnomalies(prev => Object.fromEntries(
@@ -668,11 +651,9 @@ export default function My_ValveAlerts({ user }) {
     status: queued[alert.id] ? "반영대기" : "입력대기",
     product: alert.product || alert.vehicle || "",
     step_id: alert.step_id || "",
-    recommendation: recommendationText(alert),
-    evidence: matchingEvidenceText(alert, extraCols),
     discovery: discoveryText(alert),
     step_desc: inputs[alert.id]?.step_desc ?? alert.step_desc ?? "",
-  })), [editableStepAlerts, extraCols, inputs, queued]);
+  })), [editableStepAlerts, inputs, queued]);
   const maskCsvRows = useMemo(() => editableMaskAlerts.map(alert => ({
     status: queued[alert.id] ? "반영대기" : "입력대기",
     products: alertProducts(alert).join(", "),
@@ -836,7 +817,7 @@ export default function My_ValveAlerts({ user }) {
           <Filter
             id="matching-alert-product"
             aria-label="매칭알람 제품 선택"
-            value={selectedProduct}
+            value={selectedProduct || ""}
             onChange={event => setSelectedProduct(event.target.value)}
             placeholder={`전체 제품 (${alerts.length})`}
             options={products.map(product => ({ value: product, label: `${product} (${productCounts[product] || 0})` }))}
@@ -924,21 +905,18 @@ export default function My_ValveAlerts({ user }) {
         title="매칭테이블 (Vehicle_matching.csv)"
         right={<Pill tone={editableStepAlerts.length ? "danger" : "neutral"}>미매칭 step · {editableStepAlerts.length}건</Pill>}
       >
-        <div
-          title="추천 function step은 동일 area의 매칭 완료 step만 후보로 두고, FAB의 동일 PPID → 동일 eqp_id → 동일 eqp_model → step_id 근접 순서로 선택합니다. step_desc는 선택된 step_id의 Vehicle_matching.csv 값이며, 최종 반영은 사용자가 확인합니다."
-          style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
-        >
-          동일 AREA 안에서 PPID → EQP → 설비모델 순으로 매칭된 step_desc를 추천합니다. 추천을 확인해 판정 function step 열에 입력하면 반영대기에 들어갑니다.
+        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+          FAB DB에서 발견된 신규 step_id입니다. 판정 function step 열에 입력하거나 Excel에서 복사해 붙여넣으면 반영대기에 들어갑니다.
         </div>
         {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : editableStepAlerts.length === 0 ? (
           <EmptyState title="판정 대기 미매칭 step 없음" hint="vehicle_matching에 없는 step이 발견되면 여기에 표시됩니다" />
         ) : (
           <DecisionSpreadsheet
             title="Vehicle 매칭테이블"
-            columns={["status", "product", "step_id", "recommendation", "evidence", "discovery", "step_desc"]}
+            columns={["status", "product", "step_id", "discovery", "step_desc"]}
             sourceRows={stepCsvRows}
             aliases={{ "스텝": "step_id", "function_step": "step_desc", "판정_step": "step_desc" }}
-            columnLabels={{ status: "상태", product: "제품", step_id: "미매칭 step_id", recommendation: "추천 function step", evidence: "추천 근거", discovery: "발견 근거", step_desc: "판정 function step" }}
+            columnLabels={{ status: "상태", product: "제품", step_id: "미매칭 step_id", discovery: "발견 근거", step_desc: "판정 function step" }}
             editableColumn="step_desc"
             disabled={!canManage || !!busy}
             onRowsChange={rows => updateDecisionValues(editableStepAlerts, rows, "step_desc")}

@@ -143,7 +143,33 @@ const stripMlPrefix=(s)=>{
   const v=String(s||"").trim();
   return v.startsWith("ML_TABLE_")?v.slice("ML_TABLE_".length):v;
 };
-const stepIdsForGroup=(group)=>Array.isArray(group?.step_ids)?group.step_ids.filter(Boolean):[];
+const stepIdParts=(value)=>{
+  const text=String(value||"").trim();
+  const match=text.match(/^([A-Za-z]+)(\d+)(.*)$/);
+  return match?{text,prefix:match[1].toLowerCase(),number:Number(match[2]),suffix:match[3].toLowerCase()}:null;
+};
+const compareStepIds=(left,right)=>{
+  const a=stepIdParts(left),b=stepIdParts(right);
+  if(a&&b){
+    const prefix=a.prefix.localeCompare(b.prefix);
+    if(prefix)return prefix;
+    if(a.number!==b.number)return a.number-b.number;
+    const suffix=a.suffix.localeCompare(b.suffix,undefined,{numeric:true,sensitivity:"base"});
+    if(suffix)return suffix;
+  }else if(a||b){
+    return a?-1:1;
+  }
+  return String(left||"").localeCompare(String(right||""),undefined,{numeric:true,sensitivity:"base"});
+};
+const sortedUniqueStepIds=(values)=>{
+  const seen=new Set();
+  return (values||[]).map(value=>String(value||"").trim()).filter(value=>{
+    const key=value.toLowerCase();
+    if(!value||seen.has(key))return false;
+    seen.add(key);return true;
+  }).sort(compareStepIds);
+};
+const stepIdsForGroup=(group)=>Array.isArray(group?.step_ids)?sortedUniqueStepIds(group.step_ids):[];
 const normalizeOperatorKey=(value)=>String(value??"").trim().toLowerCase().replace(/[\s-]+/g,"_");
 const isNullOperator=(value)=>normalizeOperatorKey(value)==="is_null";
 const isNotNullOperator=(value)=>normalizeOperatorKey(value)==="not_null";
@@ -254,7 +280,7 @@ const stepItemLines=(meta)=>{
     else push(g?.step_id,g?.item_id);
   });
   if(!out.length)(Array.isArray(meta?.step_ids)?meta.step_ids:[]).forEach(sid=>push(sid,fallbackItem));
-  return out;
+  return out.sort((left,right)=>compareStepIds(String(left).split(" | ",1)[0],String(right).split(" | ",1)[0]));
 };
 // 이 행이 적용공정정보 모드에서 보여줄 줄 목록. 빈 배열이면 표시 대상이 없다.
 const matchStepLines=(kind,meta,{excludeNotNull=false}={})=>{
@@ -285,7 +311,7 @@ const computeProcessColumns=(kind,meta,{excludeNotNull=false}={})=>{
     if(!ids.length && Array.isArray(meta?.step_ids)){
       meta.step_ids.forEach(sid=>push(sid,""));
     }
-    return {step_id:ids.join("\n"),step_desc:descs.join("\n")};
+    return {step_id:sortedUniqueStepIds(ids).join("\n"),step_desc:descs.join("\n")};
   }
   const fallbackDesc=String(meta?.step_desc||meta?.function_step||"").trim();
   (Array.isArray(meta?.groups)?meta.groups:[]).forEach(g=>{
@@ -296,7 +322,7 @@ const computeProcessColumns=(kind,meta,{excludeNotNull=false}={})=>{
   });
   if(!ids.length)(Array.isArray(meta?.step_ids)?meta.step_ids:[]).forEach(sid=>push(sid,fallbackDesc));
   if(!descs.length && fallbackDesc) push("", fallbackDesc);
-  return {step_id:ids.join("\n"),step_desc:descs.join("\n")};
+  return {step_id:sortedUniqueStepIds(ids).join("\n"),step_desc:descs.join("\n")};
 };
 // Metadata objects are shared by the filter, snapshot, and row-render paths.
 // Keep the cache identity-based: a new metadata object must always recompute,
@@ -316,6 +342,13 @@ const matchProcessColumns=(kind,meta,{excludeNotNull=false}={})=>{
   const columns=computeProcessColumns(kind,meta,{excludeNotNull});
   byOption.set(cacheKey,columns);
   return columns;
+};
+// KNOB는 step_desc만 남아 있는 규칙을 적용 공정으로 간주하지 않는다.
+// 제품별 Vehicle matching에서 실제 step_id가 확인된 행만 공정정보 모드에 노출한다.
+const hasAppliedProcessColumns=(kind,columns)=>{
+  const stepId=String(columns?.step_id||"").trim();
+  if(kind==="knob_ppid")return Boolean(stepId);
+  return Boolean(stepId||String(columns?.step_desc||"").trim());
 };
 // Vehicle_matching.csv 의 module 열이 유일한 원천이다. 그 열이 없으면 KNOB/VM 도
 // 빈 값이라 module 열 자체가 안 붙는다. INLINE 은 자기 CSV 에 module 이 없으므로
@@ -1846,12 +1879,22 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
     });
     return out;
   })();
-  const histActionStyle=(action)=>action==="delete"
-    ?{background:"rgba(239,68,68,0.13)",color:"rgba(239,68,68,0.95)"}
-    :{background:"rgba(249,115,22,0.13)",color:"rgba(249,115,22,0.95)"};
+  const isHistoryDeleteAction=(action)=>String(action||"").toLowerCase().includes("delete");
+  const historyActionLabel=(action)=>({
+    set:"plan 수정",delete:"plan 삭제",
+    tag_add:"TAG 추가",tag_update:"TAG 수정",tag_delete:"TAG 삭제",
+    tag_color_add:"TAG 색상 추가",tag_color_update:"TAG 색상 수정",
+    tag_column_add:"TAG 열 추가",tag_column_update:"TAG 열 수정",tag_column_delete:"TAG 열 삭제",
+  })[action]||action||"set";
+  const histActionStyle=(action)=>{
+    if(isHistoryDeleteAction(action))return{background:"rgba(239,68,68,0.13)",color:"rgba(239,68,68,0.95)"};
+    if(String(action||"").includes("add"))return{background:"rgba(34,197,94,0.13)",color:"rgba(34,197,94,0.95)"};
+    if(String(action||"").startsWith("tag_"))return{background:"rgba(59,130,246,0.13)",color:"rgba(59,130,246,0.95)"};
+    return{background:"rgba(249,115,22,0.13)",color:"rgba(249,115,22,0.95)"};
+  };
   const renderHistRow=(h,key,indent)=>{
     const{root,wafer,column}=histRowParts(h);
-    const isDel=h?.action==="delete";
+    const isDel=isHistoryDeleteAction(h?.action);
     const oldVal=hasValue(h?.old)?String(h.old):"";
     const newVal=hasValue(h?.new)?String(h.new):"";
     // "어떻게 바꿨는지"가 한 눈에 보이도록 old→new 를 한 칸에 붙여 보여준다.
@@ -1864,7 +1907,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       <td style={{...HIST_MONO,color:"var(--accent)"}}>{root||"-"}</td>
       <td style={HIST_MONO}>{wafer||"-"}</td>
       <td style={{...HIST_MONO,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis"}} title={column}>{column||"-"}</td>
-      <td style={HIST_TD}><span style={{fontSize:14,padding:"1px 6px",borderRadius:3,...histActionStyle(h?.action)}}>{h?.action||"set"}</span></td>
+      <td style={HIST_TD}><span style={{fontSize:14,padding:"1px 6px",borderRadius:3,...histActionStyle(h?.action)}}>{historyActionLabel(h?.action)}</span></td>
       <td style={HIST_TD}>
         <span style={{color:"var(--text-secondary)",textDecoration:oldVal?"line-through":"none"}}>{oldVal||"(없음)"}</span>
         <span style={{margin:"0 6px",color:"var(--text-secondary)"}}>→</span>
@@ -2017,14 +2060,15 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       .catch(e=>toast.error(e.message));};
   const deletePlan=(ck)=>{if(!confirm("Delete?"))return;sf(API+"/plan/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({product:selProd,cell_keys:[ck],username:user?.username||""})}).then(loadView);};
   // 적용 공정 정보가 켜져 있으면 스냅샷에도 별도 step_id / step_desc 열을 싣는다.
-  // 매칭이 없는 행도 원래 항목과 값을 보존하고 두 공정 칸만 비운다.
+  // KNOB는 제품별 step_id 매칭이 있는 행만 남긴다. 다른 공정 종류는 기존처럼
+  // step_id 또는 step_desc 중 하나가 있으면 표시한다.
   const hasAppliedProcess=row=>{
     if(!showParamMeta)return true;
     if(String(row?._param||"").startsWith("TAG_"))return true;
     const kind=matchKindOf(row?._param);
     if(!kind)return false;
     const columns=matchProcessColumns(kind,matchMetaFor(kind,row?._param),{excludeNotNull:excludeNotNullStepMeta});
-    return Boolean(String(columns.step_id||"").trim()||String(columns.step_desc||"").trim());
+    return hasAppliedProcessColumns(kind,columns);
   };
   const applyStepLabelsForSnapshot=(rows)=>{
     if(!showParamMeta)return rows;
@@ -2039,7 +2083,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       // 현재 화면에서 확정한 두 열을 스냅샷 행에 그대로 싣는다.
       // 매칭되지 않은 행은 원본 SplitTable 행으로는 보존하되, 별도 적용 공정
       // 목록에는 만들지 않는다. (빈 라벨이 인폼에 따로 노출되는 것을 방지)
-      const hasProcess=Boolean(String(columns.step_id||"").trim()||String(columns.step_desc||"").trim());
+      const hasProcess=hasAppliedProcessColumns(kind,columns);
       return {...row,_process_columns:columns,...(hasProcess?{_applied_process:{kind:kind||"",...columns}}:{})};
     });
   };
@@ -3191,8 +3235,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         // 칸은 칠하지 않는다 — 가운데가 빈 건 "아직 안 왔다"가 아니라 그 step 에 값이
         // 없는 것뿐이다. 회색은 마지막으로 채워진 split **뒤에서만** 시작한다.
         //
-        // f_step route에 없는 step_id 미매칭 행은 표 하단에 그대로 보이지만 진행
-        // 경계에서는 제외한다. 그 행의 값이 실제 미진행 공정 회색을 막으면 안 된다.
+        // f_step route에 없는 step_id 미매칭 행도 값이 전혀 없으면 회색이다.
+        // 단, 진행 경계에서는 제외한다. 그 행의 값이 실제 미진행 공정 회색을 막으면 안 된다.
         // viewRows(잘리기 전 전체)로 계산한다. displayRows 는 스크롤에 따라 늘어나는
         // 앞부분 슬라이스라(인덱스는 같다), 그걸로 재면 스크롤할 때마다 회색이 바뀐다.
         const displayValueOf=(row,ci)=>{
@@ -3203,14 +3247,16 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         };
         const headerCount=(data.headers||[]).length;
         const lastFilledRowByCol=new Array(headerCount).fill(-1);
-        const rowTracksStepProgress=viewRows.map(row=>{
+        const rowHasMappedStep=viewRows.map(row=>{
           const param=String(row?._param||"").trim();
           if(!isKnobProgressRow(param))return false;
-          if(hasTrackedProgressContract)return trackedProgressParams.has(param);
           const kind=matchKindOf(param);
           const columns=kind?matchProcessColumns(kind,matchMetaFor(kind,param),{excludeNotNull:excludeNotNullStepMeta}):null;
           return Boolean(String(columns?.step_id||"").trim());
         });
+        const rowTracksStepProgress=viewRows.map((row,ri)=>rowHasMappedStep[ri]&&(
+          !hasTrackedProgressContract||trackedProgressParams.has(String(row?._param||"").trim())
+        ));
         const rowHasNoSplit=viewRows.map((row,ri)=>{
           let any=false;
           for(let ci=0;ci<headerCount;ci+=1){
@@ -3219,7 +3265,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
               if(rowTracksStepProgress[ri])lastFilledRowByCol[ci]=ri;
             }
           }
-          return rowTracksStepProgress[ri]&&!any;
+          // step_id 매칭에 실패한 KNOB도 일반 KNOB 화면에는 남는다. 이런 행 역시
+          // split이 전혀 없고 마지막으로 값이 채워진 공정 뒤라면 회색이어야 한다.
+          // 단, 미매칭 행의 값은 위의 진행 경계를 움직이지 않는다.
+          return isKnobProgressRow(row?._param)&&!any;
         });
         const normalizedSelection=selectedCellRange
           ? normalizeCellRange(selectedCellRange.startRow,selectedCellRange.startCol,selectedCellRange.endRow,selectedCellRange.endCol)
@@ -3733,13 +3782,12 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             // 위 lastFilledRowByCol / rowHasNoSplit 주석 참조.
             const cellNotReachedAt=(ci)=>{
               if(!isKnobProgressRow(rowParam))return false;
-              if(!rowTracksStepProgress[ri])return false;
               if(hasValue(cellDisplayValueAt(ci)))return false;
               // 이 wafer 열에서 더 뒤 step 에 split 이 채워져 있으면 여긴 아직 회색이 아니다.
               if(ri<lastFilledRowByCol[ci])return false;
-              const progressNotReached=hasWaferStepProgress
+              const progressNotReached=rowTracksStepProgress[ri]&&(hasWaferStepProgress
                 ? waferProgressAt(ci)?.notReached?.has(rowParam)===true
-                : notReachedParams.has(rowParam);
+                : notReachedParams.has(rowParam));
               return progressNotReached||rowHasNoSplit[ri]===true;
             };
             const waferNotReachedFlags=(data.headers||[]).map((_,ci)=>cellNotReachedAt(ci));
@@ -3983,7 +4031,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             </select>
             <select value={histFilter.action} onChange={e=>applyHistFilter({action:e.target.value})} style={{...HIST_INPUT,minWidth:100}} title="변경 종류">
               <option value="">동작 전체</option>
-              {(histFacets.actions||[]).map(a=><option key={a} value={a}>{a}</option>)}
+              {(histFacets.actions||[]).map(a=><option key={a} value={a}>{historyActionLabel(a)}</option>)}
             </select>
             <input value={histFilter.column} onChange={e=>applyHistFilter({column:e.target.value},true)} placeholder="컬럼 (부분일치)" style={{...HIST_INPUT,width:150}} list="hist-column-list" />
             <datalist id="hist-column-list">{(histFacets.columns||[]).map(c=><option key={c} value={c} />)}</datalist>
@@ -4016,7 +4064,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
               const roots=[...new Set(g.rows.map(r=>histRowParts(r).root).filter(Boolean))];
               const cols=[...new Set(g.rows.map(r=>histRowParts(r).column).filter(Boolean))];
               const wafers=[...new Set(g.rows.map(r=>histRowParts(r).wafer).filter(Boolean))];
-              const dels=g.rows.filter(r=>r.action==="delete").length;
+              const dels=g.rows.filter(r=>isHistoryDeleteAction(r.action)).length;
+              const actions=[...new Set(g.rows.map(r=>r.action||"set"))];
+              const groupAction=actions.length===1?actions[0]:(dels===g.rows.length?"delete":actions[0]);
+              const groupActionLabel=actions.map(historyActionLabel).join(" + ");
               // 사유는 저장 단위로 붙으므로 묶음 헤더에 그대로 보여준다.
               const groupReason=(g.rows.find(r=>String(r?.reason||"").trim())||{}).reason||"";
               return(<Fragment key={g.gid+"-"+gi}>
@@ -4026,7 +4077,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
                   <td style={{...HIST_MONO,color:"var(--accent)"}} title={roots.join(", ")}>{roots[0]||"-"}{roots.length>1?` 외 ${roots.length-1}`:""}</td>
                   <td style={HIST_MONO} title={wafers.join(", ")}>{wafers.length}종</td>
                   <td style={{...HIST_MONO,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis"}} title={cols.join(", ")}>{cols[0]||"-"}{cols.length>1?` 외 ${cols.length-1}`:""}</td>
-                  <td style={HIST_TD}><span style={{fontSize:14,padding:"1px 6px",borderRadius:3,...histActionStyle(dels===g.rows.length?"delete":"set")}}>{dels===g.rows.length?"delete":dels>0?"set+delete":"set"}</span></td>
+                  <td style={HIST_TD}><span style={{fontSize:14,padding:"1px 6px",borderRadius:3,...histActionStyle(groupAction)}}>{groupActionLabel}</span></td>
                   <td style={{...HIST_TD,color:"var(--text-secondary)"}}>{g.rows.length}개 셀 일괄 변경{dels>0&&dels<g.rows.length?` (삭제 ${dels})`:""}</td>
                   <td style={{...HIST_TD,maxWidth:280,whiteSpace:"pre-wrap",wordBreak:"break-word"}} title={groupReason}>
                     {groupReason||<span style={{color:"var(--text-secondary)"}}>-</span>}

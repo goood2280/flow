@@ -10,6 +10,7 @@ import datetime
 import logging
 import threading
 from typing import Any
+from uuid import uuid4
 
 from core.paths import PATHS
 from core.utils import load_json, save_json
@@ -105,12 +106,16 @@ def _enrich_item(item: dict[str, Any]) -> dict[str, Any]:
     return d
 
 
-def get_sample_prompts() -> dict[str, Any]:
-    """Return both pinned questions and successful questions for the home chat and admin UI."""
+def get_sample_prompts(user: str = "") -> dict[str, Any]:
+    """Return global pinned questions and only this user's successful questions."""
+    owner = str(user or "").strip()
     with _LOCK:
         data = _read_data()
         pinned = [_enrich_item(x) for x in data.get("pinned", [])]
-        successful = [_enrich_item(x) for x in data.get("successful", [])]
+        successful = [
+            _enrich_item(x) for x in data.get("successful", [])
+            if owner and str(x.get("owner") or "").strip() == owner
+        ]
         return {
             "ok": True,
             "pinned": pinned,
@@ -123,22 +128,25 @@ def get_sample_prompts() -> dict[str, Any]:
 def record_success(prompt: str = "", user: str = "", category: str = "", text: str = "") -> dict[str, Any]:
     """Record a user query that succeeded, updating frequency count and timestamp."""
     actual_text = (prompt or text or "").strip()
+    owner = str(user or "").strip()
     if len(actual_text) < 2:
         return {"ok": False, "reason": "prompt too short"}
+    if not owner:
+        return {"ok": False, "reason": "user required"}
 
     with _LOCK:
         data = _read_data()
         successful = data.get("successful", [])
 
-        # Check if already present in successful list
+        # A repeated prompt is deduplicated only within its owner. Legacy global
+        # entries have no trustworthy owner and are intentionally not adopted.
         found = False
         for item in successful:
             item_txt = item.get("prompt") or item.get("text") or ""
-            if item_txt.strip().lower() == actual_text.lower():
+            if (str(item.get("owner") or "").strip() == owner
+                    and item_txt.strip().lower() == actual_text.lower()):
                 item["count"] = int(item.get("count", 1)) + 1
                 item["last_used"] = _now_iso()
-                if user:
-                    item["last_user"] = user
                 if category and not item.get("category"):
                     item["category"] = category
                 found = True
@@ -147,19 +155,49 @@ def record_success(prompt: str = "", user: str = "", category: str = "", text: s
         if not found:
             # Add to front
             entry = {
-                "id": f"succ-{len(successful) + 1}-{int(datetime.datetime.now().timestamp())}",
+                "id": f"succ-{uuid4()}",
                 "prompt": actual_text,
                 "text": actual_text,
                 "count": 1,
                 "created_at": _now_iso(),
                 "last_used": _now_iso(),
-                "last_user": user or "user",
+                "owner": owner,
                 "category": category or "",
             }
             successful.insert(0, entry)
 
-        # Retain at most 60 successful items
-        data["successful"] = successful[:60]
+        # Check for auto-skillification (20+ usages across users or prompt count)
+        total_prompt_count = sum(
+            int(x.get("count", 1)) for x in successful
+            if (x.get("prompt") or x.get("text") or "").strip().lower() == actual_text.lower()
+        )
+        already_auto_skilled = any(
+            x.get("auto_skilled") for x in successful
+            if (x.get("prompt") or x.get("text") or "").strip().lower() == actual_text.lower()
+        )
+        if total_prompt_count >= 20 and not already_auto_skilled:
+            try:
+                from core import flowi_personalization
+                created = flowi_personalization.auto_create_skill_from_prompt(actual_text, category or "")
+                if created:
+                    for x in successful:
+                        if (x.get("prompt") or x.get("text") or "").strip().lower() == actual_text.lower():
+                            x["auto_skilled"] = True
+                            x["auto_skill_id"] = created.get("id")
+            except Exception as exc:
+                logger.warning("auto-skillification failed: %s", type(exc).__name__)
+
+        # Retain at most 60 prompts for this owner without deleting another
+        # owner's private history or rewriting unowned legacy records.
+        owner_seen = 0
+        retained = []
+        for item in successful:
+            if str(item.get("owner") or "").strip() == owner:
+                owner_seen += 1
+                if owner_seen > 60:
+                    continue
+            retained.append(item)
+        data["successful"] = retained
         _write_data(data)
         return {"ok": True}
 
@@ -217,4 +255,3 @@ def delete_prompt(prompt: str = "", text: str = "", item_id: str = "", kind: str
 
         _write_data(data)
         return {"ok": True}
-

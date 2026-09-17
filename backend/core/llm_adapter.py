@@ -80,6 +80,9 @@ _DATA_TASK_PATHS = (
     "/api/llm/test", "/api/llm/flowi/verify",
     "/api/home-agent/probe",
     "/api/template-report/assistant",
+    "/api/flowi-learning/db-reference/generate",
+    "/api/product-wiki/intake",
+    "/api/product-semantics/bootstrap", "/api/product-semantics/propose",
 )
 
 ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"

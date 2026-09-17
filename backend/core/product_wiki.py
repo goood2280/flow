@@ -242,6 +242,8 @@ def intake_entry(product, expected_revision, text, actor, entry_id="", manager=F
     previous = check_entry_access(product, expected_revision, entry_id, actor, manager)
     from core.product_wiki_structure import intake_context
     reference = intake_context(product, text)
+    from core import product_semantics
+    reference["semantic"] = product_semantics.prompt_context(product, text)
     warning = ""
     try:
         from core.llm_adapter import complete
@@ -275,7 +277,15 @@ def intake_entry(product, expected_revision, text, actor, entry_id="", manager=F
     values["related_ids"] = list((previous or {}).get("related_ids") or [])
     doc, saved_id = save_entry(product, expected_revision, values, actor, manager,
                                return_saved_id=True)
-    return {**doc, "saved_entry_id": saved_id, "intake_warning": warning}
+    semantic = None
+    try:
+        from core import product_semantics
+        semantic = product_semantics.propose(product, text, actor, saved_id)
+    except Exception:
+        # A saved original must never be reported as an unsuccessful save just
+        # because the optional semantic interpretation failed afterwards.
+        warning = (warning + " 지식 원문은 저장했지만 용어 연결 초안을 만들지 못했습니다.").strip()
+    return {**doc, "saved_entry_id": saved_id, "intake_warning": warning, "semantic_proposal": semantic}
 
 
 def history(product, entry_id="", before_revision=None):

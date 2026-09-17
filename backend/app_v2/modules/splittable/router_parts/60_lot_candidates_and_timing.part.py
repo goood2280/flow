@@ -256,6 +256,10 @@ def _build_plan_risk_payload(hist: list, include_deleted: bool = False) -> dict:
     for h in hist or []:
         if not isinstance(h, dict):
             continue
+        # TAG 변경도 같은 History 원장에 보관하지만 Plan 최종값/드리프트에는 섞지 않는다.
+        kind = str(h.get("kind") or "plan").strip().lower()
+        if kind not in {"", "plan"}:
+            continue
         ck = h.get("cell")
         if not ck:
             continue

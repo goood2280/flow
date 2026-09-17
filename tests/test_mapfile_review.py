@@ -40,10 +40,22 @@ def test_summary_is_compact_and_submits_background_refresh(tmp_path):
     published = mapfile_review.publish_snapshot({
         "vehicle": "VEH_A", "product_code": "PA100", "overall_light": "red",
         "summary": {"red_files": 1}, "files": [{"filename": "x", "signature": "v",
-            "traffic_light": "red", "issues": [{"secret": 1}], "targets": {"missing": 1}}],
+            "traffic_light": "red", "summary": {"red": 3}, "sl": {"light": "red", "red": 2},
+            "main": {"light": "red", "red": 1}, "issues": [{"secret": 1}], "targets": {"missing": 1}}],
     })
     assert "issues" not in published["files"][0]
     assert "targets" not in published["files"][0]
+    assert published["files"][0]["mismatch_count"] == 3
+    assert published["files"][0]["sl"]["red"] == 2
+    assert published["files"][0]["main"]["red"] == 1
+
+
+def test_force_summary_schedules_manual_recheck_even_when_snapshot_is_fresh():
+    mapfile_review.publish_snapshot({"vehicle": "V", "files": [], "groups": []})
+    with patch.object(mapfile_review._pool, "submit") as submit:
+        result = mapfile_review.get_summary("V", force=True)
+    submit.assert_called_once_with(mapfile_review._refresh, "V", True)
+    assert result["refreshing"] is True
 
 
 def test_open_version_and_comments_are_content_versioned(tmp_path):

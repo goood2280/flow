@@ -53,6 +53,7 @@ def test_purpose_value_and_color_are_saved_per_wafer_and_expanded(monkeypatch):
     store = {"columns": [], "values": {}, "colors": {}}
     monkeypatch.setattr(splittable, "_load_custom_tags_data", lambda: store)
     monkeypatch.setattr(splittable, "_save_custom_tags_data", lambda data: None)
+    monkeypatch.setattr(splittable, "_archive_custom_tag_changes", lambda *args, **kwargs: [])
 
     result = splittable.save_custom_tag_values(
         splittable.CustomTagValuesReq(
@@ -87,6 +88,64 @@ def test_purpose_value_and_color_are_saved_per_wafer_and_expanded(monkeypatch):
     assert cell["actual"] == "DOE"
     assert cell["tag_color"] == "#fecaca"
     assert cell["is_custom_tag"] is True
+
+
+def test_tag_value_add_update_delete_are_visible_in_history(tmp_path, monkeypatch):
+    from routers import splittable
+
+    store = {"columns": [], "values": {}, "colors": {}}
+    monkeypatch.setattr(splittable, "PLAN_DIR", tmp_path)
+    monkeypatch.setattr(splittable, "_load_custom_tags_data", lambda: store)
+    monkeypatch.setattr(splittable, "_save_custom_tags_data", lambda data: None)
+    cell = "L1|1|TAG_purpose"
+
+    for value in ("DOE_A", "DOE_B", ""):
+        splittable.save_custom_tag_values(splittable.CustomTagValuesReq(
+            product="P1", values={cell: value}, username="tester",
+        ))
+
+    response = splittable.get_history(
+        product="P1", root_lot_id="L1", limit=500, offset=0,
+        user="", action="", column="", wafer_id="", q="",
+        since="", until="", has_reason=False,
+    )
+    rows = response["history"]
+    assert [row["action"] for row in rows] == ["tag_add", "tag_update", "tag_delete"]
+    assert [row["kind"] for row in rows] == ["tag", "tag", "tag"]
+    assert [(row["old"], row["new"]) for row in rows] == [
+        (None, "DOE_A"), ("DOE_A", "DOE_B"), ("DOE_B", None),
+    ]
+    assert all(row["cell"] == cell for row in rows)
+
+
+def test_tag_column_history_does_not_pollute_final_plan(tmp_path, monkeypatch):
+    from routers import splittable
+
+    store = {"columns": [], "values": {}, "colors": {}}
+    monkeypatch.setattr(splittable, "PLAN_DIR", tmp_path)
+    monkeypatch.setattr(splittable, "_load_custom_tags_data", lambda: store)
+    monkeypatch.setattr(splittable, "_save_custom_tags_data", lambda data: None)
+    monkeypatch.setattr(splittable, "_audit_user", lambda *args, **kwargs: None)
+
+    splittable.save_custom_tag_column(splittable.CustomTagColumnReq(
+        product="P1", name="owner", username="tester",
+    ))
+    splittable.save_custom_tag_module(splittable.CustomTagModuleReq(
+        product="P1", column="TAG_owner", module="INLINE", username="tester",
+    ))
+    splittable.delete_custom_tag_column(
+        splittable.CustomTagColumnDeleteReq(
+            product="P1", column="TAG_owner", username="tester",
+        ),
+        _perm={"username": "tester"},
+    )
+
+    rows = splittable._plan_history_entries("P1")
+    assert [row["action"] for row in rows] == [
+        "tag_column_add", "tag_column_update", "tag_column_delete",
+    ]
+    assert all(row["kind"] == "tag" for row in rows)
+    assert splittable._build_plan_risk_payload(rows)["final"] == []
 
 
 def test_purpose_is_in_csv_and_xlsx_keeps_its_background(monkeypatch):
@@ -201,9 +260,10 @@ def test_split_check_xlsx_includes_purpose_header_row_with_colors_and_no_body_ta
 
 
 def test_xlsx_and_csv_do_not_fall_back_to_lot_management_purpose(monkeypatch):
+    import importlib
     from openpyxl import load_workbook
     from routers import splittable
-    import routers.lot_management
+    lot_management_router = importlib.import_module("routers.lot_management")
 
     frame = pl.DataFrame({
         "root_lot_id": ["L1"],
@@ -223,7 +283,7 @@ def test_xlsx_and_csv_do_not_fall_back_to_lot_management_purpose(monkeypatch):
     monkeypatch.setattr(splittable, "_split_step_progress", lambda *args, **kwargs: {})
     monkeypatch.setattr(splittable, "_log_split_table_download", lambda *args, **kwargs: None)
     monkeypatch.setattr(
-        routers.lot_management, "_load",
+        lot_management_router, "_load",
         lambda prod: (_ for _ in ()).throw(AssertionError("SplitTable export must not read LOT Management purpose")),
     )
 

@@ -50,6 +50,44 @@ def list_conversations(username):
     return sorted(rows, key=lambda row: row["updated_at"], reverse=True)
 
 
+def list_all_conversations(limit: int = 100):
+    rows = []
+    base_dir = PATHS.data_root / "home_conversations"
+    if not base_dir.is_dir():
+        return []
+    for path in base_dir.glob("*/*.sqlite3"):
+        try:
+            with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as connection:
+                meta = dict(connection.execute("SELECT key, value FROM metadata"))
+                msg_count = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            if "title" in meta:
+                rows.append({
+                    "id": path.stem,
+                    "title": meta.get("title", "대화"),
+                    "username": meta.get("username", ""),
+                    "updated_at": float(meta.get("updated_at", 0)),
+                    "message_count": msg_count,
+                })
+        except Exception:
+            continue
+    rows.sort(key=lambda r: r["updated_at"], reverse=True)
+    return rows[:limit]
+
+
+def read_any(conversation_id):
+    cid = str(UUID(str(conversation_id)))
+    base_dir = PATHS.data_root / "home_conversations"
+    matching = list(base_dir.glob(f"*/{cid}.sqlite3"))
+    if not matching:
+        raise FileNotFoundError(conversation_id)
+    path = matching[0]
+    with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as connection:
+        decoded = _decode(connection, cid)
+        meta = dict(connection.execute("SELECT key, value FROM metadata"))
+        decoded["username"] = meta.get("username", "")
+        return decoded
+
+
 @contextmanager
 def turn(username, conversation_id=None):
     conversation_id = str(UUID(str(conversation_id))) if conversation_id else str(uuid4())
@@ -67,6 +105,7 @@ def turn(username, conversation_id=None):
         for key in ("title", "context", "updated_at"):
             value = json.dumps(state[key], ensure_ascii=False) if key == "context" else str(state[key])
             connection.execute("INSERT OR REPLACE INTO metadata VALUES (?, ?)", (key, value))
+        connection.execute("INSERT OR REPLACE INTO metadata VALUES (?, ?)", ("username", str(username)))
         existing = connection.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         connection.executemany("INSERT INTO messages(payload) VALUES (?)", [
             (json.dumps(message, ensure_ascii=False, default=str),) for message in state["messages"][existing:]

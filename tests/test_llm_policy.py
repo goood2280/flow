@@ -196,6 +196,12 @@ def test_template_assistant_request_is_allowed_by_task_policy(monkeypatch):
         assert not llm_adapter.complete("unapproved")["meta"]["invoked"]
 
 
+def test_wiki_and_semantic_tasks_are_allowed_for_admin():
+    for path in ("/api/product-wiki/intake", "/api/product-semantics/propose", "/api/product-semantics/bootstrap"):
+        with llm_adapter.request_execution_scope({"username": "admin", "role": "admin"}, path):
+            assert llm_adapter._execution_denial() == ""
+
+
 def test_error_explain_endpoint_never_calls_llm(monkeypatch):
     monkeypatch.setattr(
         llm_adapter,

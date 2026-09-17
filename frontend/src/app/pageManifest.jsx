@@ -26,6 +26,7 @@ const definitions = [
   { key: "meeting", label: "회의관리", icon: "🗓", group: "work", layout: "workboard", helpId: "meeting", defaultEnabled: false, load: () => import("../pages/My_Meeting") },
   { key: "calendar", label: "변경점 관리", icon: "📅", group: "work", layout: "workboard", helpId: "calendar", defaultEnabled: false, load: () => import("../pages/My_Calendar") },
   { key: "tracker", label: "ET 추적", icon: "📋", group: "work", layout: "workboard", helpId: "tracker", defaultEnabled: false, load: () => import("../pages/My_Tracker") },
+  { key: "lottracker", label: "LOT Tracker", icon: "🧭", group: "work", layout: "analysis", helpId: "lottracker", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_LotTracker") },
   { key: "valve", label: "매칭알람", icon: "🚨", group: "work", layout: "workboard", helpId: "valve", defaultEnabled: false, load: () => import("../pages/My_ValveAlerts") },
   { key: "teg", label: "TEG 위치 조회", icon: "📐", group: "work", layout: "analysis", helpId: "teg", defaultEnabled: false, load: () => import("../pages/My_TegMap") },
   { key: "yieldmap", label: "WF MAP", icon: "◫", group: "work", layout: "analysis", helpId: "yieldmap", defaultEnabled: false, load: () => import("../pages/My_YieldMap") },

@@ -60,6 +60,10 @@ TARGETS: dict[str, dict[str, Any]] = {
         "file": "Inline_matching.csv",
         "db_roots": ("1.RAWDATA_DB_INLINE", "INLINE"),
         "keys": ("step_id", "item_id"),
+        # Inline rulebooks often keep a stable logical item_id (ITEM_1), while
+        # raw INLINE stores the visible item description (1.0 STI) in item_id.
+        # Either representation is a valid match for the same row.
+        "csv_key_aliases": {"item_id": ("item_desc",)},
         "id_cols": ("item_id", "step_id", "item_desc"),
         "fill_columns": ("product", "module"),
         "module_source": "step_range",
@@ -299,8 +303,18 @@ def _product_files(target: str, product: str, limit: int = 0) -> list[Path]:
     return files[:limit] if limit and limit > 0 else files
 
 
-def _product_key_index(target: str, product: str, keys: tuple[str, ...], limit: int = 0) -> set[tuple]:
-    """제품 폴더 전체에서 (keys) 조합의 유니크 집합을 만든다."""
+def _normalise_key_tuple(values: Iterable[Any]) -> tuple[str, ...]:
+    return tuple(str(value or "").strip().casefold() for value in values)
+
+
+def _product_key_index(target: str, product: str, keys: tuple[str, ...], limit: int = 0,
+                       wanted: set[tuple[str, ...]] | None = None) -> set[tuple]:
+    """제품 폴더에서 필요한 (keys) 조합만 읽어 유니크 집합을 만든다.
+
+    wanted가 있으면 parquet predicate pushdown으로 CSV에 등장한 값만 수집한다.
+    파일 묶음의 스키마가 서로 달라 한 번에 읽지 못하면 파일별 메타 스캔으로
+    폴백해, 일부 파일의 열 누락 때문에 제품 전체가 miss가 되지 않게 한다.
+    """
     files = _product_files(target, product, limit)
     if not files:
         return set()
@@ -309,8 +323,10 @@ def _product_key_index(target: str, product: str, keys: tuple[str, ...], limit: 
     except ImportError:
         logger.warning("[matching_fill] polars 미설치 — 스캔 불가")
         return set()
-    try:
-        lf = pl.scan_parquet([str(f) for f in files])
+    wanted_norm = {_normalise_key_tuple(key) for key in (wanted or set())}
+
+    def collect_index(batch: list[Path]) -> set[tuple]:
+        lf = pl.scan_parquet([str(f) for f in batch])
         schema = lf.collect_schema().names()
         folded = {str(name).strip().casefold(): name for name in schema}
         aliases = (TARGETS.get(target) or {}).get("db_key_aliases") or {}
@@ -323,22 +339,40 @@ def _product_key_index(target: str, product: str, keys: tuple[str, ...], limit: 
                 resolved.append((pos, actual))
         if not resolved:
             return set()
+        if wanted_norm:
+            predicate = None
+            for pos, actual in resolved:
+                values = sorted({key[pos] for key in wanted_norm if pos < len(key) and key[pos]})
+                if not values:
+                    continue
+                expr = pl.col(actual).cast(pl.Utf8).str.strip_chars().str.to_lowercase().is_in(values)
+                predicate = expr if predicate is None else predicate & expr
+            if predicate is not None:
+                lf = lf.filter(predicate)
         df = lf.select([
             pl.col(actual).cast(pl.Utf8).alias(f"_key_{pos}") for pos, actual in resolved
-        ]).unique().collect()
+        ]).unique().collect(engine="streaming")
+        rows = df.rows()
+        if len(resolved) == len(keys):
+            return {tuple("" if v is None else str(v).strip() for v in r) for r in rows}
+        out: set[tuple] = set()
+        for r in rows:
+            slot: list[str] = ["*"] * len(keys)
+            for (pos, _actual), value in zip(resolved, r):
+                slot[pos] = "" if value is None else str(value).strip()
+            out.add(tuple(slot))
+        return out
+
+    try:
+        return collect_index(files)
     except Exception as e:
-        logger.warning("[matching_fill] %s/%s 스캔 실패: %s", target, product, e)
-        return set()
-    rows = df.rows()
-    if len(resolved) == len(keys):
-        return {tuple("" if v is None else str(v).strip() for v in r) for r in rows}
-    # DB 에 없는 키는 와일드카드로 둔다 — 있는 열만으로 비교하도록 위치를 맞춘다.
+        logger.info("[matching_fill] %s/%s 묶음 스캔 폴백: %s", target, product, e)
     out: set[tuple] = set()
-    for r in rows:
-        slot: list[str] = ["*"] * len(keys)
-        for (pos, _actual), value in zip(resolved, r):
-            slot[pos] = "" if value is None else str(value).strip()
-        out.add(tuple(slot))
+    for fp in files:
+        try:
+            out.update(collect_index([fp]))
+        except Exception as e:
+            logger.warning("[matching_fill] %s/%s 파일 스캔 실패 %s: %s", target, product, fp, e)
     return out
 
 
@@ -433,7 +467,34 @@ def _resolve_column(names: Iterable[str], *candidates: str) -> str:
         hit = folded.get(str(candidate or "").strip().casefold())
         if hit:
             return hit
+    normalised = {
+        re.sub(r"[\s_]+", "_", str(name).strip().casefold()): str(name)
+        for name in names or []
+    }
+    for candidate in candidates:
+        hit = normalised.get(re.sub(r"[\s_]+", "_", str(candidate or "").strip().casefold()))
+        if hit:
+            return hit
     return ""
+
+
+def _row_match_keys(row: dict, cols: list[str], spec: dict,
+                    keys: tuple[str, ...]) -> set[tuple[str, ...]]:
+    """CSV 한 행의 raw 매칭 키 후보. alias 열은 OR, 서로 다른 키는 AND다."""
+    aliases = spec.get("csv_key_aliases") or {}
+    values_by_key: list[list[str]] = []
+    for key in keys:
+        values: list[str] = []
+        for candidate in (key, *(aliases.get(key) or ())):
+            actual = _resolve_column(cols, candidate)
+            value = _row_value_ci(row, actual or candidate)
+            if value and value.casefold() not in {item.casefold() for item in values}:
+                values.append(value)
+        values_by_key.append(values or [""])
+    out: set[tuple[str, ...]] = {()}
+    for values in values_by_key:
+        out = {prefix + (value,) for prefix in out for value in values}
+    return out
 
 
 def _fab_value_step_index(target: str, product: str, value_candidates: tuple[str, ...],
@@ -643,7 +704,7 @@ def scan(target: str, username: str = "", column: str = "product") -> dict:
             return _scan_module_by_vehicle(target, spec, cols, rows, username)
         return _scan_module(target, spec, cols, rows, username)
 
-    keys = tuple(k for k in spec["keys"] if k in cols)
+    keys = tuple(k for k in spec["keys"] if _resolve_column(cols, k))
     if not keys:
         raise ValueError(f"{spec['file']} 에 매칭 키({', '.join(spec['keys'])})가 없습니다")
 
@@ -654,28 +715,37 @@ def scan(target: str, username: str = "", column: str = "product") -> dict:
     if not products:
         raise FileNotFoundError(f"{target} raw DB 제품 폴더를 찾을 수 없습니다")
 
+    row_keys = [_row_match_keys(row, cols, spec, keys) for row in rows]
+    wanted_keys = {key for candidates in row_keys for key in candidates}
     index_cache: dict[str, set[tuple]] = {}
 
     def index_of(product: str) -> set[tuple]:
         if product not in index_cache:
-            index_cache[product] = _product_key_index(target, product, keys, limit)
+            raw_index = _product_key_index(target, product, keys, limit, wanted_keys)
+            index_cache[product] = {
+                tuple("*" if value == "*" else str(value or "").strip().casefold() for value in key)
+                for key in raw_index
+            }
         return index_cache[product]
 
-    step_col = "step_id" if "step_id" in cols else ""
+    step_col = _resolve_column(cols, "step_id")
     out_rows: list[dict] = []
     counts = {"fill": 0, "change": 0, "same": 0, "miss": 0}
     for i, row in enumerate(rows):
-        key = tuple(str(row.get(k) or "").strip() for k in keys)
+        candidates_for_row = row_keys[i]
         output_column = "vehicle" if column == "vehicle" else PRODUCT_COL
         current = _row_value_ci(row, output_column) if _resolve_column(cols, output_column) else ""
-        scoped = _rule_products(row.get(step_col) or "", target, rules) if step_col else None
+        scoped = _rule_products(_row_value_ci(row, step_col), target, rules) if step_col else None
         candidates = [p for p in (scoped if scoped is not None else products)]
         hits = []
         for product in candidates:
             if product not in products:
                 continue          # 규칙에 적힌 제품이 DB 에 없으면 조용히 건너뛴다
             idx = index_of(product)
-            if key in idx or _wildcard_hit(key, idx):
+            if any(
+                (normalised := _normalise_key_tuple(key)) in idx or _wildcard_hit(normalised, idx)
+                for key in candidates_for_row
+            ):
                 hits.append(product)
         proposed = ", ".join(hits)
         if not hits:
@@ -689,7 +759,8 @@ def scan(target: str, username: str = "", column: str = "product") -> dict:
         counts[status] += 1
         out_rows.append({
             "i": i,
-            "keys": {k: row.get(k, "") for k in keys},
+            "keys": {k: " / ".join(sorted({key[pos] for key in candidates_for_row if key[pos]}))
+                     for pos, k in enumerate(keys)},
             "id": {c: row.get(c, "") for c in (spec.get("id_cols") or ()) if c in cols},
             "current": current,
             "proposed": proposed,
@@ -719,7 +790,9 @@ def scan(target: str, username: str = "", column: str = "product") -> dict:
 
 def _scan_module(target: str, spec: dict, cols: list[str], rows: list[dict], username: str) -> dict:
     """module 채우기 — DB 를 읽지 않고 step 번호 구간표만 본다."""
-    if "step_id" not in cols:
+    step_col = _resolve_column(cols, "step_id")
+    module_col = _resolve_column(cols, MODULE_COL)
+    if not step_col:
         raise ValueError(f"{spec['file']} 에 step_id 열이 없어 module 구간을 정할 수 없습니다")
     rules = settings()["module_rules"]
     if not rules:
@@ -728,8 +801,8 @@ def _scan_module(target: str, spec: dict, cols: list[str], rows: list[dict], use
     out_rows: list[dict] = []
     counts = {"fill": 0, "change": 0, "same": 0, "miss": 0}
     for i, row in enumerate(rows):
-        step_id = str(row.get("step_id") or "").strip()
-        current = str(row.get(MODULE_COL) or "").strip()
+        step_id = _row_value_ci(row, step_col)
+        current = _row_value_ci(row, module_col or MODULE_COL)
         proposed = module_for_step(step_id, rules)
         prefix, number = _step_parts(step_id)
         if not proposed:

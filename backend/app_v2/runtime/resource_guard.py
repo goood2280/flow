@@ -60,6 +60,7 @@ DEFAULT_HEAVY_PREFIXES = (
     "/api/dashboard",
     "/api/splittable",
     "/api/tracker",
+    "/api/lot-tracker",
     "/api/llm/flowi",
     "/api/dbmap",
 )

@@ -410,13 +410,13 @@ def download_history_csv(product: str = Query(...), root_lot_id: str = Query("")
     if not hist:
         raise HTTPException(404, "No history entries")
 
-    header = ["time", "user", "action", "root_lot_id", "wafer_id",
+    header = ["time", "user", "kind", "action", "root_lot_id", "wafer_id",
               "column", "old_value", "new_value", "reason", "prev_plan_user", "batch"]
 
     def _rows():
         for h in hist:
             lot, wf, col = _history_cell_parts(h)
-            yield [h.get("time", ""), h.get("user", ""), h.get("action", ""),
+            yield [h.get("time", ""), h.get("user", ""), h.get("kind", "plan"), h.get("action", ""),
                    lot, wf, col, h.get("old", ""), h.get("new", ""),
                    h.get("reason", ""), h.get("prev_user", ""), h.get("batch", "")]
 

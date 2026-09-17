@@ -19,7 +19,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from core import audit, flowi_fewshots, flowi_file_docs, semantic_measure_catalog, semantic_source_catalog
+from core import audit, flowi_fewshots, flowi_file_docs, semantic_measure_catalog, semantic_source_catalog, chat_conversations, flowi_personalization
 from core.auth import current_user
 
 router = APIRouter(prefix="/api/flowi-learning", tags=["flowi-learning"])
@@ -154,4 +154,104 @@ def delete_file_doc(request: Request, body: FileDocDeleteReq):
     if not ok:
         raise HTTPException(status_code=404, detail=f"file not found: {body.file}")
     audit.record(request, action=f"flowi_learning:file_doc_delete:{body.file}", tab="admin")
+    return {"ok": True}
+
+
+class SkillCurateReq(BaseModel):
+    title: str
+    procedure: str
+    feature: str = "table"
+    action: str = ""
+    shared: bool = True
+    auto: bool = False
+
+
+class SkillUpdateReq(BaseModel):
+    skill_id: str
+    title: str
+    procedure: str
+    shared: bool = True
+
+
+class SkillDeleteReq(BaseModel):
+    skill_id: str
+
+
+@router.get("/conversations")
+def list_conversations(request: Request, limit: int = 100):
+    me = _require_admin(request)
+    return {"conversations": chat_conversations.list_conversations(me["username"])[:max(1, min(limit, 100))]}
+
+
+@router.get("/conversations/{conversation_id}")
+def read_conversation(request: Request, conversation_id: str):
+    me = _require_admin(request)
+    try:
+        return chat_conversations.read(me["username"], conversation_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="대화를 찾을 수 없습니다.") from exc
+
+
+@router.get("/skills")
+def list_skills(request: Request):
+    me = _require_admin(request)
+    return {"skills": flowi_personalization.list_skills(me["username"])}
+
+
+@router.get("/skills/draft/{conversation_id}/{message_id}")
+def draft_skill(request: Request, conversation_id: str, message_id: str):
+    me = _require_admin(request)
+    try:
+        draft = flowi_personalization.draft_from_result(me["username"], conversation_id, message_id)
+        return {"draft": draft}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/skills/curate")
+def curate_skill(request: Request, body: SkillCurateReq):
+    me = _require_admin(request)
+    try:
+        skill = flowi_personalization.save_curated_skill(
+            owner=me.get("username") or "admin",
+            title=body.title,
+            procedure=body.procedure,
+            feature=body.feature,
+            action=body.action,
+            shared=body.shared,
+            auto=body.auto,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit.record(request, action=f"flowi_learning:skill_curate:{skill.get('id')}", tab="admin")
+    return {"ok": True, "skill": skill}
+
+
+@router.post("/skills/update")
+def update_skill_admin(request: Request, body: SkillUpdateReq):
+    me = _require_admin(request)
+    try:
+        skill = flowi_personalization.update_skill(
+            username=me["username"],
+            skill_id=body.skill_id,
+            title=body.title,
+            procedure=body.procedure,
+            shared=body.shared,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="스킬을 찾을 수 없습니다.") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    audit.record(request, action=f"flowi_learning:skill_update:{body.skill_id}", tab="admin")
+    return {"ok": True, "skill": skill}
+
+
+@router.post("/skills/delete")
+def delete_skill_admin(request: Request, body: SkillDeleteReq):
+    me = _require_admin(request)
+    try:
+        flowi_personalization.delete_skill(me["username"], body.skill_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="스킬을 찾을 수 없습니다.") from exc
+    audit.record(request, action=f"flowi_learning:skill_delete:{body.skill_id}", tab="admin")
     return {"ok": True}

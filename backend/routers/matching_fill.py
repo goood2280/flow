@@ -56,11 +56,11 @@ def targets(request: Request):
             "csv_exists": bool(cols),
             "csv_rows": len(rows),
             "columns": cols,
-            "has_product_col": _mf.PRODUCT_COL in cols,
-            "keys": [k for k in spec["keys"] if k in cols],
+            "has_product_col": bool(_mf._resolve_column(cols, _mf.PRODUCT_COL)),
+            "keys": [k for k in spec["keys"] if _mf._resolve_column(cols, k)],
             "products": _mf.list_products(key),
-            "has_module_col": _mf.MODULE_COL in cols,
-            "has_step_col": "step_id" in cols,
+            "has_module_col": bool(_mf._resolve_column(cols, _mf.MODULE_COL)),
+            "has_step_col": bool(_mf._resolve_column(cols, "step_id")),
             "has_step_desc_col": any(str(c).strip().casefold() == "step_desc" for c in cols),
             # 이 대상에서 채울 수 있는 열. vm_matching 은 product 를 채우지 않는다
             # (제품 귀속은 Vehicle_matching.csv 가 step_desc 로 이미 정한다).

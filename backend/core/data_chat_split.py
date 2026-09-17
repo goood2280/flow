@@ -110,9 +110,12 @@ def _source_version(view, row):
 
 
 def _resolve_scope(text, context):
-    from core.data_chat import product_candidates, extract_lot_tokens, resolve_lot_scope
-    from routers import splittable
-    products = [p["name"] for p in splittable.list_products().get("products", []) if p.get("name")]
+    from core.data_chat import (
+        available_product_catalog, product_candidates, extract_lot_tokens,
+        resolve_lot_scope, split_table_product,
+    )
+    catalog = available_product_catalog()
+    products = [str(row.get("product") or "") for row in catalog if row.get("split_table")]
     matched = product_candidates(text, products)
     if len(matched) > 1:
         raise ValueError("제품이 여러 개입니다. 하나의 제품을 지정해 주세요.")
@@ -120,8 +123,9 @@ def _resolve_scope(text, context):
     inherited = product_candidates(str(product), products)
     if len(inherited) == 1:
         product = inherited[0]
-    if product not in products:
-        raise ValueError("수정할 제품과 root lot을 알려 주세요. 예: PRODA LOT01")
+    split_product = split_table_product(product)
+    if not split_product:
+        raise ValueError("실제 DB의 ML_TABLE이 있는 제품과 root lot을 알려 주세요.")
     # Do not interpret recipe names or the M1 column as lot IDs.
     prefix = ASSIGNMENT.split(text)[0] if ASSIGNMENT.search(text) else text
     unknown_products = [p for p in re.findall(r"\b(?:ML_TABLE_)?PROD[A-Za-z0-9_]*\b", prefix, re.I)
@@ -135,7 +139,9 @@ def _resolve_scope(text, context):
     _, root = resolve_lot_scope(raw_lot)
     if not root or (matched and product != context.get("product") and not lots):
         raise ValueError("수정할 root lot을 알려 주세요. ‘나머지’는 해당 root lot의 실제 wafer에만 적용됩니다.")
-    return product, root
+    context["product"] = product
+    context["source_table"] = split_product
+    return split_product, root
 
 
 def _preview(text, context, request, user):
@@ -185,9 +191,16 @@ def _preview(text, context, request, user):
             "column": row["_param"], "plans": plans, "expected_plans": {k: existing.get(k) for k in plans},
             "source_version": _source_version(view, row), "rows": table, "created": time.time(),
             "status": "pending", "reason": text}
+        if context.get("semantic_scope"):
+            proposal["semantic_scope"] = context["semantic_scope"]
+            for item in table:
+                item["대상 구조"] = " / ".join(str(r.get("module", "")) + (" / " + str(r.get("path")) if r.get("path") else "") for r in context["semantic_scope"])
+            proposal["reason"] += " [확인된 대상 연결] " + json.dumps(context["semantic_scope"], ensure_ascii=False)
         save_json(_proposal_path(identifier), proposal)
     context.update(product=product, root_lot_id=root, last_action="splittable.plan", pending_split_id=identifier)
     context.pop("split_instruction", None)
+    context.pop("semantic_scope", None)
+    context.pop("semantic_split_prompt", None)
     return _answer(f"{product} / {root}의 {row['_param']}에서 #{','.join(map(str, sorted(selected)))}은 S0={s0}, 나머지 실제 wafer #{','.join(map(str, sorted(set(numbers)-selected)))}은 S1={s1}로 이해했습니다. 아래는 변경 전·후 미리보기이며 아직 저장하지 않았습니다. 확인 후 ‘승인하겠다 진행하겠다’ 또는 승인 버튼으로 반영하세요.",
         context, table=table, approval={"id": identifier, "status": "pending", "expires_in": TTL_SECONDS})
 

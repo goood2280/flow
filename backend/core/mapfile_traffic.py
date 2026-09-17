@@ -709,6 +709,7 @@ def inspect_mapfiles_for_product(vehicle: str, force: bool = False) -> dict[str,
     def _calc_group_summary(group_files: list[dict[str, Any]]) -> dict[str, int]:
         return {
             "total_files": len(group_files),
+            "mismatch_count": sum(int((r.get("summary") or {}).get("red") or 0) for r in group_files),
             "green_files": sum(1 for r in group_files if r.get("traffic_light") == "green"),
             "yellow_files": sum(1 for r in group_files if r.get("traffic_light") == "yellow"),
             "red_files": sum(1 for r in group_files if r.get("traffic_light") == "red"),

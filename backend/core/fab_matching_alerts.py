@@ -918,9 +918,6 @@ def _recommendations() -> dict[str, dict]:
     try:
         from core import valve_step_advisor
         records = valve_step_advisor.load_records()
-        # 알고리즘 교체 직후 백그라운드 재검사가 끝날 때까지 과거 추천을 그대로
-        # 보여주면 사용자는 이미 폐기된 값을 새 결과로 오해한다. 현재 버전만 붙이고
-        # 나머지는 화면에서 "추천 대기"로 둔다.
         return {
             key: record for key, record in records.items()
             if int(record.get("algorithm_version") or 0)
@@ -1046,7 +1043,6 @@ def list_alerts() -> dict:
         ]
     ack = _acks()
     decided = _decided_ids()
-    recs = _recommendations()
     mapping_by_product: dict[str, dict] = {}
     visible_alerts = []
     for alert in alerts:
@@ -1069,10 +1065,6 @@ def list_alerts() -> dict:
         alert["status"] = info.get("status") or "active"
         alert["ack_note"] = info.get("note") or ""
         alert["decision"] = decided.get(alert.get("id"))
-        if alert.get("type") == "unmatched_step":
-            alert["recommendation"] = recs.get(
-                f"{alert.get('vehicle') or ''}|{alert.get('step_id') or ''}"
-            )
         visible_alerts.append(alert)
     alerts = visible_alerts
     alerts.sort(key=lambda a: (
@@ -1853,12 +1845,6 @@ def _loop_once() -> None:
         except Exception:
             logger.exception("FAB matching scan dispatch failed; running on owner")
             scan_next_product(force=requested)
-    # 새 FAB 스캐너가 추천 기록을 읽기만 하고 만들지는 않던 누락을 보완한다.
-    # advisor 자체의 max_alerts_per_run 상한은 그대로 지키고, backlog가 있을 때만
-    # idle 구간에서 다음 배치를 이어간다.
-    recommendation = _run_recommendation_batch()
-    recommendation_remaining = int(recommendation.get("skipped") or 0)
-    next_recommendation_ts = time.time() + RECOMMENDATION_BATCH_INTERVAL_SECONDS
     # Wake frequently enough for an API-side manual request, while the
     # normal interval is still measured from the last completed scan.
     deadline = time.time() + int(cfg.get("scan_interval_seconds") or DEFAULT_SCAN_INTERVAL_SECONDS)
@@ -1868,10 +1854,6 @@ def _loop_once() -> None:
         _scanner_beat(state="idle", next_scan_ts=deadline)
         if _load_state().get("scan_requested"):
             break
-        if recommendation_remaining and time.time() >= next_recommendation_ts:
-            recommendation = _run_recommendation_batch()
-            recommendation_remaining = int(recommendation.get("skipped") or 0)
-            next_recommendation_ts = time.time() + RECOMMENDATION_BATCH_INTERVAL_SECONDS
 
 
 def _loop() -> None:

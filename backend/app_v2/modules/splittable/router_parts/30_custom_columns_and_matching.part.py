@@ -392,6 +392,58 @@ class ManagementRowValuesReq(BaseModel):
     root_lot_id: str = ""
 
 
+def _custom_tag_history_value(entry: dict | None) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    label = str(entry.get("label") or entry.get("column") or "").strip()
+    module = _clean_tag_module(entry.get("module"))
+    return f"{label} · module={module}" if module else label
+
+
+def _custom_tag_stored_value(raw) -> str:
+    if isinstance(raw, dict):
+        raw = raw.get("value")
+    return "" if raw is None else str(raw).strip()
+
+
+def _archive_custom_tag_changes(
+    product: str,
+    actor: str,
+    changes: list[dict],
+    *,
+    changed_at: str = "",
+) -> list[dict]:
+    """Store TAG mutations in the unified SplitTable history ledger."""
+    valid = [dict(change) for change in (changes or []) if isinstance(change, dict)]
+    if not valid:
+        return []
+    now = changed_at or datetime.datetime.now().isoformat(timespec="seconds")
+    batch = _new_history_batch_id()
+    batch_size = len(valid)
+    entries = []
+    for change in valid:
+        root_lot_id = str(change.get("root_lot_id") or "").strip()
+        wafer_id = str(change.get("wafer_id") or "").strip()
+        column = str(change.get("column") or "").strip()
+        entries.append({
+            "kind": "tag",
+            "cell": str(change.get("cell") or f"{root_lot_id}|{wafer_id}|{column}"),
+            "root_lot_id": root_lot_id,
+            "wafer_id": wafer_id,
+            "column": column,
+            "old": change.get("old"),
+            "new": change.get("new"),
+            "user": actor or "unknown",
+            "time": now,
+            "action": str(change.get("action") or "tag_update"),
+            "reason": _clean_plan_reason(change.get("reason")),
+            "batch": batch,
+            "batch_size": batch_size,
+        })
+    _archive_plan_history(product, entries)
+    return entries
+
+
 @router.get("/custom-tags")
 def list_custom_tags(product: str = Query("")):
     columns = _custom_tag_columns_for_product(product) if product else []
@@ -413,6 +465,16 @@ def save_custom_tag_column(req: CustomTagColumnReq, request: Request = None):
         label = label[len(CUSTOM_TAG_PREFIX) + 1:].strip()
     now = datetime.datetime.now().isoformat(timespec="seconds")
     data = _load_custom_tags_data()
+    before = next(
+        (
+            dict(c)
+            for c in (data.get("columns") or [])
+            if isinstance(c, dict)
+            and str(c.get("product") or "").strip() == product
+            and str(c.get("column") or "").strip().upper() == column.upper()
+        ),
+        None,
+    )
     entry = _ensure_custom_tag_column(
         data,
         product=product,
@@ -423,6 +485,15 @@ def save_custom_tag_column(req: CustomTagColumnReq, request: Request = None):
         module=req.module,
     )
     _save_custom_tags_data(data)
+    old_value = _custom_tag_history_value(before)
+    new_value = _custom_tag_history_value(entry)
+    if before is None or old_value != new_value:
+        _archive_custom_tag_changes(product, actor, [{
+            "column": entry["column"],
+            "old": old_value or None,
+            "new": new_value,
+            "action": "tag_column_add" if before is None else "tag_column_update",
+        }], changed_at=now)
     return {
         "ok": True,
         "column": entry["column"],
@@ -455,6 +526,7 @@ def save_custom_tag_module(req: CustomTagModuleReq, request: Request = None):
         ),
         None,
     )
+    created = entry is None
     if entry is None and column.upper() == DEFAULT_CUSTOM_TAG_COLUMN.upper():
         entry = _ensure_custom_tag_column(
             data,
@@ -467,11 +539,22 @@ def save_custom_tag_module(req: CustomTagModuleReq, request: Request = None):
         )
     if entry is None:
         raise HTTPException(404, f"tag column not found: {column}")
+    old_value = "" if created else _custom_tag_history_value(entry)
+    now = datetime.datetime.now().isoformat(timespec="seconds")
     entry["module"] = module
-    entry["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
+    entry["updated"] = now
     if actor:
         entry["username"] = actor
     _save_custom_tags_data(data)
+    new_value = _custom_tag_history_value(entry)
+    if created or old_value != new_value:
+        _archive_custom_tag_changes(product, actor, [{
+            "column": column,
+            "old": old_value or None,
+            "new": new_value,
+            "action": "tag_column_add" if created else "tag_column_update",
+            "reason": "module 설정" if created else "module 변경",
+        }], changed_at=now)
     return {"ok": True, "column": column, "module": module, "columns": _custom_tag_columns_for_product(product)}
 
 
@@ -494,6 +577,16 @@ def delete_custom_tag_column(
     data = _load_custom_tags_data()
 
     columns = data.get("columns") if isinstance(data.get("columns"), list) else []
+    deleted_entry = next(
+        (
+            dict(entry)
+            for entry in columns
+            if isinstance(entry, dict)
+            and str(entry.get("product") or "").strip() == product
+            and str(entry.get("column") or "").strip() == column
+        ),
+        None,
+    )
     kept_columns = []
     deleted_columns = 0
     for entry in columns:
@@ -532,6 +625,14 @@ def delete_custom_tag_column(
     actor = req.username or ""
     if not actor and isinstance(_perm, dict):
         actor = _perm.get("username") or ""
+    if deleted_columns:
+        _archive_custom_tag_changes(product, actor, [{
+            "column": column,
+            "old": _custom_tag_history_value(deleted_entry) or column,
+            "new": None,
+            "action": "tag_column_delete",
+            "reason": f"TAG 열 삭제 · 값 {deleted_values}건 · 색상 {deleted_colors}건",
+        }])
     _audit_user(actor, "splittable:custom_tag_delete", detail=f"product={product} column={column}")
     return {
         "ok": True,
@@ -558,6 +659,7 @@ def save_custom_tag_values(req: CustomTagValuesReq, request: Request = None):
     colors = data.setdefault("colors", {})
     saved = 0
     deleted = 0
+    history_changes: list[dict] = []
     rejected: list[str] = []
     for cell_key, raw_value in (req.values or {}).items():
         parts = str(cell_key or "").split("|", 2)
@@ -577,13 +679,31 @@ def save_custom_tag_values(req: CustomTagValuesReq, request: Request = None):
             now=now,
         )
         store_key = _tag_value_key(product, root_lot_id, wafer_id, column)
+        old_value = _custom_tag_stored_value(values.get(store_key))
         value = "" if raw_value is None else str(raw_value).strip()
         if value:
             values[store_key] = {"value": value, "username": actor, "updated": now}
             saved += 1
+            if old_value != value:
+                history_changes.append({
+                    "root_lot_id": root_lot_id,
+                    "wafer_id": wafer_id,
+                    "column": column,
+                    "old": old_value or None,
+                    "new": value,
+                    "action": "tag_update" if old_value else "tag_add",
+                })
         elif store_key in values:
             values.pop(store_key, None)
             deleted += 1
+            history_changes.append({
+                "root_lot_id": root_lot_id,
+                "wafer_id": wafer_id,
+                "column": column,
+                "old": old_value,
+                "new": None,
+                "action": "tag_delete",
+            })
     colors_saved = 0
     colors_deleted = 0
     rejected_colors: list[str] = []
@@ -610,10 +730,21 @@ def save_custom_tag_values(req: CustomTagValuesReq, request: Request = None):
         )
         store_key = _tag_value_key(product, root_lot_id, wafer_id, column)
         # 흰색도 Lot 관리와 동일한 명시적 색 선택이므로 저장한다.
-        if colors.get(store_key) != color:
+        old_color = str(colors.get(store_key) or "").strip().lower()
+        if old_color != color:
             colors[store_key] = color
             colors_saved += 1
+            history_changes.append({
+                "root_lot_id": root_lot_id,
+                "wafer_id": wafer_id,
+                "column": column,
+                "old": old_color or None,
+                "new": color,
+                "action": "tag_color_update" if old_color else "tag_color_add",
+                "reason": "TAG 색상",
+            })
     _save_custom_tags_data(data)
+    _archive_custom_tag_changes(product, actor, history_changes, changed_at=now)
 
     if saved > 0 or colors_saved > 0:
         try:

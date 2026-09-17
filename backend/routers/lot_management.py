@@ -716,9 +716,14 @@ def get_my_lots(request: Request):
     # 1. 존재하는 모든 제품의 랏관리 테이블 파일 스캔
     if TABLE_DIR.is_dir():
         for path in TABLE_DIR.glob("*.json"):
-            prod = path.stem
             try:
                 doc = load_json(path, {})
+                # Table filenames are SHA-256 storage keys, not product names.
+                # The persisted document keeps the canonical product selected by
+                # the user, so use that value for status hydration and MY LOT UI.
+                prod = str(doc.get("product") or "").strip()
+                if not prod:
+                    continue
                 source_rows = [r for r in (doc.get("rows") or []) if isinstance(r, dict)]
                 target_rows = []
                 for row in source_rows:

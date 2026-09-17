@@ -23,7 +23,7 @@ const TEG_COLOR = "#2563eb";
 const SHOT_COLOR = "#64748b";
 const DIE_COLOR = "#2f9e63";
 const PREVIEW_SIZE = 380;
-const PREVIEW_MIN_VERTICAL_TEG_WIDTH_PX = 16;
+const PREVIEW_MIN_TEG_EDGE_PX = 1.2;
 // TEG 는 shot 대비 아주 작아 기본 배율(×12)로는 이름이 안 읽힌다 —
 // Mapfile 체크의 shot 확대와 같은 ×60 까지 연다.
 const PREVIEW_MAX_ZOOM = 60;
@@ -131,10 +131,10 @@ function FlatPreview({ block, imgUrl }) {
               Vertical 표의 이름은 반시계 90° 회전해 긴 축에 맞추고, 확대할수록 커진다. */}
           {rects.map((r, i) => {
             const rawW = r.w * s, rawH = r.h * s;
-            // 실제 좌표는 유지하되 Vertical 이름이 놓이는 얇은 축만 화면상 최소 16px로 보강한다.
-            // 기존에도 1.2px 최소치를 썼으며, 이 값은 좌표/CSV가 아닌 미리보기 표시만 바꾼다.
-            const w = Math.max((vertical ? PREVIEW_MIN_VERTICAL_TEG_WIDTH_PX : 1.2) / zoom, rawW);
-            const h = Math.max(1.2 / zoom, rawH);
+            // 방향과 무관하게 같은 물리 치수를 그린다. 최소치는 선이 사라지지 않게 하는
+            // 공통 1.2px뿐이며, zoom에 따라 빠지는 별도 Vertical 확대 보정은 두지 않는다.
+            const w = Math.max(PREVIEW_MIN_TEG_EDGE_PX / zoom, rawW);
+            const h = Math.max(PREVIEW_MIN_TEG_EDGE_PX / zoom, rawH);
             const x = toX(r.x) - (w - rawW) / 2;
             const yTop = toY(r.y + r.h) - (h - rawH) / 2;
             const nm = String(r.name || "");

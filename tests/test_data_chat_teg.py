@@ -87,7 +87,8 @@ def test_public_orchestrator_keeps_followup_and_routes_model_tools(monkeypatch, 
         return {"ok": True, "obj": {"action": "teg.coordinates", "params": {"product": "PRODA", "tegs": ["TEG_B"]}}}
     monkeypatch.setattr(llm_adapter, "complete_json", plan)
     result = data_chat.execute("측정 구조의 절대 지점을 알려줘", {}, None)
-    assert result["ok"] and result["context"]["teg_names"] == ["TEG_B"]
+    assert not result["ok"] and result["tool"]["missing"] == ["product"]
+    assert not result["context"].get("teg_names")
     assert len(calls) == 1
 
 

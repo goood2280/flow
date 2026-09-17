@@ -302,11 +302,14 @@ def test_routers_teg_map_endpoints(tmp_path):
             "summary": {"total_files": 1}, "files": [{"filename": "CODE1_a.txt"}],
         }) as mock_summary:
             traffic_res = teg_router.mapfile_traffic_get(vehicle="VH_1", force=False, user=normal_user)
-            mock_summary.assert_called_once_with("VH_1")
+            mock_summary.assert_called_once_with("VH_1", force=False)
             assert traffic_res["ok"] is True
             assert traffic_res["product_code"] == "CODE1"
             assert traffic_res["summary"]["total_files"] == 1
             assert traffic_res["files"][0]["filename"] == "CODE1_a.txt"
+            mock_summary.reset_mock()
+            teg_router.mapfile_traffic_get(vehicle="VH_1", force=True, user=normal_user)
+            mock_summary.assert_called_once_with("VH_1", force=True)
 
         # 4. GET /mapfile-traffic/content returns text
         with patch("core.mapfile_review.open_version", return_value={

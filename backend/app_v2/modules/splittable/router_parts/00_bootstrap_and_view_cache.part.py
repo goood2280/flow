@@ -1052,6 +1052,37 @@ def _safe_step_segment(s: str) -> str:
 
 
 _RULE_ORDER_RE = _re.compile(r"^R(\d+)$", _re.I)
+_STEP_ID_NATURAL_RE = _re.compile(r"^([A-Za-z]+)(\d+)(.*)$")
+
+
+def _step_id_sort_key(value: object) -> tuple:
+    """Natural process-step order: prefix, numeric body, then suffix.
+
+    A lexical sort puts suffixed or different-width IDs in surprising places.
+    SplitTable's applied-process display instead needs, for example,
+    AA100000 < AA100001EC < AA101000.
+    """
+    text = str(value or "").strip()
+    upper = text.upper()
+    match = _STEP_ID_NATURAL_RE.match(upper)
+    suffix_source = match.group(3) if match else upper
+    suffix = []
+    for token in _re.split(r"(\d+)", suffix_source):
+        if not token:
+            continue
+        suffix.append((0, int(token)) if token.isdigit() else (1, token.casefold()))
+    if match:
+        return (0, match.group(1).casefold(), int(match.group(2)), tuple(suffix), upper)
+    return (1, "", 0, tuple(suffix), upper)
+
+
+def _sorted_step_ids(values) -> list[str]:
+    unique: dict[str, str] = {}
+    for value in values or []:
+        step_id = str(value or "").strip()
+        if step_id:
+            unique.setdefault(step_id.casefold(), step_id)
+    return sorted(unique.values(), key=_step_id_sort_key)
 
 
 def _rule_order_label(raw: object, fallback_idx: int = 1) -> str:
