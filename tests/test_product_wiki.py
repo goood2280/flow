@@ -50,9 +50,12 @@ def test_conflict_and_concurrent_writers(isolated_wiki):
 
 def test_author_restriction_and_manager(isolated_wiki):
     saved = wiki.save_entry("PRODA", 0, entry(), "alice")["entries"][0]
-    with pytest.raises(PermissionError):
-        wiki.save_entry("PRODA", 1, entry(id=saved["id"], title="bad"), "bob")
-    assert wiki.save_entry("PRODA", 1, entry(id=saved["id"], title="managed"), "bob", manager=True)["revision"] == 2
+    # Collaborative editing: bob can edit alice's entry, author remains alice, updated_by is bob
+    updated = wiki.save_entry("PRODA", 1, entry(id=saved["id"], title="edited_by_bob"), "bob")
+    assert updated["revision"] == 2
+    record = updated["entries"][0]
+    assert record["author"] == "alice"
+    assert record["updated_by"] == "bob"
 
 
 def test_report_snapshot_and_ai_evidence(isolated_wiki, monkeypatch):
@@ -249,8 +252,8 @@ def test_intake_preflight_conflict_and_permission_skip_llm(isolated_wiki, monkey
     monkeypatch.setattr("core.llm_adapter.complete", lambda *a, **k: calls.append(1) or extraction())
     with pytest.raises(wiki.Conflict):
         wiki.intake_entry("P", 0, "raw", "alice", saved["id"])
-    with pytest.raises(PermissionError):
-        wiki.intake_entry("P", 1, "raw", "bob", saved["id"])
+    with pytest.raises(ValueError):
+        wiki.intake_entry("P", 1, "raw", "bob", "non_existent_id")
     assert calls == []
 
 
@@ -284,3 +287,16 @@ def test_http_intake_contract(isolated_wiki, monkeypatch):
     payload = response.json()
     assert payload["revision"] == 1 and payload["saved_entry_id"] == payload["entries"][0]["id"]
     assert payload["intake_warning"] == ""
+
+
+def test_delete_entry_and_wiki_compilation(isolated_wiki):
+    saved = wiki.save_entry("PRODA", 0, entry(title="삭제할 이슈"), "alice")["entries"][0]
+    doc = wiki.delete_entry("PRODA", 1, saved["id"], "charlie")
+    assert doc["revision"] == 2
+    assert not any(e["id"] == saved["id"] for e in doc["entries"])
+    hist = wiki.history("PRODA", saved["id"])
+    assert hist[0]["action"] == "delete"
+    assert hist[0]["actor"] == "charlie"
+    compiled = wiki.compile_product_wiki("PRODA", actor="charlie", use_ai=False)
+    assert "PRODA" in compiled["wiki_document"]
+    assert isinstance(compiled["wiki_toc"], list)
