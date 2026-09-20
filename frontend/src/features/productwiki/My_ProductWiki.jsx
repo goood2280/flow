@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ProductSemanticPanel from "./ProductSemanticPanel";
 import RichBoardEditor from "../../components/RichBoardEditor";
 import { Banner, Button, Input, PageShell, Select } from "../../components/ui";
 import { authSrc, sf } from "../../lib/api";
@@ -156,6 +157,8 @@ export default function My_ProductWiki({ user }) {
   const [tocOpen, setTocOpen] = useState(true);
 
   const mounted = useRef(true);
+  const loadGeneration = useRef(0);
+  const [semanticRefresh, setSemanticRefresh] = useState(0);
 
   // Load products list on mount
   useEffect(() => {
@@ -183,17 +186,19 @@ export default function My_ProductWiki({ user }) {
   // Load product document
   const loadProduct = useCallback(async (targetProduct) => {
     if (!targetProduct) return;
+    const ticket = ++loadGeneration.current;
+    setDoc(null);
     setLoading(true);
     setError("");
     try {
       const data = await sf(`${API}/product?product=${encodeURIComponent(targetProduct)}`);
-      if (mounted.current) {
+      if (mounted.current && ticket === loadGeneration.current) {
         setDoc(data);
       }
     } catch (err) {
-      if (mounted.current) setError(err.message);
+      if (mounted.current && ticket === loadGeneration.current) setError(err.message);
     } finally {
-      if (mounted.current) setLoading(false);
+      if (mounted.current && ticket === loadGeneration.current) setLoading(false);
     }
   }, []);
 
@@ -209,6 +214,7 @@ export default function My_ProductWiki({ user }) {
   // Handle saving an issue (create or update)
   const handleSaveIssue = async (e) => {
     e.preventDefault();
+    if (busy || loading || !doc || doc.product?.toLowerCase() !== product.toLowerCase()) return;
     if (!issueTitle.trim()) {
       setError("이슈 제목을 입력해 주세요.");
       return;
@@ -224,29 +230,27 @@ export default function My_ProductWiki({ user }) {
 
     const payload = {
       product,
-      expected_revision: doc?.revision || 0,
-      entry: {
-        id: editingEntry ? editingEntry.id : "",
-        title: issueTitle.trim(),
-        body: issueBody || "",
-        source_text: issueBody || "",
-        kind: editingEntry?.kind || "issue",
-        status: editingEntry?.status || "open",
-      },
+      expected_revision: doc.revision,
+      entry_id: editingEntry?.id || "",
+      title: issueTitle.trim(),
+      text: issueBody || issueTitle.trim(),
     };
+    if (payload.text.length > 40000) {
+      setError("이슈 내용은 40,000자 이내로 입력해 주세요.");
+      setBusy(false);
+      return;
+    }
 
     try {
-      const updatedDoc = await sf(`${API}/entries`, {
+      const updatedDoc = await sf(`${API}/intake`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
       setDoc(updatedDoc);
-      setNotice(
-        editingEntry
-          ? "이슈가 수정되었으며 AI가 전체 제품 위키를 자동으로 갱신했습니다."
-          : "새 이슈가 등록되었으며 AI가 전체 제품 위키에 반영했습니다."
-      );
+      const warnings = [updatedDoc.intake_warning, updatedDoc.compile_warning, updatedDoc.semantic_proposal?.warning].filter(Boolean);
+      setNotice(warnings.length ? `원문을 저장했습니다. ${warnings.join(" ")}` : "이슈를 구조화하고 위키에 반영했습니다. 아래에서 제안된 Step·Item 연결을 확인해 주세요.");
+      setSemanticRefresh((value) => value + 1);
       setEditingEntry(null);
       setIssueTitle("");
       setIssueBody("");
@@ -261,7 +265,7 @@ export default function My_ProductWiki({ user }) {
   const startEdit = (entry) => {
     setEditingEntry(entry);
     setIssueTitle(entry.title || "");
-    setIssueBody(entry.body || entry.source_text || "");
+    setIssueBody(entry.source_text ?? entry.body ?? "");
     setFormOpen(true);
     setRawModalOpen(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -303,30 +307,23 @@ export default function My_ProductWiki({ user }) {
     }
   };
 
-  // Re-sync single issue to wiki via AI compiler
+  // Reprocess the original issue with the current product vocabulary.
   const handleResyncEntry = async (entry) => {
-    setBusy(true);
-    setError("");
-    setNotice("");
+    if (busy || loading) return;
+    setBusy(true); setError(""); setNotice("");
     try {
-      const res = await sf(`${API}/compile`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ product, use_ai: true }),
+      const res = await sf(`${API}/intake`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product, expected_revision: doc.revision,
+          entry_id: entry.id, title: entry.source_title || entry.title,
+          text: entry.source_text || entry.body || entry.title }),
       });
-      setDoc((prev) => ({
-        ...prev,
-        wiki_document: res.wiki_document,
-        wiki_toc: res.wiki_toc,
-        wiki_updated_at: res.wiki_updated_at,
-        wiki_updated_by: res.wiki_updated_by,
-      }));
-      setNotice(`'${entry.title}' 이슈를 포함하여 전체 위키 문서를 AI가 재정리했습니다.`);
-    } catch (err) {
-      setError(err.message || "위키 재반영에 실패했습니다.");
-    } finally {
-      setBusy(false);
-    }
+      setDoc(res);
+      setSemanticRefresh((value) => value + 1);
+      const warnings = [res.intake_warning, res.compile_warning, res.semantic_proposal?.warning].filter(Boolean);
+      setNotice(warnings.length ? `원문을 보존했습니다. ${warnings.join(" ")}` : "최신 제품 연결표로 이슈를 다시 정리했습니다. 제안된 연결을 확인해 주세요.");
+    } catch (err) { setError(err.message || "이슈 재정리에 실패했습니다."); }
+    finally { setBusy(false); }
   };
 
   // View audit history for an entry
@@ -376,7 +373,7 @@ export default function My_ProductWiki({ user }) {
             <Select
               className="pw-product-select"
               value={product}
-              disabled={catalogLoading || busy}
+              disabled={catalogLoading || busy || loading}
               onChange={(e) => setProduct(e.target.value)}
             >
               <option value="">제품을 선택하세요</option>
@@ -454,6 +451,7 @@ export default function My_ProductWiki({ user }) {
                   onChange={(e) => setIssueTitle(e.target.value)}
                   disabled={busy}
                   required
+                  maxLength={200}
                 />
               </div>
 
@@ -471,7 +469,7 @@ export default function My_ProductWiki({ user }) {
 
               <div className="pw-form-footer">
                 <div className="pw-hint">
-                  💡 원본 문서는 보존됩니다.
+                  원문을 보존하고 연결된 AI가 제품 별칭·Step·Item 참고표로 내용을 정리합니다. 불확실한 연결은 아래에서 확인하세요.
                 </div>
                 <div className="pw-form-buttons">
                   {editingEntry && (
@@ -479,12 +477,12 @@ export default function My_ProductWiki({ user }) {
                       취소
                     </Button>
                   )}
-                  <Button type="submit" variant="primary" disabled={busy || !issueTitle.trim()}>
+                  <Button type="submit" variant="primary" disabled={busy || loading || !doc || !issueTitle.trim()}>
                     {busy
-                      ? "AI가 위키에 반영 중…"
+                      ? "원문 저장 · AI 정리 중…"
                       : editingEntry
                       ? "수정 내용 위키에 반영"
-                      : "위키에 즉시 등록"}
+                      : "저장 · AI로 정리"}
                   </Button>
                 </div>
               </div>
@@ -492,6 +490,11 @@ export default function My_ProductWiki({ user }) {
           )}
         </section>
       )}
+
+      {product && <details className="pw-issue-card">
+        <summary>이슈의 제품 용어 · Step / Item 연결 검토</summary>
+        <ProductSemanticPanel key={product} product={product} user={user} reviewOnly refreshKey={semanticRefresh} />
+      </details>}
 
       {/* ── Main Wiki Document View (Namuwiki / Wikipedia style) ── */}
       {loading ? (
@@ -514,7 +517,7 @@ export default function My_ProductWiki({ user }) {
                 <span className="pw-wiki-badge">위키 문서</span>
               </div>
               <div className="pw-wiki-byline">
-                <span>최근 갱신: {formatDateTime(doc?.wiki_updated_at || doc?.wiki_document ? new Date().toISOString() : null)}</span>
+                <span>최근 갱신: {formatDateTime(doc?.wiki_updated_at)}</span>
                 {doc?.wiki_updated_by && <span> · 편집자: <b>{doc.wiki_updated_by}</b></span>}
                 <span> · 등록 기술 항목: <b>{activeEntries.length}건</b></span>
                 <span> · Revision {doc?.revision || 0}</span>
@@ -628,9 +631,13 @@ export default function My_ProductWiki({ user }) {
                           <div
                             className="pw-raw-content"
                             dangerouslySetInnerHTML={{
-                              __html: sanitizeHtml(entry.body || entry.source_text || "—"),
+                              __html: sanitizeHtml(entry.source_text ?? entry.body ?? "—"),
                             }}
                           />
+                          {entry.source_text && entry.body && entry.body !== entry.source_text && <details>
+                            <summary>AI가 정리한 내용</summary>
+                            <div className="pw-raw-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(entry.body) }} />
+                          </details>}
 
                           <div className="pw-raw-footer">
                             <div className="pw-raw-actions">
@@ -638,6 +645,7 @@ export default function My_ProductWiki({ user }) {
                                 size="sm"
                                 variant="secondary"
                                 onClick={() => startEdit(entry)}
+                                disabled={busy}
                                 title="이 이슈를 수정합니다."
                               >
                                 ✏️ 수정
@@ -647,7 +655,7 @@ export default function My_ProductWiki({ user }) {
                                 variant="secondary"
                                 disabled={busy}
                                 onClick={() => handleResyncEntry(entry)}
-                                title="이 이슈를 포함하여 AI가 전체 위키를 다시 정리합니다."
+                                title="원문을 최신 제품 연결표로 다시 해석하고 위키를 정리합니다."
                               >
                                 🔄 위키에 재반영
                               </Button>
@@ -655,6 +663,7 @@ export default function My_ProductWiki({ user }) {
                                 size="sm"
                                 variant="danger"
                                 onClick={() => handleDeleteEntry(entry)}
+                                disabled={busy}
                                 title="이 이슈를 삭제합니다."
                               >
                                 🗑️ 삭제

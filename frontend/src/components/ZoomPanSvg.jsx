@@ -3,7 +3,7 @@
    중복 구현되던 zoom/pan 로직을 단일 소스로 추출 (v9.5.x).
    children 은 함수형 — 현재 zoom 값을 받아 <g> 내부 콘텐츠를 그린다
    (strokeWidth={0.8/zoom} 처럼 줌 불변 두께를 유지하기 위함). */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 const ZOOM_MIN = 1, ZOOM_MAX = 12, ZOOM_STEP = 1.15;
 
@@ -51,6 +51,9 @@ export default function ZoomPanSvg({ size = 380, maxZoom = ZOOM_MAX, style = {},
     }
   }, [zoom, pan]);
   const onPointerMove = useCallback((e) => {
+    // Hovering pointers are not active touches; otherwise a later drag can be
+    // mistaken for a pinch, and the pointer map grows without pointer-down.
+    if (!pointersRef.current.has(e.pointerId)) return;
     pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointersRef.current.size === 2 && pinchRef.current) {
       const d = pinchDist(pointersRef.current);
@@ -78,6 +81,12 @@ export default function ZoomPanSvg({ size = 380, maxZoom = ZOOM_MAX, style = {},
 
   const isZoomed = zoom !== 1 || pan.x !== 0 || pan.y !== 0;
 
+  // 드래그(패닝) 중에는 zoom이 변하지 않으므로 children(zoom)을 재평가하지 않고
+  // <g transform="...">만 이동시켜 대량 SVG 자식의 반복 계산을 피한다.
+  const renderedContent = useMemo(() => {
+    return typeof children === "function" ? children(zoom) : children;
+  }, [children, zoom]);
+
   return (
     <div style={{ position: "relative", display: "inline-block" }}>
       <svg ref={svgRef} width={size} height={size} viewBox={`0 0 ${size} ${size}`}
@@ -87,7 +96,7 @@ export default function ZoomPanSvg({ size = 380, maxZoom = ZOOM_MAX, style = {},
         onPointerDown={onPointerDown} onPointerMove={onPointerMove}
         onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
         <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
-          {typeof children === "function" ? children(zoom) : children}
+          {renderedContent}
         </g>
       </svg>
       {/* 줌 리셋 버튼 — 줌/패닝 상태일 때만 표시 */}

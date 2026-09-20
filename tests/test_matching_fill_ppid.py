@@ -193,6 +193,62 @@ def test_inline_module_scan_accepts_spaced_case_variant_headers_without_db_scan(
 
     assert proposal["counts"] == {"fill": 1, "change": 0, "same": 0, "miss": 0}
     assert proposal["rows"][0]["proposed"] == "PC"
+    assert proposal["add_column"] is False
+
+
+def test_inline_module_scan_without_existing_module_column(monkeypatch):
+    from core import matching_fill as matching
+
+    store = {"settings": {}, "proposals": {}}
+    columns = ["Product", "Step ID", "Item ID"]  # module 열 없음
+    rows = [{"Product": "PRODA", "Step ID": "AA100500", "Item ID": "ITEM_5"}]
+    monkeypatch.setattr(matching, "_read_csv", lambda target: (columns, rows))
+    monkeypatch.setattr(matching, "settings", lambda: {
+        "prefix_rules": [],
+        "module_rules": [{"prefix": "AA", "breaks": [{"from": 100000, "module": "PC"}]}],
+        "max_files_per_product": 0,
+    })
+    monkeypatch.setattr(matching, "list_products", lambda target: pytest.fail("module scan must not read DB"))
+    monkeypatch.setattr(matching, "_load_store", lambda: store)
+    monkeypatch.setattr(matching, "_save_store", lambda data: None)
+
+    proposal = matching.scan("inline", column="module")
+
+    assert proposal["add_column"] is True
+    assert proposal["counts"] == {"fill": 1, "change": 0, "same": 0, "miss": 0}
+    assert proposal["rows"][0]["proposed"] == "PC"
+    assert proposal["rows"][0]["current"] == ""
+
+
+def test_inline_module_apply_creates_leftmost_column(monkeypatch, tmp_path):
+    from core import matching_fill as matching
+    from core import valve_alerts
+
+    csv_path = tmp_path / "Inline_matching.csv"
+    csv_path.write_text("product,step_id,item_id\nPRODA,AA100500,ITEM_5\n", encoding="utf-8")
+    store = {"settings": {}, "proposals": {}}
+    monkeypatch.setattr(matching, "_db_root", lambda: tmp_path)
+    monkeypatch.setattr(matching, "settings", lambda: {
+        "prefix_rules": [],
+        "module_rules": [{"prefix": "AA", "breaks": [{"from": 100000, "module": "PC"}]}],
+        "max_files_per_product": 0,
+    })
+    monkeypatch.setattr(matching, "_load_store", lambda: store)
+    monkeypatch.setattr(matching, "_save_store", lambda data: None)
+    monkeypatch.setattr(valve_alerts, "_after_write", lambda *args: {})
+
+    proposal = matching.scan("inline", column="module")
+    assert proposal["add_column"] is True
+
+    result = matching.apply_proposal("inline", column="module", expected_scanned_at=proposal["scanned_at"])
+    assert result["added_column"] is True
+
+    columns, rows = matching._read_csv("inline")
+    # 사용자 요구사항: module 열은 가장 왼쪽에 생겨야 함
+    assert columns[0] == "module"
+    assert columns == ["module", "product", "step_id", "item_id"]
+    assert rows[0]["module"] == "PC"
+    assert rows[0]["step_id"] == "AA100500"
 
 
 def test_inline_product_index_falls_back_across_mixed_parquet_schemas(monkeypatch, tmp_path):

@@ -159,3 +159,69 @@ def test_admin_management_routes_and_author_confirmation(catalog):
     assert saved.status_code == 200
     confirm = client.post("/api/product-semantics/confirm", json={"product": "AA", "id": saved.json()["id"], "draft": {"measurements": [measurement()]}})
     assert confirm.status_code == 403
+
+
+def test_inline_matching_scope_headers_and_fab_separation(catalog):
+    sem.PATHS.db_root.joinpath("Inline_matching.csv").write_text(
+        ' PRODUCT , STEP_ID , ITEM_ID ,MODULE,ITEM_DESC\n"AA,BB",P10,I1,PC,Gate CD\nBB,X1,J1,SD,Other\n', encoding="utf-8")
+    catalog["measurements"].append({"product": "AA", "module": "FAB_MOD", "source_type": "FAB", "step_id": "P10", "item_id": "I1"})
+    sem._snapshot_path().write_text(json.dumps(catalog), encoding="utf-8")
+    sem.save_item_alias("AA", "P10", "I1", ["선폭"], "admin", module="PC")
+    rows = sem.overview("AA")["measurements"]
+    assert not any(r["step_id"] == "X1" for r in rows)
+    inline = next(r for r in rows if r["source_type"] == "INLINE" and r["step_id"] == "P10")
+    assert inline["module"] == "PC" and inline["aliases"] == ["선폭"]
+    assert next(r for r in rows if r["source_type"] == "FAB")["aliases"] == []
+
+
+def test_alias_optimistic_concurrency_and_validation(catalog):
+    first = sem.save_product_aliases("AA", ["alias", "ALIAS"], "admin", "")
+    assert first["aliases"] == ["alias"]
+    with pytest.raises(wiki.Conflict):
+        sem.save_product_aliases("AA", [], "other", "")
+    assert sem.save_product_aliases("AA", [], "admin", first["updated_at"])["aliases"] == []
+    item = sem.save_item_alias("AA", "P10", "I1", ["선폭"], "admin", expected_updated_at="")
+    with pytest.raises(wiki.Conflict):
+        sem.save_item_alias("AA", "P10", "I1", [], "other", expected_updated_at="")
+    assert sem.save_item_alias("AA", "P10", "I1", [], "admin", expected_updated_at=item["updated_at"])["aliases"] == []
+    with pytest.raises(ValueError):
+        sem.save_item_alias("AA", "", "", [], "admin")
+    with pytest.raises(ValueError):
+        sem.save_item_alias("UNKNOWN", "P10", "I1", [], "admin")
+
+
+def test_alias_context_is_product_scoped_and_identifier_safe(catalog):
+    sem.save_item_alias("AA", "P10", "I1", ["Gate CD", "선폭"], "admin", module="PC")
+    assert sem.resolve_terms("AA", "GateCD 변경")[0]["source_type"] == "INLINE"
+    assert sem.resolve_terms("AA", "I10") == []
+    assert sem.resolve_terms("BB", "Gate CD") == []
+    context = sem.intake_reference("AA", "선폭")
+    assert context["measurements"][0]["item_id"] == "I1"
+    assert context["measurements"][0]["aliases"] == ["Gate CD", "선폭"]
+
+
+def test_inline_live_mapping_retains_unambiguous_observed_module(catalog):
+    sem.PATHS.db_root.joinpath("Inline_matching.csv").write_text(
+        "product,step_id,item_id,item_desc\nAA,P10,I1,Gate CD\n", encoding="utf-8")
+    row = next(r for r in sem.overview("AA")["measurements"] if r["item_id"] == "I1")
+    assert row["module"] == "PC"
+    sem.save_item_alias("AA", "P10", "I1", ["선폭"], "admin")
+    assert sem.resolve_terms("AA", "선폭")[0]["module"] == "PC"
+
+
+def test_alias_ambiguity_remains_explicit(catalog):
+    for step, item in [("P10", "I1"), ("A10", "I2")]:
+        sem.save_item_alias("AA", step, item, ["선폭"], "admin")
+    assert len(sem.resolve_terms("AA", "선폭")) == 2
+    assert sem.overview("AA")["diagnostics"]
+
+
+def test_edited_issue_cannot_confirm_old_semantics(catalog, monkeypatch):
+    monkeypatch.setattr(llm_adapter, "complete", lambda *a, **k: {"ok": False})
+    first = wiki.intake_entry("AA", 0, "PC CD1 original", "alice", title="원제목")
+    proposal = first["semantic_proposal"]
+    second = wiki.intake_entry("AA", first["revision"], "PC CD1 revised", "alice", first["saved_entry_id"], title="수정제목")
+    assert second["revision"] == 2
+    assert next(r for r in sem.records("AA") if r["id"] == proposal["id"])["is_current"] is False
+    with pytest.raises(wiki.Conflict, match="원문"):
+        sem.confirm("AA", proposal["id"], {"measurements": [measurement()]}, "alice")

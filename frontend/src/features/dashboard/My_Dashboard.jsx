@@ -36,6 +36,7 @@ function useFoldHeight(ref, { min = 260, gap = 12, scale = 1 } = {}) {
   useEffect(() => {
     let last = 0;
     let box = null; // 스크롤 부모는 마운트 후 고정 — 매 tick getComputedStyle 워크 방지
+    let raf = 0;
     const calc = () => {
       const el = ref.current;
       if (!el) return;
@@ -53,10 +54,24 @@ function useFoldHeight(ref, { min = 260, gap = 12, scale = 1 } = {}) {
       const next = Math.max(min, Math.round((viewH - offset - gap) * scale));
       if (Math.abs(next - last) > 2) { last = next; setH(next); }
     };
+    const schedule = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = 0; calc(); });
+    };
     calc();
-    window.addEventListener("resize", calc);
-    const timer = setInterval(calc, 500);
-    return () => { window.removeEventListener("resize", calc); clearInterval(timer); };
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
+    if (ro) {
+      if (ref.current) ro.observe(ref.current);
+      if (box) ro.observe(box);
+    }
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule, { passive: true, capture: true });
+    return () => {
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule, true);
+      if (ro) ro.disconnect();
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, [ref, min, gap, scale]);
   return h;
 }
@@ -387,6 +402,8 @@ function WipSplitPanel({ user }) {
   const [drillCopied, setDrillCopied] = useState(false);
   const dark = typeof document !== "undefined" && (document.documentElement.classList.contains("dark") || localStorage.getItem("hol_dark") === "true");
   const chartBoxRef = useRef(null);
+  const fetchSeqRef = useRef(0);
+  const fetchControllerRef = useRef(null);
   // gap = 차트 아래 안내문(≈14px) + 카드 하단 패딩/여백.
   // scale 0.7 = fold 까지 채우던 예전 높이의 70% (min 도 같은 비율로 낮춘다).
   const chartH = useFoldHeight(chartBoxRef, { gap: 28, scale: CHART_HEIGHT_SCALE, min: 200 });
@@ -408,6 +425,10 @@ function WipSplitPanel({ user }) {
 
   // ex 는 톱니바퀴 설정값 — 기본 인자라 호출 시점의 현재 값이 그대로 쓰인다.
   const fetchData = (p, b, s, a, lt, ex = excludeRootPrefix) => {
+    const seq = ++fetchSeqRef.current;
+    fetchControllerRef.current?.abort();
+    const controller = new AbortController();
+    fetchControllerRef.current = controller;
     setLoading(true);
     setErr("");
     setDrill(null); // 필터가 바뀌면 이전 슬라이스의 드릴다운은 더 이상 맞지 않는다
@@ -418,16 +439,20 @@ function WipSplitPanel({ user }) {
     q.set("axis", a || "step_desc");
     if (lt && lt !== "ALL") q.set("lot_type", lt);
     if (String(ex || "").trim()) q.set("exclude_root_prefix", String(ex).trim());
-    sf(`${API}/wip-split?${q.toString()}`)
+    sf(`${API}/wip-split?${q.toString()}`, { signal: controller.signal })
       .then((d) => {
+        if (seq !== fetchSeqRef.current) return;
         setData(d);
         setProduct(d.product || "");
         setLotType(d.lot_type || "ALL");
         setSplitCol(d.split_col || "");
         if (d.axis) setAxis(d.axis);
       })
-      .catch((e) => setErr(e.message || String(e)))
-      .finally(() => setLoading(false));
+      .catch((e) => {
+        if (e?.name === "AbortError" || seq !== fetchSeqRef.current) return;
+        setErr(e.message || String(e));
+      })
+      .finally(() => { if (seq === fetchSeqRef.current) setLoading(false); });
   };
   useEffect(() => {
     let initProduct = "";
@@ -455,6 +480,7 @@ function WipSplitPanel({ user }) {
       setProductOrder(order);
       setCatalogProducts(mergeProductOrder(rows,order));
     }).catch(()=>setCatalogProducts([]));
+    return () => fetchControllerRef.current?.abort();
   }, []);
 
   // 자유 입력 bin 간격 적용 — 1~100000 정수로 보정, 같은 값 재입력은 무시.

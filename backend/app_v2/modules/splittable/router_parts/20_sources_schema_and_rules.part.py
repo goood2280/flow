@@ -1501,13 +1501,13 @@ def _mltable_schema_columns(product: str, prefix: str = "") -> list[str]:
             st = fp.stat()
             key = str(fp.resolve())
             cached = _SCHEMA_COLUMNS_CACHE.get(key)
-            if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+            if cached and cached[0] == st.st_mtime_ns and cached[1] == st.st_size:
                 cols = list(cached[2])
             else:
                 cols = _scan_parquet_compat(str(fp)).collect_schema().names()
                 while len(_SCHEMA_COLUMNS_CACHE) >= _SCHEMA_COLUMNS_CACHE_MAX:
                     _SCHEMA_COLUMNS_CACHE.pop(next(iter(_SCHEMA_COLUMNS_CACHE)), None)
-                _SCHEMA_COLUMNS_CACHE[key] = (st.st_mtime, st.st_size, list(cols))
+                _SCHEMA_COLUMNS_CACHE[key] = (st.st_mtime_ns, st.st_size, list(cols))
         except Exception:
             continue
         if pref:
@@ -2264,11 +2264,7 @@ def _split_step_order_context(product: str) -> dict:
         # INLINE-only and suffixed IDs), while progress shading keeps the
         # authoritative route ranks above.
         explicit_meta_maps = {
-            "KNOB": _build_knob_meta(product) or {},
-            "INLINE": _build_inline_meta(product) or {},
-            "VM": _build_vm_meta(product) or {},
-            "FAB": _build_fab_meta(product) or {},
-            "MASK": _build_mask_meta(product) or {},
+            key.upper(): value for key, value in _process_meta_snapshot(product).items()
         }
         display_step_ids = [
             str(r.get(sm.get("step_id_col", "step_id")) or r.get("raw_step_id") or "").strip()
@@ -3065,6 +3061,12 @@ def _step_label_item_lines(meta: dict) -> list[str]:
 
 
 def _step_label_metas(product: str) -> dict:
+    try:
+        return _process_meta_snapshot(product)
+    except Exception:
+        # Preserve partial export labels when one source cannot be read, without
+        # publishing that incomplete result as the shared snapshot.
+        logger.warning("Applied-process export snapshot unavailable: %s", product, exc_info=True)
     out = {"knob": {}, "inline": {}, "vm": {}, "fab": {}, "mask": {}}
     for key, fn in (
         ("knob", _build_knob_meta),
@@ -3079,6 +3081,65 @@ def _step_label_metas(product: str) -> dict:
         except Exception:
             out[key] = {}
     return out
+
+
+from app_v2.modules.splittable.process_meta_cache import ProcessMetaCache
+
+_PROCESS_META_CACHE = ProcessMetaCache(
+    max_bytes=int(max(1, _env_float("FLOW_SPLITTABLE_PROCESS_META_RAM_MB", 16)) * 1024 * 1024),
+    max_entries=int(max(1, _env_float("FLOW_SPLITTABLE_PROCESS_META_MAX_PRODUCTS", 32))),
+)
+
+
+def _process_meta_signature(product: str) -> str:
+    # Only source/schema changes invalidate this snapshot. WIP movement changes
+    # neither applied-process mappings nor ML_TABLE column names.
+    base = _base_root()
+    paths = [SOURCE_CFG, RULEBOOK_SCHEMA_FILE, base / "ppid_knob.csv", base / "knob_ppid.csv"]
+    paths.extend(_rulebook_path(kind) for kind in _RULEBOOK_FILES)
+    def source_signature(path):
+        try:
+            stat = path.stat()
+            return str(path.resolve()), stat.st_mtime_ns, stat.st_size
+        except FileNotFoundError:
+            return str(path.resolve()), None, None
+
+    signature = (
+        2, str(base.resolve()), _canonical_product_name(product).upper(),
+        tuple(source_signature(path) for path in paths),
+        tuple(_mltable_schema_columns(product)),
+    )
+    return hashlib.sha256(repr(signature).encode("utf-8")).hexdigest()
+
+
+def _process_meta_cache_path(product: str) -> Path:
+    digest = hashlib.sha256(product.upper().encode("utf-8")).hexdigest()[:24]
+    return _base_root() / "cache" / "splittable_process_meta" / f"{digest}.json"
+
+
+def _process_meta_snapshot(product: str) -> dict:
+    product = _canonical_product_name(product)
+    path = _process_meta_cache_path(product)
+
+    def build():
+        # Unlike best-effort export labels, a persisted generation must be complete.
+        return {
+            "knob": _build_knob_meta(product), "inline": _build_inline_meta(product),
+            "vm": _build_vm_meta(product), "fab": _build_fab_meta(product),
+            "mask": _build_mask_meta(product),
+        }
+
+    return _PROCESS_META_CACHE.get(
+        path, _process_meta_signature(product), build,
+        lambda: _process_meta_signature(product),
+    )
+
+
+@router.get("/process-meta")
+def process_meta(product: str = Query(...)):
+    """One WIP-prepared snapshot for all applied-process columns."""
+    revision = _matching_meta_revision(product)
+    return {"product": product, "items": _process_meta_snapshot(product), "revision": revision}
 
 
 def _step_label_lines_for_param(param: str, metas: dict, exclude_not_null: bool = True) -> tuple[str, list[str]]:
@@ -3288,25 +3349,25 @@ def _virtual_columns_for_prefix(product: str, prefix: str,
 @router.get("/inline-meta")
 def inline_meta(product: str = Query("")):
     """v8.7.5/v8.8.15: INLINE prefix 항목 매칭 메타. product 필터 추가."""
-    return {"items": _build_inline_meta(product)}
+    return {"items": _process_meta_snapshot(product)["inline"]}
 
 
 @router.get("/vm-meta")
 def vm_meta(product: str = Query("")):
     """v8.7.5/v8.8.7: VM_ prefix 항목 매칭 메타. product 필터 추가."""
-    return {"items": _build_vm_meta(product)}
+    return {"items": _process_meta_snapshot(product)["vm"]}
 
 
 @router.get("/fab-meta")
 def fab_meta(product: str = Query("")):
     """FAB_<step_desc>_<feature_name> process metadata for the selected product."""
-    return {"items": _build_fab_meta(product)}
+    return {"items": _process_meta_snapshot(product)["fab"]}
 
 
 @router.get("/mask-meta")
 def mask_meta(product: str = Query("")):
     """MASK_ prefix 항목 매칭 메타. MASK_ 뒤가 step_desc이며 Vehicle_matching.csv에서 step_id와 module을 연결한다."""
-    return {"items": _build_mask_meta(product)}
+    return {"items": _process_meta_snapshot(product)["mask"]}
 
 
 @router.post("/infer-step-mapping")
@@ -3685,7 +3746,7 @@ def knob_meta(product: str = Query("")):
       }
     ppid_knob.csv는 product 없는 공용 룰북으로 읽고, product별 step_id 확장만 Vehicle_matching.csv에서 적용한다.
     """
-    return {"features": _build_knob_meta(product)}
+    return {"features": _process_meta_snapshot(product)["knob"]}
 
 
 class PrefixSaveReq(BaseModel):

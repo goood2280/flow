@@ -2014,6 +2014,20 @@ def _split_view_cache_dep_signature(product: str, custom_name: str = "", product
     return (hard_sig, soft_sig)
 
 
+def _matching_meta_revision(product: str, hard_sig: tuple | None = None) -> str:
+    # Reuse the view's dependency check; no metadata build/schema scan in the
+    # warm response path. Colors live outside the view's calculation inputs.
+    if hard_sig is None:
+        try:
+            hard_sig, _ = _split_view_cache_dep_signature(product)
+        except HTTPException as exc:
+            if exc.status_code != 404:
+                raise
+            # Matching metadata can exist before a product's first ML_TABLE.
+            hard_sig = (str(product), _view_global_stat_sig()[0])
+    return _view_signature_digest((hard_sig, _path_cache_sig(CATEGORY_COLORS_CFG)))
+
+
 def _view_product_invalidation_path(product: str) -> Path:
     canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip().upper()
     digest = hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:16]

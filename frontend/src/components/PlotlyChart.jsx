@@ -159,9 +159,11 @@ export function FlowPlotlyChart({
   const xMax = numberOrNull(cfg.x_max ?? chart?.x_max);
   const yMin = numberOrNull(cfg.y_min ?? chart?.y_min);
   const yMax = numberOrNull(cfg.y_max ?? chart?.y_max);
-  const yScale = String(cfg.y_scale || chart?.y_scale || "linear") === "log" ? "log" : "linear";
+  const rawYScale = String(cfg.y_scale || chart?.y_scale || "linear");
+  const yScale = rawYScale === "log" ? "log" : rawYScale === "date" ? "date" : rawYScale === "category" ? "category" : "linear";
   const valueAxisIsX = chartType === "bar_horizontal";
   const axisRange = (min, max, scale = "linear") => {
+    if (scale === "date") return {};
     if (min == null && max == null) return {};
     const scaled = value => value == null ? null : scale === "log" ? Math.log10(Math.max(value, 1e-300)) : value;
     return {
@@ -314,24 +316,32 @@ export function FlowPlotlyChart({
       const missing = name === "missing";
       const mode = chartType === "line" ? "lines+markers" : "markers";
       const seriesColor = missing ? MISSING_COLOR : colorMap[name] || SERIES[idx % SERIES.length];
+      const lineDash = cfg?.line_dash_map?.[name] || rows[0]?.line_dash || (/(?:예측|forecast|projection)/i.test(name) ? "dash" : "solid");
+      const isForecast = /(?:예측|forecast|projection)/i.test(name);
       return {
         type: useSvg ? "scatter" : "scattergl",
         mode,
         name: colorBy ? `${name} (${rows.length})` : "data",
-        x: rows.map((point) => numberOrValue(pointX(point))),
-        y: rows.map((point) => numberOrValue(pointY(point))),
+        x: rows.map((point) => cfg?.x_type === "category" ? text(pointX(point)) : numberOrValue(pointX(point))),
+        y: rows.map((point) => yScale === "date" ? text(pointY(point)) : numberOrValue(pointY(point))),
         text: rows.map((point) => hoverLines(point, xLabel, yLabel, colorBy)),
         hoverinfo: "text",
         customdata: rows,
         marker: {
           size: markerSize,
-          color: emphasizeMarkers ? lightenHex(seriesColor) : seriesColor,
+          color: isForecast ? "transparent" : emphasizeMarkers ? lightenHex(seriesColor) : seriesColor,
           opacity: emphasizeMarkers ? Math.max(markerOpacity,0.92) : missing ? Math.min(markerOpacity,0.58) : markerOpacity,
-          line: emphasizeMarkers
-            ? { color: dark ? "#6b7280" : "#374151", width: 1.3 }
-            : { color: dark ? "#111111" : "#ffffff", width: 0.6 },
+          symbol: rows[0]?.marker_symbol || (isForecast ? "circle" : "circle"),
+          line: {
+            color: seriesColor,
+            width: isForecast ? 2 : emphasizeMarkers ? 1.3 : 0.6,
+          },
         },
-        line: { color: seriesColor, width: chartType === "line" ? lineWidth : Math.max(0.5,lineWidth*0.78) },
+        line: {
+          color: seriesColor,
+          width: chartType === "line" ? lineWidth : Math.max(0.5,lineWidth*0.78),
+          dash: lineDash,
+        },
       };
     });
     if (cubicFit) {
@@ -458,19 +468,21 @@ export function FlowPlotlyChart({
           dragmode: "pan",
           shapes: geometryOverlay?.shapes || [],
           clickmode: enableHighlight ? "event+select" : "event",
-          // 원 차트에는 축이 없다. 이때 xaxis/yaxis 키를 undefined 로 "넣어" 두면
-          // plotly 의 cleanLayout 이 layout.xaxis.anchor 를 읽다가 터진다(빈 차트).
-          // 키 자체를 빼야 한다.
           ...(radial ? {} : {
             xaxis: {
               title: { text: axisXLabel, font: { size: Number(cfg?.x_font_size||chart?.x_font_size)||axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
               tickfont: { size: Number(cfg?.x_font_size||chart?.x_font_size)||tickFontSize, color: fg },
-              ...(valueAxisIsX ? { type: yScale, ...yAxisRange } : xAxisRange),
-              showticklabels: !hideXTicks,
-              // 상자는 범주축에 균등 배치 — 그래야 아래 통계표 열과 자리가 맞는다.
-              ...(chartType === "box" && categoryArray?.length
+              ...(cfg?.x_type === "category"
+                ? {
+                    type: "category",
+                    ...(cfg?.category_array?.length ? { categoryorder: "array", categoryarray: cfg.category_array } : {}),
+                  }
+                : cfg?.x_type
+                ? { type: cfg.x_type }
+                : chartType === "box" && categoryArray?.length
                 ? { type: "category", categoryorder: "array", categoryarray: categoryArray }
-                : {}),
+                : (valueAxisIsX ? { type: yScale, ...yAxisRange } : xAxisRange)),
+              showticklabels: !hideXTicks,
               showgrid: showGrid,
               gridcolor: grid,
               zerolinecolor: grid,
@@ -481,6 +493,7 @@ export function FlowPlotlyChart({
               mirror: false,
               automargin: true,
               ...(geometryOverlay ? { range: geometryOverlay.xRange, constrain: "domain" } : {}),
+              ...(cfg?.xaxis || {}),
             },
             yaxis: {
               title: { text: axisYLabel, font: { size: Number(cfg?.y_font_size||chart?.y_font_size)||axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },

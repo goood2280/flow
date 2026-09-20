@@ -81,7 +81,7 @@ _DATA_TASK_PATHS = (
     "/api/home-agent/probe",
     "/api/template-report/assistant",
     "/api/flowi-learning/db-reference/generate",
-    "/api/product-wiki/intake",
+    "/api/product-wiki/intake", "/api/product-wiki/compile",
     "/api/product-semantics/bootstrap", "/api/product-semantics/propose",
 )
 

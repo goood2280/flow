@@ -3103,7 +3103,7 @@ export default function My_FileBrowser({
         </>}
       </div>
       {/* Main */}
-      <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+      <div style={{flex:1,minWidth:0,minHeight:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
         {/* SQL Bar */}
         <div style={{padding:"10px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",gap:8,alignItems:"center"}}>
           <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}}>SQL:</span>

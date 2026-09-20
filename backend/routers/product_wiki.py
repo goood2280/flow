@@ -74,6 +74,7 @@ class IntakeRequest(BaseModel):
     expected_revision: int = Field(..., ge=0)
     text: str = Field(..., min_length=1, max_length=40000)
     entry_id: str = Field("", max_length=64)
+    title: str = Field("", max_length=200)
 
 
 @router.get("/products")
@@ -176,6 +177,8 @@ def serve_image(uid: str, name: str, request: Request):
 def compile_wiki(req: CompileRequest, user=Depends(require_access)):
     try:
         return wiki.compile_product_wiki(req.product, actor=user["username"], use_ai=req.use_ai)
+    except wiki.Conflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(500, f"위키 컴파일 실패: {exc}")
 
@@ -221,7 +224,7 @@ def intake(req: IntakeRequest, user=Depends(require_access)):
     try:
         return wiki.intake_entry(req.product, req.expected_revision, req.text,
                                  user["username"], req.entry_id,
-                                 is_page_manager(user, "productwiki"))
+                                 is_page_manager(user, "productwiki"), req.title)
     except wiki.Conflict as exc:
         raise HTTPException(409, str(exc)) from exc
     except PermissionError as exc:

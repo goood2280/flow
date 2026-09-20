@@ -7,6 +7,7 @@
 
    계약:
    - `stop()` 을 부르거나 컴포넌트가 사라지면 타이머는 반드시 정리된다.
+   - 앞 조회가 끝난 뒤에만 다음 조회를 시작한다. 중지·재시작 전 조회 결과는 버린다.
    - 연속 실패가 `maxErrors` 에 닿으면 스스로 멈추고 `onError(err, "errors")` 를 부른다.
      **무한 로딩을 만들지 않는다.**
    - `maxTicks` 를 넘기면 멈추고 `onError(null, "timeout")`.
@@ -21,16 +22,15 @@
      });
 */
 import { useCallback, useEffect, useRef } from "react";
+import { createPollingLoop } from "./pollingLoop.mjs";
 
 export default function usePolling() {
-  const timerRef = useRef(null);
+  const loopRef = useRef(null);
   const aliveRef = useRef(true);
+  if (loopRef.current === null) loopRef.current = createPollingLoop();
 
   const stop = useCallback(() => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
+    loopRef.current.stop();
   }, []);
 
   useEffect(() => {
@@ -42,45 +42,11 @@ export default function usePolling() {
   }, [stop]);
 
   const start = useCallback((fetcher, opts = {}) => {
-    const {
-      intervalMs = 2000,
-      maxErrors = 5,
-      maxTicks = 0,          // 0 = 무제한
-      onData,
-      onError,
-    } = opts;
-    stop();
-    let errors = 0;
-    let ticks = 0;
-    const tick = () => {
-      if (!aliveRef.current) { stop(); return; }
-      ticks += 1;
-      if (maxTicks > 0 && ticks > maxTicks) {
-        stop();
-        if (onError) onError(null, "timeout");
-        return;
-      }
-      Promise.resolve()
-        .then(fetcher)
-        .then((data) => {
-          if (!aliveRef.current) { stop(); return; }
-          errors = 0;
-          if (onData) onData(data);
-        })
-        .catch((err) => {
-          if (!aliveRef.current) { stop(); return; }
-          errors += 1;
-          if (errors >= maxErrors) {
-            stop();
-            if (onError) onError(err, "errors");
-          }
-        });
-    };
-    timerRef.current = setInterval(tick, intervalMs);
-    tick();                       // 첫 조회는 즉시
-  }, [stop]);
+    if (!aliveRef.current) return;
+    loopRef.current.start(fetcher, opts);
+  }, []);
 
-  const isRunning = useCallback(() => timerRef.current !== null, []);
+  const isRunning = useCallback(() => loopRef.current.isRunning(), []);
 
   return { start, stop, isRunning };
 }

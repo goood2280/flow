@@ -2845,6 +2845,39 @@ def _wip_split_exclude_prefixes(raw: str) -> list[str]:
     return [p.strip().upper() for p in str(raw or "").split(",") if p.strip()]
 
 
+_WIP_CATALOG_LOCK = threading.Lock()
+_WIP_CATALOG_CACHE: dict = {}
+
+
+def _wip_split_catalog(fp: Path) -> tuple[list[str], list[str]]:
+    """Validate format and enumerate products once per atomic WIP generation."""
+    from core.latest_lot_cache_format import FORMAT_COLUMN, FORMAT_VERSION
+
+    st = fp.stat()
+    signature = (str(fp.resolve()), st.st_mtime_ns, st.st_size)
+    with _WIP_CATALOG_LOCK:
+        hit = _WIP_CATALOG_CACHE.get(signature)
+        if hit is not None:
+            return hit
+        lf = pl.scan_parquet(fp)
+        names = lf.collect_schema().names()
+        if FORMAT_COLUMN not in names:
+            raise HTTPException(409, f"구형 latest cache입니다. SplitTable FAB 캐시를 갱신해 format v{FORMAT_VERSION}로 재생성하세요.")
+        versions = lf.select(pl.col(FORMAT_COLUMN).cast(pl.Int64, strict=False).unique()).collect().to_series().drop_nulls().to_list()
+        if versions != [FORMAT_VERSION]:
+            raise HTTPException(409, f"지원하지 않는 latest cache 형식입니다({versions}). format v{FORMAT_VERSION}로 재생성하세요.")
+        if "product" not in names:
+            raise HTTPException(500, "latest cache에 product 열이 없습니다.")
+        values = (lf.select(_wip_split_product_expr(names).alias("product"))
+                  .filter(pl.col("product") != "").unique().collect().get_column("product").to_list())
+        # The catalog is tiny; retain only the current source generation.
+        current = fp.stat()
+        if (current.st_mtime_ns, current.st_size) == (st.st_mtime_ns, st.st_size):
+            _WIP_CATALOG_CACHE.clear()
+            _WIP_CATALOG_CACHE[signature] = (names, values)
+        return names, values
+
+
 def _wip_split_latest_cache(product: str = "") -> tuple[pl.DataFrame, str, list[str], Path]:
     """Load only the current SplitTable-owned canonical latest-step cache."""
     from core import lot_progress_cache
@@ -2862,39 +2895,7 @@ def _wip_split_latest_cache(product: str = "") -> tuple[pl.DataFrame, str, list[
     errors: list[str] = []
     for fp in candidates:
         try:
-            lf = pl.scan_parquet(fp)
-            names = lf.collect_schema().names()
-            if FORMAT_COLUMN not in names:
-                raise HTTPException(
-                    409,
-                    "구형 latest cache는 사용하지 않습니다. SplitTable FAB 캐시를 "
-                    f"갱신해 format v{FORMAT_VERSION} 캐시를 생성하세요.",
-                )
-            versions = (
-                lf.select(pl.col(FORMAT_COLUMN).cast(pl.Int64, strict=False).unique())
-                .collect()
-                .to_series()
-                .drop_nulls()
-                .to_list()
-            )
-            if versions != [FORMAT_VERSION]:
-                raise HTTPException(
-                    409,
-                    f"지원하지 않는 latest cache 형식입니다({versions}). "
-                    f"SplitTable FAB 캐시를 갱신해 format v{FORMAT_VERSION}로 재생성하세요.",
-                )
-            if "product" not in names:
-                errors.append(f"{fp.name}: product 열 없음")
-                continue
-            # 제품 목록은 canonical latest-lot의 authoritative `product` 기준이다.
-            values = (
-                lf.select(_wip_split_product_expr(names).alias("product"))
-                .filter(pl.col("product").is_not_null() & (pl.col("product").str.strip_chars() != ""))
-                .unique()
-                .collect()
-                .get_column("product")
-                .to_list()
-            )
+            names, values = _wip_split_catalog(fp)
             infos.append((fp, [str(v).strip() for v in values if str(v or "").strip()]))
         except HTTPException:
             raise
@@ -2937,7 +2938,10 @@ def _wip_split_latest_cache(product: str = "") -> tuple[pl.DataFrame, str, list[
     if chosen is None:
         raise HTTPException(400, f"product '{selected}' 의 latest cache를 찾지 못했습니다.")
     try:
-        frame = pl.read_parquet(chosen)
+        # Push the selected product into the scan instead of materializing every
+        # product before _wip_split_prepare filters it. Preserve physical aliases.
+        lf = pl.scan_parquet(chosen)
+        frame = lf.filter(_wip_split_product_expr(lf.collect_schema().names()) == query).collect()
     except Exception as exc:
         raise HTTPException(500, f"latest cache 읽기 실패: {exc}")
     return frame, selected, products, chosen

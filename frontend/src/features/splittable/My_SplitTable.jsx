@@ -537,7 +537,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   // v9.2.x: 대형 결과(예: KNOB 1000행) 첫 페인트 <1s 보장 — 행을 점진 렌더.
   //   초기 ROW_RENDER_INITIAL 행만 그리고, 하단 sentinel 이 보이면 CHUNK 씩 확장.
   //   전체를 한 커밋에 그리면 1000행×25웨이퍼 기준 메인스레드가 2초+ 블로킹된다.
-  const ROW_RENDER_INITIAL=200, ROW_RENDER_CHUNK=300;
+  const ROW_RENDER_INITIAL=200, ROW_RENDER_CHUNK=200;
   const[rowRenderLimit,setRowRenderLimit]=useState(ROW_RENDER_INITIAL);
   const renderMoreRef=useRef(null);
   const[showParamMeta,setShowParamMeta]=useState(false);
@@ -560,23 +560,33 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   useEffect(()=>{
     const el=renderMoreRef.current;
     if(!el)return;
-    const grow=()=>setRowRenderLimit(l=>l+ROW_RENDER_CHUNK);
-    const io=new IntersectionObserver(es=>{es.forEach(en=>{if(en.isIntersecting)grow();});},{rootMargin:"600px"});
+    const root=splitTableRef.current;
+    let alive=true;
+    let growRaf=0;
+    const grow=()=>{
+      if(!alive)return;
+      setRowRenderLimit(l=>l+ROW_RENDER_CHUNK);
+    };
+    const scheduleGrow=()=>{
+      if(growRaf)return;
+      growRaf=requestAnimationFrame(()=>{growRaf=0;grow();});
+    };
+    const io=new IntersectionObserver(es=>{if(es.some(en=>en.isIntersecting))scheduleGrow();},{root,rootMargin:"600px"});
     io.observe(el);
-    // IO 콜백이 억제되는 임베디드/스로틀 환경 폴백 — 스크롤로 sentinel 에 근접하면 확장.
-    let scroller=el.parentElement;
-    while(scroller&&scroller.scrollHeight<=scroller.clientHeight+50)scroller=scroller.parentElement;
-    const target=scroller||window;
-    let last=0;
+    // IO 콜백이 억제되는 임베디드/스로틀 환경 폴백 — 실제 표 스크롤러를 기준으로 확장.
+    const target=root||window;
     const onScroll=()=>{
-      const now=Date.now();
-      if(now-last<150)return;
-      last=now;
       const r=el.getBoundingClientRect();
-      if(r.top<window.innerHeight+600)grow();
+      const boundary=root?root.getBoundingClientRect().bottom:window.innerHeight;
+      if(r.top<boundary+600)scheduleGrow();
     };
     target.addEventListener("scroll",onScroll,{passive:true});
-    return()=>{io.disconnect();target.removeEventListener("scroll",onScroll);};
+    return()=>{
+      alive=false;
+      io.disconnect();
+      target.removeEventListener("scroll",onScroll);
+      if(growRaf)cancelAnimationFrame(growRaf);
+    };
     // deps: sentinel 은 data/viewMode/limit 변경 때만 재마운트 — 매 렌더 재등록 방지
   },[data,viewMode,rowRenderLimit]);
   const viewRetryTimerRef=useRef(null);
@@ -641,6 +651,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   // v8.4.7: KNOB feature_name → {label, groups}. 제품 바뀌면 재fetch.
   const[knobMeta,setKnobMeta]=useState({});
   const[matchingMetaRevision,setMatchingMetaRevision]=useState(0);
+  const matchingMetaIdentityRef=useRef({product:"",revision:""});
   const[categoryColors,setCategoryColors]=useState({});
   // v8.4.9-b: Notes (wafer 태그 + param 메모). lot 단위로 fetch.
   const[notes,setNotes]=useState([]);
@@ -656,6 +667,34 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const notesRequestIdentityRef=useRef("");
   const notesRequestControllerRef=useRef(null);
   const notesRequestPendingRef=useRef(null);
+  const noteIndex=useMemo(()=>{
+    const wafer=new Map(),param=new Map(),cell=new Map(),lot=new Map();
+    const waferPrefix=`${selProd}__${lotId}__W`;
+    const lotKey=`${selProd}__LOT__${lotId}`;
+    for(const note of notes){
+      const key=String(note?.key||"");
+      if(note?.scope==="lot"){
+        if(key===lotKey)lot.set(key,[...(lot.get(key)||[]),note]);
+        continue;
+      }
+      if(note?.scope!=="wafer"&&note?.scope!=="param")continue;
+      if(!key.startsWith(waferPrefix))continue;
+      const rest=key.slice(waferPrefix.length);
+      const sep=rest.indexOf("__");
+      const wid=sep<0?rest:rest.slice(0,sep);
+      const waferKey=`${waferPrefix}${wid}`;
+      if(note.scope==="wafer"){
+        wafer.set(waferKey,[...(wafer.get(waferKey)||[]),note]);
+        continue;
+      }
+      if(sep<0)continue;
+      const paramKey=rest.slice(sep+2);
+      const cellKey=key;
+      cell.set(cellKey,[...(cell.get(cellKey)||[]),note]);
+      param.set(paramKey,[...(param.get(paramKey)||[]),note]);
+    }
+    return{wafer,param,cell,lot};
+  },[notes,selProd,lotId]);
   // v8.8.13: 노트 drawer 내부 검색 (wafer id / param 이름 / text 부분일치)
   const[noteSearch,setNoteSearch]=useState("");
   const SPLITTABLE_TABS=splittableTabs();
@@ -1131,60 +1170,33 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       .catch(()=>{if(active){setProductSchema([]);setOverrideCols([]);}});
     return()=>{active=false;controller.abort();};
   },[selProd]);
-  // v8.4.7: 제품 바뀔 때 KNOB meta 재fetch.
-  useEffect(()=>{if(!selProd){setKnobMeta({});setCategoryColors({});return;}
-    let active=true;
-    const controller=new AbortController();
-    setKnobMeta({});setCategoryColors({});
-    sf(API+"/knob-meta?product="+encodeURIComponent(selProd),{signal:controller.signal})
-      .then(d=>{if(active)setKnobMeta(d.features||{});}).catch(()=>{if(active)setKnobMeta({});});
-    sf(API+"/category-colors?product="+encodeURIComponent(selProd),{signal:controller.signal})
-      .then(d=>{if(active)setCategoryColors(d.colors||{});}).catch(()=>{if(active)setCategoryColors({});});
-    return()=>{active=false;controller.abort();};
-  },[selProd,matchingMetaRevision]);
-  // v8.8.7: VM meta fetch — VM_ parameter 아래 step_id/step_desc 노출용.
+  // WIP 갱신 때 준비한 적용공정정보를 한 요청으로 붙인다.
   const[vmMeta,setVmMeta]=useState({});
-  useEffect(()=>{
-    if(!selProd){setVmMeta({});return;}
-    let active=true;
-    const controller=new AbortController();
-    setVmMeta({});
-    sf(API+"/vm-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""),{signal:controller.signal})
-      .then(d=>{if(active)setVmMeta(d.items||{});}).catch(()=>{if(active)setVmMeta({});});
-    return()=>{active=false;controller.abort();};
-  },[selProd,matchingMetaRevision]);
-  // FAB_<step_desc>_<feature_name> meta — fab.csv의 이름을 제품별 Vehicle step에 연결.
   const[fabMeta,setFabMeta]=useState({});
-  useEffect(()=>{
-    if(!selProd){setFabMeta({});return;}
-    let active=true;
-    const controller=new AbortController();
-    setFabMeta({});
-    sf(API+"/fab-meta?product="+encodeURIComponent(selProd),{signal:controller.signal})
-      .then(d=>{if(active)setFabMeta(d.items||{});}).catch(()=>{if(active)setFabMeta({});});
-    return()=>{active=false;controller.abort();};
-  },[selProd,matchingMetaRevision]);
-  // INLINE meta — INLINE_<item_desc> row 의 step_id/step_desc 표기용
-  // (이전 INLINE_<item_id> 행도 lookup alias로 계속 지원).
   const[inlineMetaSt,setInlineMetaSt]=useState({});
-  useEffect(()=>{
-    if(!selProd){setInlineMetaSt({});return;}
-    let active=true;
-    const controller=new AbortController();
-    setInlineMetaSt({});
-    sf(API+"/inline-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""),{signal:controller.signal})
-      .then(d=>{if(active)setInlineMetaSt(d.items||{});}).catch(()=>{if(active)setInlineMetaSt({});});
-    return()=>{active=false;controller.abort();};
-  },[selProd,matchingMetaRevision]);
-  // MASK meta — MASK_<step_desc> row 의 step_desc, step_id, module 매칭 용.
   const[maskMetaSt,setMaskMetaSt]=useState({});
   useEffect(()=>{
-    if(!selProd){setMaskMetaSt({});return;}
     let active=true;
     const controller=new AbortController();
-    setMaskMetaSt({});
-    sf(API+"/mask-meta"+(selProd?("?product="+encodeURIComponent(selProd)):""),{signal:controller.signal})
-      .then(d=>{if(active)setMaskMetaSt(d.items||{});}).catch(()=>{if(active)setMaskMetaSt({});});
+    if(matchingMetaIdentityRef.current.product!==selProd){
+      matchingMetaIdentityRef.current={product:selProd,revision:""};
+      setKnobMeta({});setVmMeta({});setFabMeta({});setInlineMetaSt({});setMaskMetaSt({});setCategoryColors({});
+    }
+    if(!selProd)return;
+    Promise.all([
+      sf(API+"/process-meta?product="+encodeURIComponent(selProd),{signal:controller.signal}),
+      sf(API+"/category-colors?product="+encodeURIComponent(selProd),{signal:controller.signal}),
+    ]).then(([d,colors])=>{
+        if(!active)return;
+        const meta=d.items||{};
+        matchingMetaIdentityRef.current={product:selProd,revision:String(d.revision||"")};
+        setKnobMeta(meta.knob||{});setVmMeta(meta.vm||{});setFabMeta(meta.fab||{});
+        setInlineMetaSt(meta.inline||{});setMaskMetaSt(meta.mask||{});
+        setCategoryColors(colors.colors||{});
+      }).catch(e=>{if(active&&e?.name!=="AbortError"){
+        matchingMetaIdentityRef.current={product:selProd,revision:""};
+        toast.error("적용 공정 정보를 불러오지 못했습니다. 다시 조회해 주세요.");
+      }});
     return()=>{active=false;controller.abort();};
   },[selProd,matchingMetaRevision]);
   // 상단 purpose도 표의 wafer TAG_purpose와 같은 값을 사용한다.
@@ -1643,14 +1655,18 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       const preparing=!d.rows?.length&&(lc.queued===true||lc.status==="queued"||lc.status==="running");
       if(preparing&&prepAttempt<240){
         setData(d);setLoading(false);retryScheduled=true;
-        viewRetryTimerRef.current=setTimeout(()=>loadView({...opts,_prepAttempt:prepAttempt+1,_searchSeq:searchSeq}),1500);
+        viewRetryTimerRef.current=setTimeout(()=>loadView({...opts,_prepAttempt:prepAttempt+1,_searchSeq:searchSeq}),prepAttempt<4?250:1500);
         return;
       }
       if(splitPerfEnabled&&d.rows?.length&&splitPerfPendingRef.current?.searchSeq===searchSeq){
         splitPerfPendingRef.current.responseAt=responseReceivedAt;
       }
       setData(d);
-      setMatchingMetaRevision(revision=>revision+1);
+      const metaRevision=String(d.matching_meta_revision||"");
+      if(metaRevision&&matchingMetaIdentityRef.current.revision!==metaRevision){
+        matchingMetaIdentityRef.current={product:selProd,revision:metaRevision};
+        setMatchingMetaRevision(revision=>revision+1);
+      }
       if(splitPerfEnabled&&d.rows?.length&&splitPerfPendingRef.current?.searchSeq===searchSeq){
         setSplitPerfReadySeq(searchSeq);
       }
@@ -1800,12 +1816,12 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const deleteNote=(id)=>{if(!confirm("삭제?"))return;
     sf(API+"/notes/delete",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({id,username:user?.username||""})})
       .then(()=>reloadNotes()).catch(e=>toast.error("삭제 실패: "+e.message));};
-  const notesForWafer=(wid)=>notes.filter(n=>n.scope==="wafer"&&n.key===`${selProd}__${lotId}__W${wid}`);
-  const notesForParam=(param)=>notes.filter(n=>n.scope==="param"&&n.key.endsWith(`__${param}`)&&n.key.startsWith(`${selProd}__${lotId}__W`));
+  const notesForWafer=(wid)=>noteIndex.wafer.get(`${selProd}__${lotId}__W${wid}`)||[];
+  const notesForParam=(param)=>noteIndex.param.get(String(param||""))||[];
   // v8.4.9-c: 특정 (wafer × param) 셀용 메모 — 행/열 교차 단위.
-  const notesForCell=(wid,param)=>notes.filter(n=>n.scope==="param"&&n.key===`${selProd}__${lotId}__W${wid}__${param}`);
+  const notesForCell=(wid,param)=>noteIndex.cell.get(`${selProd}__${lotId}__W${wid}__${param}`)||[];
   // v8.7.8: parameter 전역 태그 (product 내 모든 LOT 공통) + LOT 노트
-  const notesForLot=()=>notes.filter(n=>n.scope==="lot"&&n.key===`${selProd}__LOT__${lotId}`);
+  const notesForLot=()=>noteIndex.lot.get(`${selProd}__LOT__${lotId}`)||[];
   const doSearch=()=>loadView();
   const openTrackerIssue=(issueId)=>{
     const iid=String(issueId||"").trim();
@@ -3045,7 +3061,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       </div>}
     </div>
     {/* Main */}
-    <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+    <div style={{flex:1,minWidth:0,minHeight:0,display:"flex",flexDirection:"column",overflow:"hidden"}}>
       <div style={{padding:"8px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
         <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{stripMlPrefix(selProd)}</span>
         {lotId&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>| {lotId}</span>}
@@ -3564,7 +3580,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           ...splitLikeSource,
           display_mode:"pems",
         },splitLikeBuildOptions);
-        return <div ref={splitTableRef} className={noWrapRows?"stm-nowrap":undefined} onMouseOver={noWrapRows?(event)=>{const cell=event.target.closest("td,th");if(cell&&event.currentTarget.contains(cell)){const text=cell.textContent?.trim();if(text&&!String(cell.title||"").includes(text))cell.title=text+(cell.title?"\n"+cell.title:"");}}:undefined} tabIndex={0} aria-label="SplitTable 셀 그리드" onPaste={handleSplitPaste} onCopy={handleSplitCopy} onKeyDown={handleSplitKeyDown} onMouseUp={finishCellSelection} onMouseLeave={finishCellSelection} style={{flex:1,overflow:"auto",background:"var(--bg-card)",outline:"none"}}>
+        return <div ref={splitTableRef} className={noWrapRows?"stm-nowrap":undefined} onMouseOver={noWrapRows?(event)=>{const cell=event.target.closest("td,th");if(cell&&event.currentTarget.contains(cell)){const text=cell.textContent?.trim();if(text&&!String(cell.title||"").includes(text))cell.title=text+(cell.title?"\n"+cell.title:"");}}:undefined} tabIndex={0} aria-label="SplitTable 셀 그리드" onPaste={handleSplitPaste} onCopy={handleSplitCopy} onKeyDown={handleSplitKeyDown} onMouseUp={finishCellSelection} onMouseLeave={finishCellSelection} style={{flex:1,minWidth:0,minHeight:0,overflow:"auto",background:"var(--bg-card)",outline:"none"}}>
         {data.background_cache?.queued&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(30,64,175,0.95)",background:"rgba(59,130,246,0.10)",borderBottom:"1px solid rgba(59,130,246,0.28)"}}>{data.background_cache.message||"관련 캐시를 백그라운드에서 준비 중입니다."}</div>}
         {data.lot_warn&&<div style={{padding:"7px 10px",fontSize:14,fontWeight:600,color:"rgba(180,83,9,0.95)",background:"rgba(251,191,36,0.14)",borderBottom:"1px solid rgba(251,191,36,0.35)"}}>{data.lot_warn}</div>}
         {Array.isArray(data.lot_management_purposes)&&data.lot_management_purposes.length>0&&<div style={{padding:"8px 10px",fontSize:14,lineHeight:1.55,color:"var(--text-primary)"}}>
@@ -3933,6 +3949,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             {displayRows.length<viewRows.length&&<tr ref={renderMoreRef}>
               <td colSpan={1+(showModuleCol?1:0)+(showParamMeta?2:0)+(data.headers?.length||0)} style={{padding:"10px",textAlign:"center",fontSize:14,color:"var(--text-secondary)",borderBottom:GRID_LINE,background:"var(--bg-secondary)"}}>
                 {displayRows.length} / {viewRows.length} 행 표시 — 스크롤하면 자동으로 더 표시됩니다
+                <button type="button" onClick={()=>setRowRenderLimit(l=>l+ROW_RENDER_CHUNK)} style={{marginLeft:8,padding:"3px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-card)",color:"var(--accent)",fontSize:12,cursor:"pointer"}}>더 표시</button>
               </td>
             </tr>}
             {/* 마지막 줄의 TAG 추가 행. module 열이 붙어 있으면 그 칸까지 채워야

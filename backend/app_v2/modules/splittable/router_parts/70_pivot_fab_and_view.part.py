@@ -281,6 +281,10 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "", *, immediate: boo
                     dedupe_key=f"pivot:{canonical}",
                     timeout_sec=6 * 3600.0,
                 )
+            if (res or {}).get("queued"):
+                _cache_build_emit(canonical, "[Pivot캐시] worker 실행 대기 중",
+                                  detail={"reason": reason, "queued": True})
+                return  # submission is not completion; retain ready view caches
             ok = bool((res or {}).get("ok"))
         except Exception as exc:
             # run_heavy 자체가 터지면 예전에는 스레드만 조용히 죽어 화면에
@@ -1600,13 +1604,15 @@ def _enqueue_fab_lot_index_build(product: str, fab_source: str = "",
                     # 무슨 작업인지 알 수 없어 사람이 읽는 이름으로 둔다.
                     label=f"FAB 랏 인덱스 (root별 최신 FAB lot): {canonical}",
                     local_idle_only=not immediate,
-                    local_fallback=bool(immediate),
+                    # FAB labels are a read prerequisite even with no worker.
+                    # The local lane still enforces memory admission/one build.
+                    local_fallback=True,
                     durable=not immediate,
                     priority="normal" if immediate else "maintenance",
                     dedupe_key=f"fab_lot_index:{canonical}",
                     timeout_sec=6 * 3600.0,
                 )
-            ok = bool((res or {}).get("ok"))
+            ok = bool((res or {}).get("ok")) and not bool((res or {}).get("queued"))
         finally:
             with _FAB_IDX_BUILD_LOCK:
                 _FAB_IDX_BUILD_INPROGRESS.discard(canonical)
@@ -2094,19 +2100,27 @@ def _view_orjson_response(payload):
     """/view 전용 직렬화 우회. FastAPI 기본 경로는 dict 반환 시 jsonable_encoder 를
     payload 전체에 재귀 적용하는데, KNOB 처럼 행×웨이퍼 셀이 많은 응답(수만 셀)에서
     이 인코딩만 수 초가 걸린다. Response 객체를 직접 반환하면 그 경로를 건너뛴다.
-    orjson 미설치·직렬화 실패 시 dict 를 그대로 돌려 기본 경로로 폴백한다.
+    orjson 미설치 시 표준 JSON으로 직접 직렬화한다. 비표준 값 때문에 실패한
+    경우에만 dict를 돌려 기본 호환 경로로 폴백한다.
 
     (응답, 직렬화 ms, 본문 바이트) 를 돌려준다 — 이 비용은 핸들러 total_ms 밖이라
     호출측이 타이밍 로그에 따로 실어야 보인다. 폴백(dict 반환) 시 바이트는 0."""
-    if _orjson is None or not isinstance(payload, dict):
+    if not isinstance(payload, dict):
         return payload, 0.0, 0
     _t0 = time.perf_counter()
     try:
-        body = _orjson.dumps(
-            payload,
-            default=str,
-            option=_orjson.OPT_SERIALIZE_NUMPY | _orjson.OPT_NON_STR_KEYS,
-        )
+        if _orjson is not None:
+            body = _orjson.dumps(
+                payload,
+                default=str,
+                option=_orjson.OPT_SERIALIZE_NUMPY | _orjson.OPT_NON_STR_KEYS,
+            )
+        else:
+            # Offline installs may not have the optional native wheel. Compact
+            # view payloads already contain JSON-native cells: do not send them
+            # through FastAPI's recursive per-cell encoder a second time.
+            body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                              default=str, allow_nan=False).encode("utf-8")
     except Exception:
         return payload, (time.perf_counter() - _t0) * 1000.0, 0
     return (
@@ -2274,6 +2288,7 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
         # payload 캐시 히트 응답은 사실상 전부 이 구간이다.
         _lap(runtime_profile, "prelude_ms")
         if cached_view is not None:
+            cached_view["matching_meta_revision"] = _matching_meta_revision(product, view_hard_sig)
             # 신규 lot 없음(hard 일치) → fresh/stale 모두 캐시 즉시 서빙. soft 만
             # 달라진 stale 이면 백그라운드에서 최신 lot 라벨로 재검증을 예약한다.
             if freshness == "stale":
@@ -2313,7 +2328,10 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
     compute_owner, compute_event = _view_compute_begin(view_cache_key)
     if not compute_owner:
         wait_started = time.perf_counter()
-        completed = compute_event.wait(timeout=_view_compute_wait_seconds())
+        wait_sec = _view_compute_wait_seconds()
+        if request is not None and not force_recompute:
+            wait_sec = min(wait_sec, _view_interactive_queue_wait_sec())
+        completed = compute_event.wait(timeout=wait_sec)
         runtime_profile["singleflight_wait_ms"] = (time.perf_counter() - wait_started) * 1000.0
         # 대기는 singleflight_wait_ms 에 이미 잡혔다 — 단계 합계에서 빼기 위해 버린다.
         _lap(runtime_profile, None)
@@ -2322,6 +2340,7 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
         freshness, cached_view = _split_view_cache_get(view_cache_key, view_hard_sig, view_soft_sig)
         _lap(runtime_profile, "prelude_ms")
         if cached_view is not None:
+            cached_view["matching_meta_revision"] = _matching_meta_revision(product, view_hard_sig)
             return _attach_split_view_runtime_fields(
                 cached_view,
                 request,
@@ -2369,7 +2388,9 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
     pivot_base_lf = None
     knob_sidecar_all_columns = None
     try:
-        if root_lot_id.strip() and not cache_first_enabled:
+        # A cache-first retry must consume a newly completed pivot too. Skipping
+        # it forced single-server users back into lookup preparation forever.
+        if root_lot_id.strip():
             fast_cache_path = _pivot_cache_path(product, root_lot_id.strip())
             if fast_cache_path.exists():
                 try:
@@ -2859,6 +2880,7 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
             "step_progress": step_progress,
             "headers": headers, "rows_compact": rows_compact,
             "wafer_keys": [f"{k}" for k in wf_sorted],
+            "matching_meta_revision": _matching_meta_revision(product, view_hard_sig),
             "header_groups": header_groups, "wafer_fab_list": wafer_fab_list,
             "row_labels": {"root_lot_id": "root_lot_id", "lot_id": "lot_id", "parameter": "항목"},
             "available_fab_lots": available_fab_lots,

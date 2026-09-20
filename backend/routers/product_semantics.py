@@ -22,6 +22,7 @@ class Confirmation(BaseModel):
 class Aliases(BaseModel):
     product: str = Field(min_length=1, max_length=200)
     aliases: list[str] = Field(default_factory=list, max_length=50)
+    expected_updated_at: str | None = Field(None, max_length=100)
 
 
 class ItemAliasRequest(BaseModel):
@@ -32,6 +33,7 @@ class ItemAliasRequest(BaseModel):
     module: str = Field("", max_length=100)
     step_desc: str = Field("", max_length=300)
     item_desc: str = Field("", max_length=300)
+    expected_updated_at: str | None = Field(None, max_length=100)
 
 
 def _call(function, *args, **kwargs):
@@ -57,7 +59,7 @@ def bootstrap(user=Depends(require_admin)):
 
 @router.post("/product-aliases")
 def product_aliases(body: Aliases, user=Depends(require_admin)):
-    return _call(semantic.save_product_aliases, body.product, body.aliases, user["username"])
+    return _call(semantic.save_product_aliases, body.product, body.aliases, user["username"], body.expected_updated_at)
 
 
 @router.get("/product")
@@ -79,4 +81,4 @@ def confirm(body: Confirmation, user=Depends(require_access)):
 @router.post("/item-alias")
 def save_item_alias(body: ItemAliasRequest, user=Depends(require_admin)):
     return _call(semantic.save_item_alias, body.product, body.step_id, body.item_id,
-                 body.aliases, user["username"], body.module, body.step_desc, body.item_desc)
+                 body.aliases, user["username"], body.module, body.step_desc, body.item_desc, body.expected_updated_at)

@@ -1,5 +1,18 @@
 from pathlib import Path
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def healthy_dispatch_admission(monkeypatch):
+    # Queue semantics must not depend on free RAM on the test runner. Memory
+    # pressure behavior has separate deterministic worker/cache tests.
+    from core import runtime_limits
+    monkeypatch.setattr(runtime_limits, "process_memory_high", lambda: False)
+    monkeypatch.setattr(runtime_limits, "process_memory_snapshot", lambda: {
+        "system_memory_total_gb": 24, "system_memory_available_gb": 12,
+    })
+
 
 class _AliveTimer:
     def is_alive(self):

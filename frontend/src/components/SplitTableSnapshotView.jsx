@@ -660,18 +660,22 @@ export default function SplitTableSnapshotView({
   const lotContextTitle = `root_lot_id: ${rootLotId || "-"}\nlot_id: ${lotIdLabel || "-"}`;
   const rowSpans = useMemo(() => {
     if (!splitCheckMode) return tableRows.map(() => 1);
-    return tableRows.map((row, idx) => {
-      const param = String(row?._param || "").trim();
-      if (!param || !isKnobRow(row)) return 1;
-      const prev = idx > 0 ? String(tableRows[idx - 1]?._param || "").trim() : "";
-      if (prev === param) return 0;
-      let span = 1;
-      for (let i = idx + 1; i < tableRows.length; i += 1) {
-        if (String(tableRows[i]?._param || "").trim() !== param) break;
-        span += 1;
+    const spans = tableRows.map(() => 1);
+    let start = 0;
+    while (start < tableRows.length) {
+      const first = tableRows[start];
+      const param = String(first?._param || "").trim();
+      if (!param || !isKnobRow(first)) {
+        start += 1;
+        continue;
       }
-      return span;
-    });
+      let end = start + 1;
+      while (end < tableRows.length && String(tableRows[end]?._param || "").trim() === param) end += 1;
+      spans[start] = end - start;
+      for (let i = start + 1; i < end; i += 1) spans[i] = 0;
+      start = end;
+    }
+    return spans;
   }, [splitCheckMode, tableRows]);
   const uniq = useMemo(() => {
     const out = {};

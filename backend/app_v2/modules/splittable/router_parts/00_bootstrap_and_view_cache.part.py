@@ -369,7 +369,10 @@ def _view_cold_lane_wait_sec() -> float:
 def _view_cold_lane_acquire(runtime_profile: dict | None = None) -> bool:
     """cold 계산 슬롯을 잡는다. 대기 시간은 runtime_profile 에 남긴다."""
     wait_started = time.perf_counter()
-    ok = _VIEW_COLD_SEMAPHORE.acquire(timeout=_view_cold_lane_wait_sec())
+    wait_sec = _view_cold_lane_wait_sec()
+    if runtime_profile and runtime_profile.get("is_user_search"):
+        wait_sec = min(wait_sec, _view_interactive_queue_wait_sec())
+    ok = _VIEW_COLD_SEMAPHORE.acquire(timeout=wait_sec)
     if runtime_profile is not None:
         runtime_profile["cold_lane_wait_ms"] = (time.perf_counter() - wait_started) * 1000.0
     if ok:
@@ -609,6 +612,12 @@ def _view_compute_finish(key: tuple | None) -> None:
             event = current[1]
     if event is not None:
         event.set()
+
+
+def _view_interactive_queue_wait_sec() -> float:
+    # A saturated cold lane must not occupy an HTTP thread for 90 seconds.
+    # Ready RAM/disk results bypass this lane; unready reads retry explicitly.
+    return max(0.0, min(1.0, _env_float("FLOW_SPLITTABLE_INTERACTIVE_QUEUE_WAIT_SEC", 0.15)))
 
 
 def _view_compute_wait_seconds() -> float:
@@ -1700,6 +1709,7 @@ def _scratch_cache_registry() -> list[tuple[str, dict, object]]:
         ("ram_cache_lot_status", _RAM_CACHE_LOT_STATUS_CACHE, _RAM_CACHE_LOT_STATUS_LOCK),
         ("root_latest_step", _ROOT_LATEST_STEP_CACHE, _ROOT_LATEST_STEP_LOCK),
         ("step_order_ctx", _STEP_ORDER_CTX_CACHE, _STEP_ORDER_CTX_LOCK),
+        ("process_meta", _PROCESS_META_CACHE._entries, _PROCESS_META_CACHE._lock),
         ("latest_status_stats", _LATEST_STATUS_STATS_CACHE, _LATEST_STATUS_STATS_LOCK),
         ("lot_lookup", _LOT_LOOKUP_CACHE, None),
         ("view_product_sig", _VIEW_PRODUCT_SIG_CACHE, _VIEW_PRODUCT_SIG_LOCK),

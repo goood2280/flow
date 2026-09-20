@@ -434,6 +434,15 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
                        type(e).__name__, e)
     with _LATEST_IDX_FRESH_LOCK:
         _LATEST_IDX_FRESH_CACHE.clear()
+    # WIP refresh is the owner of applied-process preparation. Persist beside
+    # shared DB caches so API and worker processes reuse the same generation.
+    process_meta_errors = []
+    for product in dict.fromkeys(exported_products):
+        try:
+            _process_meta_snapshot(product)
+        except Exception as exc:
+            process_meta_errors.append({"product": product, "error": str(exc)})
+            logger.warning("WIP applied-process preparation failed: %s", product, exc_info=True)
     result = {
         "ok": True,
         "path": str(fp),
@@ -441,6 +450,7 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
         "products": exported_products,
         "skipped": skipped,
         "cache_updated_at": cache_updated_at,
+        "process_meta_errors": process_meta_errors,
     }
     if update_state:
         _mark_match_cache_refreshed(result)

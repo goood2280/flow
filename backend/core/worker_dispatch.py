@@ -60,6 +60,7 @@
   FLOW_WORKER_TASK_TIMEOUT_SEC 오프로드 기본 대기 한도 (기본 1800)
   FLOW_WORKER_MAX_QUEUE       큐 깊이 상한 (기본 256, 자동 캐시는 로컬 실행 안 함)
   FLOW_WORKER_MAINTENANCE_EVERY 일반 작업 N-1건 뒤 캐시 작업 1건 보장 (기본 5)
+  FLOW_REQUIRED_CACHE_IDLE_WAIT_SEC 필수 읽기 캐시의 로컬 idle grace (기본 5)
 """
 from __future__ import annotations
 
@@ -116,6 +117,22 @@ _CACHE_BUILD_TYPES = {
     "auto_report_generate",           # legacy PPT/HTML rendering
     "auto_report_history_refresh",    # rolling ET history snapshot
 }
+
+# These caches are prerequisites for an interactive read.  When the worker is
+# unavailable, waiting for a long global idle window makes the API appear
+# unavailable forever under ordinary UI polling traffic.  They still pass
+# through the normal memory admission and cache/scan gate after this short
+# grace period; the distinction only affects the idle wait.
+_REQUIRED_READ_CACHE_TYPES = {
+    "ml_lookup_cache_build",
+    "splittable_pivot_build",
+    "splittable_fab_lot_index_build",
+    "splittable_lot_progress_cache_refresh",
+}
+
+
+def _required_cache_idle_wait_sec() -> float:
+    return _env_float("FLOW_REQUIRED_CACHE_IDLE_WAIT_SEC", 5.0, 0.0, 60.0)
 
 
 def _cache_gate(task_type: str, label: str, *, product: str = ""):
@@ -990,7 +1007,11 @@ def _run_local_heavy(
             return {"ok": False, "error": "local_heavy_queue_timeout"}
     try:
         if idle_only:
-            idle_wait = _env_float("FLOW_LOCAL_HEAVY_IDLE_WAIT_SEC", 1800.0, 0.0, 21600.0)
+            idle_wait = (
+                _required_cache_idle_wait_sec()
+                if str(task_type) in _REQUIRED_READ_CACHE_TYPES
+                else _env_float("FLOW_LOCAL_HEAVY_IDLE_WAIT_SEC", 1800.0, 0.0, 21600.0)
+            )
             quiet_for = _env_float("FLOW_LOCAL_HEAVY_IDLE_QUIET_SEC", 10.0, 0.0, 300.0)
             idle_deadline = time.monotonic() + idle_wait
             while True:
@@ -1003,6 +1024,10 @@ def _run_local_heavy(
                 if not busy:
                     break
                 if time.monotonic() >= idle_deadline:
+                    if str(task_type) in _REQUIRED_READ_CACHE_TYPES:
+                        logger.info(
+                            "required read cache proceeding after idle grace: %s", name)
+                        break
                     logger.info("local heavy deferred until next idle window: %s", name)
                     return {"ok": False, "error": "local_heavy_waiting_for_idle"}
                 time.sleep(2.0)

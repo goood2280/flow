@@ -1022,8 +1022,15 @@ def base_files(request: Request = None, fast: bool = Query(False)):
     if hasattr(PATHS, "cache_dir") and hasattr(PATHS, "db_cache_dir"):
         try:
             from core import lot_progress_cache as _lot_progress_cache
-            import threading
-            threading.Thread(target=_lot_progress_cache.export_lot_progress_parquet, daemon=True).start()
+            from app_v2.modules.filebrowser.export_schedule import schedule_if_stale
+            schedule_if_stale(
+                _lot_progress_cache.cache_file(),
+                _lot_progress_cache.cache_parquet_file(),
+                lambda: _lot_progress_cache.export_lot_progress_parquet(
+                    _lot_progress_cache.load_lot_progress_cache()
+                ),
+                settings=PATHS.data_root / "settings.json",
+            )
         except Exception as e:
             logger.warning("lot-progress parquet cache export start failed: %s", e)
     _refresh_single_file_step_caches(base_root)

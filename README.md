@@ -135,10 +135,12 @@ SplitTable pivot, WIP latest-lot, FAB latest 인덱스의 최근 성공·실패�
 
 | 역할 | 권장 자원 | 책임 |
 |---|---:|---|
-| 운영 API | 5코어 / 28GB RAM | 사용자 요청, SplitTable 조회, API-local RAM 캐시 |
+| 운영 API | 5코어 / 24GB RAM | 사용자 요청, SplitTable 조회, API-local RAM 캐시, worker 부재 시 필수 캐시 생성 |
 | 개발 worker | 5코어 / 10~15GB RAM | lookup/pivot/FAB index 등 무거운 공유 캐시 생성 |
 
-두 서버는 동일한 `FLOW_DB_ROOT`와 `FLOW_DATA_ROOT`를 봐야 합니다. 개발 worker가 살아 있으면 무거운 작업을 worker로 위임하고, 꺼져 있으면 운영 서버가 사용자 요청이 없는 시간에 한 작업씩 천천히 수행합니다.
+두 서버를 사용할 경우 동일한 `FLOW_DB_ROOT`와 `FLOW_DATA_ROOT`를 봐야 합니다. 별도 worker는 선택 사항입니다. worker가 없으면 lookup/pivot/FAB/latest-lot 필수 읽기 캐시는 운영 서버에서 메모리 여유를 확인한 뒤 공유 스캔 슬롯으로 하나씩 생성합니다. 계속되는 화면 폴링이 캐시 생성을 막지 않도록 idle 양보는 기본 5초(`FLOW_REQUIRED_CACHE_IDLE_WAIT_SEC`, 0~60초) 뒤 진행합니다. 빌더 내부의 배치별 사용자 양보와 메모리 보호는 유지됩니다.
+
+SplitTable의 목표는 준비된 데이터 조회부터 실제 표 첫 표시까지 p95 500ms입니다. 원본만 있고 필수 캐시가 전혀 없는 최초 생성까지 500ms를 보장하는 것은 아닙니다. 운영 화면 URL에 `split_perf=1` 쿼리를 추가해 브라우저 표시 시간을 확인하고, 서버/API 별도 측정은 `scripts/check_split_server_latency.py --help`를 사용합니다. 이 도구는 준비 중·빈 결과를 빠른 성공으로 계산하지 않으며 실제 운영 URL·제품·root lot과 `FLOW_BENCH_SESSION_TOKEN` 환경변수를 요구합니다. 운영 설정과 캐시를 지우지 않고 조회만 수행합니다.
 
 ## 빠른 설치
 

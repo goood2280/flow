@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { sf } from "../../lib/api";
 import { Button, Input, Select, Textarea, Banner } from "../../components/ui";
+import { canManagePage } from "../../lib/permissions";
 
 const API = "/api/product-semantics";
 const post = (path, body) => sf(`${API}${path}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 const aliases = (text) => text.split(/[,\n]/).map((x) => x.trim()).filter(Boolean);
 const pairKey = (row) => JSON.stringify([row.module, row.source_type, row.step_id, row.item_id]);
 
-export default function ProductSemanticPanel({ product: fixedProduct = "", admin = false, refreshKey = 0 }) {
+export default function ProductSemanticPanel({ product: fixedProduct = "", admin = false, refreshKey = 0, reviewOnly = false, user = null }) {
   const [catalog, setCatalog] = useState(null);
   const [product, setProduct] = useState(fixedProduct);
   const [data, setData] = useState(null);
@@ -50,10 +51,13 @@ export default function ProductSemanticPanel({ product: fixedProduct = "", admin
   const measurements = data?.measurements || [];
   const modules = [...new Set([...(data?.steps || []), ...measurements].map((row) => row.module).filter(Boolean))];
   const records = data?.records || [];
+  const pendingCount = records.filter((record) => record.status === "pending" && record.is_current !== false).length;
+  const canConfirm = (record) => record?.is_current !== false && (admin || canManagePage(user, "productwiki") || record?.created_by === user?.username);
+  const diagnostics = Array.isArray(data?.diagnostics) ? data.diagnostics : Array.isArray(data?.overview?.diagnostics) ? data.overview.diagnostics : [];
   return <section className="pw-semantic" aria-label="제품 용어와 구조 연결" style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 18, display: "grid", gap: 12 }}>
-    <h3 style={{ margin: 0 }}>제품 · Inline 별칭과 모듈 / 세부 구조</h3>
+    <h3 style={{ margin: 0 }}>제품 · Inline 별칭과 모듈 / 세부 구조 {pendingCount > 0 && <small style={{ color: "var(--warning, #b45309)" }}>· 확인 대기 {pendingCount}건</small>}</h3>
     <p className="pw-muted">기록 원문과 해석 초안을 보존합니다. 실제 Step·Item 연결은 확인 후 공용 지식에 반영하며, 홈 Flow-i에서도 같은 연결을 참고합니다.</p>
-    {admin && <>
+    {admin && !reviewOnly && <>
       <Button disabled={busy} onClick={() => act(async () => {
         const value = await post("/bootstrap", {}); setCatalog(value); await reload();
         setMessage(value.warning || "실제 DB 제품·모듈·Step·Inline 아이템을 확인했습니다.");
@@ -66,9 +70,9 @@ export default function ProductSemanticPanel({ product: fixedProduct = "", admin
     </>}
     {message && <Banner tone="info"><span role="status">{message}</span></Banner>}
     {product && <>
-      {admin && <>
+      {admin && !reviewOnly && <>
         <label>제품 별칭 모음<Input value={aliasText} disabled={busy} onChange={(e) => setAliasText(e.target.value)} placeholder="쉼표로 구분한 별칭" /></label>
-        <Button disabled={busy} onClick={() => act(async () => { await post("/product-aliases", { product, aliases: aliases(aliasText) }); await reload(); setMessage("제품 별칭을 저장했습니다. 중복 별칭은 홈에서 확인 질문으로 처리합니다."); })}>제품 별칭 저장</Button>
+         <Button disabled={busy} onClick={() => act(async () => { await post("/product-aliases", { product, aliases: aliases(aliasText), expected_updated_at: data?.product_aliases?.[0]?.updated_at || "" }); await reload(); setMessage("제품 별칭을 저장했습니다. 중복 별칭은 홈에서 확인 질문으로 처리합니다."); })}>제품 별칭 저장</Button>
         <label>Inline 아이템 · 모듈과 하위 구조 설명<Textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} maxLength={40000} disabled={busy}
           placeholder="PC CD1의 별칭은 … / SD 안에 eSD, eSiGe가 있고 eSD의 Step 범위는 … 처럼 적어 주세요. 제품은 위에서 선택한 제품입니다." /></label>
         <Button disabled={busy || !text.trim()} onClick={() => act(async () => {
@@ -76,19 +80,23 @@ export default function ProductSemanticPanel({ product: fixedProduct = "", admin
           setMessage(record.warning || "원문을 저장하고 연결 초안을 만들었습니다. 아래에서 실제 ID와 별칭을 확인해 주세요.");
         })}>설명 저장 · LLM 구조화</Button>
       </>}
+      {diagnostics.length > 0 && <Banner tone="warning"><span role="status">{diagnostics.join(" ")}</span></Banner>}
       <details><summary>관찰된 제품 공정 순서 · Inline 아이템 ({data?.steps?.length || 0} Step / {measurements.length} 조합)</summary>
-        <div style={{ maxHeight: 250, overflow: "auto" }}><table><thead><tr><th>모듈</th><th>Step</th><th>공정 설명</th><th>Item</th><th>아이템 설명</th></tr></thead><tbody>
-          {(measurements.length ? measurements : data?.steps || []).map((row, i) => <tr key={i}><td>{row.module}</td><td>{row.step_id}</td><td>{row.step_desc}</td><td>{row.item_id || "—"}</td><td>{row.item_desc}</td></tr>)}
+         <div style={{ maxHeight: 250, overflow: "auto" }}><table><thead><tr><th>모듈</th><th>Step</th><th>공정 설명</th><th>Item</th><th>아이템 설명</th><th>출처</th><th>갱신</th></tr></thead><tbody>
+          {(measurements.length ? measurements : data?.steps || []).map((row, i) => <tr key={i}><td>{row.module}</td><td>{row.step_id}</td><td>{row.step_desc}</td><td>{row.item_id || "—"}</td><td>{row.item_desc}</td><td>{row.source || row.source_type || "—"}</td><td>{row.updated_at ? new Date(row.updated_at).toLocaleString() : "—"}</td></tr>)}
         </tbody></table></div>
       </details>
-      {!data?.generated_at && <p>관리자에서 초기 Semantic을 생성하면 실제 Step·Item을 선택할 수 있습니다. 원문 기록은 먼저 저장할 수 있습니다.</p>}
+      {!data?.generated_at && !measurements.length && <p>관리자에서 실제 DB를 새로고침하면 Step·Item을 선택할 수 있습니다. 원문 기록은 먼저 저장할 수 있습니다.</p>}
       {records.length > 0 && <div style={{ display: "grid", gap: 8 }}>{records.map((record) => <details key={record.id}>
-        <summary>{record.status === "confirmed" ? "연결 확인됨" : "연결 확인 필요"} · {record.source_text.slice(0, 100)}</summary>
-        <p style={{ whiteSpace: "pre-wrap" }}>{record.source_text}</p>
+         <summary>{record.is_current === false ? "오래된 제안" : record.status === "confirmed" ? "연결 확인됨" : "연결 확인 필요"} · {record.source_text.slice(0, 100)}</summary>
+         <p style={{ whiteSpace: "pre-wrap" }}>{record.source_text}</p>
+         <small>작성자 {record.author || record.created_by || "—"} · 출처 {record.source || record.source_type || "수동 입력"}{record.updated_at ? ` · 갱신 ${new Date(record.updated_at).toLocaleString()}` : ""}</small>
         {record.warning && <p>{record.warning}</p>}
         {(record.draft.measurements || []).map((r, i) => <p key={`m${i}`}><b>{r.term}</b> {r.aliases?.length ? `(${r.aliases.join(", ")})` : ""} → {r.module} / {r.source_type} / {r.step_id || "Step 확인 필요"} / {r.item_id || "Item 확인 필요"}</p>)}
         {(record.draft.structures || []).map((r, i) => <p key={`s${i}`}><b>{r.module} / {r.path}</b> {r.aliases?.join(", ")} → {r.step_start || "시작 확인"} ~ {r.step_end || "끝 확인"}</p>)}
-        {record.status === "pending" && <Button disabled={busy} onClick={() => setEditing(JSON.parse(JSON.stringify(record)))}>연결 · 별칭 확인</Button>}
+         {record.status === "pending" && canConfirm(record) && <Button disabled={busy} onClick={() => setEditing(JSON.parse(JSON.stringify(record)))}>연결 · 별칭 확인</Button>}
+         {record.status === "pending" && record.is_current !== false && !canConfirm(record) && <small>작성자 또는 페이지 관리자 확인 대기 중</small>}
+         {record.is_current === false && <small>원문이 수정 또는 삭제되어 확인할 수 없습니다.</small>}
       </details>)}</div>}
       {editing && <div style={{ display: "grid", gap: 12, borderTop: "1px solid var(--border)", paddingTop: 12 }}>
         <h4>연결 확인: {editing.source_text.slice(0, 80)}</h4>
@@ -114,7 +122,7 @@ export default function ProductSemanticPanel({ product: fixedProduct = "", admin
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Button disabled={busy} onClick={() => setEditing((old) => ({ ...old, draft: { ...old.draft, measurements: [...old.draft.measurements, { term: "", aliases: [], module: "", source_type: "INLINE", step_id: "", item_id: "" }] } }))}>측정 용어 추가</Button>
           <Button disabled={busy} onClick={() => setEditing((old) => ({ ...old, draft: { ...old.draft, structures: [...old.draft.structures, { module: "", path: "", aliases: [], step_start: "", step_end: "" }] } }))}>하위 구조 추가</Button>
-          <Button variant="primary" disabled={busy} onClick={() => act(async () => { await post("/confirm", { product, id: editing.id, draft: confirmedDraft() }); setEditing(null); await reload(); setMessage("연결을 확인했습니다. 제품 Wiki와 홈 Flow-i에서 같은 지식을 참고합니다."); })}>확인한 연결 저장</Button>
+           {canConfirm(editing) && <Button variant="primary" disabled={busy} onClick={() => act(async () => { await post("/confirm", { product, id: editing.id, draft: confirmedDraft() }); setEditing(null); await reload(); setMessage("연결을 확인했습니다. 제품 Wiki와 홈 Flow-i에서 같은 지식을 참고합니다."); })}>확인한 연결 저장</Button>}
           <Button disabled={busy} onClick={() => setEditing(null)}>닫기</Button>
         </div>
       </div>}

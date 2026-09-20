@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Banner, Button, Input, Select, TabStrip } from "../../components/ui";
 import { sf } from "../../lib/api";
 import ProductStructure from "../productwiki/ProductStructure";
+import ProductSemanticPanel from "../productwiki/ProductSemanticPanel";
 
 const ADMIN_SECTIONS = [
   { k: "product_aliases", l: "1. 제품별 별칭 연결 테이블" },
@@ -28,6 +29,10 @@ export default function ProductAdminPanel({ user }) {
   const [semanticData, setSemanticData] = useState(null);
   const [dataLoading, setDataLoading] = useState(false);
   const [catalog, setCatalog] = useState(null);
+  const [bootstrapBusy, setBootstrapBusy] = useState(false);
+  const [writeBusy, setWriteBusy] = useState(false);
+  const [semanticRefreshKey, setSemanticRefreshKey] = useState(0);
+  const [bootstrapMeta, setBootstrapMeta] = useState(null);
 
   // Filter states for inline items table
   const [searchQuery, setSearchQuery] = useState("");
@@ -70,7 +75,7 @@ export default function ProductAdminPanel({ user }) {
       .finally(() => setLoading(false));
 
     sf("/api/product-semantics/catalog")
-      .then(setCatalog)
+      .then((value) => { setCatalog(value); setBootstrapMeta(value); })
       .catch(() => {});
   }, []);
 
@@ -101,15 +106,20 @@ export default function ProductAdminPanel({ user }) {
 
   // Handle Product Alias Save
   async function handleSaveProductAliases(updatedAliases) {
-    if (!product) return;
+    if (!product || writeBusy) return false;
+    setWriteBusy(true);
     try {
-      await post("/product-aliases", { product, aliases: updatedAliases });
+      await post("/product-aliases", { product, aliases: updatedAliases, expected_updated_at: semanticData?.product_aliases?.[0]?.updated_at || "" });
       setProductAliasList(updatedAliases);
       setNotice(`[${product}] 제품 별칭을 성공적으로 저장했습니다.`);
-      reloadSemantic(product);
+      await reloadSemantic(product);
       sf("/api/product-semantics/catalog").then(setCatalog).catch(() => {});
+      return true;
     } catch (err) {
       setError(err.message || "제품 별칭 저장 실패");
+      return false;
+    } finally {
+      setWriteBusy(false);
     }
   }
 
@@ -132,7 +142,8 @@ export default function ProductAdminPanel({ user }) {
 
   // Handle Inline Item Alias Save
   async function handleSaveItemAlias(itemData) {
-    if (!product) return;
+    if (!product || writeBusy) return false;
+    setWriteBusy(true);
     try {
       await post("/item-alias", {
         product,
@@ -142,12 +153,17 @@ export default function ProductAdminPanel({ user }) {
         step_desc: itemData.step_desc || "",
         item_desc: itemData.item_desc || "",
         aliases: itemData.aliases || [],
+        expected_updated_at: itemData.updated_at || "",
       });
       setNotice(`[${itemData.step_id} / ${itemData.item_id}] 별칭 매핑을 저장했습니다.`);
       setEditingItem(null);
-      reloadSemantic(product);
+      await reloadSemantic(product);
+      return true;
     } catch (err) {
       setError(err.message || "아이템 별칭 저장 실패");
+      return false;
+    } finally {
+      setWriteBusy(false);
     }
   }
 
@@ -163,7 +179,7 @@ export default function ProductAdminPanel({ user }) {
       .map((s) => s.trim())
       .filter(Boolean);
 
-    await handleSaveItemAlias({
+    const saved = await handleSaveItemAlias({
       step_id: newItemForm.step_id.trim(),
       item_id: newItemForm.item_id.trim(),
       module: newItemForm.module.trim(),
@@ -171,12 +187,13 @@ export default function ProductAdminPanel({ user }) {
       item_desc: newItemForm.item_desc.trim(),
       aliases,
     });
+    if (!saved) return;
     setShowAddItemModal(false);
     setNewItemForm({ module: "", step_id: "", step_desc: "", item_id: "", item_desc: "", aliases_text: "" });
   }
 
   // Filtered Measurements Rows
-  const measurements = semanticData?.measurements || [];
+  const measurements = (semanticData?.measurements || []).filter((row) => String(row.source_type || "").toUpperCase() === "INLINE");
   const modulesList = useMemo(() => {
     return [...new Set(measurements.map((r) => r.module).filter(Boolean))].sort();
   }, [measurements]);
@@ -246,14 +263,14 @@ export default function ProductAdminPanel({ user }) {
             </p>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <label htmlFor="product-admin-select" style={{ fontSize: 13, fontWeight: 600 }}>
               관리 대상 제품:
             </label>
             <Select
               id="product-admin-select"
               value={product}
-              disabled={loading || !products.length}
+              disabled={loading || dataLoading || writeBusy || bootstrapBusy || !products.length}
               onChange={(e) => setProduct(e.target.value)}
               style={{ minWidth: 160, fontWeight: 600 }}
             >
@@ -264,11 +281,26 @@ export default function ProductAdminPanel({ user }) {
                 </option>
               ))}
             </Select>
+            <Button disabled={bootstrapBusy || writeBusy} onClick={async () => {
+              if (bootstrapBusy) return;
+              setBootstrapBusy(true); setError("");
+              try {
+                const value = await post("/bootstrap", {});
+                setCatalog(value); setBootstrapMeta(value); setSemanticRefreshKey((v) => v + 1);
+                await reloadSemantic(product);
+                setNotice(value.warning || "실제 DB의 제품·모듈·Step·Inline 항목을 다시 확인했습니다.");
+              } catch (err) { setError(err.message || "실제 DB 새로고침 실패"); }
+              finally { setBootstrapBusy(false); }
+            }}>{bootstrapBusy ? "DB 확인 중…" : "실제 DB 새로고침"}</Button>
+            {bootstrapMeta?.generated_at && <small style={{ color: "var(--text-secondary)" }}>기준 {new Date(bootstrapMeta.generated_at).toLocaleString()}</small>}
           </div>
         </div>
 
         {error && <Banner tone="danger"><span role="alert">{error}</span></Banner>}
         {notice && <Banner tone="info"><span role="status">{notice}</span></Banner>}
+        {semanticData?.warning && <Banner tone="warning">{semanticData.warning}</Banner>}
+        {(semanticData?.diagnostics || []).map((message, i) => <Banner key={i} tone="warning">{message}</Banner>)}
+        {product && <small>연결 검토 대기 {(semanticData?.records || []).filter((r) => r.status === "pending" && r.is_current !== false).length}건 · Inline {measurements.length}개 조합</small>}
 
         <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
           <TabStrip active={section} onChange={setSection} items={ADMIN_SECTIONS} />
@@ -582,6 +614,8 @@ export default function ProductAdminPanel({ user }) {
                               <code style={{ fontSize: 12, background: "var(--surface-subtle)", padding: "2px 4px", borderRadius: 3 }}>
                                 {row.step_id}
                               </code>
+                              <small style={{ display: "block", color: "var(--text-secondary)" }}>{row.source === "manual" ? "관리자 직접 등록" : row.source || "DB 관측"}</small>
+                              {row.updated_at && <small style={{ display: "block", color: "var(--text-secondary)" }}>{new Date(row.updated_at).toLocaleString()}</small>}
                             </td>
                             <td style={{ padding: "10px 12px", color: "var(--text-strong)" }}>
                               {row.step_desc || <span style={{ color: "var(--text-secondary)" }}>—</span>}
@@ -714,6 +748,7 @@ export default function ProductAdminPanel({ user }) {
                                       module: row.module || "",
                                       step_desc: row.step_desc || "",
                                       item_desc: row.item_desc || "",
+                                      updated_at: row.updated_at || "",
                                       aliases: [...(row.aliases || [])],
                                     });
                                     setNewAliasInput("");
@@ -735,8 +770,9 @@ export default function ProductAdminPanel({ user }) {
                 <span>
                   표시 중: {filteredItems.length}건 / 전체 {measurements.length}건
                 </span>
-                <span>실제 DB INLINE 및 FAB 측정 파라미터 매핑</span>
+                <span>제품별 INLINE 연결 · DB 관측 및 관리자 등록</span>
               </div>
+              <ProductSemanticPanel key={product} product={product} admin={user?.role === "admin"} reviewOnly user={user} refreshKey={semanticRefreshKey} />
             </div>
           )}
 

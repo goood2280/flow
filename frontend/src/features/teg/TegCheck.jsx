@@ -6,13 +6,14 @@
       🟢 일치 / 🟡 확인필요(ΔX·ΔY 각 2 이내) / 🔴 불일치 / ⚪ 미등록 로 표시.
    오프셋(flat 기본·TEG별·회전 offset)은 ⚙️ 설정의 "TEG Mapfile 체크" 섹션에서 편집.
 */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { putJson, sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
 import { Button, Card, DataTable, EmptyState, LinkBtn, Pill, Select, TabStrip, Textarea } from "../../components/UXKit";
 import ZoomPanSvg from "../../components/ZoomPanSvg";
 import TegMapfileVersionComments from "./TegMapfileVersionComments";
+import { consolidateShotItems as consolidateShotItemsPure, indexShotMains, shotFocusBounds } from "./shotItems.mjs";
 
 const API = "/api/teg-map";
 
@@ -44,6 +45,10 @@ const SHOT_LIGHT_STYLE = {
   purple: { stroke: LIGHT_COLORS.purple, text: LIGHT_COLORS.purple, fill: "rgba(124,58,237,0.20)" },
 };
 const SHOT_DEFAULT_STYLE = { stroke: "#111827", text: "#111827", fill: "rgba(17,24,39,0.06)" };
+const MAX_SHOT_ZOOM = 60;
+const MAX_SHOT_LABELS = 80;
+const EMPTY_SHOT_CELLS = Object.freeze([]);
+const SHOT_LABEL_RANK = Object.freeze({ red: 0, orange: 1, yellow: 2, purple: 3, green: 4, gray: 5, dim: 6 });
 
 // 결과 화면에서 무엇을 볼지 — 대상 TEG(S/L) / MAIN 내부 TEG / 둘 다 (기본)
 const VIEW_ALL = "all", VIEW_TARGET = "target", VIEW_MAIN = "main";
@@ -491,91 +496,212 @@ function PatternGrid({ res, px, selected, onSelect, mapFor }) {
 
 /* ── shot 확대 뷰 — die 격자 + 계산 좌표 기준 TEG 배치.
    Mapfile 에 셋업된 TEG 를 모두 그리고 빨강/노랑/초록 상태색을 그대로 쓴다.
+   동일 좌표에 여러 행이 중복된 경우 consolidateShotItems 로 묶여 전달되며,
+   마우스 호버 시 하나의 지연 상세 패널에서 건수와 포함 목록을 볼 수 있다.
    TEG 는 shot 대비 아주 작아 기본 배율로는 이름이 안 읽힌다 — 뷰를 크게 잡고
    최대 배율도 올린다 (zoom/pan/핀치는 공용 ZoomPanSvg). ── */
-function ShotView({ shot, items, size = 560 }) {
+const ShotGeometry = memo(function ShotGeometry({ scene, onMarkerEnter, onMarkerLeave }) {
+  return (
+    <>
+      <rect x={scene.ox} y={scene.oy} width={scene.w} height={scene.h}
+        fill="rgba(128,128,128,0.05)" stroke="var(--muted)" strokeWidth={1}
+        vectorEffect="non-scaling-stroke" />
+      {scene.cells.map(c => (
+        <rect key={c.key} x={c.x} y={c.y} width={c.w} height={c.h}
+          fill="rgba(47,158,99,0.08)" stroke="#2f9e63"
+          strokeWidth={scene.fromImage ? 1.2 : 0.8} vectorEffect="non-scaling-stroke"
+          opacity="0.85" />
+      ))}
+      <g onPointerOver={onMarkerEnter} onPointerLeave={onMarkerLeave}>
+        {scene.items.map(t => (
+          <rect key={t.key} data-shot-index={t.index}
+            x={t.x} y={t.y} width={t.w} height={t.h}
+            fill={t.color.fill} stroke={t.color.stroke} strokeWidth={1.6}
+            vectorEffect="non-scaling-stroke" />
+        ))}
+      </g>
+    </>
+  );
+});
+
+const ShotAnnotations = memo(function ShotAnnotations({ scene, zoom }) {
+  const labels = [];
+  for (const item of scene.labelOrder) {
+    if (item.fontSize * zoom < 2.5) continue;
+    labels.push(item);
+    if (labels.length === MAX_SHOT_LABELS) break;
+  }
+  return (
+    <g pointerEvents="none">
+      {/* shot 센터 십자 */}
+      <line x1={scene.centerX - 5 / zoom} y1={scene.centerY}
+        x2={scene.centerX + 5 / zoom} y2={scene.centerY}
+        stroke="var(--muted)" strokeWidth={0.8 / zoom} />
+      <line x1={scene.centerX} y1={scene.centerY - 5 / zoom}
+        x2={scene.centerX} y2={scene.centerY + 5 / zoom}
+        stroke="var(--muted)" strokeWidth={0.8 / zoom} />
+      {scene.cells.map(c => (
+        <g key={`annotation-${c.key}`}>
+          {scene.fromImage && (
+            <path d={`M${c.x} ${c.bottom - 7 / zoom} L${c.x} ${c.bottom} L${c.x + 7 / zoom} ${c.bottom}`}
+              fill="none" stroke="#2f9e63" strokeWidth={1.6 / zoom} opacity="0.95" />
+          )}
+          {c.name && (
+            <text x={c.x + 3 / zoom} y={c.bottom - 3 / zoom} fontSize={10 / zoom}
+              fill="#2f9e63" opacity="0.9" fontWeight={700}>{c.name}</text>
+          )}
+        </g>
+      ))}
+      {/* 이름은 화면 혼잡과 줌 비용을 제한하고, 모든 위치의 상세는 호버 패널에서 제공한다. */}
+      {labels.map(t => (
+        <text key={`label-${t.key}`} data-shot-label="true"
+          x={t.labelX} y={t.labelY} fontSize={t.fontSize}
+          textAnchor="middle" dominantBaseline="central"
+          transform={t.labelAngle ? `rotate(${t.labelAngle} ${t.labelX} ${t.labelY})` : undefined}
+          fill={t.color.text} fontWeight={700}>{t.label}</text>
+      ))}
+      <text x={scene.size / 2} y={scene.oy + scene.h + 16 / zoom}
+        fontSize={11 / zoom} fill="var(--muted)" textAnchor="middle">
+        {scene.widthLabel}
+      </text>
+    </g>
+  );
+});
+
+function ShotView({ shot, items, size = 560, focus = null }) {
   const SIZE = size;
-  const MAX_ZOOM = 60;
-  const drawItems = items;
-  const W = shot.shot_w_mm, H = shot.shot_h_mm;
+  const W = focus?.width || shot.shot_w_mm, H = focus?.height || shot.shot_h_mm;
+  const centerX = focus?.centerX || 0, centerY = focus?.centerY || 0;
   const pad = 0.12;
   const s = SIZE / Math.max(W * (1 + pad * 2), H * (1 + pad * 2));
   const w = W * s, h = H * s;
   const ox = (SIZE - w) / 2, oy = (SIZE - h) / 2;
-  const toX = (mm) => ox + (mm + W / 2) * s;
+  const toX = useCallback((mm) => ox + (mm - centerX + W / 2) * s, [ox, W, s, centerX]);
   // SVG 는 y 가 아래로 증가 — ebeam +y(위)를 뒤집어 shot 센터가 정확히 (0,0)이 되게 한다.
-  const toY = (mm) => oy + (H / 2 - mm) * s;
-  const cells = shot.cells || [];
+  const toY = useCallback((mm) => oy + (H / 2 - mm + centerY) * s, [oy, H, s, centerY]);
+  const cells = shot.cells || EMPTY_SHOT_CELLS;
   // 개발 격자만 좌하단 코너(└)를 찍는다 — 그 점이 MAIN TEG 좌표다.
   const fromImage = shot.cell_source === "dev_grid";
+  const [hoveredIndex, setHoveredIndex] = useState(null);
+
+  const scene = useMemo(() => {
+    const sceneItems = items.map((t, index) => {
+        const color = SHOT_LIGHT_STYLE[t.light] || SHOT_DEFAULT_STYLE;
+        const x = toX(t.mm_x), yBottom = toY(t.mm_y);
+        const wpx = Math.max(1.5 / MAX_SHOT_ZOOM, (t.w || 0) * s);
+        const hpx = Math.max(1.5 / MAX_SHOT_ZOOM, (t.h || 0) * s);
+        const label = String(t.name || "");
+        // Vertical map은 TEG 자체가 반시계/시계 방향으로 선 상태다. 이름도 같은
+        // 방향으로 돌리고, 회전 뒤의 가로·세로를 기준으로 크기를 맞춰 좁은 폭에
+        // 눌려 지나치게 작아지지 않게 한다 (평균 글자폭 ≈ 0.58em).
+        const labelAngle = t.flat_used === "v_R" ? -90 : t.flat_used === "v_L" ? 90 : 0;
+        const labelWidth = labelAngle ? hpx : wpx;
+        const labelHeight = labelAngle ? wpx : hpx;
+        const fs = Math.min(labelHeight * 0.62,
+          (labelWidth * 0.92) / Math.max(1, label.length * 0.58));
+        const labelX = x + wpx / 2, labelY = yBottom - hpx / 2;
+        return { ...t, index, color, x, y: yBottom - hpx, w: wpx, h: hpx,
+          label, labelAngle, labelX, labelY, fontSize: fs };
+      });
+    const sceneCells = cells.map((c, index) => {
+      const bottom = toY(c.y);
+      return { key: `${index}-${c.name || "cell"}`, name: c.name, x: toX(c.x),
+        y: bottom - c.h * s, bottom, w: c.w * s, h: c.h * s };
+    });
+    const labelOrder = sceneItems.filter(item => item.label).sort((a, b) =>
+      (SHOT_LABEL_RANK[a.light] ?? 9) - (SHOT_LABEL_RANK[b.light] ?? 9)
+      || b.fontSize - a.fontSize || a.index - b.index
+    );
+    return { size: SIZE, ox, oy, w, h, fromImage, items: sceneItems, cells: sceneCells,
+      labelOrder, centerX: toX(0), centerY: toY(0),
+      widthLabel: `${fmtN(Math.round(W * 100) / 100)} mm` };
+  }, [SIZE, W, cells, fromImage, h, items, ox, oy, s, toX, toY, w]);
+
+  const onMarkerEnter = useCallback((event) => {
+    const rawIndex = event.target?.dataset?.shotIndex;
+    if (rawIndex === undefined) return;
+    const index = Number(rawIndex);
+    if (Number.isInteger(index)) setHoveredIndex(current => current === index ? current : index);
+  }, []);
+  const onMarkerLeave = useCallback(() => setHoveredIndex(null), []);
+  const hoveredItem = hoveredIndex === null ? null : scene.items[hoveredIndex];
+  const renderContent = useCallback((zoom) => (
+    <>
+      <ShotGeometry scene={scene} onMarkerEnter={onMarkerEnter} onMarkerLeave={onMarkerLeave} />
+      <ShotAnnotations scene={scene} zoom={zoom} />
+    </>
+  ), [onMarkerEnter, onMarkerLeave, scene]);
 
   return (
-    <ZoomPanSvg size={SIZE} maxZoom={MAX_ZOOM}>
-      {(zoom) => (
-        <>
-          <rect x={ox} y={oy} width={w} height={h} fill="rgba(128,128,128,0.05)"
-            stroke="var(--muted)" strokeWidth={1 / zoom} />
-          {/* shot 센터 십자 */}
-          <line x1={toX(0) - 5 / zoom} y1={toY(0)} x2={toX(0) + 5 / zoom} y2={toY(0)} stroke="var(--muted)" strokeWidth={0.8 / zoom} />
-          <line x1={toX(0)} y1={toY(0) - 5 / zoom} x2={toX(0)} y2={toY(0) + 5 / zoom} stroke="var(--muted)" strokeWidth={0.8 / zoom} />
-          {/* die 셀 — c.x/c.y = 셀 좌하단(mm), y 축 반전이라 top = toY(c.y) - 높이.
-              그림 모드는 좌하단 코너(└)를 함께 찍는다 — 그 점이 MAIN TEG 좌표다. */}
-          {cells.map((c, i) => (
-            <g key={i}>
-              <rect x={toX(c.x)} y={toY(c.y) - c.h * s} width={c.w * s} height={c.h * s}
-                fill="rgba(47,158,99,0.08)" stroke="#2f9e63"
-                strokeWidth={(fromImage ? 1.2 : 0.8) / zoom} opacity="0.85" />
-              {fromImage && (
-                <path d={`M${toX(c.x)} ${toY(c.y) - 7 / zoom} L${toX(c.x)} ${toY(c.y)} L${toX(c.x) + 7 / zoom} ${toY(c.y)}`}
-                  fill="none" stroke="#2f9e63" strokeWidth={1.6 / zoom} opacity="0.95" />
-              )}
-              {/* die 이름(MAIN01 …) — 어느 die 인지 알아야 "다른 die 안" 판정이 읽힌다 */}
-              {c.name && (
-                <text x={toX(c.x) + 3 / zoom} y={toY(c.y) - 3 / zoom} fontSize={10 / zoom}
-                  fill="#2f9e63" opacity="0.9" fontWeight={700}>{c.name}</text>
-              )}
-            </g>
-          ))}
-          {/* TEG — 계산 좌표(mm) 기준. 상태별 색을 사각형·테두리·이름에 함께 적용한다.
-              이름은 사각형 안에 들어가도록
-              크기를 맞추므로 확대할수록 커진다. 같은 위치의 항목도 생략하지 않고
-              Mapfile에 나온 전체 행을 그린다. */}
-          {drawItems.map((t) => {
-            const color = SHOT_LIGHT_STYLE[t.light] || SHOT_DEFAULT_STYLE;
-            const x = toX(t.mm_x), yBottom = toY(t.mm_y);
-            const wpx = Math.max(1.5 / zoom, (t.w || 0) * s);
-            const hpx = Math.max(1.5 / zoom, (t.h || 0) * s);
-            const label = String(t.name || "");
-            // Vertical map은 TEG 자체가 반시계/시계 방향으로 선 상태다. 이름도 같은
-            // 방향으로 돌리고, 회전 뒤의 가로·세로를 기준으로 크기를 맞춰 좁은 폭에
-            // 눌려 지나치게 작아지지 않게 한다 (평균 글자폭 ≈ 0.58em).
-            const labelAngle = t.flat_used === "v_R" ? -90 : t.flat_used === "v_L" ? 90 : 0;
-            const labelWidth = labelAngle ? hpx : wpx;
-            const labelHeight = labelAngle ? wpx : hpx;
-            const fs = Math.min(labelHeight * 0.62,
-              (labelWidth * 0.92) / Math.max(1, label.length * 0.58));
-            const labelX = x + wpx / 2, labelY = yBottom - hpx / 2;
-            return (
-              <g key={t.key}>
-                <rect x={x} y={yBottom - hpx} width={wpx} height={hpx}
-                  fill={color.fill} stroke={color.stroke} strokeWidth={1.6 / zoom} />
-                {label && fs * zoom >= 2.5 && (
-                  <text x={labelX} y={labelY} fontSize={fs}
-                    textAnchor="middle" dominantBaseline="central"
-                    transform={labelAngle ? `rotate(${labelAngle} ${labelX} ${labelY})` : undefined}
-                    fill={color.text} fontWeight={700}>{label}</text>
-                )}
-              </g>
-            );
-          })}
-          <text x={SIZE / 2} y={oy + h + 16 / zoom} fontSize={11 / zoom} fill="var(--muted)" textAnchor="middle">
-            {fmtN(Math.round(W * 100) / 100)} mm
-          </text>
-        </>
+    <div style={{ position: "relative", display: "inline-block" }}>
+      <ZoomPanSvg size={SIZE} maxZoom={MAX_SHOT_ZOOM}>
+        {renderContent}
+      </ZoomPanSvg>
+      {hoveredItem && (
+        <div data-shot-hover="true" role="status" style={{ position: "absolute", left: 8, top: 8,
+          maxWidth: Math.max(180, SIZE - 16), padding: "5px 7px", borderRadius: 5,
+          background: "rgba(17,24,39,0.92)", color: "#fff", fontSize: 11, lineHeight: 1.45,
+          whiteSpace: "pre-line", pointerEvents: "none", boxShadow: "0 2px 8px rgba(0,0,0,0.22)" }}>
+          {hoveredItem.tooltip || hoveredItem.label}
+        </div>
       )}
-    </ZoomPanSvg>
+    </div>
   );
 }
+
+const MemoShotView = memo(ShotView);
+
+const ShotExplorer = memo(function ShotExplorer({ shot, items, rawItems, size = 560 }) {
+  // Local state keeps filter/MAIN interactions out of the large validation parent.
+  const [redOnly, setRedOnly] = useState(false);
+  const [selectedName, setSelectedName] = useState("");
+  const groups = useMemo(() => indexShotMains(rawItems, shot.main_cells?.length ? shot.main_cells : shot.cells),
+    [rawItems, shot.main_cells, shot.cells]);
+  const selected = groups.find(group => group.name === selectedName);
+  const redItems = useMemo(() => items.filter(item => item.light === "red"), [items]);
+  const detailItems = useMemo(() => selected
+    ? consolidateShotItemsPure(selected.rawItems, "main-detail") : [], [selected]);
+  const detailRed = useMemo(() => detailItems.filter(item => item.light === "red"), [detailItems]);
+  const detailShot = useMemo(() => selected ? { ...shot, cells: selected.cells } : shot, [shot, selected]);
+  const focus = useMemo(() => shotFocusBounds(detailItems, selected?.cells), [detailItems, selected]);
+  const visible = redOnly ? redItems : items;
+  const detailVisible = redOnly ? detailRed : detailItems;
+  return (
+    <div data-shot-explorer="true" style={{ minWidth: 0 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <Button variant={!redOnly ? "primary" : "ghost"} aria-pressed={!redOnly} onClick={() => setRedOnly(false)}>전체 위치 {items.length}</Button>
+        <Button variant={redOnly ? "primary" : "ghost"} aria-pressed={redOnly} onClick={() => setRedOnly(true)}>빨간 오류만 {redItems.length}</Button>
+        <span style={{ fontSize: 12, color: "var(--muted)" }}>동일 위치는 하나로 표시 · 마우스를 올려 오류 사유 확인</span>
+      </div>
+      {redOnly && !redItems.length && <p role="status">표시할 빨간 오류가 없습니다.</p>}
+      <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: 16 }}>
+        <div aria-label="전체 Shot" style={{ maxWidth: "100%", overflow: "auto" }}>
+          <MemoShotView key={`overview-${redOnly}`} shot={shot} items={visible} size={size} />
+        </div>
+        <aside aria-label="MAIN별 확대" style={{ flex: "1 1 320px", minWidth: 0, maxWidth: 460 }}>
+          <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, fontWeight: 700 }}>
+            MAIN 확대
+            <select aria-label="확대할 MAIN" value={selected?.name || ""} onChange={event => setSelectedName(event.target.value)}
+              style={{ minWidth: 0, flex: 1, padding: 6, background: "var(--bg-card)", color: "var(--text-primary)", border: "1px solid var(--line)", borderRadius: 5 }}>
+              <option value="">MAIN 선택</option>
+              {groups.map(group => <option key={group.name} value={group.name}>{group.name}</option>)}
+            </select>
+          </label>
+          {!selected && <p style={{ fontSize: 12, color: "var(--muted)" }}>{groups.length
+            ? "MAIN을 선택하면 해당 영역과 소속 TEG만 확대합니다. 경계 밖 오류도 포함합니다."
+            : "MAIN 소속·영역 정보가 없습니다."}</p>}
+          {selected && <>
+            <p role="status" style={{ fontSize: 12 }}>{selected.name} · {detailVisible.length}개 위치 · 빨간 오류 {detailRed.length}개</p>
+            {detailVisible.length || selected.cells.length ? <div style={{ maxWidth: "100%", overflow: "auto" }}>
+              <MemoShotView key={`${selected.name}-${redOnly}`} shot={detailShot} items={detailVisible} size={400} focus={focus} />
+            </div> : <p>선택한 조건에 표시할 위치가 없습니다.</p>}
+            {redOnly && !detailRed.length && <p style={{ fontSize: 12 }}>이 MAIN에는 빨간 오류가 없습니다.</p>}
+          </>}
+        </aside>
+      </div>
+    </div>
+  );
+});
 
 /* ── module 이름 후보 chip — 엔지니어마다 이름 위치(module~( / 꼬리표 1·2번째)가
    달라 자동 인식이 틀릴 수 있다. 인식된 토큰은 음영, 다른 토큰 클릭 → 행별 재지정. ── */
@@ -766,7 +892,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const slSummaryRows = slIssues;
   const mainSummaryRows = [...mainRedIssues, ...mainInfoIssues];
   // shot 배치도 — Mapfile 에 나온 대상·미등록·MAIN 앵커를 포함해 전부 그린다.
-  // 같은 위치에 겹쳐도 생략하지 않는다. "전체 표시"와 실제 결과가 같아야 한다.
+  // 같은 좌표의 원문 행은 하나의 대표 박스로 집약하고 호버 상세에 원문 판정을 보존한다.
   const [showAll, setShowAll] = useState(false);
   const [showMain, setShowMain] = useState(false);
   const [showWarn, setShowWarn] = useState(false);
@@ -784,7 +910,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           ...r,
           light: r.die_state === "in" ? "red" : r.light,
           light_reason: r.die_state === "in" ? (r.light_reason || "die 침범") : r.light_reason,
-          key: `r${i}`, w: r.teg_w, h: r.teg_h,
+          key: `r${i}`, kind: "target", w: r.teg_w, h: r.teg_h,
         }))
     : []), [needsShotItems, slRows, seeTarget]);
   const shotMainCandidates = useMemo(() => (needsShotItems && seeMain
@@ -793,15 +919,23 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
         name: t.teg,
         group: group.group,
         light: t.light || "gray",
-        key: `m-${groupIndex}-${index}`,
+        key: `m-${groupIndex}-${index}`, kind: "main",
         w: t.teg_w,
         h: t.teg_h,
       })))
     : []), [needsShotItems, teg.main_groups, seeMain]);
-  const shotTargetRows = shotTargetCandidates;
-  const shotMainRows = shotMainCandidates;
-  const shotItems = useMemo(
-    () => [...shotTargetRows, ...shotMainRows], [shotTargetRows, shotMainRows]);
+  const shotTargetRows = useMemo(
+    () => consolidateShotItemsPure(shotTargetCandidates, "target"),
+    [shotTargetCandidates]
+  );
+  const shotMainRows = useMemo(
+    () => consolidateShotItemsPure(shotMainCandidates, "main"),
+    [shotMainCandidates]
+  );
+  const shotRawItems = useMemo(() => [...shotTargetCandidates, ...shotMainCandidates],
+    [shotTargetCandidates, shotMainCandidates]
+  );
+  const shotItems = useMemo(() => consolidateShotItemsPure(shotRawItems, "shot"), [shotRawItems]);
   const targets = teg.targets || { items: [], matched: 0, missing: 0, total: 0, source: "default" };
   // 이 Mapfile 의 flat → Teg_location direction. 방향이 다른 대상 TEG 는 애초에
   // 이 원문에 없는 게 정상이라 '미설정' 이 아니라 '판정 불가' 로 가른다.
@@ -1131,11 +1265,11 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
         </div>
 
         {res.shot?.available && shotItems.length > 0 && (
-          <div style={{ minWidth: 0, maxWidth: 420, marginTop: 12 }}>
+          <div id="teg-shot-explorer" style={{ minWidth: 0, marginTop: 12 }}>
             <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 5 }}>
               Shot에서 위치 확인 · 빨강=이상 · 노랑=확인 필요 · 초록=정상
             </div>
-            <ShotView shot={res.shot} items={shotItems} size={400} />
+            <ShotExplorer shot={res.shot} items={shotItems} rawItems={shotRawItems} />
           </div>
         )}
       </div>
@@ -1693,8 +1827,8 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             <span style={{ fontWeight: 700 }}>shot 확대 · 전체 표시</span>
             {showTechnical && <span style={{ color: "var(--muted)" }}>
               {fmtN(res.shot.shot_w_mm)}×{fmtN(res.shot.shot_h_mm)} mm · 기준 {res.shot.geometry_source === "product_info" ? "config 제품정보(우선)" : "Chip_Radius fallback"} · shot 센터 = ebeam (0,0)
-              {seeTarget ? ` · 대상 TEG ${shotTargetRows.length}` : ""}
-              {seeMain ? ` · MAIN 내부 TEG ${shotMainRows.length}` : ""}
+              {seeTarget ? ` · 대상 TEG ${shotTargetRows.length}개소${shotTargetCandidates.length > shotTargetRows.length ? ` (원문 ${shotTargetCandidates.length}행)` : ""}` : ""}
+              {seeMain ? ` · MAIN 내부 TEG ${shotMainRows.length}개소${shotMainCandidates.length > shotMainRows.length ? ` (원문 ${shotMainCandidates.length}행)` : ""}` : ""}
               {" 전체 표시"}
             </span>}
             {showTechnical && <Pill tone={res.shot.checked ? "ok" : "warn"} size="sm">
@@ -1709,8 +1843,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           {showTechnical && showRule && (
             <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 6, lineHeight: 1.7 }}>
               계산 좌표(EbeamX/Y × 배율) 기준으로 Mapfile의 대상 TEG, 미등록 행,
-              MAIN 내부 TEG와 MAIN 기준 앵커를 모두 그립니다. 상태색은 사각형과 이름에 같이 적용하고,
-              이름은 사각형 가운데에 넣으므로 확대하면 읽힙니다. 같은 위치에 겹치는 항목도 생략하지 않습니다.
+              MAIN 내부 TEG와 MAIN 기준 앵커를 모두 그립니다. 동일 좌표(같은 자리)에 여러 행이 겹친 경우
+              대표 박스로 집약하여 표시하며(오류 우선), 마우스 호버 시 총 건수와 포함된 TEG 목록을 확인할 수 있습니다.
+              상태색은 사각형과 이름에 같이 적용하고, 이름은 사각형 가운데에 넣으므로 확대하면 읽힙니다.
               정답지에 있는 TEG 는 ΔX·ΔY 가 2 를 넘거나 die 안에 깊이 들어가면 빨간불이고,
               둘 다면 사유에 둘 다 적습니다. <b>die 경계에서 허용오차 안쪽/바깥쪽</b>(⚙️ 설정
               die_tol, ebeam raw 단위)은 노란불 '경계 근처' 입니다.
@@ -1750,7 +1885,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             </div>
           )}
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
-            <ShotView shot={res.shot} items={shotItems} />
+            <a href="#teg-shot-explorer">Shot 전체·빨간 오류·MAIN별 확대 보기 ↑</a>
             <div style={{ minWidth: 240, flex: "0 1 300px", display: "flex",
                           flexDirection: "column", gap: 8 }}>
               {/* 배치도에 그린 대상 TEG 가 5개 미만이면 각 TEG 의 ebeam 좌표도 함께 표시 */}

@@ -693,7 +693,7 @@ def scan(target: str, username: str = "", column: str = "product") -> dict:
     cols, rows = _read_csv(target)
     if not cols:
         raise FileNotFoundError(f"{spec['file']} 을 찾을 수 없습니다 ({_db_root()})")
-    if not _resolve_column(cols, column):
+    if not _resolve_column(cols, column) and column != MODULE_COL:
         raise ValueError(f"{spec['file']} 에 {column} 열이 없어 채울 수 없습니다")
     if str(spec.get("match_source") or "") == "fab_ppid":
         return _scan_ppid_fab(target, spec, cols, rows, username, column)
@@ -800,9 +800,10 @@ def _scan_module(target: str, spec: dict, cols: list[str], rows: list[dict], use
 
     out_rows: list[dict] = []
     counts = {"fill": 0, "change": 0, "same": 0, "miss": 0}
+    has_module_col = bool(module_col)
     for i, row in enumerate(rows):
         step_id = _row_value_ci(row, step_col)
-        current = _row_value_ci(row, module_col or MODULE_COL)
+        current = _row_value_ci(row, module_col) if has_module_col else ""
         proposed = module_for_step(step_id, rules)
         prefix, number = _step_parts(step_id)
         if not proposed:
@@ -830,7 +831,7 @@ def _scan_module(target: str, spec: dict, cols: list[str], rows: list[dict], use
         "file": spec["file"],
         "keys": ["step_id"],
         "products": [],
-        "add_column": False,
+        "add_column": not has_module_col,
         "rows": out_rows,
         "counts": counts,
         "scanned_at": _now(),
@@ -864,9 +865,10 @@ def _scan_module_by_vehicle(target: str, spec: dict, cols: list[str], rows: list
 
     out_rows: list[dict] = []
     counts = {"fill": 0, "change": 0, "same": 0, "miss": 0}
+    has_module_col = bool(_resolve_column(cols, MODULE_COL))
     for i, row in enumerate(rows):
         step_desc = str(row.get(desc_col) or "").strip()
-        current = str(row.get(MODULE_COL) or "").strip()
+        current = _row_value_ci(row, MODULE_COL) if has_module_col else ""
         proposed = module_map.get(_step_desc_key(step_desc), "")
         if not proposed:
             status = "miss"
@@ -894,7 +896,7 @@ def _scan_module_by_vehicle(target: str, spec: dict, cols: list[str], rows: list
         "file": spec["file"],
         "keys": ["step_desc"],
         "products": [],
-        "add_column": False,
+        "add_column": not has_module_col,
         "rows": out_rows,
         "counts": counts,
         "scanned_at": _now(),
@@ -960,8 +962,17 @@ def apply_proposal(target: str, username: str = "", skip_rows: Iterable[int] | N
     with _lock:
         cols, rows = _read_csv_preserving(fp)
         actual_column = _resolve_column(cols, column)
+        added_column = False
         if not actual_column:
-            raise ValueError(f"{proposal['file']} 에 {column} 열이 없어 반영할 수 없습니다")
+            if proposal.get("add_column"):
+                actual_column = column
+                # 사용자 요구사항: module 등 신규 생성 열은 가장 왼쪽에 생기도록 삽입
+                cols.insert(0, actual_column)
+                added_column = True
+                for r in rows:
+                    r[actual_column] = ""
+            else:
+                raise ValueError(f"{proposal['file']} 에 {column} 열이 없어 반영할 수 없습니다")
         selected = []
         for item in proposal.get("rows") or []:
             i = int(item.get("i", -1))
@@ -969,9 +980,9 @@ def apply_proposal(target: str, username: str = "", skip_rows: Iterable[int] | N
                 continue
             if item.get("status") in ("miss", "same"):
                 continue
-            actual = _row_value_ci(rows[i], actual_column)
+            actual = _row_value_ci(rows[i], actual_column) if not added_column else ""
             expected = str(item.get("current") or "").strip()
-            if actual != expected:
+            if not added_column and actual != expected:
                 raise ValueError(
                     f"{proposal['file']} {i + 1}행의 {column} 값이 검사 후 변경되었습니다. "
                     "다시 검사해 전체 Before/After를 확인해 주세요."
@@ -996,4 +1007,4 @@ def apply_proposal(target: str, username: str = "", skip_rows: Iterable[int] | N
             _save_store(store)
 
     return {"ok": True, "file": proposal["file"], "changed": changed,
-            "added_column": False, **post}
+            "added_column": added_column, **post}

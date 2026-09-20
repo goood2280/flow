@@ -399,17 +399,20 @@ def _refresh_dashboard_latest_v4(products: list[str], *, force: bool,
     exported = _canonical_product_set(list(export.get("products") or []))
     expected = _canonical_product_set(targets)
     ok = bool(export.get("ok") and expected and expected.issubset(exported))
+    metadata_failed = bool(export.get("process_meta_errors"))
+    ok = ok and not metadata_failed
     if job_id:
         from core.cache_event_log import heartbeat
         heartbeat(
             job_id,
             (f"대시보드 format v{LATEST_LOT_STEP_CACHE_FORMAT_VERSION} 완료 — "
              f"{int(export.get('row_count') or 0):,}행") if ok
-            else f"대시보드 format v{LATEST_LOT_STEP_CACHE_FORMAT_VERSION} 생성 실패",
+            else ("적용공정정보 캐시 준비 실패 — 갱신 결과를 확인하세요" if metadata_failed
+                  else f"대시보드 format v{LATEST_LOT_STEP_CACHE_FORMAT_VERSION} 생성 실패"),
         )
     return {
         "ok": ok,
-        "error": "" if ok else "canonical_export_incomplete",
+        "error": "" if ok else ("process_meta_incomplete" if metadata_failed else "canonical_export_incomplete"),
         "match_cache": match,
         "latest_cache": export,
     }

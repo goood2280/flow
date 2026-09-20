@@ -71,6 +71,11 @@ function ApplyPreviewDialog({ preview, applying, onCancel, onConfirm }) {
             <div style={{ fontSize: 18, fontWeight: 900 }}>전체 Before / After 확인</div>
             <div style={{ marginTop: 4, color: "var(--text-secondary)", fontSize: 13 }}>
               아래 선택 행 전체가 <b>{preview.file}</b>의 <b>{preview.column}</b> 열에 반영됩니다.
+              {preview.addColumn && (
+                <span style={{ color: "var(--accent)", marginLeft: 8, fontWeight: 700 }}>
+                  ({preview.column} 열이 파일 가장 왼쪽에 새로 추가됩니다)
+                </span>
+              )}
             </div>
           </div>
           <Pill tone="warn" style={{ marginLeft: "auto" }}>{preview.rows.length}행</Pill>
@@ -256,8 +261,7 @@ export default function My_MatchFill({ user }) {
   // (제품 귀속은 Vehicle_matching.csv 가 step_desc 로 이미 정한다).
   // 아래 effect 의 의존성이라 참조가 매 렌더 바뀌지 않게 memo 한다.
   const fillColumns = useMemo(
-    () => (current?.fill_columns || ["product", "module"])
-      .filter(key => (current?.columns || []).some(c => String(c).trim().toLowerCase() === key.toLowerCase())),
+    () => (current?.fill_columns || ["product", "module"]),
     [current],
   );
   // module 원천: step 번호 구간표(step_range) vs Vehicle_matching step_desc.
@@ -317,6 +321,7 @@ export default function My_MatchFill({ user }) {
       rows: applyRows.map(row => ({ ...row, id: { ...(row.id || {}) } })),
       skipRows: [...skip],
       scannedAt: proposal?.scanned_at || "",
+      addColumn: Boolean(proposal?.add_column),
     });
   };
 
@@ -430,7 +435,7 @@ export default function My_MatchFill({ user }) {
               <b style={{ fontFamily: "monospace" }}>{current.file}</b>
               <Pill tone={current.csv_exists ? "ok" : "bad"}>{current.csv_exists ? `${current.csv_rows}행` : "CSV 없음"}</Pill>
               <Pill tone={hasCurrentColumn ? "ok" : "warn"}>
-                {hasCurrentColumn ? `${column} 열 있음` : "지원되는 채울 열 없음"}
+                {hasCurrentColumn ? `${column} 열 있음` : `${column} 열 없음 (반영 시 가장 왼쪽에 추가)`}
               </Pill>
               {fabProcessMatch ? (
                 <span style={{ color: "var(--text-secondary)", fontSize: 13 }}>

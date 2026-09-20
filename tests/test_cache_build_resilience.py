@@ -159,7 +159,7 @@ def test_lookup_recovers_interrupted_directory_switch(cache_env):
     assert not previous.exists()
 
 
-@pytest.mark.parametrize("total,expected", [(10, 8.0), (23, 18.4)])
+@pytest.mark.parametrize("total,expected", [(10, 8.0), (23, 18.4), (24, 19.2)])
 def test_five_core_host_reserves_cpu_and_memory(monkeypatch, total, expected):
     from core import runtime_limits
     for name in ("FLOW_CPU_BUDGET_CORES", "FLOW_PROCESS_MEMORY_LIMIT_GB",

@@ -4,6 +4,22 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def isolate_process_metadata_snapshots(monkeypatch, tmp_path):
+    """Route/export tests must never publish derived metadata into live Base."""
+    import hashlib
+    from routers import splittable
+    from app_v2.modules.splittable.process_meta_cache import ProcessMetaCache
+
+    monkeypatch.setattr(splittable, "_PROCESS_META_CACHE", ProcessMetaCache())
+    monkeypatch.setattr(
+        splittable, "_process_meta_cache_path",
+        lambda product: tmp_path / "process-meta" / (
+            hashlib.sha256(product.upper().encode("utf-8")).hexdigest() + ".json"
+        ),
+    )
+
+
+@pytest.fixture(autouse=True)
 def isolate_llm_usage(monkeypatch, tmp_path):
     from core import llm_usage
     monkeypatch.setattr(llm_usage, "_path", lambda: tmp_path / "llm_usage.json")
