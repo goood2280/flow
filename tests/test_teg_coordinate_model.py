@@ -3,6 +3,7 @@ import math
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -294,6 +295,25 @@ def test_explicit_main_group_without_main_chip_info_is_orange(monkeypatch):
     assert group["tegs"][1]["main_group"] == "MAIN01"
     assert group["tegs"][1]["light"] == "orange"
     assert group["tegs"][1]["light_reason"] == "MAIN 정보없음 · 소속 MAIN01"
+
+
+def test_main_info_missing_orange_state_is_rendered_as_yellow():
+    source = (
+        Path(__file__).parents[1]
+        / "frontend"
+        / "src"
+        / "features"
+        / "teg"
+        / "TegCheck.jsx"
+    ).read_text(encoding="utf-8")
+
+    # `orange` remains in persisted/backend contracts, but its visual treatment
+    # is intentionally identical to the normal yellow review state.
+    assert 'orange: "🟡", yellow: "🟡"' in source
+    assert "orange: REVIEW_YELLOW" in source
+    assert 'orange: { stroke: "#a16207", text: "#854d0e", fill: "rgba(234,179,8,0.34)" }' in source
+    assert "🟠 MAIN 정보없음" not in source
+    assert "🟠 MAIN 정보누락" not in source
 
 
 @pytest.mark.parametrize("module_name, ref_name, rule_name", [
@@ -1241,6 +1261,30 @@ def test_product_config_keeps_l_map_and_shape_rules():
     assert product["modules"][0]["flat"] == "v_L"
     assert teg_map.normalize_direction("", "VL_PCHK") == "v_L"
     assert teg_map.normalize_direction("", "V_L_SPECIAL") == "v_L"
+
+
+@pytest.mark.parametrize("name", ["BEOL_VMA", "VNCAP", "VMA", "VIA", "VOLTAGE"])
+def test_direction_name_fallback_requires_v_underscore_prefix(name):
+    assert teg_map.normalize_direction("", name) == "h"
+    # A misplaced name in the direction field must not be accepted merely
+    # because it starts with V.
+    assert teg_map.normalize_direction(name, "UNPREFIXED") == "h"
+
+
+@pytest.mark.parametrize("name", ["V_TEG", "v_ncap", "V_PCHK"])
+def test_direction_name_fallback_accepts_v_underscore_prefix(name):
+    assert teg_map.normalize_direction("", name) == "v"
+
+
+@pytest.mark.parametrize("value", ["V", "Vertical", "Vertical(R)", "v_R", "VR", "세로"])
+def test_direction_column_accepts_only_supported_vertical_tokens(value):
+    assert teg_map.normalize_direction(value, "BEOL_VMA") == "v"
+
+
+def test_default_check_targets_do_not_treat_embedded_or_plain_v_as_vertical():
+    assert teg_map.default_check_targets([
+        "V_TEG", "H_TEG", "BEOL_VMA", "VNCAP", "VIA", "OTHER",
+    ]) == ["V_TEG", "H_TEG"]
 
 
 def test_vehicle_wafer_edge_uses_147_default_and_product_override():

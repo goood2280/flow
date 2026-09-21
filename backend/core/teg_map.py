@@ -2090,11 +2090,14 @@ def normalize_direction(value: Any, teg_name: str = "") -> str:
                 return "v"
             if norm in (0, 180):
                 return "h"
-        if s.startswith(("v_l", "vl", "vertical(l)", "vertical l", "왼쪽")):
+        # 방향 열은 허용된 토큰만 정확히 일치시킨다. 예전 startswith 판정은
+        # VNCAP, VMA 같은 실제 TEG/공정 이름이 실수로 이 열에 들어왔을 때도
+        # Vertical로 해석했다. 이름 기반 폴백은 아래의 V_ 접두 규칙만 담당한다.
+        if s in {"v_l", "vl", "v(l)", "vertical(l)", "vertical l", "왼쪽"}:
             return "v_L"
-        if s.startswith(("v", "세로")):
+        if s in {"v", "v_r", "vr", "v(r)", "vertical", "vertical(r)", "vertical r", "세로"}:
             return "v"
-        if s.startswith(("h", "가로")):
+        if s in {"h", "horizontal", "가로"}:
             return "h"
     name = str(teg_name or "").strip().upper()
     if name.startswith(("V_L", "VL_", "L_PCHK", "L_PRBCHK")):

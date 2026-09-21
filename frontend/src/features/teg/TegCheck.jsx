@@ -6,14 +6,14 @@
       🟢 일치 / 🟡 확인필요(ΔX·ΔY 각 2 이내) / 🔴 불일치 / ⚪ 미등록 로 표시.
    오프셋(flat 기본·TEG별·회전 offset)은 ⚙️ 설정의 "TEG Mapfile 체크" 섹션에서 편집.
 */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { putJson, sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
 import { Button, Card, DataTable, EmptyState, LinkBtn, Pill, Select, TabStrip, Textarea } from "../../components/UXKit";
 import ZoomPanSvg from "../../components/ZoomPanSvg";
 import TegMapfileVersionComments from "./TegMapfileVersionComments";
-import { consolidateShotItems as consolidateShotItemsPure, indexShotMains, shotFocusBounds } from "./shotItems.mjs";
+import { consolidateShotItems as consolidateShotItemsPure, indexShotMains, shotFocusBounds, shotItemsInCells } from "./shotItems.mjs";
 
 const API = "/api/teg-map";
 
@@ -29,17 +29,20 @@ const ISSUE_PAGE_SIZE = 200;
 const MAIN_GROUP_PAGE_SIZE = 50;
 
 const STATUS_ICON = { match: "🟢", warning: "🟡", mismatch: "🔴", extended: "🟣", missing: "⚪", noref: "—" };
-const LIGHT_ICON = { red: "🔴", orange: "🟠", yellow: "🟡", purple: "🟣", green: "🟢", gray: "⚪" };
+// Backend의 `orange`는 기존 저장 snapshot/집계 호환용 상태명으로 유지하되,
+// 사용자에게는 다른 확인필요 상태와 같은 노란색으로 표시한다.
+const REVIEW_YELLOW = "#d99a1a";
+const LIGHT_ICON = { red: "🔴", orange: "🟡", yellow: "🟡", purple: "🟣", green: "🟢", gray: "⚪" };
 const FLAT_LABELS = { h: "Horizontal", v_R: "Vertical(R)", v_L: "Vertical(L)" };
 
 // 조회되어야 할 TEG 목록 신호등 — 색상 차순 정렬 기준(작을수록 위): 빨강 → 미등록 → 노랑 → 초록.
-const LIGHT_COLORS = { red: "#dc2626", orange: "#f97316", gray: "#9ca3af", yellow: "#d99a1a", green: "#2f9e63",
+const LIGHT_COLORS = { red: "#dc2626", orange: REVIEW_YELLOW, gray: "#9ca3af", yellow: REVIEW_YELLOW, green: "#2f9e63",
                        purple: "#7c3aed", dim: "#cbd5e1" };
 const LIGHT_RANK = { red: 0, orange: 1, gray: 2, yellow: 3, purple: 4, green: 5, dim: 6 };
 const RED_EDGE = "#991b1b";   // shot 확대의 빨간불 테두리 (진한 빨강)
 const SHOT_LIGHT_STYLE = {
   red: { stroke: RED_EDGE, text: LIGHT_COLORS.red, fill: "rgba(220,38,38,0.16)" },
-  orange: { stroke: "#c2410c", text: "#c2410c", fill: "rgba(249,115,22,0.28)" },
+  orange: { stroke: "#a16207", text: "#854d0e", fill: "rgba(234,179,8,0.34)" },
   yellow: { stroke: "#a16207", text: "#854d0e", fill: "rgba(234,179,8,0.34)" },
   green: { stroke: "#166534", text: "#166534", fill: "rgba(34,197,94,0.30)" },
   purple: { stroke: LIGHT_COLORS.purple, text: LIGHT_COLORS.purple, fill: "rgba(124,58,237,0.20)" },
@@ -568,11 +571,11 @@ const ShotAnnotations = memo(function ShotAnnotations({ scene, zoom }) {
   );
 });
 
-function ShotView({ shot, items, size = 560, focus = null }) {
+function ShotView({ shot, items, size = 560, focus = null, exactFocus = false }) {
   const SIZE = size;
   const W = focus?.width || shot.shot_w_mm, H = focus?.height || shot.shot_h_mm;
   const centerX = focus?.centerX || 0, centerY = focus?.centerY || 0;
-  const pad = 0.12;
+  const pad = exactFocus ? 0 : 0.12;
   const s = SIZE / Math.max(W * (1 + pad * 2), H * (1 + pad * 2));
   const w = W * s, h = H * s;
   const ox = (SIZE - w) / 2, oy = (SIZE - h) / 2;
@@ -583,6 +586,7 @@ function ShotView({ shot, items, size = 560, focus = null }) {
   // 개발 격자만 좌하단 코너(└)를 찍는다 — 그 점이 MAIN TEG 좌표다.
   const fromImage = shot.cell_source === "dev_grid";
   const [hoveredIndex, setHoveredIndex] = useState(null);
+  const focusClipId = `shot-focus-${useId().replace(/:/g, "")}`;
 
   const scene = useMemo(() => {
     const sceneItems = items.map((t, index) => {
@@ -627,10 +631,16 @@ function ShotView({ shot, items, size = 560, focus = null }) {
   const hoveredItem = hoveredIndex === null ? null : scene.items[hoveredIndex];
   const renderContent = useCallback((zoom) => (
     <>
-      <ShotGeometry scene={scene} onMarkerEnter={onMarkerEnter} onMarkerLeave={onMarkerLeave} />
-      <ShotAnnotations scene={scene} zoom={zoom} />
+      {exactFocus && <defs><clipPath id={focusClipId}>
+        <rect x={scene.ox} y={scene.oy} width={scene.w} height={scene.h} />
+      </clipPath></defs>}
+      <g data-shot-focus-clip={exactFocus ? "true" : undefined}
+        clipPath={exactFocus ? `url(#${focusClipId})` : undefined}>
+        <ShotGeometry scene={scene} onMarkerEnter={onMarkerEnter} onMarkerLeave={onMarkerLeave} />
+        <ShotAnnotations scene={scene} zoom={zoom} />
+      </g>
     </>
-  ), [onMarkerEnter, onMarkerLeave, scene]);
+  ), [exactFocus, focusClipId, onMarkerEnter, onMarkerLeave, scene]);
 
   return (
     <div style={{ position: "relative", display: "inline-block" }}>
@@ -660,10 +670,12 @@ const ShotExplorer = memo(function ShotExplorer({ shot, items, rawItems, size = 
   const selected = groups.find(group => group.name === selectedName);
   const redItems = useMemo(() => items.filter(item => item.light === "red"), [items]);
   const detailItems = useMemo(() => selected
-    ? consolidateShotItemsPure(selected.rawItems, "main-detail") : [], [selected]);
+    ? consolidateShotItemsPure(shotItemsInCells(selected.rawItems, selected.cells), "main-detail") : [], [selected]);
   const detailRed = useMemo(() => detailItems.filter(item => item.light === "red"), [detailItems]);
   const detailShot = useMemo(() => selected ? { ...shot, cells: selected.cells } : shot, [shot, selected]);
-  const focus = useMemo(() => shotFocusBounds(detailItems, selected?.cells), [detailItems, selected]);
+  // MAIN 확대는 소속 TEG나 경계 밖 오류까지 fit하지 않고 MAIN 사각형 자체만
+  // viewport로 삼는다. 주변 항목은 위에서 제외하고 경계 겹침은 ShotView가 clip한다.
+  const focus = useMemo(() => shotFocusBounds([], selected?.cells), [selected]);
   const visible = redOnly ? redItems : items;
   const detailVisible = redOnly ? detailRed : detailItems;
   return (
@@ -688,13 +700,14 @@ const ShotExplorer = memo(function ShotExplorer({ shot, items, rawItems, size = 
             </select>
           </label>
           {!selected && <p style={{ fontSize: 12, color: "var(--muted)" }}>{groups.length
-            ? "MAIN을 선택하면 해당 영역과 소속 TEG만 확대합니다. 경계 밖 오류도 포함합니다."
+            ? "MAIN을 선택하면 해당 MAIN 사각형 안쪽만 확대합니다."
             : "MAIN 소속·영역 정보가 없습니다."}</p>}
           {selected && <>
             <p role="status" style={{ fontSize: 12 }}>{selected.name} · {detailVisible.length}개 위치 · 빨간 오류 {detailRed.length}개</p>
-            {detailVisible.length || selected.cells.length ? <div style={{ maxWidth: "100%", overflow: "auto" }}>
-              <MemoShotView key={`${selected.name}-${redOnly}`} shot={detailShot} items={detailVisible} size={400} focus={focus} />
-            </div> : <p>선택한 조건에 표시할 위치가 없습니다.</p>}
+            {selected.cells.length ? <div style={{ maxWidth: "100%", overflow: "auto" }}>
+              <MemoShotView key={`${selected.name}-${redOnly}`} shot={detailShot} items={detailVisible}
+                size={400} focus={focus} exactFocus />
+            </div> : <p>선택한 MAIN의 사각형 정보가 없습니다.</p>}
             {redOnly && !detailRed.length && <p style={{ fontSize: 12 }}>이 MAIN에는 빨간 오류가 없습니다.</p>}
           </>}
         </aside>
@@ -1151,7 +1164,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             title="해당 행의 MAIN~~ 내부에 있고 Main_chip_info의 Main chip 허용범위를 만족">
             🟡 확인필요 {mainYellowCount}개
           </Pill>
-          <Pill tone={mainOrangeCount ? "warn" : "neutral"}>🟠 MAIN 정보없음 {mainOrangeCount}개</Pill>
+          <Pill tone={mainOrangeCount ? "warn" : "neutral"}>🟡 MAIN 정보없음 {mainOrangeCount}개</Pill>
           {mainGrayCount > 0 && <Pill tone="neutral">⚪ 판정 불가 {mainGrayCount}개</Pill>}
         </div>
       ) : null;
@@ -1161,7 +1174,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     <div key={item.key} role="alert"
       style={{ fontSize: 12, fontWeight: 600, color: item.light === "red"
         ? "var(--text-primary)" : LIGHT_COLORS[item.light || "orange"], lineHeight: 1.55 }}>
-      {item.light === "orange" ? "🟠" : "🔴"}{" "}
+      {item.light === "orange" ? "🟡" : "🔴"}{" "}
       {item.light === "red" ? <RedCountText text={item.text} /> : item.text}
     </div>
   ));
@@ -1609,7 +1622,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                                 background: "rgba(245, 158, 11, 0.08)" }}>
                 <summary style={{ fontSize: 11, color: "var(--warn)", fontWeight: 800,
                                   cursor: "pointer", userSelect: "none" }}>
-                  🟠 MAIN 정보누락 TEG {mainInfoIssues.length}개
+                  🟡 MAIN 정보누락 TEG {mainInfoIssues.length}개
                   {mainInfoIssues.length > ISSUE_PAGE_SIZE ? ` · 상위 ${ISSUE_PAGE_SIZE}개 표시` : ""}
                 </summary>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -1646,7 +1659,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                       </Pill>
                     )}
                     {g.main_info_missing && (
-                      <Pill tone="warn" size="sm">🟠 MAIN 정보없음</Pill>
+                      <Pill tone="warn" size="sm">🟡 MAIN 정보없음</Pill>
                     )}
                     {g.red > 0 && (
                       <Pill tone="danger" size="sm"
@@ -1665,7 +1678,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                     {g.orange > 0 && (
                       <Pill tone="warn" size="sm"
                         title={`${g.group}의 MAIN 크기·위치 정보가 없어 판정할 수 없습니다`}>
-                        🟠 {g.orange}
+                        🟡 {g.orange}
                       </Pill>
                     )}
                   </div>

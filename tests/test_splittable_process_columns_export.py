@@ -212,6 +212,53 @@ def test_f_step_route_tracks_unmatched_current_step_and_excludes_unmapped_rows(m
     splittable._STEP_ORDER_CTX_CACHE.clear()
 
 
+def test_f_step_progress_uses_in_route_step_when_knob_also_has_out_of_route_step(monkeypatch):
+    from routers import splittable
+
+    splittable._STEP_ORDER_CTX_CACHE.clear()
+    monkeypatch.setattr(splittable, "_s0_sop_catalog", lambda: {
+        "p1": {
+            "product": "P1",
+            "step_order": ["ST100", "ST200", "ST300"],
+            "rows": {
+                "st100": {"step_id": "ST100", "ppid": "PP1"},
+                "st200": {"step_id": "ST200", "ppid": "PP2"},
+                "st300": {"step_id": "ST300", "ppid": "PP3"},
+            },
+        }
+    })
+    monkeypatch.setattr(splittable, "_load_knob_step_matching_rows", lambda *args, **kwargs: [
+        {"product": "P1", "step_id": "ST100", "step_desc": "MIXED"},
+        {"product": "P1", "step_id": "ST999", "step_desc": "MIXED_EXTRA"},
+    ])
+    monkeypatch.setattr(splittable, "_sch", lambda name: {
+        "product_col": "product", "step_id_col": "step_id", "step_desc_col": "step_desc",
+    } if name == "step_matching" else {})
+    monkeypatch.setattr(splittable, "_load_prefixes", lambda: ["KNOB"])
+    monkeypatch.setattr(splittable, "_mltable_schema_columns", lambda *args, **kwargs: ["KNOB_MIXED"])
+    monkeypatch.setattr(splittable, "_inferred_stage_meta", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_build_knob_meta", lambda *args, **kwargs: {
+        "MIXED": {"groups": [{"step_ids": ["ST100", "ST999"]}]},
+    })
+    monkeypatch.setattr(splittable, "_build_inline_meta", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_build_vm_meta", lambda *args, **kwargs: {})
+    monkeypatch.setattr(splittable, "_root_latest_step_state", lambda *args, **kwargs: {
+        "step_id": "ST100",
+        "by_wafer": {"1": "ST100"},
+    })
+
+    context = splittable._split_step_order_context("P1")
+    progress = splittable._split_step_progress("P1", "ROOT1", ["KNOB_MIXED"], [1])
+
+    # ST999 is display-only. It must not shadow the valid ST100 mapping and
+    # drop this KNOB from the authoritative progress contract.
+    assert context["param_step"]["KNOB_MIXED"] == "ST999"
+    assert context["progress_param_rank"]["KNOB_MIXED"] == context["seq_rank"]["ST100"]
+    assert progress["tracked"] == ["KNOB_MIXED"]
+    assert progress["not_reached"] == []
+    splittable._STEP_ORDER_CTX_CACHE.clear()
+
+
 def test_fab_missing_greys_only_f_step_tracked_parameters(monkeypatch):
     from routers import splittable
 
@@ -244,6 +291,9 @@ def test_split_table_unmatched_knob_without_step_id_uses_empty_split_grey_bounda
     assert "return isKnobProgressRow(row?._param)&&!any" in source
     assert "if(!rowHasMappedStep[ri])return false" not in source
     assert "const progressNotReached=rowTracksStepProgress[ri]&&" in source
+    assert source.index("if(progressNotReached)return true") < source.index(
+        "if(ri<lastFilledRowByCol[ci])return false"
+    )
 
 
 def test_split_table_applied_process_requires_step_id_for_knob():

@@ -2281,6 +2281,15 @@ def _split_step_order_context(product: str) -> dict:
         param_step: dict[str, str] = {}
         progress_rank_candidates: dict[str, int] = {}
         progress_param_step: dict[str, str] = {}
+        # 진행 판정의 대표 step은 반드시 실제 f_step route 안에서 고른다.
+        # 표시용 메타에는 route 밖의 matching-only step도 섞일 수 있는데, 여러
+        # step_id를 가진 KNOB에서 그 값이 더 뒤에 있으면 기존에는 대표값을
+        # 가로채 행 전체가 progress 추적에서 빠졌다. route 안 후보만 남긴 맵으로
+        # 대표값을 고르면 표시 순서는 유지하면서 미진행 회색 판정은 복구된다.
+        progress_seq_rank = {
+            sid: rank for sid, rank in seq_rank.items()
+            if not route_steps or sid in route_steps
+        }
 
         # FAB/MASK 등 별도 matching CSV가 없는 prefix는 ML_TABLE 컬럼명과
         # Vehicle step_desc/module의 stage 추론 결과로 먼저 등록한다.
@@ -2302,7 +2311,7 @@ def _split_step_order_context(product: str) -> dict:
                 param_rank, param_step, inferred_meta, pref, display_seq_rank,
             )
             _register_step_order_meta(
-                progress_rank_candidates, progress_param_step, inferred_meta, pref, seq_rank,
+                progress_rank_candidates, progress_param_step, inferred_meta, pref, progress_seq_rank,
             )
 
         # 명시적 matching 메타는 추론값보다 우선한다. KNOB 메타 안에는 매칭 CSV에
@@ -2313,7 +2322,7 @@ def _split_step_order_context(product: str) -> dict:
                 overwrite=True,
             )
             _register_step_order_meta(
-                progress_rank_candidates, progress_param_step, meta_map, pref, seq_rank,
+                progress_rank_candidates, progress_param_step, meta_map, pref, progress_seq_rank,
                 overwrite=True,
             )
         # When f_step exists, only parameters whose representative step is in

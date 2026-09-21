@@ -241,7 +241,8 @@ def test_admin_rule_api_persists_and_real_dispatch_uses_current_identifiers(rout
     assert out["usage"]["llm_calls_used"] == 0
 
 
-def test_current_router_is_discovered_and_packaged_without_retired_agent():
+def test_current_routers_are_discovered_and_packaged_without_retired_agent():
+    import ast
     import importlib.util
     import logging
     from pathlib import Path
@@ -251,9 +252,32 @@ def test_current_router_is_discovered_and_packaged_without_retired_agent():
     loaded, failed = include_router_modules(app, root / "backend/routers", logging.getLogger("test"), only=["flowi_routes"])
     assert loaded == ["flowi_routes"] and failed == []
     assert "/api/flowi-learning/routing" in {r.path for r in app.routes}
+    home_app = FastAPI()
+    loaded, failed = include_router_modules(home_app, root / "backend/routers", logging.getLogger("test"), only=["data_chat"])
+    assert loaded == ["data_chat"] and failed == []
+    assert {
+        "/api/home-agent/status",
+        "/api/home-agent/probe",
+        "/api/home-agent/conversations",
+    } <= {r.path for r in home_app.routes}
     spec = importlib.util.spec_from_file_location("flowi_test_builder", root / "_build_setup.py")
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
     files = {p.relative_to(root).as_posix() for p in builder.gather_files()}
-    assert {"backend/routers/flowi_routes.py", "backend/core/flowi_routing.py", "backend/core/flowi_turn.py", "frontend/src/features/admin/FlowiRoutesPanel.jsx"} <= files
+    assert {
+        "backend/routers/data_chat.py",
+        "backend/routers/flowi_routes.py",
+        "backend/core/flowi_gate.py",
+        "backend/core/flowi_routing.py",
+        "backend/core/flowi_turn.py",
+        "frontend/src/features/admin/FlowiRoutesPanel.jsx",
+    } <= files
     assert "backend/routers/flowi_learning.py" not in files
+    app_tree = ast.parse((root / "backend/app.py").read_text(encoding="utf-8"))
+    required_sources = next(
+        ast.literal_eval(node.value)
+        for node in app_tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "_REQUIRED_BUNDLED_BACKEND_SOURCES" for target in node.targets)
+    )
+    assert "backend/core/flowi_gate.py" in required_sources

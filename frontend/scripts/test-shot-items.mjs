@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { build } from "esbuild";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { consolidateShotItems, indexShotMains, shotFocusBounds } from "../src/features/teg/shotItems.mjs";
+import { consolidateShotItems, indexShotMains, shotFocusBounds, shotItemsInCells } from "../src/features/teg/shotItems.mjs";
 
 const frontendDir = dirname(dirname(fileURLToPath(import.meta.url)));
 const tegFile = join(frontendDir, "src/features/teg/TegCheck.jsx");
@@ -63,6 +63,17 @@ test("keeps an outside MAIN error owned by its MAIN", () => {
   assert.equal(main01.rawItems[1].name, "outside");
   assert.equal(main01.rawItems[1].light, "red");
   assert.equal(main02.rawItems.length, 0);
+});
+
+test("MAIN detail keeps only markers touching the selected rectangle", () => {
+  const cells = [{ name: "MAIN01", x: -2, y: -2, w: 4, h: 4 }];
+  const result = shotItemsInCells([
+    row({ name: "inside", mm_x: 0, mm_y: 0, w: 0.2, h: 0.2 }),
+    row({ name: "boundary", mm_x: 1.9, mm_y: 0, w: 0.2, h: 0.2 }),
+    row({ name: "nearby", mm_x: 2.2, mm_y: 0, w: 0.2, h: 0.2 }),
+    row({ name: "far", mm_x: 20, mm_y: 6, w: 1, h: 1 }),
+  ], cells);
+  assert.deepEqual(result.map(item => item.name), ["inside", "boundary"]);
 });
 
 test("consolidates same-coordinate rows independently per MAIN ownership", () => {
@@ -227,6 +238,18 @@ test("ShotView bounds eager labels while retaining every marker", () => {
   assert.equal((markup.match(/data-shot-label="true"/g) || []).length, 80);
   assert.match(markup, /rotate\(-90/);
   assert.match(markup, /rotate\(90/);
+});
+
+test("ShotView exact focus clips drawing to the MAIN rectangle", () => {
+  const markup = renderToStaticMarkup(React.createElement(ShotView, {
+    shot: { shot_w_mm: 100, shot_h_mm: 100, cells: [{ name: "MAIN01", x: -2, y: -2, w: 4, h: 4 }] },
+    items: consolidateShotItems([row({ name: "inside", mm_x: 0, mm_y: 0 })]),
+    size: 400,
+    focus: { centerX: 0, centerY: 0, width: 4, height: 4 },
+    exactFocus: true,
+  }));
+  assert.match(markup, /data-shot-focus-clip="true"/);
+  assert.match(markup, /clip-path="url\(#shot-focus-/);
 });
 
 test("ShotExplorer SSR renders one overview and leaves MAIN detail lazy", () => {

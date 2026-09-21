@@ -3249,7 +3249,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         //   ② split table 에 이 step 의 split 자체가 없다 (행 전체가 비어 있음)
         // 단, 같은 wafer 열에서 **더 뒤 step 에 split 이 채워져 있으면** 그 앞의 빈
         // 칸은 칠하지 않는다 — 가운데가 빈 건 "아직 안 왔다"가 아니라 그 step 에 값이
-        // 없는 것뿐이다. 회색은 마지막으로 채워진 split **뒤에서만** 시작한다.
+        // 없는 것뿐이다. 다만 FAB latest가 명시적으로 미진행이라고 판정한 칸은 이
+        // 보조 경계보다 우선한다. 회색은 마지막으로 채워진 split **뒤에서만** 시작한다.
         //
         // f_step route에 없는 step_id 미매칭 행도 값이 전혀 없으면 회색이다.
         // 단, 진행 경계에서는 제외한다. 그 행의 값이 실제 미진행 공정 회색을 막으면 안 된다.
@@ -3799,12 +3800,15 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
             const cellNotReachedAt=(ci)=>{
               if(!isKnobProgressRow(rowParam))return false;
               if(hasValue(cellDisplayValueAt(ci)))return false;
-              // 이 wafer 열에서 더 뒤 step 에 split 이 채워져 있으면 여긴 아직 회색이 아니다.
-              if(ri<lastFilledRowByCol[ci])return false;
               const progressNotReached=rowTracksStepProgress[ri]&&(hasWaferStepProgress
                 ? waferProgressAt(ci)?.notReached?.has(rowParam)===true
                 : notReachedParams.has(rowParam));
-              return progressNotReached||rowHasNoSplit[ri]===true;
+              // FAB latest의 명시적 미진행 판정은 행 위치 기반 보조 경계보다
+              // 신뢰도가 높다. 뒤 행에 값이 있더라도 현재 step 뒤의 빈 칸이면 회색이다.
+              if(progressNotReached)return true;
+              // progress 계약이 없는 빈 KNOB만 마지막 실값 뒤에서 보조 회색 처리한다.
+              if(ri<lastFilledRowByCol[ci])return false;
+              return rowHasNoSplit[ri]===true;
             };
             const waferNotReachedFlags=(data.headers||[]).map((_,ci)=>cellNotReachedAt(ci));
             const waferNotReachedCount=waferNotReachedFlags.filter(Boolean).length;

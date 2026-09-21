@@ -1,7 +1,18 @@
 {
-  "version": "10.4.296",
+  "version": "10.4.297",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.297",
+      "date": "2026-09-21",
+      "tag": "fix",
+      "title": "Flow-i 연결 복구와 SplitTable WIP·TEG Mapfile 판정 표시 보정",
+      "changes": [
+        "[Flow-i] LLM 프리셋을 Gemma4로 단일화하고 설치 번들에서 누락되던 권한 게이트 소스를 포함해 홈 연결 상태와 대화 목록 조회를 복구.",
+        "[SplitTable] 값이 없는 KNOB가 현재 WIP 이후 공정이면 뒤 행 값과 무관하게 회색 처리하고, 복수 step_id에서 route 밖 단계가 진행 판정을 가로채지 않도록 보정.",
+        "[TEG Mapfile] MAIN 정보없음 상태를 노란색으로 통일하고 V_ 접두 또는 명시적 방향값만 Vertical로 판정하며, MAIN 확대는 선택한 MAIN 사각형 내부만 표시하도록 제한."
+      ]
+    },
     {
       "version": "10.4.296",
       "date": "2026-09-20",

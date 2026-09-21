@@ -154,31 +154,7 @@ LLM_NAMED_PRESETS: List[Dict[str, Any]] = [
         "key": "gemma4_internal", "label": "Gemma4 (사내)",
         "description": "Gemma4-260430 · 관리자 전용 · 최근 60초 공용 25회. URL·credential key·Send-System-Name을 별도로 저장합니다.",
         "provider": "gemma4", "model": "Gemma4-260430", "auth_mode": "dep_ticket",
-        "format": "openai", "timeout_s": 60, "is_default": False,
-    },
-    {
-        "key": "gpt_oss_120b_internal",
-        "label": "GPT OSS 120B (사내)",
-        "description": "사내 운영 GPT OSS 120B endpoint. Flow 기본 LLM 백본.",
-        "provider": "playground",
-        "model": "gpt-oss-120b",
-        "auth_mode": "dep_ticket",
-        "format": "openai",
-        "timeout_s": 60,
-        "api_url_hint": "https://llm.internal/v1/chat/completions",
-        "is_default": True,
-    },
-    {
-        "key": "dev_openai_mini",
-        "label": "Dev: OpenAI 5.4-mini",
-        "description": "로컬/외부 개발 fallback. OpenAI 호환 mini 모델.",
-        "provider": "openai",
-        "model": "gpt-5.4-mini",
-        "auth_mode": "bearer",
-        "format": "openai",
-        "timeout_s": 20,
-        "api_url_hint": "https://api.openai.com/v1/chat/completions",
-        "is_default": False,
+        "format": "openai", "timeout_s": 60, "is_default": True,
     },
 ]
 
@@ -1660,8 +1636,8 @@ def admin_set_share_base_url(req: ShareBaseUrlReq, _user=Depends(current_user)):
 
 # ── LLM presets (P1) ──────────────────────────────────────────────
 # Admin-only safe metadata for one-click LLM profile selection. Returns the
-# `gpt_oss_120b_internal` (Flow 기본) plus dev fallback presets. Secret fields
-# (api_url, admin_token) are NEVER returned — admin fills them in the panel.
+# Gemma4 is the only operator-facing preset. Secret fields (api_url,
+# admin_token) are NEVER returned — admin fills them in the panel.
 @router.get("/llm/presets")
 def admin_llm_presets(_admin=Depends(require_admin)):
     return {

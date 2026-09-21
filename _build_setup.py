@@ -104,9 +104,9 @@ EXCLUDE_PARTS = {
     'archive', 'reference', 'backup',
 }
 
-# Flow-i is parked locally under backup/flowi-* until the feature can be used
-# again. Keep the deployable installer free of its router graph, unit agents,
-# UI, and tests; backup/ is already excluded above and remains local-only.
+# The retired agent runtime is parked locally under backup/flowi-*. Keep that
+# graph out of the deployable installer, but preserve dependencies used by the
+# active home data chat (`backend/routers/data_chat.py`).
 FLOWI_EXCLUDE_PREFIXES = (
     'backend/app_v2/modules/llm/',
     'backend/app_v2/modules/agent_runtime/',
@@ -117,7 +117,6 @@ FLOWI_EXCLUDE_PREFIXES = (
 FLOWI_EXCLUDE_FILES = {
     'backend/core/flowi_fewshots.py',
     'backend/core/flowi_file_docs.py',
-    'backend/core/flowi_gate.py',
     'backend/core/flowi_multisource.py',
     'backend/core/flowi_workflow_catalog.py',
     'backend/core/flowi_workflow_defaults.json',

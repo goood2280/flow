@@ -169,6 +169,7 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/core/data_chat.py",
     "backend/core/data_product_catalog.py",
     "backend/core/flowi_db_reference.py",
+    "backend/core/flowi_gate.py",
     "backend/core/flowi_personalization.py",
     "backend/core/flowi_routing.py",
     "backend/core/flowi_turn.py",

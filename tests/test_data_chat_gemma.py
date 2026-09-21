@@ -114,6 +114,15 @@ def test_gemma_headers_body_and_separate_profile(monkeypatch):
     assert profiles["gemma4"]["admin_token"] == "test-ticket"
 
 
+def test_gemma4_is_the_only_named_llm_preset():
+    assert [preset["key"] for preset in admin.LLM_NAMED_PRESETS] == ["gemma4_internal"]
+    assert admin.LLM_NAMED_PRESETS[0]["provider"] == "gemma4"
+    assert admin.LLM_NAMED_PRESETS[0]["is_default"] is True
+    payload = admin.admin_llm_presets({"role": "admin"})
+    assert payload["presets"] == admin.LLM_NAMED_PRESETS
+    assert payload["default_key"] == "gemma4_internal"
+
+
 @pytest.mark.parametrize("path",["/api/llm/error/explain","/api/llm/translate","/api/meetings/summary","/api/knowledge/ask"])
 def test_unrelated_features_cannot_spend_llm_calls(path,monkeypatch):
     monkeypatch.setattr(llm_adapter.urllib.request,"urlopen",lambda *a,**k:pytest.fail("unrelated LLM network call"))

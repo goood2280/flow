@@ -136,6 +136,25 @@ export function indexShotMains(rawItems, cells = []) {
   return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 }
 
+/** Keep only markers that touch one of the selected MAIN rectangles.
+ * The detail viewport clips partial overlaps at the MAIN boundary, so nearby
+ * markers cannot widen or leak into the MAIN-only view. */
+export function shotItemsInCells(items, cells = []) {
+  const validCells = cells.filter(c => [c.x, c.y, c.w, c.h].every(v => finiteCoordinate(v) !== null)
+    && Number(c.w) > 0 && Number(c.h) > 0);
+  if (!validCells.length) return [];
+  return (items || []).filter(item => {
+    const x = finiteCoordinate(item?.mm_x), y = finiteCoordinate(item?.mm_y);
+    if (x === null || y === null) return false;
+    const right = x + finitePositive(item?.w), top = y + finitePositive(item?.h);
+    return validCells.some(cell => {
+      const cellX = Number(cell.x), cellY = Number(cell.y);
+      const cellRight = cellX + Number(cell.w), cellTop = cellY + Number(cell.h);
+      return x <= cellRight && right >= cellX && y <= cellTop && top >= cellY;
+    });
+  });
+}
+
 export function shotFocusBounds(items, cells = []) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const item of items) {
