@@ -1157,6 +1157,94 @@
   font-size: 12px;
 }
 
+.home-data-chat__product-clarification {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 4%, var(--bg-primary));
+}
+
+.home-data-chat__product-options,
+.home-data-chat__product-other {
+  display: grid;
+  gap: 6px;
+}
+
+.home-data-chat__product-prompt {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.home-data-chat__product-clarification .home-data-chat__actions {
+  justify-content: flex-start;
+  padding: 0;
+}
+
+.home-data-chat__product-clarification .home-data-chat__actions button,
+.home-data-chat__product-other-toggle {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.home-data-chat__product-clarification .home-data-chat__actions button:hover,
+.home-data-chat__product-other-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.home-data-chat__product-clarification button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.home-data-chat__product-other-form {
+  display: flex;
+  gap: 6px;
+}
+
+.home-data-chat__product-other-form input {
+  min-width: 0;
+  flex: 1;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+}
+
+.home-data-chat__product-other-form input:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: 1px;
+}
+
+.home-data-chat__product-other-form button {
+  padding: 6px 11px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--text-on-accent, #fff);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.home-data-chat__product-other-form button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
 @media (max-width: 900px) {
   .home-data-chat.has-workspace {
     height: 85vh;

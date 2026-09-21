@@ -3,7 +3,7 @@ import sqlite3
 from uuid import UUID
 from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel, Field
-from core import audit, auth, data_chat, chat_conversations, flowi_gate, flowi_personalization, flowi_turn
+from core import audit, auth, data_chat, chat_conversations, chat_prompts, flowi_gate, flowi_personalization, flowi_turn
 from core import ai_semantic, home_model_status, llm_adapter
 
 router = APIRouter(prefix="/api/home-agent", tags=["data-chat"])
@@ -45,6 +45,7 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
     if not body.prompt.strip():
         raise HTTPException(400, "메시지를 입력하세요.")
     failure = None
+    success = None
     try:
         with chat_conversations.turn(_user["username"], body.conversation_id) as state:
             existing = bool(state["messages"])
@@ -60,6 +61,12 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
                 context.pop("pending_semantic_selection", None)
                 context.pop("semantic_scope", None)
                 context.pop("semantic_split_prompt", None)
+                context.pop("pending_split_query", None)
+                context.pop("pending_custom_selection", None)
+                context.pop("pending_split_choice", None)
+                context.pop("split_query", None)
+                context.pop("pending_eta", None)
+                context.pop("eta_query", None)
             # These keys are server-owned, refreshed for this turn only.
             context.pop("personalization", None)
             context.pop("selected_skill", None)
@@ -85,6 +92,9 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
                 chat_conversations.append(state, "assistant", "요청 처리에 실패했습니다. 다시 시도해 주세요.", error=True,
                     response={"ok": False, "routing_trace": {"question": body.prompt, "status": "failed", "events": []}})
             else:
+                success = chat_prompts.completed_origin(state["messages"], result)
+                if success:
+                    result["success_prompt"] = success["prompt"]
                 state["context"] = result.get("context", context)
                 display = {key: value for key, value in result.items() if key != "context"}
                 answer = result.get("reply") or result.get("answer") or (result.get("tool") or {}).get("answer") or "응답이 없습니다."
@@ -97,6 +107,9 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
         raise
     if failure is not None:
         raise failure
+    if success:
+        tool = result.get("tool") or {}
+        chat_prompts.record_success(success["prompt"], user=_user["username"], category=tool.get("feature") or "")
     audit.record(request, "home:data-chat", detail=str(result.get("conversation_id") or ""), tab="home")
     return result
 

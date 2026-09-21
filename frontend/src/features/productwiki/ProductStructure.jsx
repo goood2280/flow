@@ -15,6 +15,32 @@ const splitStepIds = (value) => Array.isArray(value)
   ? value.map(text).filter(Boolean)
   : text(value).split(/[;,\n]+/).map(text).filter(Boolean);
 const pathParts = (value) => text(value).split("/").map(text).filter(Boolean);
+const naturalStepParts = (value) => text(value).match(/\d+|\D+/g) || [];
+// Compare numeric chunks naturally, but always render the original step_id;
+// leading zeroes are part of the identifier and must not be normalized away.
+const naturalStepCompare = (left, right) => {
+  const a = naturalStepParts(left);
+  const b = naturalStepParts(right);
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    if (index >= a.length) return -1;
+    if (index >= b.length) return 1;
+    const leftPart = a[index];
+    const rightPart = b[index];
+    const leftNumeric = /^\d+$/.test(leftPart);
+    const rightNumeric = /^\d+$/.test(rightPart);
+    if (leftNumeric && rightNumeric) {
+      const leftNumber = BigInt(leftPart);
+      const rightNumber = BigInt(rightPart);
+      if (leftNumber < rightNumber) return -1;
+      if (leftNumber > rightNumber) return 1;
+      continue;
+    }
+    if (leftNumeric !== rightNumeric) return leftNumeric ? -1 : 1;
+    const lexicalCompare = leftPart.localeCompare(rightPart, undefined, { sensitivity: "base" });
+    if (lexicalCompare) return lexicalCompare;
+  }
+  return text(left).localeCompare(text(right), undefined, { sensitivity: "base" });
+};
 const normalizedFullPath = (module, path) => {
   const moduleName = text(module) || EMPTY_MODULE;
   const parts = pathParts(path);
@@ -77,6 +103,34 @@ function sourceLabel(stepId, sources) {
   if (descriptions.length === 1) return descriptions[0];
   if (descriptions.length > 1) return `복수 매칭 ${descriptions.length}건`;
   return stepId;
+}
+
+function sortedChildren(node) {
+  const minimumStepId = (item) => {
+    if (item.type === "step") return item.stepId;
+    let minimum = "";
+    for (const descendant of item.children.values()) {
+      const stepId = minimumStepId(descendant);
+      if (stepId && (!minimum || naturalStepCompare(stepId, minimum) < 0)) minimum = stepId;
+    }
+    return minimum;
+  };
+  return [...node.children.values()]
+    .map((child, index) => ({ child, index }))
+    .sort((left, right) => {
+      if (left.child.type === "step" && right.child.type === "step") {
+        return naturalStepCompare(left.child.stepId, right.child.stepId) || left.index - right.index;
+      }
+      const leftStepId = minimumStepId(left.child);
+      const rightStepId = minimumStepId(right.child);
+      if (leftStepId && rightStepId) {
+        return naturalStepCompare(leftStepId, rightStepId) || left.index - right.index;
+      }
+      // Structural insertion order is meaningful; only sibling stage nodes
+      // with a known stage are reordered by step_id.
+      return left.index - right.index;
+    })
+    .map(({ child }) => child);
 }
 
 function buildTree(product, rows, mappingRows) {
@@ -168,7 +222,7 @@ function matchesLink(node, link) {
 }
 
 function TreeBranch({ node, selectedKey, onSelect }) {
-  const children = [...node.children.values()];
+  const children = sortedChildren(node);
   return <li className={`pws-tree-item pws-tree-item--${node.type}`}>
     <button
       type="button"
@@ -207,7 +261,8 @@ function StructureDetail({ node, entries, entryLinks, onSelectEntry }) {
       if (seenSources.has(key)) return false;
       seenSources.add(key);
       return true;
-    });
+    })
+    .sort((left, right) => naturalStepCompare(left.stepId, right.stepId));
   const descriptions = [...new Set(descendants(node, (item) => item.descriptions?.length).flatMap((item) => item.descriptions))];
   const related = (entries || []).filter((entry) => matchesLink(node, entryLinks?.[entry.id]));
   return <section className="pws-detail" aria-live="polite">

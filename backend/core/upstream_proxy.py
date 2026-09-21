@@ -19,7 +19,7 @@ unit AI, ChartBuilder Assistant)는 인증·실행 이력을 운영에 모으기
 검증한다 — 별도 자격증명 불필요.
 
 운영서버 다운/타임아웃/5xx 면 None 을 반환한다. 호출측은 SplitTable
-GET은 로컬 검색으로 폴백하고, 운영 전용 AI POST만 503을 만든다. 연결
+GET은 로컬 검색으로 폴백하고, 운영 전용 AI 및 홈 상태·대화 조회는 503을 만든다. 연결
 실패 후에는 쿨다운(기본 60초) 동안 프록시 시도 자체를 건너뛰어 운영서버가
 죽어 있을 때 매 검색에 연결 대기 지연이 붙는 것을 막는다. 4xx 는 결정적
 응답(잘못된 파라미터·인증 실패)이므로 그대로 통과시킨다.
@@ -66,6 +66,11 @@ _AI_PROXY_PATHS_DEFAULT = (
     "/api/agent/unit/",
     "/api/llm/flowi/chat",
 )
+# The home UI must inspect/probe the same model and conversation owner that
+# executes its turns. Local worker status used to report a disconnected model.
+_HOME_READ_PATHS = ("/api/home-agent/status", "/api/home-agent/conversations",
+                    "/api/home-agent/sample-prompts")
+_HOME_POST_PATHS = ("/api/home-agent/probe",)
 LOOP_GUARD_HEADER = "x-flow-upstream-proxied"
 _TIMEOUT_SEC_DEFAULT = 120.0
 _COOLDOWN_SEC_DEFAULT = 60.0
@@ -111,11 +116,21 @@ def ai_proxy_paths() -> tuple[str, ...]:
 
 def _supported_proxy_request(path: str, method: str) -> bool:
     verb = str(method or "").upper()
+    if _home_owned_request(path, verb):
+        return True
     if verb == "GET":
         return any(str(path or "").startswith(prefix) for prefix in proxy_paths())
     if verb == "POST":
         return any(str(path or "").startswith(prefix) for prefix in ai_proxy_paths())
     return False
+
+
+def _home_owned_request(path: str, method: str) -> bool:
+    path = str(path or "").rstrip("/")
+    if method == "GET":
+        return any(path == prefix or path.startswith(prefix + "/")
+                   for prefix in _HOME_READ_PATHS)
+    return method == "POST" and path in _HOME_POST_PATHS
 
 
 def _timeout_sec() -> float:
@@ -140,9 +155,10 @@ def enabled() -> bool:
 def requires_operating(path: str, method: str, incoming_headers) -> bool:
     """개발 워커에서 로컬 실행을 금지해야 하는 운영 소유 요청인가."""
     # SplitTable GET은 운영 캐시를 우선할 뿐 로컬 폴백이 허용된다.
-    # LLM credential·breaker·실행 이력을 운영에 모아야 하는 AI POST만 필수다.
-    if str(method or "").upper() != "POST" or not any(
-            str(path or "").startswith(prefix) for prefix in ai_proxy_paths()):
+    # AI 실행과 그 모델 상태·연결 검사·대화 조회는 같은 운영 소유자를 사용한다.
+    verb = str(method or "").upper()
+    if not _home_owned_request(path, verb) and not (verb == "POST" and any(
+            str(path or "").startswith(prefix) for prefix in ai_proxy_paths())):
         return False
     try:
         if incoming_headers is not None and incoming_headers.get(LOOP_GUARD_HEADER):
@@ -256,6 +272,8 @@ def status() -> dict:
         "api_base_url": api_base_url(),
         "paths": list(proxy_paths()),
         "ai_paths": list(ai_proxy_paths()),
+        "home_read_paths": list(_HOME_READ_PATHS),
+        "home_post_paths": list(_HOME_POST_PATHS),
         "timeout_sec": _timeout_sec(),
         "cooldown_sec": _cooldown_sec(),
         "cooldown_remaining_sec": round(cooldown_remaining, 1),

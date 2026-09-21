@@ -240,6 +240,30 @@ test("ShotView bounds eager labels while retaining every marker", () => {
   assert.match(markup, /rotate\(90/);
 });
 
+test("ShotView keeps a representative label when overlapping TEGs are too small", () => {
+  const items = consolidateShotItems([
+    row({ name: "A", mm_x: 0, mm_y: 0, w: 0.0001, h: 0.0001 }),
+    row({ name: "B", mm_x: 0, mm_y: 0, w: 0.0001, h: 0.0001 }),
+    ...Array.from({ length: 90 }, (_, index) => row({
+      name: `VISIBLE${index}`, mm_x: index + 10, mm_y: 10, w: 100, h: 100,
+    })),
+  ], "shot");
+  const markup = renderToStaticMarkup(React.createElement(ShotView, {
+    shot: { shot_w_mm: 1000, shot_h_mm: 1000, cells: [] }, items, size: 400,
+  }));
+  assert.match(markup, /A 외 1종 TEG/);
+  assert.equal((markup.match(/data-shot-label="true"/g) || []).length, 80);
+});
+
+test("consolidated label falls back to a named TEG when the status representative is blank", () => {
+  const [item] = consolidateShotItems([
+    row({ name: "", light: "red", light_reason: "MAIN anchor error" }),
+    row({ name: "TEG000", light: "green" }),
+  ], "shot");
+  assert.equal(item.name, "TEG000");
+  assert.deepEqual(item.uniqueNames, ["TEG000"]);
+});
+
 test("ShotView exact focus clips drawing to the MAIN rectangle", () => {
   const markup = renderToStaticMarkup(React.createElement(ShotView, {
     shot: { shot_w_mm: 100, shot_h_mm: 100, cells: [{ name: "MAIN01", x: -2, y: -2, w: 4, h: 4 }] },

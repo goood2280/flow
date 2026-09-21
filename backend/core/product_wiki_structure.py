@@ -33,7 +33,11 @@ def mapping_source(product):
                 if key not in seen:
                     rows.append(item)
                     seen.add(key)
-            rows.sort(key=lambda r: (r['module'], r['step_id'], r['step_desc']))
+            # Sort for display without changing the source spelling. Numeric
+            # portions therefore sort naturally (A2 before A10) and IDs such
+            # as 001200 retain their leading zeroes in the response.
+            rows.sort(key=lambda r: (r['module'].casefold(), _natural_step_key(r['step_id']),
+                                     r['step_id'].casefold(), r['step_desc'].casefold()))
             result['rows'] = rows
             result['fingerprint'] = hashlib.sha256(json.dumps(rows, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
             warnings = []
@@ -48,6 +52,11 @@ def mapping_source(product):
     except (OSError, UnicodeError, csv.Error):
         result['warning'] = '매칭 파일을 읽지 못했습니다. 저장된 구조는 계속 볼 수 있습니다.'
     return result
+
+
+def _natural_step_key(value):
+    parts = re.findall(r'\d+|\D+', str(value or ''))
+    return tuple((0, int(part)) if part.isdigit() else (1, part.casefold()) for part in parts)
 
 
 def _ensure(db):

@@ -69,6 +69,18 @@ def test_plain_wip_location_is_not_claimed(teg_sources):
     ) is None
 
 
+def test_native_view_preserves_feature_geometry_and_selected_tegs(monkeypatch, teg_sources):
+    payload = {"vehicle": "PRODA", "geometry": {"fit": "radius", "wafer_radius_mm": 150, "shot_w_mm": 20, "shot_h_mm": 30},
+               "shots": [{"x": 1, "y": 2, "mm_x": 3.5, "mm_y": -4.5, "radius": 5.7}], "tegs": TEGS}
+    monkeypatch.setattr(data_chat_teg.teg_map, "map_payload", lambda product: payload)
+    out = data_chat_teg.dispatch("PRODA TEG_A 어디있어", {})
+    view = out["tool"]["teg_view"]
+    assert view["geometry"] == payload["geometry"]
+    assert view["shots"][0]["mm_y"] == -4.5
+    assert [t["teg"] for t in view["tegs"]] == ["TEG_A"]
+    assert out["tool"]["context"]["teg_names"] == ["TEG_A"]
+
+
 def test_public_orchestrator_keeps_followup_and_routes_model_tools(monkeypatch, teg_sources):
     from core import data_chat, llm_adapter
     from routers import splittable

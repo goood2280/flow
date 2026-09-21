@@ -62,6 +62,18 @@ def test_mapping_case_insensitive_headers_and_missing_module_warning(isolated):
     assert "module" in result["warning"]
 
 
+def test_mapping_rows_use_natural_step_order_without_rewriting_ids(isolated):
+    write_mapping(isolated, [
+        {"vehicle": "VH_A", "product": "PRODA", "step_id": "AA10", "step_desc": "TEN", "module": "GATE"},
+        {"vehicle": "VH_A", "product": "PRODA", "step_id": "AA2", "step_desc": "TWO", "module": "GATE"},
+        {"vehicle": "VH_A", "product": "PRODA", "step_id": "AA001200", "step_desc": "ZERO", "module": "GATE"},
+        {"vehicle": "VH_A", "product": "PRODA", "step_id": "AA1200", "step_desc": "SAME NUMBER", "module": "GATE"},
+        {"vehicle": "VH_A", "product": "PRODA", "step_id": "AA1201", "step_desc": "NEXT", "module": "GATE"},
+    ])
+    result = structure.mapping_source("PRODA")
+    assert [row["step_id"] for row in result["rows"]] == ["AA2", "AA10", "AA001200", "AA1200", "AA1201"]
+
+
 def test_structure_save_history_noop_and_unknown_orphan_preservation(isolated):
     write_mapping(isolated, [{"vehicle": "VH_A", "product": "PRODA", "step_id": "S1", "step_desc": "ETCH", "module": "GATE"}])
     saved = structure.save("PRODA", 0, [row(step_ids=["S1"])], "admin", manager=True)

@@ -1790,6 +1790,49 @@ def canonical_lot_progress_summaries(
     }
 
 
+def canonical_wafer_inventory(*, product: str, lot_id: str = "", root_lot_id: str = "", limit: int = 200) -> dict:
+    """Read current product membership, counting distinct wafers before display limits."""
+    import polars as pl
+    from core.latest_lot_cache_format import FORMAT_COLUMN, FORMAT_VERSION, normalize_product
+
+    if not normalize_product(product):
+        raise ValueError("조회할 제품을 선택해 주세요.")
+    path = filebrowser_cache_parquet_file()
+    if not path.is_file():
+        raise ValueError("현재 WIP 캐시가 없습니다. 캐시 갱신 후 다시 조회해 주세요.")
+    names = list(pl.read_parquet_schema(path))
+    required = {FORMAT_COLUMN, "product", "root_lot_id", "lot_id", "wafer_id"}
+    if not required.issubset(names):
+        raise ValueError("현재 WIP 캐시의 식별 정보가 부족합니다. 캐시를 갱신해 주세요.")
+    lf = pl.scan_parquet(path)
+    version = lf.select(pl.col(FORMAT_COLUMN)).head(1).collect()
+    if not version.is_empty() and version.item(0, 0) != FORMAT_VERSION:
+        raise ValueError("현재 WIP 캐시 형식이 오래되었습니다. 캐시를 갱신해 주세요.")
+    def key(column):
+        return pl.col(column).cast(pl.Utf8, strict=False).fill_null("").str.strip_chars().str.to_uppercase()
+    predicate = key("product").str.replace(r"^ML_TABLE_", "") == normalize_product(product)
+    if lot_id:
+        predicate &= key("lot_id") == _norm_key(lot_id)
+    if root_lot_id:
+        predicate &= key("root_lot_id") == _norm_key(root_lot_id)
+    selected = [name for name in ("product", "root_lot_id", "lot_id", "wafer_id", "step_id", "function_step", "tkout_time", "update_time") if name in names]
+    rows = lf.filter(predicate).select(selected).collect().to_dicts()
+    unique = {}
+    for raw in rows:
+        row = dict(raw)
+        row["wafer_id"] = _norm_wafer(row.get("wafer_id"))
+        if not row["wafer_id"]:
+            continue
+        identity = (_norm_key(row.get("root_lot_id") or row.get("lot_id")), row["wafer_id"])
+        previous = unique.get(identity)
+        stamp = lambda r: _safe_text(r.get("tkout_time") or r.get("update_time"))
+        if previous is None or stamp(row) > stamp(previous):
+            unique[identity] = row
+    rows = sorted(unique.values(), key=lambda row: (_norm_key(row.get("root_lot_id")), _wafer_sort_value(row["wafer_id"])))
+    cap = max(1, min(int(limit), 200))
+    return {"items": rows[:cap], "total": len(rows), "truncated": len(rows) > cap}
+
+
 def lot_id_candidates(
     *,
     product: str = "",

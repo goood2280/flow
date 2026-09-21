@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FlowPlotlyChart } from "../../components/PlotlyChart";
+import SplitTableSnapshotView from "../../components/SplitTableSnapshotView";
 import { sf } from "../../lib/api";
 import "./HomeDataChat.css";
 import TegChatMaps from "./TegChatMaps";
@@ -9,8 +10,10 @@ const API_HISTORY_MESSAGES = 20;
 const API_HISTORY_CHARS = 4000;
 
 const FEATURE_PAGE_MAP = {
+  eta: "lottracker",
   splittable: "splittable",
   "splittable.plan": "splittable",
+  "splittable.history": "splittable",
   location: "lotlocation",
   lot_progress: "lotlocation",
   yield_map: "yieldmap",
@@ -249,6 +252,21 @@ function tableFromTool(tool) {
   return null;
 }
 
+function nativeSplitViewFromTool(tool) {
+  const splitView = tool?.split_view;
+  const isPlanPreview = tool?.feature === "splittable.plan"
+    || String(tool?.action || "").startsWith("splittable.plan")
+    || tool?.approval?.status === "pending";
+  return !isPlanPreview && Array.isArray(splitView?.headers) && Array.isArray(splitView?.rows)
+    ? splitView
+    : null;
+}
+
+function splitViewSource(tool) {
+  const context = tool?.context || {};
+  return [context.root_lot_id || context.lot_id, context.custom_name].filter(Boolean).join(" · ");
+}
+
 function responseContext(previous, response) {
   if (response?.context && typeof response.context === "object") return response.context;
   const tool = response?.tool && typeof response.tool === "object" ? response.tool : {};
@@ -367,6 +385,102 @@ function RoutingTraceCard({ trace }) {
   );
 }
 
+function productOptions(tool) {
+  const clarification = tool?.clarification;
+  if (clarification?.kind && Array.isArray(clarification.options)) {
+    return clarification.options
+      .map((option) => ({
+        label: asText(option?.label ?? option?.value).trim(),
+        value: asText(option?.value ?? option?.label).trim(),
+      }))
+      .filter((option) => option.label && option.value)
+      .slice(0, 5);
+  }
+
+  const missingProduct = Array.isArray(tool?.missing) && tool.missing.some((item) => asText(item).toLowerCase() === "product");
+  if (!missingProduct) return [];
+  const rows = resultRows(tool?.table || tool?.split_view);
+  const values = Array.isArray(tool?.products) ? tool.products : rows;
+  return values.map((row) => {
+    if (typeof row === "string" || typeof row === "number") return asText(row).trim();
+    if (Array.isArray(row)) return asText(row[0]).trim();
+    if (row && typeof row === "object") {
+      const key = Object.keys(row).find((name) => /^(product|product_name|product_id|name|value)$/i.test(name));
+      return key ? asText(row[key]).trim() : "";
+    }
+    return "";
+  }).filter(Boolean).filter((value, index, valuesList) => valuesList.indexOf(value) === index)
+    .slice(0, 5)
+    .map((value) => ({ label: value, value }));
+}
+
+function isProductRequest(tool) {
+  return ["product", "custom_set", "split_column", "split_value", "eta_reference"].includes(tool?.clarification?.kind)
+    || (Array.isArray(tool?.missing) && tool.missing.some((item) => asText(item).toLowerCase() === "product"));
+}
+
+function ProductClarification({ tool, onSubmit, disabled = false }) {
+  const clarification = tool?.clarification;
+  const options = productOptions(tool);
+  const canAskOther = clarification?.kind ? clarification.allow_other !== false : true;
+  const title = clarification?.title || "제품 선택";
+  const placeholder = clarification?.placeholder || "제품명을 입력하세요";
+  const [showOther, setShowOther] = useState(false);
+  const [value, setValue] = useState("");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    if (showOther) inputRef.current?.focus();
+  }, [showOther]);
+
+  if (!isProductRequest(tool) || (!options.length && !canAskOther)) return null;
+  const submitOther = (event) => {
+    event.preventDefault();
+    const next = value.trim();
+    if (!next || disabled) return;
+    onSubmit(next);
+    setValue("");
+  };
+
+  return (
+    <div className="home-data-chat__product-clarification" aria-label={title}>
+      {options.length > 0 && (
+        <div className="home-data-chat__product-options">
+          <span className="home-data-chat__product-prompt">{title}</span>
+          <div className="home-data-chat__actions">
+            {options.map((option) => (
+              <button type="button" key={option.value} disabled={disabled} onClick={() => onSubmit(option.value)}>
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {canAskOther && (
+        <div className="home-data-chat__product-other">
+          {!showOther ? (
+            <button type="button" className="home-data-chat__product-other-toggle" disabled={disabled} onClick={() => setShowOther(true)}>
+              기타 직접 입력
+            </button>
+          ) : (
+            <form className="home-data-chat__product-other-form" onSubmit={submitOther}>
+              <input
+                ref={inputRef}
+                value={value}
+                onChange={(event) => setValue(event.target.value)}
+                placeholder={placeholder}
+                disabled={disabled}
+                aria-label={placeholder}
+              />
+              <button type="submit" disabled={disabled || !value.trim()}>확인</button>
+            </form>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BubbleContent({ message, onExplore }) {
   const content = message.content || "";
   const tool = message.response?.tool;
@@ -387,7 +501,8 @@ function BubbleContent({ message, onExplore }) {
     }
   }
 
-  const table = tool?.table || tool?.split_view;
+  const nativeSplitView = nativeSplitViewFromTool(tool);
+  const table = nativeSplitView ? null : (tool?.table || tool?.split_view);
   const relatedTegs = Array.isArray(tool?.related_tegs) ? tool.related_tegs : [];
   const currentProduct = tool?.context?.product || "";
 
@@ -403,7 +518,22 @@ function BubbleContent({ message, onExplore }) {
         <div className="home-data-chat__guided-body">{displayBody}</div>
       )}
 
-      {table && (
+      {nativeSplitView && !isProductRequest(tool) && (
+        <div className="home-data-chat__inline-data-preview">
+          <div className="home-data-chat__data-preview-bar">
+            <span className="home-data-chat__preview-title">📊 SplitTable 미리보기</span>
+          </div>
+          <SplitTableSnapshotView
+            stView={nativeSplitView}
+            product={tool?.context?.product || ""}
+            source={splitViewSource(tool)}
+            showTitle={false}
+            maxHeight={380}
+          />
+        </div>
+      )}
+
+      {table && !isProductRequest(tool) && (
         <div className="home-data-chat__inline-data-preview">
           <div className="home-data-chat__data-preview-bar">
             <span className="home-data-chat__preview-title">📊 추출 데이터셋 미리보기</span>
@@ -435,12 +565,12 @@ function BubbleContent({ message, onExplore }) {
         </div>
       )}
 
-      <TegChatMaps maps={tool?.teg_maps} />
+      <TegChatMaps maps={tool?.teg_maps} view={tool?.teg_view} />
     </div>
   );
 }
 
-function BatchContent({ response, onExplore, onOpenWorkspace }) {
+function BatchContent({ response, onExplore, onOpenWorkspace, canRespond }) {
   const questions = Array.isArray(response?.questions) ? response.questions : [];
   if (!questions.length) return null;
   return (
@@ -454,6 +584,9 @@ function BatchContent({ response, onExplore, onOpenWorkspace }) {
             <div className="home-data-chat__batch-question"><span>{index + 1}</span>{item?.question || "질문"}<b>{status === "completed" ? "완료" : status === "needs_input" ? "입력 필요" : status === "failed" ? "실패" : "대기"}</b></div>
             {item?.reason && <div className="home-data-chat__batch-reason">{item.reason}</div>}
             {(child.reply || child.answer || child.tool) && <BubbleContent message={{ content: answerText(child), response: child }} onExplore={onExplore} />}
+            {child.tool && isProductRequest(child.tool) && (
+              <ProductClarification tool={child.tool} onSubmit={onExplore} disabled={!canRespond} />
+            )}
             {child.tool && onOpenWorkspace && (child.tool.feature || child.tool.chart_result || child.tool.table) && (
               <button type="button" className="home-data-chat__batch-workspace-btn" onClick={() => onOpenWorkspace(child.tool)}>🖥️ 작업창 열기</button>
             )}
@@ -495,7 +628,9 @@ function featureInfo(feature, tool) {
     "teg.mapfiles": "🗺️",
   };
   const titles = {
-    splittable: "SplitTable 계획 배정 & 레시피",
+    eta: "Lot 도착·완료 예상 시각",
+    splittable: "SplitTable 조회",
+    "splittable.history": "SplitTable 변경 이력",
     "splittable.plan": "SplitTable 계획 배정",
     location: "Lot 위치 및 공정 진도",
     lot_progress: "Lot 진행 현황",
@@ -553,7 +688,7 @@ function ModelStatus({ refreshKey = 0, probeKey = 0, turnUsage = null }) {
       const result = await sf(probe ? "/api/home-agent/probe" : "/api/home-agent/status", { method: probe ? "POST" : "GET" });
       if (active.current) setModel(result.model || {});
     } catch {
-      if (active.current) setModel({ status: "unknown" });
+      if (active.current) setModel({ status: "disconnected", message: "AI 서버 연결을 확인할 수 없습니다. 서버 연결 설정과 운영서버 상태를 확인해 주세요." });
     } finally {
       busy.current = false;
       if (active.current) setChecking(false);
@@ -605,7 +740,7 @@ function WorkspaceTeg({ tool, filterText = "", onExplore }) {
       </div>
 
       <div className="home-workspace__card-grid">
-        <div className="home-workspace__card">
+      <div className="home-workspace__card">
           <div className="home-workspace__card-label">조회 제품</div>
           <div className="home-workspace__card-value">{product}</div>
         </div>
@@ -618,12 +753,30 @@ function WorkspaceTeg({ tool, filterText = "", onExplore }) {
           <div className="home-workspace__card-value">{rows.length}개 위치</div>
         </div>
         <div className="home-workspace__card">
-          <div className="home-workspace__card-label">대표 좌표 (X, Y)</div>
-          <div className="home-workspace__card-value">
-            {firstRow.x !== undefined ? `(${firstRow.x}, ${firstRow.y})` : "-"}
+          <div className="home-workspace__card-label">{firstRow.abs_x !== undefined ? "웨이퍼 절대 좌표" : "샷 내 좌표"} (X, Y)</div>
+        <div className="home-workspace__card-value">
+            {firstRow.abs_x !== undefined
+              ? `(${firstRow.abs_x}, ${firstRow.abs_y}) mm`
+              : firstRow.ebeam_x !== undefined
+                ? `(${firstRow.ebeam_x}, ${firstRow.ebeam_y}) mm`
+                : "-"}
           </div>
         </div>
       </div>
+
+      {onExplore && product !== "-" && tegName !== "-" && (
+        <div className="home-workspace__quick-explore-bar">
+          <span className="home-workspace__explore-label">TEG 다시 조회:</span>
+          <button type="button" className="home-workspace__explore-chip"
+            onClick={() => onExplore(`${product} ${tegName} TEG 위치 어디있어?`)}>
+            위치
+          </button>
+          <button type="button" className="home-workspace__explore-chip"
+            onClick={() => onExplore(`${product} ${tegName} TEG 절대 좌표 알려줘`)}>
+            절대 좌표
+          </button>
+        </div>
+      )}
 
       {relatedTegs.length > 0 && onExplore && (
         <div className="home-workspace__teg-picker">
@@ -646,7 +799,7 @@ function WorkspaceTeg({ tool, filterText = "", onExplore }) {
         </div>
       )}
 
-      <TegChatMaps maps={tool.teg_maps} />
+      <TegChatMaps maps={tool.teg_maps} view={tool.teg_view} />
 
       {table && (
         <DataTable
@@ -660,7 +813,16 @@ function WorkspaceTeg({ tool, filterText = "", onExplore }) {
 }
 
 function WorkspaceSplitTable({ tool, filterText = "", onDecision, onNavigate }) {
-  const splitView = tool.split_view || tool.table;
+  const nativeSplitView = nativeSplitViewFromTool(tool);
+  const filteredSplitView = useMemo(() => {
+    const query = filterText.trim().toLowerCase();
+    if (!nativeSplitView || !query) return nativeSplitView;
+    return {
+      ...nativeSplitView,
+      rows: nativeSplitView.rows.filter((row) => asText(row).toLowerCase().includes(query)),
+    };
+  }, [nativeSplitView, filterText]);
+  const table = nativeSplitView ? null : (tool.table || tool.split_view);
   const ctx = tool.context || {};
   return (
     <div className="home-workspace__split-container">
@@ -697,9 +859,19 @@ function WorkspaceSplitTable({ tool, filterText = "", onDecision, onNavigate }) 
         </div>
       )}
 
-      {splitView && (
+      {filteredSplitView && (
+        <SplitTableSnapshotView
+          stView={filteredSplitView}
+          product={ctx.product || ""}
+          source={splitViewSource(tool)}
+          showTitle={false}
+          maxHeight={620}
+        />
+      )}
+
+      {table && (
         <DataTable
-          table={splitView}
+          table={table}
           downloadName={`splittable_${ctx.product || "plan"}`}
           filterText={filterText}
         />
@@ -1134,7 +1306,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
       const lastToolMsg = [...loadedMessages].reverse().find((m) => m.response?.tool);
       if (lastToolMsg?.response?.tool) {
         const tool = lastToolMsg.response.tool;
-        const feature = tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null));
+        const feature = isProductRequest(tool) ? null : (tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null)));
         if (feature) {
           setActiveWorkspace({
             feature,
@@ -1192,7 +1364,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
 
   const focusWorkspace = (tool) => {
     if (!tool) return;
-    const feature = tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null));
+    const feature = isProductRequest(tool) ? null : (tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null)));
     if (!feature) return;
     setActiveWorkspace({
       feature,
@@ -1232,7 +1404,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
       if (response?.usage && typeof response.usage === "object") setTurnUsage(response.usage);
       setModelRefreshKey((value) => value + 1);
       const tool = response?.tool && typeof response.tool === "object" ? response.tool : null;
-      const feature = tool?.feature || (tool?.chart_result ? "chart" : (tool?.table ? "table" : null));
+      const feature = isProductRequest(tool) ? null : (tool?.feature || (tool?.chart_result ? "chart" : (tool?.table ? "table" : null)));
 
       if (feature) {
         setActiveWorkspace((prev) => {
@@ -1270,13 +1442,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
       }));
       refreshConversations();
 
-      if (tool && response?.ok !== false && !response?.error) {
-        sf("/api/home-agent/sample-prompts/record-success", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: value, category: feature || "" }),
-        }).then(() => loadSamplePrompts()).catch(() => {});
-      }
+      if (response?.success_prompt) loadSamplePrompts();
     } catch (error) {
       if (requestVersionRef.current !== requestVersion) return;
       setChatState((current) => ({
@@ -1350,7 +1516,9 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                 )}
               </div>
             )}
-            {chatState.messages.map((message) => {
+            {(() => {
+              const latestMessageId = chatState.messages[chatState.messages.length - 1]?.id;
+              return chatState.messages.map((message) => {
               const msgTool = message.response?.tool;
               const tegCandidateGroups = Array.isArray(msgTool?.teg_candidates)
                 ? msgTool.teg_candidates.filter((group) => group && Array.isArray(group.candidates) && group.candidates.length)
@@ -1359,14 +1527,16 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                 ? msgTool.split_candidates.filter((group) => group && Array.isArray(group.candidates) && group.candidates.length)
                 : [];
               const msgFeature = msgTool?.feature || (msgTool?.chart_result ? "chart" : (msgTool?.table ? "table" : null));
-              const info = msgFeature ? featureInfo(msgFeature, msgTool) : null;
+              const info = msgFeature && !isProductRequest(msgTool) ? featureInfo(msgFeature, msgTool) : null;
               const isCurrent = activeWorkspace && activeWorkspace.tool === msgTool;
+              const canRespond = message.role === "assistant" && message.id === latestMessageId && !loading;
+              const isBatchMessage = Array.isArray(message.response?.questions) && message.response.questions.length > 0;
 
               return (
                 <article key={message.id} className={`home-data-chat__message is-${message.role}${message.error ? " is-error" : ""}`}>
                   <div className="home-data-chat__bubble">
-                     {Array.isArray(message.response?.questions) && message.response.questions.length > 0
-                       ? <BatchContent response={message.response} onExplore={(query) => submit(null, query)} onOpenWorkspace={focusWorkspace} />
+                     {isBatchMessage
+                       ? <BatchContent response={message.response} onExplore={(query) => submit(null, query)} onOpenWorkspace={focusWorkspace} canRespond={canRespond} />
                        : <BubbleContent message={message} onExplore={(query) => submit(null, query)} />}
                   </div>
 
@@ -1414,6 +1584,10 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                         </div>
                       ))}
 
+                      {!isBatchMessage && isProductRequest(msgTool) && (
+                        <ProductClarification tool={msgTool} onSubmit={(value) => submit(null, value)} disabled={!canRespond} />
+                      )}
+
                       {tegCandidateGroups.map((group, groupIndex) => (
                         <div className="home-data-chat__candidate-group" key={`${asText(group.requested)}-${groupIndex}`}>
                           <span>{group.requested ? `“${asText(group.requested)}” 후보를 선택하세요` : "TEG 후보를 선택하세요"}</span>
@@ -1440,7 +1614,8 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                   )}
                 </article>
               );
-            })}
+              });
+            })()}
             {loading && (
               <article className="home-data-chat__message is-assistant is-pending" aria-label="응답 작성 중">
                 <div className="home-data-chat__typing"><span /><span /><span /></div>

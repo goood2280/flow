@@ -467,7 +467,7 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
             if operating_required:
                 return JSONResponse(
                     {
-                        "detail": "단일 AI 실행은 운영서버에서 처리합니다. 운영서버 연결을 확인한 뒤 다시 시도하세요.",
+                        "detail": "홈 AI와 단일 AI 실행은 운영서버에서 처리합니다. 개발서버의 FLOW_API_SERVER_URL 설정과 운영서버 연결을 확인해 주세요.",
                         "error_code": "operating_server_required",
                     },
                     status_code=503,

@@ -22,6 +22,15 @@ def _object_schema(properties: dict[str, dict], required: list[str] | None = Non
 
 
 ACTIONS = {
+    "lot_progress.wafers": {
+        "description": "List wafer numbers and count distinct wafers classified under a confirmed product in the current WIP cache. Optionally restrict to an exact Fab lot or root lot; this is membership, not a yield map.",
+        "parameters": _object_schema({
+            "product": {"type": "string", "description": "Exact confirmed product name."},
+            "lot_id": {"type": "string", "default": ""},
+            "root_lot_id": {"type": "string", "default": ""},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 200},
+        }, ["product"]),
+    },
     "lot_management.table": {
         "description": "Read one product's Lot Management table, including its current WIP status unless disabled.",
         "parameters": _object_schema(
@@ -376,6 +385,30 @@ def execute_feature(action: str, params: dict | None, request: Any) -> dict:
             "chart_id": chart_result["chart_id"],
             "chart_title": str(config.get("title") or data.get("title") or ""),
         }
+        return tool
+
+    if action == "lot_progress.wafers":
+        from routers import lot_progress
+        filters = {name: _text(params, name, required=name == "product")
+                   for name in ("product", "lot_id", "root_lot_id")}
+        data = lot_progress.wafers(request=request, limit=_integer(params, "limit", 200, 1, 200), **filters)
+        rows = data.get("items") or []
+        total = int(data.get("total") or 0)
+        tool = _base_tool("lot_progress", action, "/api/lot-progress/wafers")
+        tool["table"] = _plain_table(rows, total=total, columns=["product", "root_lot_id", "lot_id", "wafer_id", "step_id"])
+        tool["context"] = filters
+        target = " / ".join(value for value in filters.values() if value)
+        tool["message"] = f"현재 WIP 기준 {target}에 분류된 웨이퍼는 총 {total}장입니다."
+        groups = {}
+        for row in rows:
+            lot = str(row.get("lot_id") or row.get("root_lot_id") or "Lot 미표기")
+            groups.setdefault(lot, []).append(str(row["wafer_id"]))
+        for lot, numbers in list(groups.items())[:10]:
+            tool["message"] += f"\n• {lot}: " + ", ".join(numbers) + f"번 ({len(numbers)}장" + (", 표시분)" if data.get("truncated") else ")")
+        if data.get("truncated"):
+            tool["message"] += f"\n전체 {total}장 중 {len(rows)}장의 번호를 표시했습니다. Lot을 지정하면 범위를 좁힐 수 있습니다."
+        elif len(groups) > 10:
+            tool["message"] += "\n나머지 Lot의 웨이퍼 번호는 아래 표에서 확인해 주세요."
         return tool
 
     if action == "lot_progress.lookup":

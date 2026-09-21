@@ -54,9 +54,28 @@ def split_table_product(product: str) -> str:
     return ""
 
 
+def available_split_product_names():
+    """Use exactly the inventory exposed by the SplitTable tab."""
+    from routers import splittable
+    return sorted({re.sub(r"^ML_TABLE_", "", str(row.get("name") or ""), flags=re.I).strip()
+                   for row in splittable.list_products().get("products", []) if row.get("name")})
+
+
+def _split_product_scope(text, context):
+    prompt = context.get("pending_product_prompt") or text
+    return bool(re.search(r"스플릿|split|knob|노브|커스텀|custom|변경\s*이력|수정\s*이력|변경\s*내역", prompt, re.I) or
+                (str(context.get("last_action") or "").startswith("splittable") and
+                 (re.fullmatch(r"[A-Za-z0-9_.-]+", text.strip()) or re.search(r"다시|계속", text))))
+
+
 def _remember(result, previous):
     """Keep the last displayed artifact as the next turn's editing target."""
     state = {**previous, **result.get("context", {})}
+    for key in ("pending_split_choice", "pending_eta"):
+        if key not in result.get("context", {}):
+            state.pop(key, None)
+    if (result.get("tool") or {}).get("feature") == "eta" and "eta_query" not in result.get("context", {}):
+        state.pop("eta_query", None)
     tool = result.get("tool") or {}
     if tool.get("feature") == "teg" and "pending_teg_selection" not in result.get("context", {}):
         state.pop("pending_teg_selection", None)
@@ -132,6 +151,7 @@ def extract_execution_trace(prompt: str, result: dict) -> dict:
     context = result.get("context") or {}
     tool = result.get("tool") or {}
     feature = tool.get("feature") or tool.get("action") or ""
+
     product = context.get("product") or ""
     clean_prod = re.sub(r"^(?:ML_TABLE_|VH_)", "", product, flags=re.I)
     root = context.get("root_lot_id") or ""
@@ -153,6 +173,11 @@ def extract_execution_trace(prompt: str, result: dict) -> dict:
         "query": "",
     }
 
+    if feature == "eta":
+        query = context.get("eta_query") or {}
+        trace.update(action="Lot 도착·완료 예상 시각", intent=f"{query.get('lot_id', '')} → {query.get('target_step_id', '')}",
+                     sources=tool.get("sources") or [], steps=["대상 Lot과 목표 Step 확인", "선택한 참고 Lot의 실제 공정 이력으로 계산"])
+        return trace
     if "location" in str(feature) or "lot_progress" in str(feature):
         trace["action"] = "Lot 현위치 및 공정 진도 조회"
         trace["intent"] = f"{clean_prod or '지정'} 랏({root or lot_id})의 실시간 재공 위치 및 최신 공정 진행 상태 파악"
@@ -327,6 +352,15 @@ def build_interpretation_guide(prompt: str, result: dict) -> str:
     tool = result.get("tool") or {}
     feature = tool.get("feature") or tool.get("action") or ""
 
+    if tool.get("action") == "lot_progress.wafers":
+        scope = tool.get("context") or context
+        target = f"제품: {scope.get('product') or ''}"
+        if scope.get("lot_id"):
+            target += f" | Lot: {scope['lot_id']}"
+        elif scope.get("root_lot_id"):
+            target += f" | Root Lot: {scope['root_lot_id']}"
+        return f"[도메인 해석 가이드]\n• {target}\n• 실행 기능: 웨이퍼 번호·장수 조회 (현재 WIP 기준)\n"
+
     # 1. 제품 & Root Lot
     line1 = []
     product = context.get("product") or ""
@@ -388,7 +422,11 @@ def build_interpretation_guide(prompt: str, result: dict) -> str:
 
     # 3. 기능
     action_label = ""
-    if feature in ("splittable.plan",) or split_m:
+    if feature == "eta":
+        action_label = "Lot 도착·완료 예상 시각 계산"
+    elif feature == "splittable.history":
+        action_label = "SplitTable 변경 이력 조회"
+    elif feature in ("splittable.plan",) or split_m:
         action_label = "SplitTable 계획 배정"
     elif "teg" in str(feature) or teg_m:
         action_label = "TEG 좌표 및 위치 조회"
@@ -454,17 +492,31 @@ def _finish(prompt: str, result: dict, context: dict) -> dict:
 
 
 def _product_question(text, context, products, message=None):
+    if _split_product_scope(text, context):
+        allowed = available_split_product_names()
+        products = [p for p in allowed if product_candidates(p, products)]
+        if not products:
+            products = allowed
+        if not products:
+            message = "스플릿테이블에 조회 가능한 제품이 없습니다. 스플릿테이블 제품 등록·캐시 상태를 확인해 주세요."
     state = deepcopy(context)
-    state["pending_product_prompt"] = text
-    return reply(message or "조회할 제품명을 알려 주세요. 제품을 확인한 뒤 요청을 이어서 처리하겠습니다.",
-                 context=state, ok=False, tool={"missing": ["product"], "table": {
+    state["pending_product_prompt"] = context.get("pending_product_prompt") or text
+    return reply(message or "조회할 제품을 선택해 주세요. 목록에 없으면 ‘기타 직접 입력’으로 제품명을 입력해 주세요.",
+                 context=state, ok=False, tool={"missing": ["product"], "clarification": {
+                     "kind": "product", "options": [{"label": p, "value": p} for p in products[:5]],
+                     "allow_other": True, "placeholder": "제품명을 입력하세요"}, "table": {
                      "columns": ["product"], "rows": [{"product": p} for p in products[:100]],
                      "total": len(products)}})
 
 
 def _product_scope(text, context):
     """Resolve only observed products, and pause before any scoped operation."""
-    products = available_product_names()
+    split_scope = _split_product_scope(text, context)
+    products = available_split_product_names() if split_scope else available_product_names()
+    if split_scope and not product_candidates(text, products):
+        other = product_candidates(text, available_product_names())
+        if other:
+            return text, _product_question(text, context, products, "해당 제품은 스플릿테이블에 없습니다. 스플릿테이블에 등록된 제품을 선택해 주세요.")
     matches = product_candidates(text, products)
     named = re.search(r"(?:제품(?:명)?\s*[:=]?\s*|\bproduct\s*[:=]\s*)([A-Za-z][A-Za-z0-9_.-]*)", text, re.I)
     if named and not product_candidates(named[1], products):
@@ -480,14 +532,17 @@ def _product_scope(text, context):
             # A new product must not inherit another product's query/artifact.
             for key in ("params", "table", "chart_result", "definition_code", "columns", "root_lot_id", "lot_id", "fab_lot_id", "teg_context", "teg_product", "teg_names", "pending_teg_selection", "pending_split_id", "pending_report_id", "pending_semantic_selection", "semantic_scope", "semantic_split_prompt"):
                 context.pop(key, None)
+            for key in ("split_query", "pending_split_choice", "eta_query", "pending_eta", "custom_name", "pending_custom_selection", "pending_split_query"):
+                context.pop(key, None)
         context["product"] = selected
         context["confirmed_product"] = selected
         pending = context.pop("pending_product_prompt", "")
         if pending:
+            known_products = list(set(products + available_product_names()))
             # Replace an invalid name instead of carrying it into the retry.
             pending = re.sub(r"\b(?:ML_TABLE_|VH_)?(?:prod[a-z0-9_-]*|pro\d+[a-z0-9_-]*)\b", "", pending, flags=re.I)
             pending = re.sub(r"(?:제품(?:명)?\s*[:=]?\s*|\bproduct\s*[:=]\s*)[A-Za-z][A-Za-z0-9_.-]*", "", pending, flags=re.I)
-            pending = re.sub(r"[A-Za-z][A-Za-z0-9_.-]*", lambda m: "" if product_candidates(m[0], products) else m[0], pending)
+            pending = re.sub(r"[A-Za-z][A-Za-z0-9_.-]*", lambda m: "" if product_candidates(m[0], known_products) else m[0], pending)
             text = f"{text} {pending}"
     elif context.get("pending_product_prompt"):
         return text, _product_question(context["pending_product_prompt"], context, products)
@@ -497,10 +552,11 @@ def _product_scope(text, context):
         context.pop("product", None)
         if isinstance(context.get("params"), dict):
             context["params"].pop("product", None)
-    scoped = bool(re.search(r"스플릿|split|knob|노브|커스텀|custom|위치|어디|현재\s*공정|랏\s*관리|lot\s*manage|수율|yield|웨이퍼\s*맵|wafer\s*map|shot\s*map|샷\s*맵|\bteg\b|맵파일|mapfile", text, re.I))
+    scoped = _is_wafer_inventory(text) or bool(re.search(r"스플릿|split|knob|노브|커스텀|custom|위치|어디|현재\s*공정|랏\s*관리|lot\s*manage|수율|yield|웨이퍼\s*맵|wafer\s*map|shot\s*map|샷\s*맵|\bteg\b|맵파일|mapfile", text, re.I))
     if (context.get("table") or context.get("chart_result")) and re.search(r"[xy]\s*축|폰트|font|높이|너비|범례|색상", text, re.I):
         scoped = False
-    if scoped and not context.get("confirmed_product"):
+    scoped = scoped or bool(re.search(r"도착|언제쯤|완료\s*시각|\beta\b", text, re.I))
+    if (scoped or split_scope) and not context.get("confirmed_product"):
         return text, _product_question(text, context, products)
     return text, None
 
@@ -517,7 +573,30 @@ def execute(prompt, context, request, history=None, *, approved_plan=None):
         "pending_split_id", "split_instruction", "pending_report_id", "report_template_id", "teg_names", "teg_product", "teg_context",
         "confirmed_product", "pending_product_prompt", "pending_teg_selection", "selected_skill",
         "pending_semantic_selection", "semantic_scope", "semantic_split_prompt",
+        "pending_split_query", "pending_custom_selection",
+        "split_query", "pending_split_choice", "eta_query", "pending_eta",
     }})
+    from core import data_chat_split_read
+    if context.get("pending_split_query") or context.get("pending_custom_selection"):
+        if re.fullmatch(r"취소(?:해|해줘)?[.!\s]*", text):
+            context.pop("pending_split_query", None)
+            context.pop("pending_custom_selection", None)
+            return reply("스플릿 조회 조건 확인을 취소했습니다.", context=context)
+        pending = context.get("pending_custom_selection")
+        if pending:
+            from routers import splittable
+            customs = splittable.list_customs().get("customs") or []
+            names = [c["name"] for c in customs if c.get("name")]
+            choice = re.fullmatch(r"(\d+)\s*번?", text)
+            candidate = pending["names"][int(choice[1]) - 1] if choice and 0 < int(choice[1]) <= len(pending["names"]) else text
+            matches = [n for n in names if n.casefold() == candidate.casefold()]
+            if len(matches) != 1:
+                return data_chat_split_read.custom_question(pending["prompt"], context, customs, "등록된 커스텀 세트를 선택해 주세요.")
+            context.update(custom_name=matches[0], custom_selection_confirmed=True)
+            context.pop("pending_custom_selection", None)
+            text = pending["prompt"]
+        elif context.get("pending_split_query"):
+            text = context.pop("pending_split_query") + " " + text
     if context.get("pending_product_prompt") and re.fullmatch(r"취소(?:해|해줘)?[.!\s]*", text):
         context.pop("pending_product_prompt", None)
         return reply("제품 확인을 기다리던 요청을 취소했습니다.", context=context)
@@ -525,6 +604,12 @@ def execute(prompt, context, request, history=None, *, approved_plan=None):
     flowi_routing.record("product_scope", product=context.get("confirmed_product") or "", needs_input=clarification is not None)
     if clarification is not None:
         return clarification
+    if not approved_plan:
+        from core import data_chat_split_query, data_chat_eta
+        for handler in (data_chat_eta.dispatch, data_chat_split_query.dispatch):
+            read_result = handler(text, context, request)
+            if read_result is not None:
+                return _finish(text, read_result, context)
     from core import product_semantics
     if context.get("confirmed_product"):
         pending = context.get("pending_semantic_selection")
@@ -585,7 +670,7 @@ def execute(prompt, context, request, history=None, *, approved_plan=None):
         flowi_routing.record("handler", handler="report")
         return _finish(text, report_result, context)
     from core import data_chat_split
-    split_result = data_chat_split.handle(text, context, request) if not approved_plan else None
+    split_result = data_chat_split.handle(text, context, request) if not approved_plan and not data_chat_split_read.HISTORY.search(text) else None
     if split_result is not None:
         flowi_routing.record("handler", handler="splittable")
         return _finish(text, split_result, context)
@@ -641,6 +726,9 @@ def execute(prompt, context, request, history=None, *, approved_plan=None):
     if action in data_chat_features.ACTIONS:
         schema = data_chat_features.ACTIONS[action].get("parameters") or {}
         params = {key: value for key, value in params.items() if key in schema.get("properties", {})}
+        if action == "lot_progress.wafers":
+            for key in ("lot_id", "root_lot_id", "fab_lot_id"):
+                context.pop(key, None)
         context.update(last_action=action, params=params)
         if params.get("product"):
             context["product"] = params["product"]
@@ -661,11 +749,11 @@ def execute(prompt, context, request, history=None, *, approved_plan=None):
         except ValueError as exc:
             return reply(f"조회 조건을 알려 주세요: {exc}", context=context, ok=False)
         return _finish(text, reply(tool.get("message") or "조회 결과를 대화에 표시했습니다.", tool=tool, context=context), context)
-    if action in {"splittable", "location"}:
+    if action in {"splittable", "location", "splittable.history"}:
         context.update(last_action=action)
         context.update({key: params[key] for key in ("product", "root_lot_id", "custom_name") if params.get(key)})
         if not feature_explicit:
-            text = ("스플릿테이블 " if action == "splittable" else "위치 ") + text
+            text = ("스플릿테이블 변경 이력 " if action == "splittable.history" else "스플릿테이블 " if action.startswith("splittable") else "위치 ") + text
     flowi_routing.record("data_fallback", action=action or "data")
     result = _execute_data(text, context, request)
     tool = result.get("tool") or {}
@@ -682,6 +770,7 @@ def execute(prompt, context, request, history=None, *, approved_plan=None):
 
 
 _EXCLUDED_LOT_WORDS = {
+    "WAFERS", "WHICH", "COUNT", "LIST", "CONTAINS", "CLASSIFIED", "UNDER",
     "SPLIT", "TABLE", "CUSTOM", "WAFER", "PARAM", "PHOTO", "ETCH", "KNOB", "WHERE", "SHOW",
     "CLEAR", "RESET", "GATE", "LOT", "STATUS", "CHART", "REPORT", "MATCH", "HOURS", "DAYS",
 }
@@ -711,10 +800,35 @@ def resolve_lot_scope(token: str) -> tuple[str, str]:
     return token, root
 
 
+def _is_wafer_inventory(text):
+    """Membership/count questions are not yield maps or split edits."""
+    if re.search(r"수율|yield|맵|\bmap\b|스플릿|split|knob|노브|차트|그래프|\bchart\b|\bteg\b|위치|어디|공정", text, re.I):
+        return False
+    wafer = re.search(r"(?<![A-Za-z])wafers?(?![A-Za-z])|웨이퍼|몇\s*장|몇\s*번", text, re.I)
+    listing = re.search(r"뭐|무엇|어떤|몇|목록|번호|리스트|분류|소속|포함|있|보여|알려|조회|list|which|how\s+many", text, re.I)
+    return bool(wafer and listing)
+
+
 def _feature_plan(text, context, history, features):
     """Offline common intents first; one schema constrained planner for other phrasing."""
     from core import llm_adapter
     folded = text.lower()
+    if _is_wafer_inventory(text) and not context.get("selected_skill"):
+        products = available_product_names()
+        params = {"product": context.get("confirmed_product") or context.get("product") or ""}
+        lots = extract_lot_tokens(text, products)
+        explicit_product = product_candidates(text, products)
+        if lots:
+            raw, root = resolve_lot_scope(lots[-1])
+            params["lot_id" if "." in raw else "root_lot_id"] = raw if "." in raw else root
+        elif not explicit_product:
+            # Short follow-ups can reuse a lot; explicit product queries start fresh.
+            if context.get("lot_id"):
+                params["lot_id"] = context["lot_id"]
+            elif context.get("root_lot_id"):
+                params["root_lot_id"] = context["root_lot_id"]
+        flowi_routing.record("rule_planner", action="lot_progress.wafers")
+        return "lot_progress.wafers", params
     if context.get("definition_code") and re.search(r"차트|그래프|chart|[xy]\s*축|폰트|font|글꼴|높이|너비|범례|색상|막대|산점|꺾은선|키워|줄여|크게|작게|q\d|sql|추출", folded) and not re.search(r"랏\s*관리|lot\s*manage|대시보드|dashboard|스플릿|splittable|위치|어디", folded):
         return "", {}
     params = dict(context.get("params") or {})
@@ -729,7 +843,7 @@ def _feature_plan(text, context, history, features):
             chosen = [choices[int(ordinal[1]) - 1]]
         if len(chosen) == 1:
             return "dashboard.chart_data", {"chart_id": chosen[0].get("id") or chosen[0].get("chart_id")}
-    if re.search(r"스플릿|splittable|split\s*table|knob|노브|커스텀|custom", folded):
+    if re.search(r"스플릿|splittable|split\s*table|knob|노브|커스텀|custom|변경\s*이력|수정\s*이력|변경\s*내역", folded):
         action = "splittable"
     elif re.search(r"위치|어디|현재\s*공정", folded):
         action = "location"
@@ -909,9 +1023,16 @@ def _execute_data(prompt, context, request):
     if re.search(r"번역|translate|오류.*설명|에러.*설명|날씨|웹\s*검색", folded):
         return reply("데이터 검색·랏 위치·차트 수정·SQL·추출 요청을 입력해 주세요. 번역과 오류 해석에는 LLM을 사용하지 않습니다.", context=context)
 
-    lot_tokens = extract_lot_tokens(text, products=None)
+    from core import data_chat_split_read
+    split = bool(data_chat_split_read.HISTORY.search(text) or re.search(r"스플릿|split\s*table|splittable|custom\s*set|커스텀|knob|노브", folded))
+    customs = (splittable.list_customs().get("customs") or []) if split else []
+    lot_text = text
+    for custom in sorted(customs, key=lambda c: len(str(c.get("name") or "")), reverse=True):
+        name = str(custom.get("name") or "")
+        if name:
+            lot_text = re.sub(r"(?<![A-Za-z0-9_])" + re.escape(name) + r"(?![A-Za-z0-9_])", " ", lot_text, flags=re.I)
+    lot_tokens = extract_lot_tokens(lot_text, products=None)
     location = bool(re.search(r"어디|위치|현재\s*공정|지금.*공정", folded))
-    split = bool(re.search(r"스플릿|split\s*table|splittable|custom\s*set|커스텀|knob|노브", folded))
     chart_task = bool(re.search(r"차트|chart|그래프|[xy]\s*축|font|폰트|글꼴|높이|너비|범례|색상|막대|산점|꺾은선|키워|줄여|크게|작게|q\d|root[ _-]*lot|tkout_time|sql|추출", folded))
     if code and chart_task and not (split or location):
         parsed = parse_chart_builder_definition(code)
@@ -967,7 +1088,11 @@ def _execute_data(prompt, context, request):
         return reply("제품 약칭이 여러 제품과 일치합니다. 제품을 지정해 주세요: " + ", ".join(matches),tool={"missing":["product"],"table":{"rows":[{"product":p} for p in matches]}},context=context)
     product = matches[0] if matches else str(context.get("product") or "")
     lots = [lot.upper() for lot in lot_tokens if not product_candidates(lot, products)]
-    lot = lots[-1] if lots else str(context.get("root_lot_id") or "")
+    # Custom-set labels may look like lot tokens. A named FAB lot takes
+    # precedence; otherwise a split query's first identifier is its root lot.
+    fab_lots = [value for value in lots if "." in value]
+    lot = (fab_lots[0] if split and fab_lots else lots[0] if split and lots else lots[-1] if lots
+           else str(context.get("fab_lot_id") or context.get("root_lot_id") or ""))
     raw_lot, root_lot = resolve_lot_scope(lot)
     lot = raw_lot
     root = root_lot
@@ -975,6 +1100,8 @@ def _execute_data(prompt, context, request):
     if not product:
         return _product_question(text, context, products)
     if not lot:
+        if split:
+            context["pending_split_query"] = text
         return reply("조회할 root lot 또는 FAB lot을 알려 주세요.",tool={"missing":["lot"]},context=context)
     if location:
         summary = canonical_lot_progress_summaries([lot], product=product, match_root="." not in lot).get(lot.upper(), {})
@@ -993,6 +1120,11 @@ def _execute_data(prompt, context, request):
         positions = sorted({" · ".join(str(row.get(key) or "") for key in ("step_id", "func_step")).strip(" ·") for row in location_rows} - {""})
         answer = f"{product} {lot}의 WIP 현재 공정: {', '.join(positions)}. 조회 결과 {len(location_rows)}행입니다." if positions else f"{lot}의 현재 위치를 WIP 캐시에서 확인하지 못했습니다."
         return reply(answer,tool=tool,context=context,interpretation=interpretation)
+    if data_chat_split_read.HISTORY.search(text):
+        source = split_table_product(product)
+        if not source:
+            return _product_question(text, context, available_split_product_names())
+        return data_chat_split_read.history_result(product, source, root, request, context)
     location_rows = lookup_lot_progress(product=product, lot_id=lot if "." in lot else "", root_lot_id=root, limit=500)
     if "." in lot:
         roots = {row.get("root_lot_id") for row in location_rows if row.get("root_lot_id")}
@@ -1000,25 +1132,10 @@ def _execute_data(prompt, context, request):
             root = roots.pop()
         elif not root:
             return reply("FAB lot에 연결된 root lot을 하나로 확인하지 못했습니다. root lot을 지정해 주세요.",context=context)
-    custom_name = str(context.get("custom_name") or "")
-    customs = splittable.list_customs().get("customs") or []
-    cand_match = re.search(r"\b([A-Za-z0-9_.\-]+(?:\s+[A-Za-z0-9_.\-]+)?)\s*(?:custom\s*set|커스텀\s*세트|커스텀|세트)", text, re.I)
-    raw_cand = cand_match.group(1).strip() if cand_match else ""
-    cand_parts = [p for p in raw_cand.split() if p.upper() not in {lot.upper(), root.upper(), product.upper()}]
-    cand_keyword = " ".join(cand_parts).strip()
-    selected = [c for c in customs if c.get("name") and (
-        re.search(r"(?<![A-Za-z0-9])" + re.escape(str(c["name"])) + r"(?![A-Za-z0-9])", text, re.I) or
-        (cand_keyword and cand_keyword.casefold() == str(c["name"]).casefold()) or
-        (cand_keyword and cand_keyword.casefold() in str(c["name"]).casefold()) or
-        (cand_keyword and str(c["name"]).casefold() in cand_keyword.casefold())
-    )]
+    custom_name, custom_question = data_chat_split_read.resolve_custom(text, context, customs)
+    if custom_question:
+        return custom_question
     cand_prefix = ""
-    if len(selected) == 1:
-        custom_name = selected[0]["name"]
-    elif len(selected) > 1:
-        return reply("Custom set 이름을 확인해 주세요: " + ", ".join(str(c.get("name") or "") for c in selected), context=context)
-    elif cand_keyword:
-        cand_prefix = cand_keyword
 
     split_product = split_table_product(product)
     if not split_product:
@@ -1029,6 +1146,7 @@ def _execute_data(prompt, context, request):
     data = splittable.view_split(product=split_product, root_lot_id=root, wafer_ids="", prefix="" if (custom_name or cand_prefix) else "KNOB", custom_name=custom_name,
         view_mode="all", history_mode="all", fab_lot_id=lot if "." in lot else "", custom_cols="", include_related=False, cache_first=True, request=request)
     rows = []
+    native_rows = []
     keys = data.get("wafer_keys") or []
     knob_names = re.findall(r"\bKNOB_[A-Za-z0-9_]+", text, re.I)
     knob_meta = splittable.knob_meta(split_product).get("features", {}) if re.search(r"knob|노브", folded) else {}
@@ -1037,6 +1155,7 @@ def _execute_data(prompt, context, request):
             continue
         if cand_prefix and not custom_name and cand_prefix.upper() not in str(row.get("_param") or "").upper():
             continue
+        native_rows.append(row)
         result = {"항목": row.get("_param")}
         meta = knob_meta.get(row.get("_param")) or {}
         if meta.get("groups"):
@@ -1050,4 +1169,6 @@ def _execute_data(prompt, context, request):
     context.update(product=product, root_lot_id=root, custom_name=custom_name)
     display_title = custom_name or (f"{cand_prefix} 세트" if cand_prefix else "KNOB")
     return reply(f"{product} · {root} · {display_title} 조회 결과 {len(rows)}개 항목입니다." if rows else "조회 결과가 없습니다. 캐시 준비 상태와 조회 조건을 확인해 주세요.",
-        tool={"feature": "splittable", "table": {"rows": rows, "total": len(rows)}, "sources": ["SplitTable 실제값 및 저장 계획"], "warnings": data.get("warnings") or []}, context=context)
+        tool={"feature": "splittable", "split_view": {**data, "rows": native_rows},
+              "context": {"product": product, "root_lot_id": root, "custom_name": custom_name},
+              "table": {"rows": rows, "total": len(rows)}, "sources": ["SplitTable 실제값 및 저장 계획"], "warnings": data.get("warnings") or []}, context=context)

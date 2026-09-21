@@ -4,6 +4,13 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def isolate_chat_success_prompts(monkeypatch, tmp_path):
+    """Home turns record successful origins server-side; never alter live chips."""
+    from core import chat_prompts
+    monkeypatch.setattr(chat_prompts, "PROMPTS_FILE", tmp_path / "chat_sample_prompts.json")
+
+
+@pytest.fixture(autouse=True)
 def isolate_process_metadata_snapshots(monkeypatch, tmp_path):
     """Route/export tests must never publish derived metadata into live Base."""
     import hashlib

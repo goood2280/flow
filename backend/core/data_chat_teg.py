@@ -150,6 +150,7 @@ def _payload_error(message: str, context: dict, *, missing: list[str] | None = N
 
 
 def _result(message: str, tool: dict, context: dict, *, ok: bool = True) -> dict:
+    tool.setdefault("context", {key: context[key] for key in ("product", "teg_product", "teg_names") if key in context})
     product = str(context.get("product") or "")
     names = [str(name) for name in context.get("teg_names") or []]
     source = " · ".join(str(item) for item in tool.get("sources") or [])
@@ -190,7 +191,9 @@ def _resolve_one_teg(name: str, tegs: list[dict]) -> tuple[str, list[str]]:
     source_matches = [str(row.get("teg") or "") for row in tegs
                       if str(row.get("teg_src") or "").casefold() == folded]
     source_matches = list(dict.fromkeys(item for item in source_matches if item))
-    if len(source_matches) == 1 and not re.match(r"^[HV]_", source_matches[0], re.I):
+    # A unique exact source alias is authoritative, including display names
+    # carrying an orientation prefix. Multiple H/V matches still need a choice.
+    if len(source_matches) == 1:
         return source_matches[0], []
 
     prefix_matches = [str(row.get("teg") or "") for row in tegs
@@ -434,6 +437,19 @@ def _teg_maps_payload(product: str, names: list[str], payload: dict) -> dict:
     }
 
 
+def _native_teg_view(product, names, payload):
+    """Bound the native read-only map payload; geometry remains source-owned."""
+    shots = payload.get("shots") or []
+    if len(shots) > MAX_VISUAL_SHOTS or len(shots) * len(names) > MAX_VISUAL_TEG_POSITIONS:
+        return None
+    wanted = {name.casefold() for name in names}
+    return {"product": product, "geometry": payload.get("geometry"),
+            "shots": [{k: s.get(k) for k in ("x", "y", "mm_x", "mm_y", "radius", "synthetic")} for s in shots],
+            "tegs": [{k: t.get(k) for k in ("teg", "ebeam_x", "ebeam_y", "teg_w", "teg_h", "chip_w", "chip_h", "flat_zone")}
+                     for t in payload.get("tegs", []) if str(t.get("teg") or "").casefold() in wanted],
+            "selected_tegs": names}
+
+
 def _locations(product: str, names: list[str], payload: dict, context: dict) -> dict:
     display_product = str(context.get("db_product") or product)
     context.update(product=display_product, teg_product=product, teg_names=names, last_action="teg.locations")
@@ -463,6 +479,7 @@ def _locations(product: str, names: list[str], payload: dict, context: dict) -> 
             "total": len(rows),
         },
         "teg_maps": _teg_maps_payload(product, names, payload),
+        "teg_view": _native_teg_view(product, names, payload),
         "related_tegs": related,
         "sources": ["TEG 위치조회 · Teg_location"],
         "warnings": [],
@@ -495,9 +512,12 @@ def _coordinates(product: str, names: list[str], context: dict) -> dict:
     if total > len(shown):
         warnings.append(f"좌표 {total:,}행 중 앞의 {len(shown):,}행만 표시했습니다.")
     try:
-        teg_maps = _teg_maps_payload(product, names, teg_map.map_payload(product))
+        native_payload = teg_map.map_payload(product)
+        teg_maps = _teg_maps_payload(product, names, native_payload)
+        teg_view = _native_teg_view(product, names, native_payload)
     except (FileNotFoundError, LookupError, ValueError) as exc:
         teg_maps = _unavailable_teg_maps(product, f"TEG 위치 그림 기준 데이터를 읽지 못했습니다: {exc}")
+        teg_view = None
     tool = {
         "feature": "teg",
         "action": "teg.coordinates",
@@ -507,6 +527,7 @@ def _coordinates(product: str, names: list[str], context: dict) -> dict:
             "total": total,
         },
         "teg_maps": teg_maps,
+        "teg_view": teg_view,
         "sources": ["TEG 위치조회 · Chip_Radius + Teg_location"],
         "warnings": warnings,
     }

@@ -90,7 +90,11 @@ def test_chat_prompts_api_endpoints(monkeypatch, tmp_path):
     assert rec_resp.status_code == 200
     assert rec_resp.json().get("ok") is True
 
-    # Check that it appears in recent_success
+    # Legacy clients cannot register unverified turns or duplicate server records.
+    assert rec_resp.json()["recorded"] is False
+    resp2 = client.get("/api/home-agent/sample-prompts")
+    assert not resp2.json().get("recent_success", [])
+    chat_prompts.record_success("신규 실제 테스트 질의", user="admin_test", category="테스트")
     resp2 = client.get("/api/home-agent/sample-prompts")
     assert any(s["text"] == "신규 실제 테스트 질의" for s in resp2.json().get("recent_success", []))
 

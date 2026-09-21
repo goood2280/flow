@@ -13,7 +13,7 @@ from typing import Any
 
 import polars as pl
 
-from core.lot_progress_cache import read_lot_progress_cache, compress_wafer_ids
+from core.lot_progress_cache import read_lot_progress_cache, compress_wafer_ids, _norm_wafer
 from core.lot_wip import describe_step, step_label
 from core.lot_tracker import step_number
 from core.ml_table_lookup import discover_ml_table_files
@@ -185,10 +185,11 @@ def find_split_leading_lot(product: str, split_col: str, split_val: str) -> dict
         }
 
     try:
-        df = pl.read_parquet(str(path), columns=["ROOT_LOT_ID", "LOT_ID", "WAFER_ID", split_col])
-        filtered = df.filter(pl.col(split_col).cast(pl.Utf8).str.to_lowercase() == split_val.lower())
-        if filtered.is_empty():
-            filtered = df.filter(pl.col(split_col).cast(pl.Utf8).str.to_lowercase().str.contains(split_val.lower()))
+        schema = pl.read_parquet_schema(str(path))
+        selected = ["ROOT_LOT_ID", "WAFER_ID", split_col] + (["LOT_ID"] if "LOT_ID" in schema else [])
+        filtered = (pl.scan_parquet(str(path)).select(selected)
+                    .filter(pl.col(split_col).cast(pl.Utf8).str.strip_chars().str.to_lowercase() == split_val.strip().lower())
+                    .collect())
     except Exception as exc:
         return {
             "ok": False,
@@ -205,9 +206,9 @@ def find_split_leading_lot(product: str, split_col: str, split_val: str) -> dict
     lot_id_map: dict[str, str] = {}
     for row in filtered.iter_rows(named=True):
         root = str(row.get("ROOT_LOT_ID") or "").strip().upper()
-        wf = str(row.get("WAFER_ID") or "").strip()
+        wf = _norm_wafer(row.get("WAFER_ID"))
         lot = str(row.get("LOT_ID") or "").strip()
-        if root:
+        if root and wf:
             target_wafers_by_root.setdefault(root, set()).add(wf)
             if lot and root not in lot_id_map:
                 lot_id_map[root] = lot
@@ -217,15 +218,19 @@ def find_split_leading_lot(product: str, split_col: str, split_val: str) -> dict
     all_items = state.get("items") or []
 
     # 현재 WIP 캐시에서 일치하는 root_lot_id / wafer_id 추출
-    wip_items = []
+    latest_by_wafer = {}
     for item in all_items:
-        if str(item.get("product") or "").strip().upper() != product.upper():
+        if re.sub(r"^ML_TABLE_", "", str(item.get("product") or "").strip().upper()) != re.sub(r"^ML_TABLE_", "", product.upper()):
             continue
         root = str(item.get("root_lot_id") or "").strip().upper()
         if root in matching_roots:
-            wf = str(item.get("wafer_id") or "").strip()
-            if not target_wafers_by_root.get(root) or wf in target_wafers_by_root[root]:
-                wip_items.append(dict(item))
+            wf = _norm_wafer(item.get("wafer_id"))
+            if wf in target_wafers_by_root[root]:
+                row = {**item, "wafer_id": wf, "update_time": str(item.get("tkout_time") or item.get("update_time") or "")}
+                old = latest_by_wafer.get((root, wf))
+                if old is None or row["update_time"] > old["update_time"]:
+                    latest_by_wafer[(root, wf)] = row
+    wip_items = list(latest_by_wafer.values())
 
     if not wip_items:
         return {
@@ -249,6 +254,9 @@ def find_split_leading_lot(product: str, split_col: str, split_val: str) -> dict
         it["func_step"] = str(it.get("function_step") or it.get("func_step") or "")
         it["score"] = score_step_progress(sid, it["step_desc"], str(it.get("update_time") or ""))
 
+    if any(it["score"][0] < 0 for it in wip_items):
+        return {"ok": False, "error": "일치하는 WIP 중 공정 순서를 확인할 수 없는 Step이 있어 선행랏을 단정할 수 없습니다. 공정 매칭 정보를 확인해 주세요."}
+
     # 점수 내림차순 정렬 (가장 선행하는 항목이 맨 앞)
     wip_items.sort(key=lambda x: x["score"], reverse=True)
 
@@ -256,8 +264,10 @@ def find_split_leading_lot(product: str, split_col: str, split_val: str) -> dict
     lots_summary: dict[str, dict[str, Any]] = {}
     for it in wip_items:
         root = str(it.get("root_lot_id") or "").strip().upper()
-        if root not in lots_summary:
-            lots_summary[root] = {
+        # Split FAB branches must remain separate even under the same root.
+        key = (root, str(it.get("lot_id") or lot_id_map.get(root) or root), str(it.get("step_id") or ""))
+        if key not in lots_summary:
+            lots_summary[key] = {
                 "root_lot_id": root,
                 "lot_id": it.get("lot_id") or lot_id_map.get(root) or root,
                 "step_id": it.get("step_id"),
@@ -268,9 +278,9 @@ def find_split_leading_lot(product: str, split_col: str, split_val: str) -> dict
                 "latest_move": str(it.get("update_time") or ""),
                 "score": it["score"],
             }
-        lots_summary[root]["wafers"].append(str(it.get("wafer_id") or ""))
-        if str(it.get("update_time") or "") > lots_summary[root]["latest_move"]:
-            lots_summary[root]["latest_move"] = str(it.get("update_time") or "")
+        lots_summary[key]["wafers"].append(str(it.get("wafer_id") or ""))
+        if str(it.get("update_time") or "") > lots_summary[key]["latest_move"]:
+            lots_summary[key]["latest_move"] = str(it.get("update_time") or "")
 
     sorted_lots = sorted(lots_summary.values(), key=lambda x: x["score"], reverse=True)
     lead_lot = sorted_lots[0]
@@ -299,7 +309,8 @@ def find_split_leading_lot(product: str, split_col: str, split_val: str) -> dict
         f"• **현재 위치**: `{step_display}`\n"
         f"• **진행 웨이퍼**: {len(lead_wafers)}장 ({compress_wafer_ids(lead_wafers)})\n"
         f"• **최종 이동 시각**: {lead_lot['latest_move'] or '-'}\n"
-        f"• 해당 split 조건의 WIP 물량: 총 {len(sorted_lots)}개 랏, {len(wip_items)}장 웨이퍼"
+        f"• 해당 split 조건의 WIP 물량: 총 {len({it['lot_id'] for it in sorted_lots})}개 랏, {len(wip_items)}장 웨이퍼\n"
+        "• 랏 안에서 가장 앞선 웨이퍼 위치 기준이며, WIP 캐시 갱신 시점의 결과입니다."
     )
 
     return {
@@ -308,7 +319,7 @@ def find_split_leading_lot(product: str, split_col: str, split_val: str) -> dict
         "split_col": split_col,
         "split_val": split_val,
         "lead_lot": lead_lot,
-        "total_lots": len(sorted_lots),
+        "total_lots": len({it['lot_id'] for it in sorted_lots}),
         "total_wafers": len(wip_items),
         "message": lead_msg,
         "table": {

@@ -71,7 +71,11 @@ export function consolidateShotItems(items, keyPrefix = "item") {
   return Array.from(groups.values(), group => {
     const representative = group.representative;
     const count = group.count;
-    const primaryName = String(representative.name ?? representative.teg ?? group.names[0] ?? "").trim();
+    const representativeName = String(representative.name ?? representative.teg ?? "").trim();
+    // The worst-status row is the geometry/status representative, but legacy
+    // MAIN anchor rows can have a blank name.  Do not let that blank hide the
+    // named TEG rows consolidated at the same coordinate.
+    const primaryName = representativeName || group.names[0] || "";
     const uniqueNameCount = group.nameSet.size;
     const uniqueReasonCount = group.reasonSet.size;
     const lines = [`${primaryName}${count > 1 ? ` (${count}건)` : ""}`];

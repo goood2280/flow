@@ -43,6 +43,14 @@ def test_lot_tracker_unmatched_reference_step_has_no_eta(monkeypatch):
     assert forecast["basis"]
 
 
+def test_history_retains_real_tkin_for_arrival(monkeypatch):
+    rows = [{"lot_id": "AZCVC.1", "step_id": "CS100000", "tkout_time": dt.datetime(2026, 9, 13), "tkin_time": dt.datetime(2026, 9, 12)}]
+    monkeypatch.setattr(lot_tracker, "scan_long_fab", lambda *a: pl.DataFrame(rows).lazy())
+    monkeypatch.setattr(lot_tracker, "describe_step", lambda *a: {})
+    product, history = lot_tracker._history("AZCVC.1", ["PRODC1"])
+    assert lot_tracker.build_timeline(history, product)[0]["tkin_time"] == "2026-09-12T00:00:00"
+
+
 def test_dpml_counts_distinct_photo_layers_not_numeric_gap():
     points = [
         {"step_desc": "02.0 PHOTO", "mask_layer": 2, "elapsed_days": 0},

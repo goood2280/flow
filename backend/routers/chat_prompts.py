@@ -28,10 +28,8 @@ def get_sample_prompts(request: Request, admin=Depends(require_admin)):
 
 @router.post("/sample-prompts/record-success")
 def record_prompt_success(request: Request, body: RecordSuccessRequest, admin=Depends(require_admin)):
-    """Record a successfully answered query."""
-    from core import chat_prompts
-    q = (body.prompt or body.text or "").strip()
-    return chat_prompts.record_success(q, user=admin["username"], category=body.category or "")
+    """Legacy clients must not double-record raw clarification answers."""
+    return {"ok": True, "recorded": False, "reason": "성공 질문은 대화 처리 완료 시 자동으로 기록합니다."}
 
 
 @router.post("/sample-prompts/pin")

@@ -38,6 +38,11 @@ echo "[flow-dev] app_root=$APP_ROOT"
 echo "[flow-dev] data_root=$FLOW_DATA_ROOT"
 echo "[flow-dev] db_root=$FLOW_DB_ROOT"
 echo "[flow-dev] port=$FLOW_WORKER_PORT python=$PYTHON_BIN"
+if [[ -n "${FLOW_API_SERVER_URL:-}" ]]; then
+  echo "[flow-dev] Home AI uses the configured operating API (FLOW_API_SERVER_URL)."
+else
+  echo "[flow-dev] Home AI requires FLOW_API_SERVER_URL; set the operating API URL before starting. Worker jobs remain available."
+fi
 echo "[flow-dev] Ctrl-C stops the supervisor and its uvicorn child."
 
 exec "$PYTHON_BIN" "$APP_ROOT/scripts/worker_watchdog.py" \

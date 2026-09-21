@@ -50,6 +50,7 @@ const SHOT_LIGHT_STYLE = {
 const SHOT_DEFAULT_STYLE = { stroke: "#111827", text: "#111827", fill: "rgba(17,24,39,0.06)" };
 const MAX_SHOT_ZOOM = 60;
 const MAX_SHOT_LABELS = 80;
+const MIN_OVERLAP_LABEL_PX = 6;
 const EMPTY_SHOT_CELLS = Object.freeze([]);
 const SHOT_LABEL_RANK = Object.freeze({ red: 0, orange: 1, yellow: 2, purple: 3, green: 4, gray: 5, dim: 6 });
 
@@ -529,10 +530,25 @@ const ShotGeometry = memo(function ShotGeometry({ scene, onMarkerEnter, onMarker
 
 const ShotAnnotations = memo(function ShotAnnotations({ scene, zoom }) {
   const labels = [];
-  for (const item of scene.labelOrder) {
-    if (item.fontSize * zoom < 2.5) continue;
-    labels.push(item);
+  // Reserve the bounded label budget for consolidated coordinates first.
+  // Otherwise 80 large single markers can push a tiny overlap summary out.
+  const annotationOrder = [
+    ...scene.labelOrder.filter(item => item.count > 1),
+    ...scene.labelOrder.filter(item => item.count <= 1),
+  ];
+  for (const item of annotationOrder) {
+    const overlapping = item.count > 1;
+    if (item.fontSize * zoom < 2.5 && !overlapping) continue;
+    labels.push(overlapping
+      ? { ...item, fontSize: Math.max(item.fontSize, MIN_OVERLAP_LABEL_PX / zoom) }
+      : item);
     if (labels.length === MAX_SHOT_LABELS) break;
+  }
+  // A shot made only of tiny single markers should still identify at least one
+  // position. Hovering exposes the full consolidated detail.
+  if (!labels.length && annotationOrder.length) {
+    const item = annotationOrder[0];
+    labels.push({ ...item, fontSize: Math.max(item.fontSize, MIN_OVERLAP_LABEL_PX / zoom) });
   }
   return (
     <g pointerEvents="none">
@@ -594,7 +610,9 @@ function ShotView({ shot, items, size = 560, focus = null, exactFocus = false })
         const x = toX(t.mm_x), yBottom = toY(t.mm_y);
         const wpx = Math.max(1.5 / MAX_SHOT_ZOOM, (t.w || 0) * s);
         const hpx = Math.max(1.5 / MAX_SHOT_ZOOM, (t.h || 0) * s);
-        const label = String(t.name || "");
+        const name = String(t.name || "");
+        const label = t.count > 1 && t.uniqueNames?.length > 1
+          ? `${name} 외 ${t.uniqueNames.length - 1}종 TEG` : name;
         // Vertical map은 TEG 자체가 반시계/시계 방향으로 선 상태다. 이름도 같은
         // 방향으로 돌리고, 회전 뒤의 가로·세로를 기준으로 크기를 맞춰 좁은 폭에
         // 눌려 지나치게 작아지지 않게 한다 (평균 글자폭 ≈ 0.58em).

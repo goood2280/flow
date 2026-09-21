@@ -107,6 +107,15 @@ def table(
     }
 
 
+@router.get("/wafers")
+def wafers(request: Request, product: str = Query(...), lot_id: str = Query(""),
+           root_lot_id: str = Query(""), limit: int = Query(200, ge=1, le=200)):
+    current_user(request)
+    from core.lot_progress_cache import canonical_wafer_inventory
+    return {"ok": True, **canonical_wafer_inventory(product=product, lot_id=lot_id,
+                                                    root_lot_id=root_lot_id, limit=limit)}
+
+
 @router.get("/snapshot")
 def snapshot(
     request: Request,

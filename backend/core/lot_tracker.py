@@ -57,9 +57,13 @@ def step_label(step_desc: str) -> str:
 def build_timeline(rows: list[dict], product: str) -> list[dict]:
     """One point per completed step; latest wafer TKOUT marks lot completion."""
     per_step: dict[str, dt.datetime] = {}
+    arrival_by_step: dict[str, dt.datetime] = {}
     for row in rows:
         sid = _key(row.get("step_id"))
         when = _datetime(row.get("tkout_time"))
+        arrival = _datetime(row.get("tkin_time"))
+        if sid and arrival and (sid not in arrival_by_step or arrival > arrival_by_step[sid]):
+            arrival_by_step[sid] = arrival
         if sid and when and (sid not in per_step or when > per_step[sid]):
             per_step[sid] = when
     ordered = sorted(per_step.items(), key=lambda item: (item[1], item[0]))
@@ -90,6 +94,7 @@ def build_timeline(rows: list[dict], product: str) -> list[dict]:
             "is_litho_photo": is_litho,
             "mask_layer": layer if layer is not None else current_mask_layer,
             "tkout_time": when.isoformat(timespec="seconds"),
+            "tkin_time": arrival_by_step[sid].isoformat(timespec="seconds") if sid in arrival_by_step else None,
             "elapsed_days": round((when - start).total_seconds() / _DAY, 3),
         })
     return result
@@ -301,9 +306,10 @@ def _history(lot_id: str, candidates: list[str]) -> tuple[str, list[dict]]:
         names = set(lf.collect_schema().names())
         if not {"lot_id", "step_id", "tkout_time"}.issubset(names):
             continue
+        selected = ["lot_id", "step_id", "tkout_time"] + (["tkin_time"] if "tkin_time" in names else [])
         rows = (lf.filter(pl.col("lot_id").cast(pl.Utf8, strict=False)
                           .str.strip_chars().str.to_uppercase() == _key(lot_id))
-                  .select("lot_id", "step_id", "tkout_time").collect().to_dicts())
+                  .select(selected).collect().to_dicts())
         if rows:
             matches.append((product, rows))
     if len(matches) > 1:

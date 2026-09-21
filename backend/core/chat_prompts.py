@@ -106,11 +106,104 @@ def _enrich_item(item: dict[str, Any]) -> dict[str, Any]:
     return d
 
 
+def _needs_input(response):
+    from core.flowi_turn import _status
+    return (response.get("routing_trace") or {}).get("status") == "needs_input" or _status(response) == "needs_input"
+
+
+def completed_origin(messages, result):
+    """Resolve the first user question in a completed clarification chain."""
+    from core.flowi_turn import _status
+    tool = result.get("tool") or {}
+    if _status(result) != "completed" or not tool or result.get("error"):
+        return None
+    if result.get("batch") and result["batch"].get("completed") != result["batch"].get("total"):
+        return None
+    index = len(messages) - 1
+    if index < 0 or messages[index].get("role") != "user":
+        return None
+    import re
+    from core import data_chat_split, data_chat_report
+    text = messages[index].get("content", "").strip()
+    if (data_chat_split.CANCEL.fullmatch(text) or data_chat_report.CANCEL.fullmatch(text)
+            or re.fullmatch(r"취소\s+[0-9a-f]{32}[.!\s]*|cancel", text, re.I)):
+        return None
+    answers = []
+    while index >= 2 and messages[index - 1].get("role") == "assistant":
+        previous = messages[index - 1].get("response") or {}
+        if not _needs_input(previous):
+            break
+        # Deferred batch questions have not been executed by a single answer.
+        if any(q.get("status") == "deferred" for q in previous.get("questions", [])):
+            return None
+        if messages[index - 2].get("role") != "user":
+            break
+        answers.append(messages[index].get("content", ""))
+        index -= 2
+    prompt = str(messages[index].get("content") or "").strip()
+    return {"prompt": prompt, "answers": answers, "message_id": messages[index].get("id", "")} if prompt else None
+
+
+def _repair_success_origins(data, owner):
+    """Once per owner, repair old answer-fragment records using their saved chats."""
+    if not owner or owner in data.get("origin_migrated_owners", []):
+        return
+    from core import chat_conversations
+    replacements, independent, incomplete, origin_counts = {}, set(), set(), {}
+    for conversation in chat_conversations.list_conversations(owner):
+        try:
+            messages = chat_conversations.read(owner, conversation["id"])["messages"]
+        except (OSError, ValueError):
+            continue
+        for index, message in enumerate(messages):
+            if message.get("role") != "assistant":
+                continue
+            if index and messages[index - 1].get("role") == "user" and _needs_input(message.get("response") or {}):
+                incomplete.add(str(messages[index - 1].get("content") or "").strip().casefold())
+            origin = completed_origin(messages[:index], message.get("response") or {})
+            if not origin:
+                continue
+            key = origin["prompt"].casefold()
+            independent.add(key)
+            origin_counts[key] = origin_counts.get(key, 0) + 1
+            for answer in origin["answers"]:
+                replacements.setdefault(answer.strip().casefold(), set()).add(origin["prompt"])
+    merged, retained, repaired = {}, [], {}
+    for item in data.get("successful", []):
+        if item.get("owner") != owner:
+            retained.append(item)
+            continue
+        item = dict(item)
+        text = str(item.get("prompt") or item.get("text") or "").strip()
+        if text.casefold() in incomplete and text.casefold() not in independent and text.casefold() not in replacements:
+            continue
+        if text.casefold() in replacements and text.casefold() not in independent:
+            for original in sorted(replacements[text.casefold()]):
+                repaired[original.casefold()] = {**item, "id": f"succ-{uuid4()}", "prompt": original,
+                                                "text": original, "count": origin_counts[original.casefold()]}
+            continue
+        key = text.casefold()
+        if key in merged:
+            merged[key]["count"] = int(merged[key].get("count", 1)) + int(item.get("count", 1))
+        else:
+            merged[key] = item
+            retained.append(item)
+    for key, item in repaired.items():
+        if key not in merged:
+            retained.append(item)
+        else:
+            merged[key]["count"] = origin_counts[key]
+    data["successful"] = retained
+    data.setdefault("origin_migrated_owners", []).append(owner)
+    _write_data(data)
+
+
 def get_sample_prompts(user: str = "") -> dict[str, Any]:
     """Return global pinned questions and only this user's successful questions."""
     owner = str(user or "").strip()
     with _LOCK:
         data = _read_data()
+        _repair_success_origins(data, owner)
         pinned = [_enrich_item(x) for x in data.get("pinned", [])]
         successful = [
             _enrich_item(x) for x in data.get("successful", [])
