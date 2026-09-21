@@ -104,6 +104,7 @@ def start_background_services(logger) -> None:
     # All recurring work that reads/writes shared files, sends notifications,
     # or builds shared caches is started by exactly one elected process.
     owner_starters = [
+        ("system monitor and daily paver", "core.sysmon", "start_background"),
         ("filebrowser preview prewarmer", "core.filebrowser_cache_prewarm", "start_prewarmer"),
         ("Inform registration postprocessor", "routers.informs", "start_inform_postprocess_worker"),
         ("splittable KNOB S0 daily snapshot", "routers.splittable", "start_knob_s0_snapshot_scheduler"),

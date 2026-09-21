@@ -394,7 +394,7 @@ function productOptions(tool) {
         value: asText(option?.value ?? option?.label).trim(),
       }))
       .filter((option) => option.label && option.value)
-      .slice(0, 5);
+      .slice(0, clarification.kind?.startsWith("inline_") ? 100 : 5);
   }
 
   const missingProduct = Array.isArray(tool?.missing) && tool.missing.some((item) => asText(item).toLowerCase() === "product");
@@ -415,7 +415,7 @@ function productOptions(tool) {
 }
 
 function isProductRequest(tool) {
-  return ["product", "custom_set", "split_column", "split_value", "eta_reference"].includes(tool?.clarification?.kind)
+  return ["product", "custom_set", "split_column", "split_value", "eta_reference", "inline_measure", "inline_time", "inline_lot_scope"].includes(tool?.clarification?.kind)
     || (Array.isArray(tool?.missing) && tool.missing.some((item) => asText(item).toLowerCase() === "product"));
 }
 

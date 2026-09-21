@@ -207,6 +207,7 @@ function ResourceSparkline({label,rows,metric,color,hours}){
 
 const FARM_ANIM=`@keyframes fabFarm{0%{transform:translateX(0)}50%{transform:translateX(10px)}100%{transform:translateX(0)}}`;
 const HISTORY_PAGE_SIZE=100;
+const USER_PAGE_SIZE=50;
 
 function HistoryPager({offset=0,limit=HISTORY_PAGE_SIZE,total=0,hasMore=false,loading=false,onPage}){
   const safeTotal=Math.max(0,Number(total)||0);
@@ -313,6 +314,8 @@ function WorkerPanel(){
 export default function My_Admin({user}){
   const isAdmin=user?.role==="admin";
   const[users,setUsers]=useState([]);const[logs,setLogs]=useState([]);const[notifs,setNotifs]=useState([]);
+  const[userCounts,setUserCounts]=useState({total:0,approved:0,pending:0});
+  const[userQuery,setUserQuery]=useState("");const[userPage,setUserPage]=useState(0);
   const[tab,setTab]=useState("notifs");const[dlHistory,setDlHistory]=useState([]);
   const[dlFilter,setDlFilter]=useState({q:"",source:""});
   const[sys,setSys]=useState({});const[resLog,setResLog]=useState([]);const[farmStatus,setFarmStatus]=useState({});
@@ -343,14 +346,19 @@ export default function My_Admin({user}){
     if(!inquiry.trim())return;
     sf("/api/admin/send-inquiry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",message:inquiry.trim()})}).then(()=>{setInquiry("");toast.ok("관리자에게 전송되었습니다.");load();}).catch(e=>toast.error(e.message));
   };
+  const loadNotifications=()=>sf("/api/admin/all-notifications?username="+encodeURIComponent(user?.username||""))
+    .then(d=>setNotifs(d.notifications||[])).catch(()=>{});
+  const loadUserCounts=()=>sf("/api/admin/users/counts").then(d=>setUserCounts({total:Number(d.total)||0,approved:Number(d.approved)||0,pending:Number(d.pending)||0})).catch(()=>{});
+  const loadUsers=()=>sf("/api/admin/users").then(d=>setUsers(d.users||[])).catch(()=>{});
+  const loadPermGroups=()=>sf("/api/admin/perm-groups").then(d=>setPermGroups(d.groups||[])).catch(()=>{});
+  const loadLogUsers=()=>sf("/api/admin/logs/users").then(d=>setLogUsers(d.users||[])).catch(()=>{});
   const load=()=>{
-    // Load ALL notifications (not just unread) so user can see history
-    sf("/api/admin/all-notifications?username="+(user?.username||"")).then(d=>setNotifs(d.notifications||[])).catch(()=>{});
-    if(isAdmin){
-      sf("/api/admin/users").then(d=>setUsers(d.users||[])).catch(()=>{});
-      sf("/api/admin/perm-groups").then(d=>setPermGroups(d.groups||[])).catch(()=>{});
-      sf("/api/admin/logs/users").then(d=>setLogUsers(d.users||[])).catch(()=>{});
-    }
+    loadNotifications();
+    if(!isAdmin)return;
+    loadUserCounts();
+    if(["users","perms","page_admins"].includes(tab))loadUsers();
+    if(tab==="perms")loadPermGroups();
+    if(tab==="logs")loadLogUsers();
   };
   // 서버가 필터를 전체 이력에 적용한 뒤 최신순 페이지를 반환한다.
   const reloadLogs=(offset=logOffset)=>{
@@ -370,13 +378,19 @@ export default function My_Admin({user}){
   };
   useEffect(()=>{load();},[]);
   useEffect(()=>{
+    if(!isAdmin)return;
+    if(["users","perms","page_admins"].includes(tab))loadUsers();
+    if(tab==="perms")loadPermGroups();
+    if(tab==="logs")loadLogUsers();
+  },[tab,isAdmin]);
+  useEffect(()=>{
     if(tab!=="logs")return;
     const timer=setTimeout(reloadLogs,250);
     return()=>{clearTimeout(timer);logRequestRef.current++;};
   },[logFilter.username,logFilter.action,logFilter.tab,logOffset,tab,isAdmin,user?.username]);
   // v8.2.0: Bell dismiss / external read → re-load this tab's notif list immediately
   useEffect(()=>{
-    const onRefresh=()=>load();
+    const onRefresh=()=>loadNotifications();
     window.addEventListener("hol:notif-refresh",onRefresh);
     return()=>window.removeEventListener("hol:notif-refresh",onRefresh);
   },[user]);
@@ -483,13 +497,13 @@ export default function My_Admin({user}){
       .then(d=>{setPermGroups(d.groups||[]);toast.ok("권한 그룹 삭제됨");})
       .catch(e=>toast.error(e.message||"삭제 실패"));
   };
-  const markRead=(ids)=>{if(!ids.length)return;sf("/api/admin/mark-read-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",ids})}).then(()=>{load();window.dispatchEvent(new CustomEvent("hol:notif-refresh"));}).catch(()=>{});};
+  const markRead=(ids)=>{if(!ids.length)return;sf("/api/admin/mark-read-batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||"",ids})}).then(()=>window.dispatchEvent(new CustomEvent("hol:notif-refresh"))).catch(()=>{});};
   const toggleRead=(n)=>{if(!n.id)return;markRead([n.id]);};
   // "모두 읽음"은 화면에 로드된 id 만 보내면 안 된다. /all-notifications 는 최근
   // 50건만 돌려주는데 종 배지는 **읽지 않은 것 중** 최근 50건을 세므로, 50건 밖의
   // 오래된 미읽음이 남아 "모두 읽음을 눌러도 종이 안 꺼지는" 상태가 된다.
   // /mark-read 는 서버에서 해당 유저 전체를 읽음 처리한다.
-  const markAllRead=()=>{sf("/api/admin/mark-read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||""})}).then(()=>{load();window.dispatchEvent(new CustomEvent("hol:notif-refresh"));}).catch((e)=>toast.error(e.message||"읽음 처리 실패"));};
+  const markAllRead=()=>{sf("/api/admin/mark-read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||""})}).then(()=>window.dispatchEvent(new CustomEvent("hol:notif-refresh"))).catch((e)=>toast.error(e.message||"읽음 처리 실패"));};
 
   // Tabs differ by role
   // v8.4.3 단위기능 페이지 철학: AWS 설정은 FileBrowser 톱니로 이관 예정 (제거).
@@ -501,13 +515,13 @@ export default function My_Admin({user}){
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
-  const tabItems=(tabs||[]).map(([k,l])=>({k,l,badge:k==="users"&&isAdmin?String(_arr(users).length):undefined}));
+  const tabItems=(tabs||[]).map(([k,l])=>({k,l,badge:k==="users"&&isAdmin?String(userCounts.total):undefined}));
   // username → 권한 그룹명 (한 사용자는 하나의 권한 그룹에만 속함)
   const userPermGroup={};
   _arr(permGroups).forEach(g=>_arr(g.members).forEach(m=>{userPermGroup[m]=g.name;}));
   const editPermUser=_arr(users).find(u=>u?.username===editPerm)||null;
-  const approvedUsers=_arr(users).filter(u=>u?.status==="approved").length;
-  const pendingUsers=_arr(users).filter(u=>u?.status==="pending").length;
+  const approvedUsers=userCounts.approved;
+  const pendingUsers=userCounts.pending;
   // v9.1.x: downloads.jsonl 의 source 필드로 구분 표시 (없으면 파일 다운로드).
   const DL_SOURCES={filebrowser:{label:"파일 다운로드",tone:"accent"},reformatize:{label:"ET 다운로드",tone:"info"},reformatize_test:{label:"ET 테스트",tone:"warn"},splittable:{label:"SplitTable 다운로드",tone:"violet"},auto_report:{label:"Auto report",tone:"ok"},template_report:{label:"Template Report",tone:"info"},catalog:{label:"매칭 테이블",tone:"neutral"}};
   const combinedDownloads=_arr(dlHistory).map((d)=>{
@@ -525,6 +539,13 @@ export default function My_Admin({user}){
       };
     });
   const resourceChartHours=resWindow==="7d"?168:24;
+  const normalizedUserQuery=userQuery.trim().toLowerCase();
+  const visibleUsers=normalizedUserQuery
+    ?_arr(users).filter(u=>[u?.name,u?.username,u?.sso_id,u?.department].some(v=>String(v||"").toLowerCase().includes(normalizedUserQuery)))
+    :_arr(users);
+  const userPageCount=Math.max(1,Math.ceil(visibleUsers.length/USER_PAGE_SIZE));
+  const safeUserPage=Math.min(userPage,userPageCount-1);
+  const pagedUsers=visibleUsers.slice(safeUserPage*USER_PAGE_SIZE,(safeUserPage+1)*USER_PAGE_SIZE);
   return(
     <div style={{padding:"24px 32px",background:"var(--bg-primary)",minHeight:"calc(100vh - 52px)",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif"}}>
       <PageHeader
@@ -551,10 +572,19 @@ export default function My_Admin({user}){
 
       {/* Users (admin only) — v8.8.27: 이름 컬럼 추가 + inline 편집. */}
       {tab==="users"&&isAdmin&&<div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr)",gap:16,alignItems:"start"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <input value={userQuery} onChange={e=>{setUserQuery(e.target.value);setUserPage(0);}} placeholder="이름, 아이디, SSO 번호, 부서 검색"
+            style={{padding:"7px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,minWidth:260}}/>
+          <span style={{fontSize:13,color:"var(--text-secondary)"}}>{visibleUsers.length.toLocaleString()}명 · {safeUserPage+1}/{userPageCount}페이지</span>
+          <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+            <Button variant="subtle" disabled={safeUserPage===0} onClick={()=>setUserPage(safeUserPage-1)}>이전</Button>
+            <Button variant="subtle" disabled={safeUserPage>=userPageCount-1} onClick={()=>setUserPage(safeUserPage+1)}>다음</Button>
+          </div>
+        </div>
         <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
             <thead><tr>{["이름","아이디","SSO 고유번호","부서","역할","상태","탭","작업"].map(h=><th key={h} style={{textAlign:"left",padding:"10px 14px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>{h}</th>)}</tr></thead>
-            <tbody>{(Array.isArray(users)?users:[]).map((u,i)=><tr key={i}>
+            <tbody>{pagedUsers.map(u=><tr key={u.username}>
               <td style={{padding:"6px 14px",borderBottom:"1px solid var(--border)",fontSize:14}}>
                 <NameInlineEdit u={u} onSave={(nm)=>sf("/api/admin/set-name",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u.username,name:nm})}).then(load).catch(e=>toast.error(e.message))}/>
               </td>
@@ -909,7 +939,7 @@ export default function My_Admin({user}){
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,marginBottom:12,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-secondary)"}}>
           <div>
             <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>보도블럭 갈기</div>
-            <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:2}}>실행 중 CPU와 RAM을 약 85%로 유지합니다. 어느 하나라도 90%에 도달하면 CPU 부하와 RAM 할당을 모두 자동 해제합니다.</div>
+            <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:2}}>CPU·RAM 각각 80% 이상 도달을 확인하며 약 85%를 목표로 최대 10분 실행합니다. 어느 하나라도 90%에 도달하면 모두 해제합니다. 예약은 한국 시간 기준이며, 놓친 예약은 당일 재기동 후 실행합니다.</div>
             <div style={{display:"flex",gap:8,alignItems:"center",marginTop:8,flexWrap:"wrap"}}>
               <label style={{display:"flex",gap:6,alignItems:"center",fontSize:14,color:"var(--text-secondary)"}}>
                 <input type="checkbox" checked={!!paverSchedule.enabled} onChange={e=>setPaverSchedule(s=>({...s,enabled:e.target.checked}))}/>
@@ -918,6 +948,11 @@ export default function My_Admin({user}){
               <input type="time" value={paverSchedule.time||"11:00"} disabled={!paverSchedule.enabled} onChange={e=>setPaverSchedule(s=>({...s,time:e.target.value}))} style={{padding:"5px 8px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-primary)",color:"var(--text-primary)"}}/>
               <Button variant="subtle" disabled={paverScheduleBusy} onClick={savePaverSchedule}>예약 저장</Button>
               {paverSchedule.last_run_at&&<span style={{fontSize:13,color:"var(--text-secondary)"}}>최근 실행 {String(paverSchedule.last_run_at).replace("T"," ")}</span>}
+              {paverSchedule.last_result?.status&&<span style={{fontSize:13,color:paverSchedule.last_result.status==="reached"?"var(--text-secondary)":WARN.fg}}>
+                {{running:"실행 중",reached:"CPU·RAM 80% 도달 확인",incomplete:"80% 도달 미확인",interrupted:"재시작으로 중단"}[paverSchedule.last_result.status]||paverSchedule.last_result.status}
+                {paverSchedule.last_result.cpu_peak_pct!=null&&` · CPU 최고 ${Number(paverSchedule.last_result.cpu_peak_pct).toFixed(1)}% · RAM 최고 ${Number(paverSchedule.last_result.memory_peak_pct||0).toFixed(1)}%`}
+                {(paverSchedule.last_result.error||paverSchedule.last_result.reason)&&` · ${paverSchedule.last_result.error||paverSchedule.last_result.reason}`}
+              </span>}
             </div>
           </div>
           <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
@@ -939,6 +974,7 @@ export default function My_Admin({user}){
         </div>
         {(sys.process_cpu_budget_cores||sys.memory_source)&&<div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"center",marginTop:-8,marginBottom:16,fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>
           <span>Flow CPU {Number(sys.process_cpu_cores||0).toFixed(2)} / {Number(sys.process_cpu_guard_cores||sys.process_cpu_budget_cores||0).toFixed(2)} cores{sys.process_cpu_over_limit?" · over":""}</span>
+          <span>할당 CPU {Number(sys.system_cpu_count||0)} cores · 측정 {sys.cpu_source||"host"}</span>
           <span>MEM source {sys.memory_source||sys.system_memory_source||"-"}{sys.system_memory_raw_total_gb&&sys.system_memory_raw_total_gb!==sys.system_memory_total_gb?` · raw ${Number(sys.system_memory_raw_total_gb||0).toFixed(1)}GB`:""}{Number(sys.system_memory_cache_reclaimable_gb||0)>0.05?` · cache ${Number(sys.system_memory_cache_reclaimable_gb||0).toFixed(1)}GB (회수가능, 사용량 제외)`:""}</span>
         </div>}
         {/* v9.2.1: 프로세스 메모리 상세 — RSS/PSS/USS 구분 표시 */}
@@ -2257,6 +2293,8 @@ function ActivityDashboardPanel(){
   const [eventPage,setEventPage]=useState({total:0,offset:0,limit:HISTORY_PAGE_SIZE,has_more:false});
   const [eventLoading,setEventLoading]=useState(false);
   const [eventError,setEventError]=useState("");
+  const [eventSectionVisible,setEventSectionVisible]=useState(false);
+  const eventSectionRef=useRef(null);
   const eventRequestRef=useRef(0);
   const summaryRequestRef=useRef(0);
   const reload=()=>{
@@ -2267,6 +2305,17 @@ function ActivityDashboardPanel(){
   };
   useEffect(()=>{reload();return()=>{summaryRequestRef.current++;};},[days]);
   useEffect(()=>{
+    const element=eventSectionRef.current;
+    if(!element)return;
+    if(typeof IntersectionObserver!=="function"){setEventSectionVisible(true);return;}
+    const observer=new IntersectionObserver(entries=>{
+      if(entries.some(entry=>entry.isIntersecting)){setEventSectionVisible(true);observer.disconnect();}
+    },{rootMargin:"200px"});
+    observer.observe(element);
+    return()=>observer.disconnect();
+  },[]);
+  useEffect(()=>{
+    if(!eventSectionVisible)return;
     const requestId=++eventRequestRef.current;
     const q=new URLSearchParams({limit:String(HISTORY_PAGE_SIZE),offset:String(eventOffset),days:String(days)});
     if(eventUsername)q.set("username",eventUsername);
@@ -2280,7 +2329,7 @@ function ActivityDashboardPanel(){
         .finally(()=>{if(requestId===eventRequestRef.current)setEventLoading(false);});
     },250);
     return()=>{clearTimeout(timer);eventRequestRef.current++;};
-  },[days,eventUsername,eventOffset]);
+  },[days,eventUsername,eventOffset,eventSectionVisible]);
   // 라벨 칸을 고정폭으로 못박아 바 시작점을 정렬한다. minWidth 만 주면 라벨이
   // 길어질 때(액션명) 칸이 늘어나 행마다 바 왼쪽이 어긋난다 — 넘치면 ellipsis + title.
   const barItem=(label,val,max,color,labelW=120)=>(<div key={String(label)} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
@@ -2350,7 +2399,7 @@ function ActivityDashboardPanel(){
     </div>
     {/* SplitTable 검색 타이밍·RAM 캐시 항목 패널은 캐시 관리 페이지(My_RamCache)로 이전됐다
         — 측정(히트/미스 속도)과 튜닝(쿼리 코어·검색 슬롯)이 같은 화면에 있어야 해서. */}
-    <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
+    <div ref={eventSectionRef} style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
         <div style={{fontSize:14,fontWeight:700}}>이벤트 이력</div>
         <input value={eventUsername} onChange={e=>{setEventOffset(0);setEventUsername(e.target.value);}} placeholder="사용자 필터 (전체는 비움)"
@@ -2363,11 +2412,12 @@ function ActivityDashboardPanel(){
       </div>
       {eventError&&<Banner tone="danger" style={{marginBottom:10}}>{eventError}</Banner>}
       {eventLoading&&<div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:8}}>이벤트를 불러오는 중…</div>}
+      {!eventSectionVisible&&<div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:8}}>이벤트 이력은 이 영역에 도달하면 불러옵니다.</div>}
       <div style={{maxHeight:400,overflowY:"auto"}}>
         <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
           <thead><tr>{["시각","유저","action","tab","detail"].map(h=><th key={h} style={{textAlign:"left",padding:"4px 8px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>{h}</th>)}</tr></thead>
           <tbody>
-            {!eventLoading&&!eventRows.length&&<tr><td colSpan={5} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>이벤트 없음</td></tr>}
+            {eventSectionVisible&&!eventLoading&&!eventRows.length&&<tr><td colSpan={5} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>이벤트 없음</td></tr>}
             {eventRows.map((r,i)=>(<tr key={`${r.timestamp||r.time}-${r.username||r.actor}-${r.action}-${i}`}><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace",color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{(r.timestamp||r.time||"").replace("T"," ").slice(0,16)}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontWeight:600}}>{r.username||r.actor||"-"}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",fontFamily:"monospace"}}>{r.action}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)"}}>{r.tab||""}</td><td style={{padding:"4px 8px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",maxWidth:400,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r.detail}>{r.detail}</td></tr>))}
           </tbody>
         </table>

@@ -9,6 +9,7 @@ import {
   Pill,
 } from "../../components/ui";
 import { sf } from "../../lib/api";
+import { buildDpmlComparison } from "./dpmlComparison";
 
 const REF_COLUMNS = ["lot_id"];
 
@@ -130,6 +131,7 @@ export default function LotTracker() {
     parseRefRows("DEMO-REF-01, DEMO-REF-02, DEMO-REF-03")
   );
   const [showOptional, setShowOptional] = useState(true);
+  const [comparisonDpml, setComparisonDpml] = useState("");
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -212,6 +214,13 @@ export default function LotTracker() {
       ...forecastPts.map((point) => chartPoint(point, `${lot.lot_id} (도착 예측)`)),
     ].filter((point) => point.x && point.y);
   }, [lot, forecast]);
+
+  const dpmlPoints = useMemo(
+    () => buildDpmlComparison(chartPoints, comparisonDpml),
+    [chartPoints, comparisonDpml]
+  );
+  const dpmlSeries = dpmlPoints[0]?.series;
+  const invalidDpml = comparisonDpml !== "" && (!Number.isFinite(Number(comparisonDpml)) || Number(comparisonDpml) <= 0);
 
   // X축은 숫자순으로 정렬되지만, 숫자에 따라 길이가 늘어나지 않는 균등 간격의 category(string) 축
   const categoryOrder = useMemo(() => {
@@ -343,6 +352,24 @@ export default function LotTracker() {
                 {/* Right: Target Step ID */}
                 <div style={{ display: "grid", gap: 10, alignContent: "start" }}>
                   <div style={{ display: "grid", gap: 5 }}>
+                    <label htmlFor="lot-tracker-dpml" style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>DPML 비교선 (일/Mask Layer)</label>
+                    <input
+                      id="lot-tracker-dpml"
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={comparisonDpml}
+                      placeholder="예: 1.5 (비워두면 숨김)"
+                      onChange={(event) => setComparisonDpml(event.target.value)}
+                      aria-invalid={invalidDpml}
+                      aria-describedby="lot-tracker-dpml-help"
+                      style={inputStyle}
+                    />
+                    <div id="lot-tracker-dpml-help" style={{ fontSize: 11, color: invalidDpml ? "var(--danger)" : "var(--text-secondary)" }}>
+                      {invalidDpml ? "DPML은 0보다 큰 숫자를 입력하세요." : "첫 완료 Photo 시점부터 표시된 레이어마다 입력한 일수를 더한 검정 점선입니다. 참고 LOT 없이도 비교할 수 있으며, 값을 바꾸면 즉시 반영됩니다."}
+                    </div>
+                  </div>
+                  <div style={{ display: "grid", gap: 5 }}>
                     <label style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>목표 STEP ID</label>
                     <input
                       value={form.target_step_id}
@@ -404,9 +431,9 @@ export default function LotTracker() {
           <Card
             title={`${lot.lot_id} 진행 현황 차트`}
             right={
-              forecast ? (
-                <span style={{ fontSize: 12, color: "var(--accent)", fontWeight: 600 }}>● 실선: 완료 / ┄ 점선: 예측</span>
-              ) : null
+              <span style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 600 }}>
+                ● 파란 실선: 완료{forecast ? " / 파란 점선: 참고 LOT 예측" : ""}{dpmlSeries ? " / 검정 점선: DPML 비교" : ""}
+              </span>
             }
             style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}
           >
@@ -414,7 +441,7 @@ export default function LotTracker() {
               <FlowPlotlyChart
                 chart={{
                   chart_type: "line",
-                  points: chartPoints,
+                  points: [...chartPoints, ...dpmlPoints],
                   x_label: "layer",
                   y_label: "tkout time",
                   color_by: "series",
@@ -431,10 +458,12 @@ export default function LotTracker() {
                   color_map: {
                     [`${lot.lot_id}`]: "#2563eb",
                     [`${lot.lot_id} (도착 예측)`]: "#2563eb",
+                    ...(dpmlSeries ? { [dpmlSeries]: "#000000" } : {}),
                   },
                   line_dash_map: {
                     [`${lot.lot_id}`]: "solid",
                     [`${lot.lot_id} (도착 예측)`]: "dash",
+                    ...(dpmlSeries ? { [dpmlSeries]: "dash" } : {}),
                   },
                   xaxis: {
                     tickangle: -45,

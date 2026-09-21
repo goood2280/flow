@@ -167,7 +167,14 @@ def test_five_core_host_reserves_cpu_and_memory(monkeypatch, total, expected):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
     monkeypatch.setattr(runtime_limits, "effective_cpu_count", lambda: 5.0)
-    monkeypatch.setattr(runtime_limits, "_memory_override_total_bytes", lambda: total * 1024**3)
+    monkeypatch.setattr(runtime_limits, "_host_memory_snapshot_bytes", lambda: {
+        "total_bytes": total * 1024**3,
+        "available_bytes": total * 0.8 * 1024**3,
+        "percent": 20.0,
+        "source": "test",
+    })
+    monkeypatch.setattr(runtime_limits, "_cgroup_memory_snapshot_bytes", lambda: {})
+    monkeypatch.setenv("FLOW_SYSTEM_MEMORY_TOTAL_GB", str(total))
     assert runtime_limits.cpu_budget_cores() == 4.0
     assert runtime_limits.process_memory_limit_gb() == expected
 

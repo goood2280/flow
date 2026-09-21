@@ -400,7 +400,7 @@ def _view_cache_max_entries() -> int:
 
 
 def _view_cache_auto_max_mb() -> float:
-    """호스트 메모리 비례 hot 응답 예산 — 총량의 15%를 [1GB, 6GB]로 제한.
+    """호스트 메모리 비례 hot 응답 예산 — 총량의 15%, 최종 전역 풀 상한 적용.
 
     SplitTable 읽기 순서의 첫 계층이라 pivot/lookup/FAB 연산을 모두 건너뛴다.
     30GB 호스트에서는 약 4.5GB를 사용하고 전체 cache_budget 지분 상한을 한 번
@@ -416,7 +416,7 @@ def _view_cache_auto_max_mb() -> float:
         from core.runtime_limits import system_memory_snapshot
         total_gb = float(system_memory_snapshot().get("system_memory_total_gb") or 0.0)
         if total_gb > 0:
-            mb = max(1024.0, min(6144.0, total_gb * 1024.0 * 0.15))
+            mb = max(1024.0, total_gb * 1024.0 * 0.15)
     except Exception:
         mb = 1024.0
     with _VIEW_CACHE_AUTO_MB_LOCK:
@@ -431,7 +431,7 @@ def _view_cache_max_bytes() -> int:
             mb = float(raw)
         except Exception:
             mb = _view_cache_auto_max_mb()
-        budget = int(max(64.0, min(8192.0, mb)) * 1024 * 1024)
+        budget = int(max(64.0, mb) * 1024 * 1024)
     else:
         configured = None
         try:
@@ -441,7 +441,7 @@ def _view_cache_max_bytes() -> int:
         except Exception:
             configured = None
         mb = configured if configured is not None and configured > 0 else _view_cache_auto_max_mb()
-        budget = int(max(64.0, min(8192.0, mb)) * 1024 * 1024)
+        budget = int(max(64.0, mb) * 1024 * 1024)
     try:
         from core import cache_budget
         # 운영자 개별 설정도 프로세스 전체 안전 풀은 우회하지 않는다.

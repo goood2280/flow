@@ -65,7 +65,7 @@ def _status(result):
     tool = result.get("tool") or {}
     state = result.get("context") or {}
     if tool.get("missing") or (tool.get("approval") or {}).get("status") == "pending" or any(
-        state.get(k) for k in ("pending_product_prompt", "pending_semantic_selection", "pending_teg_selection", "pending_split_id", "pending_report_id", "pending_split_query", "pending_custom_selection", "pending_split_choice", "pending_eta")
+        state.get(k) for k in ("pending_product_prompt", "pending_semantic_selection", "pending_teg_selection", "pending_split_id", "pending_report_id", "pending_split_query", "pending_custom_selection", "pending_split_choice", "pending_eta", "pending_inline")
     ):
         return "needs_input"
     if result.get("ok") is False or tool.get("ok") is False or tool.get("error") or tool.get("blocked"):

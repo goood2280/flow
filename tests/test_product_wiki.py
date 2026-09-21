@@ -300,3 +300,65 @@ def test_delete_entry_and_wiki_compilation(isolated_wiki):
     compiled = wiki.compile_product_wiki("PRODA", actor="charlie", use_ai=False)
     assert "PRODA" in compiled["wiki_document"]
     assert isinstance(compiled["wiki_toc"], list)
+
+
+def test_toc_entry_ids_match_rendered_sections(isolated_wiki):
+    first = wiki.save_entry("PRODA", 0, entry(title="첫 이슈"), "alice")["entries"][0]
+    second = wiki.save_entry("PRODA", 1, entry(title="둘째 이슈"), "bob")["entries"][0]
+    compiled = wiki.compile_product_wiki("PRODA", actor="alice", use_ai=False)
+    toc_ids = [item["id"] for item in compiled["wiki_toc"]]
+    assert f"entry-{first['id'][:8]}" in toc_ids
+    assert f"entry-{second['id'][:8]}" in toc_ids
+    # Every entry-based TOC id must match the rendered header id rule
+    # (frontend mirrors: trailing [8hex] on ### -> entry-xxx).
+    for line in compiled["wiki_document"].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("### ") and stripped.rstrip().endswith("]"):
+            import re as _re
+            tag = _re.search(r"\[([0-9a-fA-F]{8})\]\s*$", stripped)
+            if tag:
+                assert f"entry-{tag.group(1).lower()}" in toc_ids
+    # One section per entry, each footer intact
+    doc_entries = wiki.document("PRODA")["entries"]
+    ok, reason = wiki._validate_single_entry_document(compiled["wiki_document"], doc_entries)
+    assert ok, reason
+
+
+def _t6_entry(entry_id, title, updated_at, **extra):
+    value = {"id": entry_id, "title": title, "kind": "issue", "status": "open",
+             "author": "alice", "created_at": "2026-09-01T00:00:00+00:00",
+             "updated_by": "alice", "updated_at": updated_at,
+             "body": f"{title} 본문", "source_text": f"{title} 원문",
+             "lot_ids": [], "related_ids": []}
+    value.update(extra)
+    return value
+
+
+def test_single_entry_validation_rejects_merged_tables_and_tampered_footers():
+    entries = [_t6_entry("aaa11111-0000", "첫째", "2026-09-02T00:00:00+00:00"),
+               _t6_entry("bbb22222-0000", "둘째", "2026-09-03T00:00:00+00:00")]
+    clean = wiki._build_deterministic_document("PRODA", entries, [])
+    assert wiki._validate_single_entry_document(clean, entries) == (True, "")
+    # Two entry ids mixed in one markdown table -> merged synthesis, reject.
+    merged = clean + "\n| Knob 조건 | 적용 결과 |\n|---|---|\n| aaa11111 bbb22222 혼합 | 결과 |\n"
+    ok, reason = wiki._validate_single_entry_document(merged, entries)
+    assert not ok and reason == "merged table across entries"
+    # A single-entry table using only its own record stays valid.
+    own_table = clean + "\n| Knob 조건 | 적용 결과 |\n|---|---|\n| aaa11111 단독 | 결과 |\n"
+    assert wiki._validate_single_entry_document(own_table, entries) == (True, "")
+    # Footer verbatim: one altered character must fail closed.
+    tampered = clean.replace(entries[0]["id"], entries[0]["id"][:-1] + "x")
+    ok, _ = wiki._validate_single_entry_document(tampered, entries)
+    assert not ok
+
+
+def test_deterministic_module_sections_follow_updated_descending():
+    rows = [{"module": "GATE", "path": "Etch", "step_ids": [], "description": ""}]
+    entries = [_t6_entry("aaa11111-0000", "오래된 기록", "2026-09-02T00:00:00+00:00", structure="Etch"),
+               _t6_entry("bbb22222-0000", "최신 기록", "2026-09-05T00:00:00+00:00", structure="Etch"),
+               _t6_entry("ccc33333-0000", "중간 기록", "2026-09-03T00:00:00+00:00", structure="Etch")]
+    markdown = wiki._build_deterministic_document("PRODA", entries, rows)
+    positions = [markdown.index(f"[{e['id'][:8]}]") for e in entries]
+    # entries input order: old, newest, middle -> rendered must be newest, middle, old.
+    assert positions[1] < positions[2] < positions[0]
+    assert "이 모듈의 기록 3건 (갱신순)" in markdown

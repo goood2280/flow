@@ -1,7 +1,20 @@
 {
-  "version": "10.4.302",
+  "version": "10.4.303",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.303",
+      "date": "2026-09-22",
+      "tag": "feat",
+      "title": "홈 Inline·Trend 조회, LOT Tracker DPML 비교 및 운영 개선 통합",
+      "changes": [
+        "[홈 AI] 제품 Semantic을 먼저 해석하고 Inline_matching 후보를 실제 ML_TABLE 열과 대조하여 선택·조회. Trend는 Step별 tkout_time 선택 후 평균값 산점도를 표시하며 LOT 범위와 후속 선택 상태를 보존.",
+        "[LOT Tracker] 입력한 DPML 기준 비교선을 실제 Mask Layer 진행 그래프에 추가하고 날짜 계산과 잘못된 입력 처리를 검증.",
+        "[제품 Wiki] 검색·목차·본문 표시와 원본 기록 탐색 개선을 통합.",
+        "[관리자] 활동 로그의 증분 SQLite 인덱스와 사용자 권한 일괄 계산으로 반복 조회 비용을 줄이고 기존 감사 원본을 보존.",
+        "[운영 자원] 할당 CPU·메모리에 비례하는 검색·캐시 예산과 자동 설정을 적용하고 일일 모니터 부하의 실행 결과·중단 사유를 기록. 운영 스케줄러 소유자만 예약 작업을 실행."
+      ]
+    },
     {
       "version": "10.4.302",
       "date": "2026-09-21",

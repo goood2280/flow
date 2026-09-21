@@ -58,16 +58,16 @@ def min_auto_bytes() -> int:
 
 
 def _thread_count() -> int:
+    from core.runtime_limits import cpu_budget_cores
+    budget = max(1, int(cpu_budget_cores()))
     raw = os.environ.get("FLOW_DUCKDB_THREADS", "").strip()
     if raw:
         try:
-            return max(1, min(16, int(raw)))
+            value = int(raw)
+            return min(budget, value) if value > 0 else budget
         except Exception:
             pass
-    try:
-        return max(1, min(4, (os.cpu_count() or 2) - 1))
-    except Exception:
-        return 2
+    return budget
 
 
 def total_size(files: list[Path]) -> int:

@@ -643,7 +643,9 @@ export default function My_RamCache({ user }) {
   const [unifiedScanBusy, setUnifiedScanBusy] = useState(false);
   const [rootLotCacheStatus, setRootLotCacheStatus] = useState(null);
   const [queryWorkersStatus, setQueryWorkersStatus] = useState(null);
-  const [queryWorkersDraft, setQueryWorkersDraft] = useState(3);
+  // 0 is the persisted "auto" choice; preserve it instead of treating it as
+  // a falsy fallback to a manual worker count.
+  const [queryWorkersDraft, setQueryWorkersDraft] = useState(0);
   const [queryWorkersSaveBusy, setQueryWorkersSaveBusy] = useState(false);
   // 관리자 전용 — 검색 속도(히트/미스) 패널. 측정(이 패널)과 튜닝(쿼리 코어·⚙️ 슬롯)이
   // 같은 페이지에 있어야 한다 — 예전엔 타이밍이 활동 대시보드(My_Admin)에 있어
@@ -816,7 +818,7 @@ export default function My_RamCache({ user }) {
 
   const loadQueryWorkers = useCallback(() => {
     sf(API + "/query-workers")
-      .then(d => { setQueryWorkersStatus(d); setQueryWorkersDraft(d.desired || d.configured || 1); })
+      .then(d => { setQueryWorkersStatus(d); setQueryWorkersDraft(d.configured ?? 0); })
       .catch(() => {});
   }, []);
   const loadCacheEventLog = useCallback((cat) => {
@@ -1034,7 +1036,7 @@ export default function My_RamCache({ user }) {
     setQueryWorkersSaveBusy(true);
     postJson(API + "/query-workers/save", { query_workers: queryWorkersDraft })
       .then(d => {
-        setQueryWorkersStatus(d); setQueryWorkersDraft(d.desired || d.configured || 1);
+        setQueryWorkersStatus(d); setQueryWorkersDraft(d.configured ?? 0);
         toast.ok(d.is_dev ? "개발 서버는 SplitTable 검색 1코어로 고정됩니다" : "운영 검색 코어 저장됨 · 서버 재시작 후 적용");
       })
       .catch(e => toast.error("쿼리 워커 수 저장 실패: " + (e?.message || e)))
@@ -2252,7 +2254,7 @@ export default function My_RamCache({ user }) {
           <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
             {queryWorkersStatus?.is_dev
               ? <>개발 서버의 SplitTable 검색은 <b>1코어 고정</b>입니다. 남은 CPU는 캐시 백그라운드 작업, Flow-i, 파일탐색기 SQL 등에 우선 사용합니다.</>
-              : <>운영 서버의 SplitTable 검색은 <b>기본 4코어</b>이며 1~4코어로 조절할 수 있습니다. Polars 풀은 시작할 때 고정되므로 저장 후 서버를 재시작해야 적용됩니다.</>}
+              : <>운영 서버의 SplitTable 검색은 <b>자동({queryWorkersStatus?.auto_value ?? "호스트 CPU-1"}코어)</b> 또는 최대 {queryWorkersStatus?.max_workers ?? queryWorkersStatus?.cpu_budget ?? queryWorkersStatus?.cpu_count ?? 1}코어 범위에서 조절할 수 있습니다. Polars 풀은 시작할 때 고정되므로 저장 후 서버를 재시작해야 적용됩니다.</>}
             {queryWorkersStatus?.essential_concurrency && <span> (동시 조회 상한: {queryWorkersStatus.essential_concurrency}건)</span>}
             {queryWorkersStatus?.restart_required && <span style={{ color: "var(--warn)" }}> · 저장값 적용을 위해 서버 재시작이 필요합니다.</span>}
           </div>
@@ -2260,8 +2262,9 @@ export default function My_RamCache({ user }) {
             <select value={queryWorkersDraft} disabled={!!queryWorkersStatus?.fixed}
               onChange={e => setQueryWorkersDraft(Number(e.target.value))}
               style={{ ...S_INPUT, fontFamily: "monospace", cursor: queryWorkersStatus?.fixed ? "not-allowed" : "pointer" }}>
-              {[1, 2, 3, 4].filter(n => n <= (queryWorkersStatus?.cpu_count || 4)).map(n => (
-                <option key={n} value={n}>{n}코어{n === 4 ? " (운영 기본)" : n === 1 ? " (개발 고정/절약)" : ""}</option>
+              <option value={0}>자동 ({queryWorkersStatus?.auto_value ?? "호스트 CPU-1"}코어)</option>
+              {Array.from({ length: Math.max(1, Number(queryWorkersStatus?.max_workers ?? queryWorkersStatus?.cpu_budget ?? queryWorkersStatus?.cpu_count ?? 1)) }, (_, i) => i + 1).map(n => (
+                <option key={n} value={n}>{n}코어</option>
               ))}
             </select>
             <button onClick={saveQueryWorkers} disabled={queryWorkersSaveBusy || !!queryWorkersStatus?.fixed}

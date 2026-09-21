@@ -71,7 +71,7 @@ def _split_product_scope(text, context):
 def _remember(result, previous):
     """Keep the last displayed artifact as the next turn's editing target."""
     state = {**previous, **result.get("context", {})}
-    for key in ("pending_split_choice", "pending_eta"):
+    for key in ("pending_split_choice", "pending_eta", "pending_inline"):
         if key not in result.get("context", {}):
             state.pop(key, None)
     if (result.get("tool") or {}).get("feature") == "eta" and "eta_query" not in result.get("context", {}):
@@ -532,7 +532,7 @@ def _product_scope(text, context):
             # A new product must not inherit another product's query/artifact.
             for key in ("params", "table", "chart_result", "definition_code", "columns", "root_lot_id", "lot_id", "fab_lot_id", "teg_context", "teg_product", "teg_names", "pending_teg_selection", "pending_split_id", "pending_report_id", "pending_semantic_selection", "semantic_scope", "semantic_split_prompt"):
                 context.pop(key, None)
-            for key in ("split_query", "pending_split_choice", "eta_query", "pending_eta", "custom_name", "pending_custom_selection", "pending_split_query"):
+            for key in ("split_query", "pending_split_choice", "eta_query", "pending_eta", "custom_name", "pending_custom_selection", "pending_split_query", "pending_inline", "inline_query"):
                 context.pop(key, None)
         context["product"] = selected
         context["confirmed_product"] = selected
@@ -575,6 +575,7 @@ def execute(prompt, context, request, history=None, *, approved_plan=None):
         "pending_semantic_selection", "semantic_scope", "semantic_split_prompt",
         "pending_split_query", "pending_custom_selection",
         "split_query", "pending_split_choice", "eta_query", "pending_eta",
+        "pending_inline", "inline_query",
     }})
     from core import data_chat_split_read
     if context.get("pending_split_query") or context.get("pending_custom_selection"):
@@ -605,8 +606,8 @@ def execute(prompt, context, request, history=None, *, approved_plan=None):
     if clarification is not None:
         return clarification
     if not approved_plan:
-        from core import data_chat_split_query, data_chat_eta
-        for handler in (data_chat_eta.dispatch, data_chat_split_query.dispatch):
+        from core import data_chat_split_query, data_chat_eta, data_chat_inline
+        for handler in (data_chat_inline.dispatch, data_chat_eta.dispatch, data_chat_split_query.dispatch):
             read_result = handler(text, context, request)
             if read_result is not None:
                 return _finish(text, read_result, context)

@@ -26,6 +26,7 @@ from typing import List, Optional
 
 from core.paths import PATHS
 from core.runtime_limits import (
+    _cgroup_cpu_quota_cores,
     effective_cpu_count,
     process_cpu_snapshot,
     process_memory_snapshot,
@@ -164,6 +165,7 @@ _manual_paver_stop = threading.Event()
 _paused_until: float = 0.0              # 유휴 체크를 건너뛰는 마감 시각
 _bg_thread: Optional[threading.Thread] = None
 _last_sample: dict = {}
+_load_result: dict = {}
 
 
 def _now() -> float:
@@ -183,6 +185,52 @@ def _disk_target() -> Path:
 
 
 _PROC_CPU_LAST: dict = {"idle": 0, "total": 0, "ts": 0.0}
+_CGROUP_CPU_LOCK = threading.Lock()
+_CGROUP_CPU_LAST: dict = {}
+
+
+def _cgroup_cpu_seconds() -> tuple[float, str] | None:
+    try:
+        fields = dict(line.split() for line in Path("/sys/fs/cgroup/cpu.stat").read_text().splitlines())
+        return float(fields["usage_usec"]) / 1_000_000, "cgroup_v2"
+    except (OSError, ValueError, KeyError):
+        pass
+    for path in ("/sys/fs/cgroup/cpuacct/cpuacct.usage", "/sys/fs/cgroup/cpu,cpuacct/cpuacct.usage"):
+        try:
+            return float(Path(path).read_text()) / 1_000_000_000, "cgroup_v1"
+        except (OSError, ValueError):
+            pass
+    return None
+
+
+def _apply_effective_cpu(sample: dict) -> dict:
+    """Use container CPU time / allocated cores, never host % / container cores."""
+    cores = effective_cpu_count()
+    sample["cpu_host_percent"] = sample.get("cpu_percent", 0.0)
+    sample["cpu_source"] = "host"
+    if _cgroup_cpu_quota_cores() <= 0 and cores >= float(os.cpu_count() or 1):
+        return sample
+    reading = _cgroup_cpu_seconds()
+    if reading is None:
+        # A restricted process without readable cgroup accounting is explicitly
+        # labelled; its own CPU is a conservative fallback for the controller.
+        sample["cpu_percent"] = min(100.0, float(sample.get("process_cpu_percent") or 0) / cores)
+        sample["cpu_source"] = "process_fallback"
+        return sample
+    seconds, source = reading
+    with _CGROUP_CPU_LOCK:
+        now = time.monotonic()
+        previous = dict(_CGROUP_CPU_LAST)
+        if previous.get("source") != source or seconds < previous.get("seconds", 0):
+            previous = {}
+        elapsed = now - previous.get("time", now)
+        pct = previous.get("percent", 0.0)
+        if elapsed >= 0.1:
+            pct = max(0.0, min(100.0, 100.0 * (seconds - previous["seconds"]) / elapsed / cores))
+        if not previous or elapsed >= 0.1:
+            _CGROUP_CPU_LAST.update(time=now, seconds=seconds, percent=pct, source=source)
+    sample.update(cpu_percent=round(pct, 1), cpu_source=source)
+    return sample
 
 
 def _read_proc_cpu_percent() -> float:
@@ -287,7 +335,7 @@ def _collect_stats() -> dict:
         _apply_effective_memory(sample)
         sample.update(process_memory_snapshot())
         sample.update(process_cpu_snapshot())
-        return sample
+        return _apply_effective_cpu(sample)
     try:
         cpu = float(_psutil.cpu_percent(interval=0.3))
     except Exception:
@@ -320,7 +368,7 @@ def _collect_stats() -> dict:
     _apply_effective_memory(sample)
     sample.update(process_memory_snapshot())
     sample.update(process_cpu_snapshot())
-    return sample
+    return _apply_effective_cpu(sample)
 
 
 def collect_once() -> dict:
@@ -379,6 +427,8 @@ def _default_schedule() -> dict:
         "target_pct": DEFAULT_SCHEDULE_TARGET_PCT,
         "last_run_date": "",
         "last_run_at": "",
+        "last_result": {},
+        "timezone": "Asia/Seoul",
     }
 
 
@@ -396,12 +446,14 @@ def _normalize_schedule(raw: dict | None) -> dict:
     except Exception:
         at = DEFAULT_SCHEDULE_TIME
     try:
-        target = max(80.0, min(90.0, float(cfg.get("target_pct") or DEFAULT_SCHEDULE_TARGET_PCT)))
+        target = _normalize_paver_target(cfg.get("target_pct") or DEFAULT_SCHEDULE_TARGET_PCT)
     except Exception:
         target = DEFAULT_SCHEDULE_TARGET_PCT
     cfg.update(enabled=bool(cfg.get("enabled", True)), time=at, target_pct=target)
     cfg["last_run_date"] = str(cfg.get("last_run_date") or "")[:10]
     cfg["last_run_at"] = str(cfg.get("last_run_at") or "")[:32]
+    cfg["last_result"] = cfg["last_result"] if isinstance(cfg.get("last_result"), dict) else {}
+    cfg["timezone"] = "Asia/Seoul"
     return cfg
 
 
@@ -477,6 +529,7 @@ def get_state() -> dict:
         "threshold_pct": THRESHOLD_PCT,
         "window_hours": HISTORY_WINDOW_HOURS,
         "load_generation_enabled": _load_generation_enabled(),
+        "load_result": dict(_load_result),
         "schedule": get_schedule(),
     }
 
@@ -611,7 +664,50 @@ def _hold_memory_until(stop_event: threading.Event, deadline: float, target_pct:
             _mem_cap_mb = 0
 
 
+def _record_paver_sample(sample: dict) -> None:
+    with _lock:
+        _load_result["cpu_peak_pct"] = max(_load_result.get("cpu_peak_pct", 0), float(sample.get("cpu_percent") or 0))
+        _load_result["memory_peak_pct"] = max(_load_result.get("memory_peak_pct", 0), float(sample.get("memory_percent") or 0))
+    # Preserve short peaks even if the regular five-minute tick misses them.
+    if _load_result.get("logged_at", 0) + 30 <= _now():
+        try:
+            jsonl_append(RESOURCE_LOG, sample)
+        except Exception:
+            logger.warning("paver sample log failed", exc_info=True)
+        _load_result["logged_at"] = _now()
+
+
 def _load_worker(duration_sec: int, mode: str = "auto", target_pct: float = THRESHOLD_PCT, memory: bool = False) -> None:
+    global _load_result, _load_error, _load_mode
+    with _lock:
+        _load_result = {"status": "running", "mode": mode, "started_at": _iso(_now()),
+                        "cpu_peak_pct": 0.0, "memory_peak_pct": 0.0}
+    try:
+        _run_load_worker(duration_sec, mode, target_pct, memory)
+    except Exception as exc:
+        with _lock:
+            _load_error = f"{type(exc).__name__}: {exc}"
+        logger.exception("paver failed")
+    finally:
+        _load_stop.set()
+        with _lock:
+            _load_mode = ""
+            result = {k: v for k, v in _load_result.items() if k != "logged_at"}
+            cpu_reached = result.get("cpu_peak_pct", 0) >= 80
+            memory_reached = result.get("memory_peak_pct", 0) >= 80
+            requested_reached = cpu_reached and (memory_reached or not memory)
+            result.update(status="reached" if requested_reached and not _load_error else "incomplete",
+                          finished_at=_iso(_now()), reached_80=cpu_reached and memory_reached,
+                          memory_requested=memory,
+                          error=_load_error, reason=_load_release_reason)
+            _load_result = result
+            if mode == "scheduled":
+                cfg = _normalize_schedule(load_json(SYSMON_STATE_FILE, {}))
+                cfg["last_result"] = dict(result)
+                save_json(SYSMON_STATE_FILE, cfg, indent=2)
+
+
+def _run_load_worker(duration_sec: int, mode: str = "auto", target_pct: float = THRESHOLD_PCT, memory: bool = False) -> None:
     """CPU/RAM을 목표 구간에 유지하고 어느 하나든 90%면 모두 해제한다."""
     global _load_started_at, _load_end_at, _load_mode, _load_target_pct
     global _mem_hold, _mem_allocated_mb, _mem_cap_mb, _load_error, _load_release_reason
@@ -635,7 +731,15 @@ def _load_worker(duration_sec: int, mode: str = "auto", target_pct: float = THRE
     # 켜고 끄면 파형이 겹쳐 출렁이므로, N개는 연속 실행하고 한 개만 fractional
     # duty로 돌리는 "equivalent cores" 방식으로 목표 부근을 평탄하게 유지한다.
     cpu_worker_count = _paver_cpu_worker_count()
-    equivalent_cores = max(1.0, cpu_worker_count * 0.50)
+    initial = _collect_stats()
+    _record_paver_sample(initial)
+    initial_breach = _paver_ceiling_breach(initial)
+    if initial_breach:
+        with _lock:
+            _load_release_reason = f"{initial_breach} 안전선 도달로 시작하지 않음"
+        _load_stop.set()
+    equivalent_cores = min(cpu_worker_count * 0.50, max(0.0,
+        effective_cpu_count() * (target_pct - float(initial.get("cpu_percent") or 0)) / 100.0))
     duty_states = [{"value": duty} for duty in _paver_cpu_duties(cpu_worker_count, equivalent_cores)]
     aux_threads: List[threading.Thread] = []
 
@@ -644,45 +748,51 @@ def _load_worker(duration_sec: int, mode: str = "auto", target_pct: float = THRE
         t.start()
         aux_threads.append(t)
 
-    for duty_state in duty_states:
-        add_cpu_worker(duty_state)
-    if memory:
-        t = threading.Thread(target=_hold_memory_until, args=(_load_stop, end, float(target_pct or THRESHOLD_PCT)), daemon=True)
-        t.start()
-        aux_threads.append(t)
+    try:
+        if _load_stop.is_set():
+            return
+        for duty_state in duty_states:
+            add_cpu_worker(duty_state)
+        if memory:
+            t = threading.Thread(target=_hold_memory_until, args=(_load_stop, end, float(target_pct or THRESHOLD_PCT)), daemon=True)
+            t.start()
+            aux_threads.append(t)
 
-    while not _load_stop.is_set() and _now() < end:
-        sample = _collect_stats()
-        breach = _paver_ceiling_breach(sample)
-        if breach:
-            with _lock:
-                _load_release_reason = f"{breach} 안전선 도달로 자동 해제"
-            logger.warning("[sysmon] %s >= %.0f%%; releasing CPU/RAM paver load", breach, PAVER_RELEASE_PCT)
-            _load_stop.set()
-            break
+        while not _load_stop.is_set() and _now() < end:
+            sample = _collect_stats()
+            _record_paver_sample(sample)
+            breach = _paver_ceiling_breach(sample)
+            if breach:
+                with _lock:
+                    _load_release_reason = f"{breach} 안전선 도달로 자동 해제"
+                logger.warning("[sysmon] %s >= %.0f%%; releasing CPU/RAM paver load", breach, PAVER_RELEASE_PCT)
+                _load_stop.set()
+                break
 
-        cpu_pct = float(sample.get("cpu_percent") or 0.0)
-        equivalent_cores = _next_paver_cpu_equivalents(
-            equivalent_cores, cpu_pct, target_pct, cpu_worker_count,
-        )
-        for duty_state, duty in zip(duty_states, _paver_cpu_duties(cpu_worker_count, equivalent_cores)):
-            duty_state["value"] = duty
-        if _load_stop.wait(timeout=0.2):
-            break
+            cpu_pct = float(sample.get("cpu_percent") or 0.0)
+            equivalent_cores = _next_paver_cpu_equivalents(
+                equivalent_cores, cpu_pct, target_pct, cpu_worker_count,
+            )
+            for duty_state, duty in zip(duty_states, _paver_cpu_duties(cpu_worker_count, equivalent_cores)):
+                duty_state["value"] = duty
+            if _load_stop.wait(timeout=0.2):
+                break
 
-    for duty_state in duty_states:
-        duty_state["value"] = 0.0
-    for t in aux_threads:
-        t.join(timeout=2.0)
-    stopped_early = _load_stop.is_set()
-    with _lock:
-        _load_end_at = _now() if stopped_early else end
-        _load_mode = ""
-        _mem_allocated_mb = 0
-        _mem_cap_mb = 0
-    _mem_hold = []
-    logger.info(f"[sysmon] load generation {'stopped' if stopped_early else 'finished'} "
-                f"after {int(_now() - start)}s")
+    finally:
+        for duty_state in duty_states:
+            duty_state["value"] = 0.0
+        stopped_early = _load_stop.is_set()
+        _load_stop.set()
+        for t in aux_threads:
+            t.join(timeout=2.0)
+        with _lock:
+            _load_end_at = _now() if stopped_early else end
+            _load_mode = ""
+            _mem_allocated_mb = 0
+            _mem_cap_mb = 0
+        _mem_hold = []
+        logger.info(f"[sysmon] load generation {'stopped' if stopped_early else 'finished'} "
+                    f"after {int(_now() - start)}s")
 
 
 def _maybe_start_load() -> None:
@@ -700,9 +810,12 @@ def _maybe_start_load() -> None:
     if _window_peaked_above(THRESHOLD_PCT):
         return
     duration = random.randint(LOAD_MIN_SEC, LOAD_MAX_SEC)
-    _load_stop.clear()
-    _load_thread = threading.Thread(target=_load_worker, args=(duration,), daemon=True)
-    _load_thread.start()
+    with _lock:
+        if _load_thread and _load_thread.is_alive():
+            return
+        _load_stop.clear()
+        _load_thread = threading.Thread(target=_load_worker, args=(duration,), daemon=True)
+        _load_thread.start()
 
 
 def start_manual_load(duration_sec: int = 180, target_pct: float = THRESHOLD_PCT, memory: bool = True) -> dict:
@@ -831,44 +944,51 @@ def add_manual_paver_step() -> dict:
 
 
 def _maybe_start_scheduled_load(now: _dt.datetime | None = None) -> bool:
-    """설정 시각 이후 첫 tick에서 하루 한 번 예약 부하를 시작한다."""
-    global _load_thread
+    """One daily attempt after the due time, including same-day restart catch-up.
+
+    start_background is called only by the cross-process background owner.
+    The local lock also serializes manual starts and settings updates.
+    """
+    global _load_thread, _load_mode, _load_target_pct
     try:
         from core.worker_dispatch import server_role
-        if server_role() == "worker":
+        if server_role() == "worker" or not PATHS.is_prod:
             return False
     except Exception:
-        pass
-    if _load_thread and _load_thread.is_alive():
         return False
-    cfg = get_schedule()
-    if not cfg["enabled"]:
-        return False
-    local_now = now or _dt.datetime.now()
+    kst = _dt.timezone(_dt.timedelta(hours=9))
+    local_now = now or _dt.datetime.now(kst)
+    if local_now.tzinfo is not None:
+        local_now = local_now.astimezone(kst)
     today = local_now.date().isoformat()
-    hour, minute = (int(part) for part in cfg["time"].split(":"))
-    scheduled_minute = hour * 60 + minute
-    current_minute = local_now.hour * 60 + local_now.minute
-    # 5분 수집 tick의 흔들림만 허용한다. 서버가 오후에 재시작됐다고 놓친
-    # 오전 11시 부하를 뒤늦게 실행하면 "11시경 1회"라는 운영 의도와 어긋난다.
-    in_run_window = 0 <= current_minute - scheduled_minute < 10
-    if cfg.get("last_run_date") == today or not in_run_window:
-        return False
-    # 실행 전에 날짜를 기록해 동일 tick/재시작에서 중복 상승하지 않게 한다.
     with _lock:
-        latest = _normalize_schedule(load_json(SYSMON_STATE_FILE, {}))
-        if latest.get("last_run_date") == today:
+        if _load_thread and _load_thread.is_alive():
             return False
-        latest.update(last_run_date=today, last_run_at=local_now.isoformat(timespec="seconds"))
-        save_json(SYSMON_STATE_FILE, latest, indent=2)
-    _load_stop.clear()
-    _load_thread = threading.Thread(
-        target=_load_worker,
-        args=(MANUAL_LOAD_MAX_SEC, "scheduled", float(cfg["target_pct"]), True),
-        name="sysmon-scheduled-load",
-        daemon=True,
-    )
-    _load_thread.start()
+        cfg = _normalize_schedule(load_json(SYSMON_STATE_FILE, {}))
+        if not cfg["enabled"] or cfg.get("last_run_date") == today:
+            return False
+        hour, minute = (int(part) for part in cfg["time"].split(":"))
+        if local_now.hour * 60 + local_now.minute < hour * 60 + minute:
+            return False
+        previous = dict(cfg)
+        cfg.update(last_run_date=today, last_run_at=local_now.isoformat(timespec="seconds"),
+                   last_result={"status": "running", "started_at": local_now.isoformat(timespec="seconds")})
+        save_json(SYSMON_STATE_FILE, cfg, indent=2)
+        _load_mode = "scheduled"
+        _load_target_pct = float(cfg["target_pct"])
+        _load_stop.clear()
+        _load_thread = threading.Thread(
+            target=_load_worker,
+            args=(MANUAL_LOAD_MAX_SEC, "scheduled", _load_target_pct, True),
+            name="sysmon-scheduled-load", daemon=True,
+        )
+        try:
+            _load_thread.start()
+        except Exception:
+            _load_thread = None
+            _load_mode = ""
+            save_json(SYSMON_STATE_FILE, previous, indent=2)
+            raise
     return True
 
 
@@ -889,7 +1009,9 @@ def _bg_loop() -> None:
     """5분 주기 샘플 + 유휴 체크. 앱 기동 시 1회 즉시 샘플."""
     try:
         collect_once()
-        _maybe_start_scheduled_load()
+        from core.background_owner import is_owner
+        if is_owner():
+            _maybe_start_scheduled_load()
     except Exception as e:
         logger.warning(f"initial sample failed: {e}")
     while True:
@@ -899,8 +1021,10 @@ def _bg_loop() -> None:
             return
         try:
             collect_once()
-            _maybe_start_scheduled_load()
-            _maybe_start_load()
+            from core.background_owner import is_owner
+            if is_owner():
+                _maybe_start_scheduled_load()
+                _maybe_start_load()
         except Exception as e:
             logger.warning(f"sysmon loop error: {e}")
 
@@ -910,6 +1034,11 @@ def start_background() -> None:
     global _bg_thread
     if _bg_thread and _bg_thread.is_alive():
         return
+    with _lock:
+        cfg = _normalize_schedule(load_json(SYSMON_STATE_FILE, {}))
+        if cfg["last_result"].get("status") == "running":
+            cfg["last_result"].update(status="interrupted", reason="서버 재시작으로 완료 확인 불가")
+            save_json(SYSMON_STATE_FILE, cfg, indent=2)
     _bg_thread = threading.Thread(target=_bg_loop, name="sysmon-bg", daemon=True)
     _bg_thread.start()
     logger.info("[sysmon] background loop started")

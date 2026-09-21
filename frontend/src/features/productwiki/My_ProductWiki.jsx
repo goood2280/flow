@@ -100,7 +100,9 @@ function markdownToHtml(md) {
     if (line.startsWith("### ")) {
       secIdx++;
       const title = line.slice(4).trim();
-      html += `<h3 id="sec-${secIdx}" class="pw-wiki-h3">${formatInline(title)}</h3>`;
+      const tag = title.match(/\[([0-9a-fA-F]{8})\]\s*$/);
+      const id = tag ? `entry-${tag[1].toLowerCase()}` : `sec-${secIdx}`;
+      html += `<h3 id="${id}" class="pw-wiki-h3">${formatInline(title)}</h3>`;
       continue;
     }
     if (line.startsWith("## ")) {
@@ -362,6 +364,205 @@ export default function My_ProductWiki({ user }) {
 
   const tocList = doc?.wiki_toc || [];
   const activeEntries = (doc?.entries || []).filter((e) => !e.deleted);
+  const wikiBodyRef = useRef(null);
+
+  // Section chips: each entry-owned h3 (id="entry-xxxxxxxx") gets
+  // 수정/이력/원문 shortcuts. Injected as real DOM nodes (not HTML strings)
+  // so the HTML sanitizer policy stays untouched.
+  const handleWikiChip = (short, action) => {
+    const entry = (doc?.entries || []).find((e) =>
+      String(e.id || "").toLowerCase().startsWith(String(short || "").toLowerCase())
+    );
+    if (!entry) {
+      setError("연결된 이슈를 찾지 못했습니다.");
+      return;
+    }
+    if (action === "edit") startEdit(entry);
+    else if (action === "history") viewHistory(entry);
+    else if (action === "source") {
+      setExpandedIds((prev) => {
+        const next = new Set(prev);
+        next.add(entry.id);
+        return next;
+      });
+      setRawModalOpen(true);
+    }
+  };
+
+  useEffect(() => {
+    const root = wikiBodyRef.current;
+    if (!root) return;
+    const byShort = new Map(
+      (doc?.entries || []).map((e) => [String(e.id || "").slice(0, 8).toLowerCase(), e])
+    );
+    root.querySelectorAll(".pw-sec-chips[data-injected]").forEach((n) => n.remove());
+    root.querySelectorAll(".pw-module-records[data-injected]").forEach((n) => n.remove());
+    root.querySelectorAll(".pw-table-source[data-injected]").forEach((n) => n.remove());
+    root.querySelectorAll("tr[data-folded]").forEach((tr) => {
+      tr.removeAttribute("data-folded");
+      tr.style.display = "";
+    });
+    root.querySelectorAll('h3[id^="entry-"]').forEach((h) => {
+      const short = String(h.id || "").replace(/^entry-/, "").toLowerCase();
+      const entry = byShort.get(short);
+      if (!short || !entry) return;
+      const wrap = document.createElement("span");
+      wrap.className = "pw-sec-chips";
+      wrap.setAttribute("data-injected", "1");
+      [["edit", "수정"], ["history", "이력"], ["source", "원문"]].forEach(([action, label]) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "pw-sec-chip";
+        b.textContent = label;
+        b.setAttribute("aria-label", `${entry.title || entry.id} ${label}`);
+        b.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          handleWikiChip(short, action);
+        });
+        wrap.appendChild(b);
+      });
+      h.appendChild(wrap);
+    });
+    // Module record list: every h2 owning entry-owned h3 sections gets a
+    // "기록 N건" toggle with a 갱신순 contributor popover. Grouping is read
+    // from the rendered document (h2 scope), so AI and deterministic docs
+    // behave the same without extra bucket logic.
+    const closeAllPopovers = () => {
+      root.querySelectorAll(".pw-module-popover[data-open]").forEach((p) => p.removeAttribute("data-open"));
+    };
+    const onDocClick = (ev) => {
+      if (!ev.target.closest(".pw-module-records")) closeAllPopovers();
+    };
+    document.addEventListener("click", onDocClick);
+    root.querySelectorAll("h2").forEach((h) => {
+      const shorts = [];
+      let node = h.nextElementSibling;
+      while (node && !/^H[12]$/.test(node.tagName || "")) {
+        if (node.tagName === "H3" && String(node.id || "").startsWith("entry-")) {
+          const short = String(node.id).replace(/^entry-/, "").toLowerCase();
+          if (byShort.has(short) && !shorts.includes(short)) shorts.push(short);
+        }
+        node = node.nextElementSibling;
+      }
+      if (!shorts.length) return;
+      const rows = shorts
+        .map((s) => byShort.get(s))
+        .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+      const wrap = document.createElement("div");
+      wrap.className = "pw-module-records";
+      wrap.setAttribute("data-injected", "1");
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "pw-module-toggle";
+      toggle.textContent = `기록 ${rows.length}건 ▾`;
+      toggle.setAttribute("aria-label", "기여 이슈 목록 보기 (갱신순)");
+      const pop = document.createElement("div");
+      pop.className = "pw-module-popover";
+      pop.setAttribute("role", "dialog");
+      pop.setAttribute("aria-label", "기여 이슈 목록 (갱신순)");
+      const list = document.createElement("ul");
+      list.className = "pw-module-list";
+      rows.slice(0, 50).forEach((entry) => {
+        const li = document.createElement("li");
+        li.className = "pw-module-item";
+        const title = document.createElement("button");
+        title.type = "button";
+        title.className = "pw-module-title";
+        title.textContent = entry.title || entry.id;
+        title.title = entry.title || entry.id;
+        title.addEventListener("click", () => handleWikiChip(String(entry.id).slice(0, 8), "source"));
+        const meta = document.createElement("span");
+        meta.className = "pw-module-meta";
+        meta.textContent = `${entry.author || "—"} · ${formatDateTime(entry.updated_at)} · ${entry.status || "open"}`;
+        const edit = document.createElement("button");
+        edit.type = "button";
+        edit.className = "pw-sec-chip";
+        edit.textContent = "수정";
+        edit.addEventListener("click", () => handleWikiChip(String(entry.id).slice(0, 8), "edit"));
+        li.append(title, meta, edit);
+        list.appendChild(li);
+      });
+      pop.appendChild(list);
+      if (rows.length > 50) {
+        const more = document.createElement("p");
+        more.className = "pw-module-more";
+        more.textContent = `외 ${rows.length - 50}건은 아래 섹션에서 확인하세요.`;
+        pop.appendChild(more);
+      }
+      toggle.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const wasOpen = pop.hasAttribute("data-open");
+        closeAllPopovers();
+        if (!wasOpen) pop.setAttribute("data-open", "1");
+      });
+      wrap.append(toggle, pop);
+      h.insertAdjacentElement("afterend", wrap);
+    });
+    // Table source + folding: every rendered table gets an attribution line
+    // from its nearest preceding entry-owned h3 (1-issue-1-section rule).
+    // Body tables with >20 rows fold to the first 20.
+    const FOLD_LIMIT = 20;
+    root.querySelectorAll(".pw-table-wrapper").forEach((tw) => {
+      let node = tw.previousElementSibling;
+      let ownerShort = "";
+      while (node) {
+        const tag = node.tagName || "";
+        if (tag === "H3" && String(node.id || "").startsWith("entry-")) {
+          ownerShort = String(node.id).replace(/^entry-/, "").toLowerCase();
+          break;
+        }
+        if (/^H[12]$/.test(tag) || node.classList?.contains("pw-module-records")) break;
+        node = node.previousElementSibling;
+      }
+      const src = document.createElement("div");
+      src.className = "pw-table-source";
+      src.setAttribute("data-injected", "1");
+      const owner = ownerShort ? byShort.get(ownerShort) : null;
+      if (owner) {
+        const label = document.createElement("span");
+        label.textContent = `출처: ${owner.title || owner.id} · ${owner.updated_by || "—"} ${formatDateTime(owner.updated_at)} `;
+        const go = document.createElement("button");
+        go.type = "button";
+        go.className = "pw-table-src-btn";
+        go.textContent = "원문 보기";
+        go.addEventListener("click", () => handleWikiChip(ownerShort, "source"));
+        src.append(label, go);
+      } else {
+        src.textContent = "출처 확인 필요 — 합성표일 수 있습니다.";
+      }
+      const bodyRows = tw.querySelectorAll("table tbody tr");
+      if (bodyRows.length > FOLD_LIMIT) {
+        bodyRows.forEach((tr, i) => {
+          if (i >= FOLD_LIMIT) {
+            tr.setAttribute("data-folded", "1");
+            tr.style.display = "none";
+          }
+        });
+        const fold = document.createElement("button");
+        fold.type = "button";
+        fold.className = "pw-table-src-btn";
+        fold.textContent = `전체 ${bodyRows.length}행 보기 ▾`;
+        fold.addEventListener("click", () => {
+          const folded = tw.querySelectorAll('tr[data-folded]');
+          const collapsed = Array.from(folded).some((tr) => tr.style.display === "none");
+          folded.forEach((tr) => {
+            tr.style.display = collapsed ? "" : "none";
+          });
+          fold.textContent = collapsed ? "접기 ▴" : `전체 ${bodyRows.length}행 보기 ▾`;
+        });
+        src.append(document.createTextNode(" · "), fold);
+      }
+      tw.insertAdjacentElement("afterend", src);
+    });
+    return () => {
+      document.removeEventListener("click", onDocClick);
+      root.querySelectorAll(".pw-sec-chips[data-injected]").forEach((n) => n.remove());
+      root.querySelectorAll(".pw-module-records[data-injected]").forEach((n) => n.remove());
+      root.querySelectorAll(".pw-table-source[data-injected]").forEach((n) => n.remove());
+    };
+    // handleWikiChip follows the current render's doc; re-inject per document.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [compiledHtml, doc]);
 
   return (
     <PageShell className="product-wiki full-screen-mode">
@@ -551,6 +752,7 @@ export default function My_ProductWiki({ user }) {
 
             {/* Continuous Wiki Content */}
             <div
+              ref={wikiBodyRef}
               className="pw-wiki-body"
               dangerouslySetInnerHTML={{
                 __html: compiledHtml || "<p>등록된 위키 본문이 없습니다.</p>",
@@ -729,9 +931,12 @@ export default function My_ProductWiki({ user }) {
                     </div>
                     {h.changes && h.changes.length > 0 && (
                       <div className="pw-history-diff">
-                        {h.changes.map((c, cIdx) => (
+                        {h.changes.map((c, cIdx) => {
+                          const hasTable = /<table[\s>]/i.test(String(c.before || "")) || /<table[\s>]/i.test(String(c.after || ""));
+                          return (
                           <div key={cIdx} className="pw-diff-line">
                             <span className="pw-diff-field">{c.field}:</span>
+                            {hasTable && <span className="pw-diff-table-tag">[표]</span>}
                             <span className="pw-diff-before">
                               {typeof c.before === "string" ? c.before.slice(0, 60) : String(c.before || "—")}
                             </span>
@@ -740,7 +945,8 @@ export default function My_ProductWiki({ user }) {
                               {typeof c.after === "string" ? c.after.slice(0, 60) : String(c.after || "—")}
                             </span>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                   </div>

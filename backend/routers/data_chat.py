@@ -67,6 +67,8 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
                 context.pop("split_query", None)
                 context.pop("pending_eta", None)
                 context.pop("eta_query", None)
+                context.pop("pending_inline", None)
+                context.pop("inline_query", None)
             # These keys are server-owned, refreshed for this turn only.
             context.pop("personalization", None)
             context.pop("selected_skill", None)

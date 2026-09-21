@@ -1203,23 +1203,23 @@ SOURCE_CFG = PLAN_DIR / "source_config.json"
 
 
 # ── 쿼리 병렬 워커 수 관리 ──────────────────────────────────────────
-# 운영 SplitTable Polars 풀은 기본 4코어, 1~4 범위에서 저장 가능하다.
+# 운영 SplitTable Polars 풀은 CPU 예산에 비례한다. 0은 자동 모드다.
 # 개발은 1코어 고정이다. DuckDB 전역 설정은 건드리지 않아 파일탐색기 SQL과
 # Flow-i가 SplitTable 튜닝에 함께 제한되지 않게 한다. Polars 풀은 시작 시 고정돼
 # 운영값 변경은 서버 재시작 후 적용된다.
 
 def _normalize_query_workers(value: Any) -> int:
-    """운영 설정을 1~4 및 실제 CPU 범위로 클램프. 개발은 항상 1."""
+    """0은 자동으로 보존하고, 수동 값은 CPU 예산으로 제한. 개발은 1."""
     if _ml_table_lookup._root_ram_cache_use_dev():
         return 1
     try:
         n = int(value)
     except Exception:
-        n = 4
+        n = 0
     if n <= 0:
-        n = 4
-    from core.runtime_limits import effective_cpu_count
-    max_cpu = max(1, min(4, int(effective_cpu_count())))
+        return 0
+    from core.runtime_limits import cpu_budget_cores
+    max_cpu = max(1, int(cpu_budget_cores()))
     return max(1, min(n, max_cpu))
 
 
@@ -1238,25 +1238,26 @@ def _query_workers_key() -> str:
 
 
 def _current_query_workers() -> int:
-    """운영 저장값(기본 4). 개발 서버는 저장 내용과 무관하게 1."""
+    """운영 저장값(기본 자동). 개발 서버는 저장 내용과 무관하게 1."""
     if _ml_table_lookup._root_ram_cache_use_dev():
         return 1
     try:
         cfg = load_json(SOURCE_CFG, {})
-        return _normalize_query_workers(cfg.get("query_workers", 4))
+        return _normalize_query_workers(cfg.get("query_workers", 0))
     except Exception:
-        return _normalize_query_workers(4)
+        return _normalize_query_workers(0)
 
 
 def _current_query_workers_status() -> dict:
     """현재 쿼리 병렬화 상태를 반환."""
-    from core.runtime_limits import effective_cpu_count
+    from core.runtime_limits import effective_cpu_count, cpu_budget_cores
     configured = _current_query_workers()
     cpu_count = int(effective_cpu_count())
     is_dev = _ml_table_lookup._root_ram_cache_use_dev()
-    desired = 1 if is_dev else configured
+    budget = max(1, int(cpu_budget_cores()))
+    desired = 1 if is_dev else (configured or budget)
     try:
-        effective = max(1, int(os.environ.get("POLARS_MAX_THREADS", desired)))
+        effective = max(1, int(pl.thread_pool_size()))
     except Exception:
         effective = desired
     # essential 세마포어 동시성 — 동시에 몇 명이 조회할 수 있는지
@@ -1265,14 +1266,15 @@ def _current_query_workers_status() -> dict:
     return {
         "configured": configured,
         "effective": effective,
-        "auto_value": 1 if is_dev else min(4, max(1, cpu_count)),
+        "auto_value": 1 if is_dev else budget,
+        "max_workers": 1 if is_dev else budget,
         "cpu_count": cpu_count,
         "cpu_budget": desired,
         # 이 서버가 개발(dev) 몫인지와 저장에 쓰는 키 — 화면이 "지금 어느 서버를
         # 튜닝 중인지"를 명시해, 개발 값을 바꾼다는 게 운영에 영향 없음을 보인다.
         "is_dev": is_dev,
         "config_key": _query_workers_key(),
-        # Polars 는 시작 시 역할 기반(api=4/worker=3/standalone=auto)으로 1회 고정 —
+        # Polars 는 시작 시 역할 기반(api=auto/worker=1)으로 1회 고정 —
         # query_workers 변경에 영향받지 않고 재시작해야 바뀐다.
         "polars_threads": os.environ.get("POLARS_MAX_THREADS", ""),
         "polars_runtime_fixed": True,
@@ -1296,12 +1298,12 @@ def get_query_workers():
 def save_query_workers(req: dict, _perm=Depends(require_page_manager("splittable"))):
     """쿼리 병렬 워커 수를 저장하고 즉시 반영.
 
-    운영 서버만 1~4 값을 저장한다. 개발 서버는 1코어 고정이며 운영 설정을
+    운영 서버만 0(자동) 또는 CPU 예산 안의 값을 저장한다. 개발 서버는 1코어 고정이며 운영 설정을
     건드리지 않는다. Polars 풀 특성상 운영 저장값은 재시작 후 적용된다."""
     if _ml_table_lookup._root_ram_cache_use_dev():
         # 개발은 정책상 1코어 고정. 공유 설정 파일의 운영값을 건드리지 않는다.
         return _current_query_workers_status()
-    raw = req.get("query_workers", 4)
+    raw = req.get("query_workers", 0)
     workers = _normalize_query_workers(raw)
     cur = load_json(SOURCE_CFG, {"enabled": [], "lot_overrides": {}})
     cur[_query_workers_key()] = workers
@@ -1320,7 +1322,7 @@ def get_source_config():
     # 지정 팀 수신자 폐기 — 수신 대상은 계획 작성자 + 제품 동명 그룹 멤버로 고정.
     cfg.pop("mismatch_alert_recipients", None)
     cfg.setdefault("mismatch_mail_enabled", False)  # plan/actual 불일치 메일 발송 (기본 off)
-    cfg.setdefault("query_workers", 4)  # 운영 기본 4, 개발은 별도 정책으로 1 고정
+    cfg.setdefault("query_workers", 0)  # 운영 자동, 개발은 별도 정책으로 1 고정
     # v8.8.21: 응답 단에서도 root:~~ 남은 값은 표시 안 되게 정리.
     _migrate_legacy_root_prefix(cfg)
     return cfg

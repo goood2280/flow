@@ -6,7 +6,8 @@
 - Delegate independent file inventories, reference checks, small UI/copy edits, and focused verification to `gpt-5.6-luna` at low or medium reasoning when that model is available. Use `gpt-5.6-sol` for a bounded implementation that needs more reasoning. If unavailable, choose an available inexpensive coding model; do not silently change the main task model.
 - Give each subagent only its goal, relevant paths, constraints, and acceptance checks. Prefer no history fork, one subagent per independent scope, and no recursive delegation. Do trivial one-line edits locally when delegation would cost more than the edit.
 - The main agent must inspect delegated diffs and run the relevant checks before completion. Escalate failed or ambiguous work to the main agent instead of repeatedly spending tokens on the same failed approach.
-- Read only relevant vault branches and file sections. Avoid full-repository dumps, duplicate investigations, repeated unchanged polling, and tests unrelated to the changed behavior.
+- The user retired `doppelganger/` on 2026-09-21. Do not search or read that vault or require its context packs, retirement records, or evidence ledger. Use current user instructions, project code/docs, and verified results instead.
+- Read only relevant project file sections. Avoid full-repository dumps, duplicate investigations, repeated unchanged polling, and tests unrelated to the changed behavior.
 
 ## Spreadsheet-style tabular inputs
 

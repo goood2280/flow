@@ -534,7 +534,7 @@ python scripts/seed_valve_alert_examples.py --write
 - 자동 lookup/pivot/FAB/view 캐시는 운영 API heartbeat가 살아 있을 때 worker가 꾸준히 처리합니다. API가 내려가면 큐에 보존하고, 복구 후 이어서 처리합니다.
 - 수동 캐싱은 normal 우선순위로 큐에 들어가며 worker가 없으면 운영 서버가 메모리 가드를 거쳐 한 작업씩 local fallback합니다.
 - pivot 생성은 root 1개씩 처리합니다.
-- 제품 전체 RAM과 Root lot RAM 예열은 자동·수동 모두 폐기했습니다. 가장 먼저 읽는 view 응답 RAM은 호스트의 15%, 1~6GB 범위이며 30GB 호스트에서는 약 4.5GB입니다.
+- 제품 전체 RAM과 Root lot RAM 예열은 자동·수동 모두 폐기했습니다. 가장 먼저 읽는 view 응답 RAM은 호스트의 15%를 희망 예산으로 사용하며, 최종 상한은 전역 캐시 풀 지분입니다. 기본 운영 설정의 30GiB 호스트에서는 약 3.78GiB이며 서버 증설에 비례해 늘어납니다.
 - 역할 마커는 소스 폴더가 아니라 `{data_root}/worker/roles/<hostname>/`에 저장되어, `.dev_worker` 같은 파일이 Git/설치 번들에 섞여도 운영 서버가 worker로 기동되지 않습니다.
 - 5코어 운영 서버의 cold root-scoped 조회는 기본 2개가 실행되고 추가 요청은 짧은 큐에서 기다립니다.
 
@@ -659,3 +659,62 @@ python setup.py restore latest
 ## License
 
 Private. 사내/개인 검증 목적으로만 사용합니다.
+
+
+## 서버 용량 자동 조정과 일일 모니터 부하
+
+운영 기본값은 할당 CPU에서 1코어를 남긴 계산 예산, 총 메모리의 80% 소프트 한도다.
+`FLOW_RESOURCE_PROFILE=auto`는 기존 `small`과 같은 안전 가드를 쓰는 자동 비례 모드다.
+CPU는 affinity/cgroup quota를 반영하며, 메모리는 물리 RAM/cgroup 한도보다 크게 잡지 않는다.
+메모리 단위는 GiB(1024³ bytes)다. 공급자가 표기한 30GB와 모니터 실측 총량이 다르면
+실측 총량으로 비례 계산한다.
+
+| 할당 자원 | 기본 계산 CPU | 메모리 소프트 한도 | 전역 캐시 풀 | SplitTable 응답 캐시 상한 |
+| --- | ---: | ---: | ---: | ---: |
+| 5코어 / 30GiB | 4 | 24GiB | 10.8GiB | 약 3.78GiB |
+| 12코어 / 64GiB | 11 | 51.2GiB | 23.04GiB | 약 8.06GiB |
+
+캐시는 실제 요청에 따라 채워진다. CPU 예산은 각 라이브러리의 스레드 기본값과
+가드 기준이며 OS 차원의 프로세스 전체 hard quota는 아니다. 메모리 소프트 한도도
+RSS만으로 중단하지 않고 실제 호스트 압력을 함께 확인한다. API는 기본 1프로세스를 유지한다.
+
+### 서버 이전 후 변경할 항목
+
+1. 컨테이너/VM 할당 CPU와 메모리를 새 용량으로 변경한다. Docker/Kubernetes/서비스의
+   기존 자원 한도가 남아 있으면 앱에는 그 한도가 계속 유효하다.
+2. 캐시 관리 → 검색 코어에서 **자동**을 한 번 저장한다(`query_workers=0`).
+   기존에 명시 저장한 4 같은 값은 호환을 위해 유지한다.
+3. 배포 환경에서 오래된 고정값을 제거하고 서버를 재시작한다:
+   `FLOW_CPU_BUDGET_CORES`, `FLOW_PROCESS_MEMORY_LIMIT_GB`, `POLARS_MAX_THREADS`,
+   `RAYON_NUM_THREADS`, `PYARROW_NUM_THREADS`, `FLOW_DUCKDB_THREADS`.
+   `FLOW_SYSTEM_CPU_CORES`, `FLOW_SYSTEM_MEMORY_TOTAL_GB`, `FLOW_EFFECTIVE_MEMORY_TOTAL_GB`도
+   자동 인식이 정확하면 제거한다. 이 값들은 필요할 때 낮은 할당량을 명시하는 상한이다.
+   Polars 풀은 프로세스 시작 시 고정되므로 재시작이 필요하다.
+4. 관리자 모니터에서 할당 CPU/메모리 총량·CPU 예산·메모리 limit를 확인하고,
+   캐시 관리의 희망/실제 검색 코어가 일치하는지 확인한다.
+
+세부 튜닝은 `FLOW_PROCESS_MEMORY_LIMIT_FRACTION`(기본 0.80),
+`FLOW_CACHE_TOTAL_BUDGET_FRACTION`(0.45), `FLOW_CACHE_MEMORY_TARGET_RATIO`(0.80)로 조정한다.
+동시 무거운 요청은 기본 5코어에서 2건, 큰 서버에서도 3건으로 보수적으로 유지한다.
+더 늘릴 때는 실제 쿼리의 순간 메모리를 측정한 뒤 `FLOW_HEAVY_REQUEST_CONCURRENCY`(1~8),
+`FLOW_ESSENTIAL_REQUEST_CONCURRENCY`(1~8)를 조정한다. 개별 캐시의 관리자 수동 예산이나
+환경변수도 이전 시 점검한다. 개발 worker의 SplitTable 1코어 및 축소 캐시 정책은 유지된다.
+
+### 관리자 모니터의 보도블럭 갈기
+
+기본 예약은 한국 시간 매일 11:00, CPU·RAM 목표 85%, 최대 10분이다.
+각 자원이 한 번 이상 80%에 도달했는지를 따로 관측해 결과에 기록한다.
+90% 안전선에 닿거나 관리자가 해제하면 부하를 중단하고 임시 RAM을 반환한다.
+부하는 컨테이너 CPU 누적 시간/할당 코어를 사용해 제어하고, 호스트 사용률은 별도로 표시한다.
+
+앱의 기존 스케줄러 소유자 한 개가 모니터를 시작한다. 예약 부하는 운영 API(`PATHS.is_prod`)에서만 실행되며 개발 API/worker는 제외한다. 예약 시각을 놓친 재기동은
+당일 남은 시간에 한 번 실행하며, 시작한 날짜를 먼저 기록해 같은 날 중복 실행하지 않는다.
+실행 도중 서버가 재시작되면 중단으로 표시하고 같은 날 무조건 재시도하지 않는다.
+예약을 꺼 둔 관리자의 설정은 보존한다. 관리자 화면에서 다시 켤 수 있다.
+결과는 `log_dir/sysmon_state.json`의 `last_result`에 보존되고 모니터에 최고 사용률과
+완료/미달/중단 사유가 표시된다. 미달 시 실제 측정 source, 안전선 해제 사유,
+`FLOW_SYSMON_MAX_MEM_LOAD_MB` 고정 상한을 확인한다.
+
+정기 부하로 공급자의 자원 회수 방지가 보장되지는 않는다. 공급자 측 집계 기간·회수 조건과
+실제 운영 그래프를 별도로 확인해야 한다. 컨테이너 CPU 계측 근거:
+https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu-interface-files

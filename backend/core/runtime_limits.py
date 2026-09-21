@@ -30,7 +30,7 @@ import threading
 import time
 
 
-_SMALL_PROFILES = {"", "small", "limited", "test", "default"}
+_SMALL_PROFILES = {"", "auto", "small", "limited", "test", "default"}
 _FULL_PROFILES = {"full", "prod-full", "unlimited"}
 _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 10.0
 # RSS 상한 = 총 메모리 × 이 비율. Python/Polars 는 큰 스캔 후에도 allocator arena·
@@ -107,10 +107,16 @@ def _cgroup_cpu_quota_cores() -> float:
 
 def effective_cpu_count() -> float:
     detected = float(os.cpu_count() or 1)
+    try:
+        detected = min(detected, float(len(os.sched_getaffinity(0))))
+    except (AttributeError, OSError):
+        pass
     quota = _cgroup_cpu_quota_cores()
     if quota > 0:
         detected = min(detected, quota)
-    return max(1.0, detected)
+    # Optional operator ceiling; never exceed the actual affinity/quota.
+    override = _env_float("FLOW_SYSTEM_CPU_CORES", detected, 0.01)
+    return max(0.01, min(detected, override))
 
 
 def auto_cpu_budget_cores() -> float:
@@ -154,15 +160,7 @@ def auto_process_memory_limit_gb() -> float:
     개발 하한(_dev_process_memory_floor_gb)을 최소 보장하되, 호스트 총량-0.5GB
     (OS 여유)를 넘지 않도록 클램프한다 — FAB 캐시 등 순간 수 GB 빌드가 분수 상한에
     걸려 조기 throttle 되는 것을 막는다."""
-    total_bytes = 0.0
-    override = _memory_override_total_bytes()
-    if override:
-        total_bytes = float(override)
-    if not total_bytes:
-        limit = _cgroup_memory_snapshot_bytes()
-        total_bytes = float(limit.get("total_bytes") or 0.0) if limit else 0.0
-    if not total_bytes:
-        total_bytes = float(_host_memory_snapshot_bytes().get("total_bytes") or 0.0)
+    total_bytes = float(system_memory_snapshot().get("system_memory_total_gb") or 0) * (1024 ** 3)
     if total_bytes <= 0:
         return _SMALL_PROCESS_MEMORY_LIMIT_GB_DEFAULT
     total_gb = total_bytes / (1024 ** 3)
@@ -182,7 +180,7 @@ def cpu_budget_cores() -> float:
         value = auto_cpu_budget_cores() if is_small_profile() else effective_cpu_count()
     if value <= 0:
         value = auto_cpu_budget_cores() if is_small_profile() else effective_cpu_count()
-    return max(1.0, min(value, effective_cpu_count()))
+    return max(0.01, min(value, effective_cpu_count()))
 
 
 def process_memory_limit_gb() -> float:
@@ -448,16 +446,18 @@ def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
     )
     override_total = _memory_override_total_bytes()
     if override_total:
-        limit = {
-            "total_bytes": float(override_total),
-            "source": "env_override",
-        }
-        cache_reclaimable_gb = 0.0
+        if limit:
+            limit = dict(limit)
+            limit["total_bytes"] = min(float(limit["total_bytes"]), float(override_total))
+        else:
+            used_bytes = max(0.0, total_bytes - available_bytes)
+            limit = {"total_bytes": float(override_total), "used_bytes": used_bytes,
+                     "source": "env_override"}
     if limit:
         limit_total = float(limit.get("total_bytes") or 0.0)
-        if limit_total > 0 and (not total_bytes or limit_total < total_bytes):
+        if limit_total > 0 and (not total_bytes or limit_total <= total_bytes):
             used_bytes = float(limit.get("used_bytes") or 0.0)
-            if used_bytes > 0:
+            if "used_bytes" in limit:
                 total_bytes = limit_total
                 available_bytes = max(0.0, total_bytes - min(total_bytes, used_bytes))
                 percent = max(0.0, min(100.0, 100.0 * used_bytes / total_bytes))
@@ -694,7 +694,7 @@ def _polars_threads_for_role() -> int:
 
     Polars 풀은 프로세스 수명 동안 최초 1회만 크기가 정해지고(런타임 변경 불가)
     모든 동시 검색이 이 단일 풀을 공유한다. 그래서 무거운 빌드를 개발서버로
-    오프로드하는 api 는 검색 병렬도를 더 주고(4), 수 GB FAB/lookup 빌드를 직접
+    오프로드하는 api 는 CPU 예산만큼 검색 병렬도를 주고, 수 GB FAB/lookup 빌드를 직접
     도는 worker는 1코어로 제한한다. 역할은 운영/개발 두 종류이며 모두 실제 코어
     수로 상한 클램프한다.
 
@@ -716,18 +716,19 @@ def _polars_threads_for_role() -> int:
         # DuckDB SQL, 캐시 워커 등 다른 작업이 사용할 CPU를 남긴다.
         want = 1
     else:
-        # 운영은 기본 4코어, 관리자 설정으로 1~4 범위에서 변경한다. Polars 풀은
+        # 운영 기본은 CPU 예산 자동, 관리자 설정으로 수동 제한 가능. Polars 풀은
         # 최초 import 때 고정되므로 저장값은 다음 서버 시작부터 적용된다.
-        want = 4
+        want = 0
         try:
             cfg_path = PATHS.data_root / "splittable" / "source_config.json"
             if cfg_path.exists():
                 raw_cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
                 if isinstance(raw_cfg, dict):
-                    want = int(raw_cfg.get("query_workers", 4) or 4)
+                    want = int(raw_cfg.get("query_workers", 0) or 0)
         except Exception:
-            want = 4
-        want = max(1, min(4, want))
+            want = 0
+        budget = max(1, int(cpu_budget_cores()))
+        want = budget if want <= 0 else min(want, budget)
     return max(1, min(want, cores))
 
 

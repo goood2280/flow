@@ -480,6 +480,80 @@ def _group_permissions(username: str, role: str) -> dict:
     return {"all": False, "owner": owner, "member": member}
 
 
+def _group_permissions_index() -> dict[str, dict[str, list[str]]]:
+    """Read groups once and index their permissions by username.
+
+    This is deliberately request-scoped: the groups file is read for every bulk
+    calculation so edits become visible on the next request.  The index keeps
+    the per-user part linear in the number of users rather than rescanning every
+    group for every user.
+    """
+    try:
+        fp = PATHS.data_root / "groups" / "groups.json"
+        groups = json.loads(fp.read_text("utf-8")) if fp.is_file() else []
+    except Exception:
+        groups = []
+    indexed: dict[str, dict[str, list[str]]] = {}
+    if not isinstance(groups, list):
+        return indexed
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        gid = str(group.get("id") or group.get("name") or "").strip()
+        if not gid:
+            continue
+        owner = str(group.get("owner") or "").strip()
+        if owner:
+            perms = indexed.setdefault(owner, {"all": False, "owner": [], "member": []})
+            perms["owner"].append(gid)
+        members = group.get("members") or []
+        if isinstance(members, list):
+            seen_members = set()
+            for raw_username in members:
+                username = str(raw_username or "").strip()
+                if not username or username in seen_members:
+                    continue
+                seen_members.add(username)
+                perms = indexed.setdefault(username, {"all": False, "owner": [], "member": []})
+                perms["member"].append(gid)
+    return indexed
+
+
+def effective_permissions_bulk(users: list[dict]) -> list[dict]:
+    """Return effective permissions for users using one read of each source.
+
+    The result has the same order and shape as ``[effective_permissions(u) for
+    u in users]``.  Source files are intentionally reread on every call, so a
+    permission edit is visible on the next request without a TTL or process-wide
+    cache.
+    """
+    pa = get_page_admins()
+    group_index = _group_permissions_index()
+    out: list[dict] = []
+    for user in users:
+        user = user or {}
+        username = str(user.get("username") or "").strip()
+        role = str(user.get("role") or "user").strip() or "user"
+        manager_pages = list(CANONICAL_PAGE_IDS) if role == "admin" else sorted(
+            page for page, page_users in pa.items() if username in (page_users or [])
+        )
+        if role == "admin":
+            groups = {"all": True, "owner": [], "member": []}
+        else:
+            groups = group_index.get(
+                username, {"all": False, "owner": [], "member": []}
+            )
+        out.append({
+            "username": username,
+            "role": role,
+            "tabs": _user_tabs(user),
+            "subtabs": user_subtabs(user),
+            "page_manager": manager_pages,
+            "groups": groups,
+        })
+    return out
+
+
 def effective_permissions(user: dict) -> dict:
     """Compact effective permission summary for Admin UI and tests."""
     username = str((user or {}).get("username") or "").strip()
