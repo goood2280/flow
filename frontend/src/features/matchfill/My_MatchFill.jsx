@@ -411,7 +411,7 @@ export default function My_MatchFill({ user }) {
           <span style={{ fontWeight: 900 }}>채울 열</span>
           {[["product", fabProcessMatch ? `product (FAB ${fabKeyLabel})` : "product (DB 스캔)"],
             ["vehicle", "vehicle (DB 스캔)"],
-            ["mask", "mask (FAB RETICLE 제품명)"],
+            ["category", "category (FAB RETICLE mask 이름)"],
             ["step_id", `step_id (FAB ${fabKeyLabel})`],
             ["step_desc", "step_desc (Vehicle matching)"],
             ["module", byStepDesc ? "module (Vehicle_matching step_desc)" : "module (step 번호 구간)"]]

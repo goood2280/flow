@@ -2,7 +2,8 @@
    - 개발 worker가 FAB 제품을 하나씩 순회하며 처음 보는 step_id/ppid/reticle_id를 표시한다.
    - step_id는 Vehicle_matching.csv, ppid는 ppid_knob.csv, reticle_id는 mask_info.csv에
      엔지니어 판정으로 반영한다 (reticle_id→mask 규칙은 전 제품 공용이며
-     mask에는 제품명을 입력하며 기존 CSV 열을 유지한다).
+     mask 이름은 기존 category, vehicle은 기존 product 열에 입력하고
+     CSV 열을 추가하지 않는다).
    - 판정 이력(누가/언제/무엇으로) + 반영불필요 상태를 관리한다.
 */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -657,10 +658,11 @@ export default function My_ValveAlerts({ user }) {
   const maskCsvRows = useMemo(() => editableMaskAlerts.map(alert => ({
     status: queued[alert.id] ? "반영대기" : "입력대기",
     products: alertProducts(alert).join(", "),
+    product: alert.vehicle || alert.product || "",
     reticle_id: alert.reticle_id || "",
     step_ids: (alert.step_ids || (alert.step_id ? [alert.step_id] : [])).join(", "),
     discovery: discoveryText(alert),
-    mask: inputs[alert.id]?.mask || "",
+    category: inputs[alert.id]?.category || "",
   })), [editableMaskAlerts, inputs, queued]);
 
   const updateDecisionValues = (targetAlerts, rows, field) => {
@@ -714,9 +716,9 @@ export default function My_ValveAlerts({ user }) {
           feature_name: (v.feature_name ?? a.feature_name ?? "").trim(),
           note: (v.note || "").trim() });
       } else if (a.type === "missing_reticle") {
-        const mask = (v.mask || "").trim();
+        const mask = (v.category || "").trim();
         if (!mask) { toast.error(`${a.reticle_id}: mask 이름을 입력하세요`); return; }
-        changes.push({ type: "add_mask", id: a.id, mask, note: (v.note || "").trim() });
+        changes.push({ type: "add_mask", id: a.id, category: mask, note: (v.note || "").trim() });
       } else {
         const step_desc = (v.step_desc ?? a.step_desc ?? "").trim();
         if (!step_desc) { toast.error(`${a.step_id}: 판정 step을 입력하세요`); return; }
@@ -743,7 +745,7 @@ export default function My_ValveAlerts({ user }) {
       const next = { ...prev };
       queuedAlerts.forEach(alert => {
         const field = alert.type === "ro_ppid" ? "category"
-          : alert.type === "missing_reticle" ? "mask" : "step_desc";
+          : alert.type === "missing_reticle" ? "category" : "step_desc";
         next[alert.id] = { ...(next[alert.id] || {}), [field]: "" };
       });
       return next;
@@ -930,20 +932,22 @@ export default function My_ValveAlerts({ user }) {
       >
         <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
           FAB DB의 reticle_id 중 mask_info.csv의 reticle_id 열에 없는 값입니다.
-          mask_info.csv는 제품 구분 없이 reticle_id·mask 2열이라 같은 reticle이 여러 제품에서 발견돼도 한 줄로 묶입니다.
+          mask_info.csv는 제품 구분 없이 reticle_id·category로 관리하며, mask 이름은 category 열에 저장합니다.
+          product 열에는 해당 FAB 제품과 매칭된 vehicle 이름을 저장합니다.
+          같은 reticle이 여러 제품에서 발견돼도 한 줄로 묶입니다.
         </div>
         {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : editableMaskAlerts.length === 0 ? (
           <EmptyState title="판정 대기 미등록 reticle 없음" hint="mask_info.csv에 없는 reticle_id가 발견되면 여기에 표시됩니다" />
         ) : (
           <DecisionSpreadsheet
             title="마스크 룰북"
-            columns={["status", "products", "reticle_id", "step_ids", "discovery", "mask"]}
+            columns={["status", "products", "product", "reticle_id", "step_ids", "discovery", "category"]}
             sourceRows={maskCsvRows}
-            aliases={{ "reticle": "reticle_id", "마스크": "mask" }}
-            columnLabels={{ status: "상태", products: "발견 제품", reticle_id: "RETICLE ID", step_ids: "발견 step", discovery: "발견 근거", mask: "mask 제품명" }}
-            editableColumn="mask"
+            aliases={{ "reticle": "reticle_id", "마스크": "category", "mask": "category" }}
+            columnLabels={{ status: "상태", products: "발견 제품", product: "저장 product (vehicle)", reticle_id: "RETICLE ID", step_ids: "발견 step", discovery: "발견 근거", category: "category (mask 이름)" }}
+            editableColumn="category"
             disabled={!canManage || !!busy}
-            onRowsChange={rows => updateDecisionValues(editableMaskAlerts, rows, "mask")}
+            onRowsChange={rows => updateDecisionValues(editableMaskAlerts, rows, "category")}
           />
         )}
       </Card>
@@ -1067,7 +1071,7 @@ export default function My_ValveAlerts({ user }) {
                         : d.action === "match"
                           ? `${d.step_id} → ${d.step_desc}`
                           : d.action === "add_mask"
-                            ? `${d.reticle_id} → ${d.mask}`
+                            ? `${d.reticle_id} → ${d.category || d.mask}`
                             : (d.detail || "-")}
                     </td>
                     <td style={{ ...cellStyle, fontFamily: "monospace", fontSize: 11 }}>{d.file || "-"}</td>

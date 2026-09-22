@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { FlowPlotlyChart } from "../../components/PlotlyChart";
 import SpreadsheetPasteGrid, {
   normalizeSpreadsheetRows,
@@ -122,13 +122,13 @@ function chartPoint(point, series) {
 
 export default function LotTracker() {
   const [form, setForm] = useState({
-    product: "PRODA",
-    lot_id: "DEMO-LOT-01",
-    reference_lot_id: "DEMO-REF-01, DEMO-REF-02, DEMO-REF-03",
+    product: "",
+    lot_id: "",
+    reference_lot_id: "",
     target_step_id: "",
   });
   const [refRows, setRefRows] = useState(() =>
-    parseRefRows("DEMO-REF-01, DEMO-REF-02, DEMO-REF-03")
+    parseRefRows("")
   );
   const [showOptional, setShowOptional] = useState(true);
   const [comparisonDpml, setComparisonDpml] = useState("");
@@ -148,18 +148,8 @@ export default function LotTracker() {
     setForm((prev) => ({ ...prev, reference_lot_id: "" }));
   };
 
-  const handleLoadDemoRefs = () => {
-    const demoRows = parseRefRows("DEMO-REF-01, DEMO-REF-02, DEMO-REF-03, DEMO-REF-04, DEMO-REF-05");
-    setRefRows(demoRows);
-    setForm((prev) => ({ ...prev, reference_lot_id: refTextFromRows(demoRows) }));
-  };
-
   const executeSearch = async (searchForm) => {
     const targetForm = searchForm || form;
-    if (!targetForm.product.trim()) {
-      setError("Product를 입력하세요.");
-      return;
-    }
     if (!targetForm.lot_id.trim()) {
       setError("lot id를 입력하세요.");
       return;
@@ -183,10 +173,6 @@ export default function LotTracker() {
       setBusy(false);
     }
   };
-
-  useEffect(() => {
-    executeSearch();
-  }, []);
 
   const load = (event) => {
     if (event) event.preventDefault();
@@ -245,10 +231,10 @@ export default function LotTracker() {
         <form onSubmit={load} style={{ display: "grid", gap: 12 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 12, alignItems: "end" }}>
             <div style={{ display: "grid", gap: 5 }}>
-              <label style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Product</label>
+              <label style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Product (선택)</label>
               <input
                 value={form.product}
-                placeholder="Product"
+                placeholder="비워두면 FAB DB에서 검색"
                 onChange={(event) => setForm({ ...form, product: event.target.value })}
                 style={inputStyle}
               />
@@ -317,13 +303,6 @@ export default function LotTracker() {
                     <div style={{ display: "flex", gap: 6 }}>
                       <button
                         type="button"
-                        onClick={handleLoadDemoRefs}
-                        style={{ fontSize: 11, padding: "2px 8px", background: "var(--bg-tertiary)", border: "1px solid var(--border)", borderRadius: 4, cursor: "pointer", color: "var(--text-secondary)" }}
-                      >
-                        5개 데모 입력
-                      </button>
-                      <button
-                        type="button"
                         onClick={handleClearRefs}
                         style={{ fontSize: 11, padding: "2px 8px", background: "var(--bg-tertiary)", border: "1px solid var(--border)", borderRadius: 4, cursor: "pointer", color: "var(--text-secondary)" }}
                       >
@@ -339,7 +318,7 @@ export default function LotTracker() {
                       onChange={handleRefRowsChange}
                       aliases={{ lot: "lot_id", "lot id": "lot_id", lotid: "lot_id", reference_lot_id: "lot_id" }}
                       columnLabels={{ lot_id: "참고 lot id" }}
-                      placeholders={{ lot_id: "예: DEMO-REF-01" }}
+                      placeholders={{ lot_id: "참고 lot id" }}
                       showRowNumbers={true}
                       minRows={5}
                       maxRows={5}

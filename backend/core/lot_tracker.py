@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 from collections import Counter
 
 import polars as pl
 
-from core.long_pivot import FAB_ROOT, scan_long_fab
+from core.long_pivot import scan_long_fab
 from core.lot_progress_cache import lookup_lot_progress
 from core.lot_wip import describe_step
 from core.paths import PATHS
@@ -284,198 +285,91 @@ def predict(lot_points: list[dict], ref_points: list[dict], target_step_id: str 
     return predict_multi_lots(lot_points, [{"lot_id": "REF", "points": ref_points}], target_step_id)
 
 
+def _fab_source_roots() -> list[str]:
+    """Resolve the physical FAB DB using FileBrowser's configured display name.
+
+    An explicit ``db_name_aliases`` entry displayed as ``FAB`` wins. When the
+    operator has not configured one, LOT Tracker uses the legacy
+    ``1.RAWDATA_DB`` folder.
+    """
+    db_root = PATHS.db_root
+    actual_by_name: dict[str, str] = {}
+    if db_root.is_dir():
+        try:
+            actual_by_name = {
+                child.name.casefold(): child.name
+                for child in db_root.iterdir()
+                if child.is_dir()
+            }
+        except OSError:
+            actual_by_name = {}
+
+    aliases: dict = {}
+    settings_path = PATHS.data_root / "filebrowser_settings.json"
+    try:
+        raw = json.loads(settings_path.read_text(encoding="utf-8"))
+        configured = raw.get("db_name_aliases") if isinstance(raw, dict) else {}
+        if isinstance(configured, dict):
+            aliases = configured
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        pass
+
+    matched: list[str] = []
+    for source, display in aliases.items():
+        if str(display or "").strip().casefold() != "fab":
+            continue
+        source_key = str(source or "").strip().casefold()
+        if source_key == "1.rawdata_db":
+            continue
+        actual = actual_by_name.get(source_key)
+        if actual and actual not in matched:
+            matched.append(actual)
+    if matched:
+        return matched
+
+    return [actual_by_name.get("1.rawdata_db", "1.RAWDATA_DB")]
+
+
 def _product_candidates(lot_id: str, product: str) -> list[str]:
     if product:
         return [product.strip()]
     cached = lookup_lot_progress(lot_id=lot_id, limit=100, refresh_if_missing=False)
     known = {_key(row.get("product")) for row in cached if row.get("product")}
-    if known:
-        return sorted(known)
-    root = PATHS.db_root / FAB_ROOT
-    if root.is_dir():
-        known.update(p.name for p in root.iterdir() if p.is_dir())
+    for folder in _fab_source_roots():
+        root = PATHS.db_root / folder
+        if root.is_dir():
+            try:
+                known.update(p.name for p in root.iterdir() if p.is_dir())
+            except OSError:
+                continue
     return sorted(known)
 
 
 def _history(lot_id: str, candidates: list[str]) -> tuple[str, list[dict]]:
     matches = []
-    for product in candidates:
-        lf = scan_long_fab(product, PATHS.db_root)
-        if lf is None:
-            continue
-        names = set(lf.collect_schema().names())
-        if not {"lot_id", "step_id", "tkout_time"}.issubset(names):
-            continue
-        selected = ["lot_id", "step_id", "tkout_time"] + (["tkin_time"] if "tkin_time" in names else [])
-        rows = (lf.filter(pl.col("lot_id").cast(pl.Utf8, strict=False)
-                          .str.strip_chars().str.to_uppercase() == _key(lot_id))
-                  .select(selected).collect().to_dicts())
-        if rows:
-            matches.append((product, rows))
+    for folder in _fab_source_roots():
+        for product in candidates:
+            lf = scan_long_fab(product, PATHS.db_root, folder)
+            if lf is None:
+                continue
+            names = set(lf.collect_schema().names())
+            if not {"lot_id", "step_id", "tkout_time"}.issubset(names):
+                continue
+            selected = ["lot_id", "step_id", "tkout_time"] + (["tkin_time"] if "tkin_time" in names else [])
+            rows = (lf.filter(pl.col("lot_id").cast(pl.Utf8, strict=False)
+                              .str.strip_chars().str.to_uppercase() == _key(lot_id))
+                      .select(selected).collect().to_dicts())
+            if rows:
+                matches.append((product, rows))
     if len(matches) > 1:
         raise ValueError("같은 lot_id가 여러 제품에 있습니다. product를 지정하세요: " + ", ".join(p for p, _ in matches))
     return matches[0] if matches else ("", [])
 
 
-def make_dummy_tracker_result(lot_id: str = "DEMO-LOT-01", product: str = "PRODA", reference_lot_id: str = "", target_step_id: str = "") -> dict:
-    lot_id = _key(lot_id) or "DEMO-LOT-01"
-    product = _key(product) or "PRODA"
-
-    # 참고 LOT 파싱 (최대 5개 지원). 사용자가 미입력 시 데모용 3개 기본 제공
-    parsed_refs = parse_lot_ids(reference_lot_id)
-    if not parsed_refs:
-        parsed_refs = ["DEMO-REF-01", "DEMO-REF-02", "DEMO-REF-03"]
-
-    # 80개 Mask Layer 및 약 1,000개 FAB 공정 단계 생성
-    base_time = dt.datetime(2026, 6, 1, 8, 30, 0)
-
-    unit_ops = [
-        "INSPECT", "HARD BAKE", "DRY ETCH", "PR STRIP & ASH",
-        "POST CLEAN", "CD SEM MEASURE", "THIN FILM CVD", "RTP ANNEAL",
-        "OXIDE CMP", "POST CMP CLEAN", "ION IMPLANT", "W-PLUG DEP"
-    ]
-
-    all_simulated_steps = []
-    accum_days = 0.0
-    step_seq = 10
-
-    for layer_idx in range(81):  # Layer 0.0 ~ Layer 80.0 (총 81개 Layer)
-        layer_num_str = f"{layer_idx}.0"
-
-        # 1) Photo/Litho 공정
-        photo_name = f"{layer_num_str} MASK PHOTO"
-        if layer_idx == 0: photo_name = "0.0 ZERO PHOTO"
-        elif layer_idx == 1: photo_name = "1.0 STI LITHO"
-        elif layer_idx == 2: photo_name = "2.0 WELL PHOTO"
-        elif layer_idx == 5: photo_name = "5.0 GATE LITHO"
-        elif layer_idx == 10: photo_name = "10.0 CONTACT PHOTO"
-        elif layer_idx == 48: photo_name = "48.0 METAL1 PHOTO"
-        elif layer_idx == 60: photo_name = "60.0 VIA2 PHOTO"
-        elif layer_idx == 70: photo_name = "70.0 TOP METAL PHOTO"
-        elif layer_idx == 80: photo_name = "80.0 FINAL PASSIVATION PHOTO"
-
-        sid = f"AA{layer_idx:02d}{step_seq % 1000:04d}"
-        step_seq += 10
-        accum_days += 0.18
-        all_simulated_steps.append((sid, photo_name, round(accum_days, 3)))
-
-        # 2) Layer 내부 세부 공정들 (평균 11~12개 단위 공정 -> 81 * 12.3 ≈ 1,000 steps)
-        num_sub_steps = 11 if layer_idx % 3 == 0 else 12
-        for s_idx in range(num_sub_steps):
-            op_name = unit_ops[s_idx % len(unit_ops)]
-            sub_sid = f"AA{layer_idx:02d}{step_seq % 1000:04d}"
-            step_seq += 10
-            accum_days += 0.065  # 약 1.5시간
-            all_simulated_steps.append((sub_sid, f"{op_name}", round(accum_days, 3)))
-
-    # 전체 약 1,026개 스텝 중 605개(Layer 48.0 부근)까지 현재 LOT 완료 상태로 설정
-    split_index = 605
-    completed_steps_raw = all_simulated_steps[:split_index]
-    future_steps_raw = all_simulated_steps[split_index:]
-
-    # target_step_id 지정: 비어있거나 기존 더미값이면 마지막 공정으로 설정
-    if not target_step_id or target_step_id in ("AA300900", "AA800100"):
-        target_step_id = all_simulated_steps[-1][0]
-    else:
-        target_step_id = _key(target_step_id)
-
-    points = []
-    current_layer_label = "0.0"
-    current_mask_layer = 0
-    for sid, desc, days in completed_steps_raw:
-        t = (base_time + dt.timedelta(days=days)).isoformat(timespec="seconds")
-        num, layer = step_number(desc)
-        lbl = step_label(desc)
-        is_litho = bool(re.search(r"\b(?:LITHO|PHOTO|LITHOGRAPHY|PHOTOLITHO)\b", desc, re.I))
-        if lbl:
-            current_layer_label = lbl
-            if layer is not None:
-                current_mask_layer = layer
-        points.append({
-            "step_id": sid,
-            "step_desc": desc,
-            "step_number": num,
-            "step_label": lbl or sid,
-            "layer_label": current_layer_label,
-            "is_litho_photo": is_litho,
-            "mask_layer": layer if layer is not None else current_mask_layer,
-            "tkout_time": t,
-            "elapsed_days": days,
-        })
-
-    mask_summary = mask_layer_summary(points)
-    latest = points[-1]
-    lot = {
-        "lot_id": lot_id,
-        "product": product,
-        "current_step_id": latest["step_id"],
-        "current_step_desc": latest["step_desc"],
-        "current_time": latest["tkout_time"],
-        "current_source": "latest_cache",
-        "current_steps": [{"step_id": latest["step_id"], "step_desc": latest["step_desc"], "wafer_count": 25}],
-        "points": points,
-        **mask_summary,
-    }
-
-    # 참고 LOT들(최대 5개)의 공정 시퀀스 시뮬레이션 (각 LOT마다 현실적인 시간 편차 반영)
-    ref_lot_list = []
-    lot_offsets = [0.0, 0.40, -0.30, 0.20, -0.10]
-
-    for idx, ref_id in enumerate(parsed_refs):
-        offset = lot_offsets[idx % len(lot_offsets)]
-        ref_base = base_time - dt.timedelta(days=15 + idx * 3)
-        ref_steps_all = completed_steps_raw + [
-            (sid, desc, days + offset) for sid, desc, days in future_steps_raw
-        ]
-        ref_points = []
-        r_curr_label = "0.0"
-        r_curr_mask = 0
-        for sid, desc, days in ref_steps_all:
-            t = (ref_base + dt.timedelta(days=days)).isoformat(timespec="seconds")
-            num, layer = step_number(desc)
-            lbl = step_label(desc)
-            is_litho = bool(re.search(r"\b(?:LITHO|PHOTO|LITHOGRAPHY|PHOTOLITHO)\b", desc, re.I))
-            if lbl:
-                r_curr_label = lbl
-                if layer is not None:
-                    r_curr_mask = layer
-            ref_points.append({
-                "step_id": sid,
-                "step_desc": desc,
-                "step_number": num,
-                "step_label": lbl or sid,
-                "layer_label": r_curr_label,
-                "is_litho_photo": is_litho,
-                "mask_layer": layer if layer is not None else r_curr_mask,
-                "tkout_time": t,
-                "elapsed_days": days,
-            })
-        ref_lot_list.append({
-            "lot_id": ref_id,
-            "product": product,
-            "points": ref_points,
-            **mask_layer_summary(ref_points),
-        })
-
-    forecast = predict_multi_lots(points, ref_lot_list, target_step_id)
-
-    return {
-        "ok": True,
-        "is_dummy": True,
-        "lot": lot,
-        "references": ref_lot_list,
-        "reference": ref_lot_list[0] if ref_lot_list else None,
-        "forecast": forecast,
-        "note": "더미 데이터 예시입니다. (총 80개 Mask Layer 및 1,000개 상세 공정이 시뮬레이션되었습니다.)"
-    }
-
-
-def track_lot(lot_id: str, reference_lot_id: str = "", target_step_id: str = "", product: str = "", dummy: bool = False) -> dict:
+def track_lot(lot_id: str, reference_lot_id: str = "", target_step_id: str = "", product: str = "") -> dict:
     lot_id = _key(lot_id)
-    if not lot_id and not dummy:
+    if not lot_id:
         raise ValueError("lot_id를 입력하세요.")
-    if dummy or lot_id.startswith("DEMO") or lot_id in {"SAMPLE", "TEST", "MOCK"}:
-        return make_dummy_tracker_result(lot_id or "DEMO-LOT-01", product or "PRODA", reference_lot_id, target_step_id)
     product, rows = _history(lot_id, _product_candidates(lot_id, product))
     if not rows:
         return {"ok": False, "note": f"FAB DB에서 lot_id '{lot_id}'의 TKOUT 이력을 찾지 못했습니다.",

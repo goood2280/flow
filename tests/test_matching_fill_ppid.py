@@ -100,12 +100,12 @@ def test_mask_scan_proposes_product_step_and_vehicle_desc(monkeypatch):
     assert step_desc["rows"][0]["scoped"] == ["PRODA · S20 · PHOTO"]
 
 
-def test_mask_native_two_column_schema_fills_existing_mask_with_product(monkeypatch):
+def test_mask_native_two_column_schema_fills_existing_category_with_product(monkeypatch):
     from core import matching_fill as matching
 
     store = {"settings": {}, "proposals": {}}
-    mask_columns = ["reticle_id", "mask"]
-    mask_rows = [{"reticle_id": "RET_A", "mask": ""}]
+    mask_columns = ["reticle_id", "category"]
+    mask_rows = [{"reticle_id": "RET_A", "category": ""}]
     vehicle_columns = ["vehicle", "step_id", "step_desc"]
     vehicle_rows = [{"vehicle": "PRODA", "step_id": "S20", "step_desc": "PHOTO"}]
     monkeypatch.setattr(matching, "_read_csv", lambda target: (
@@ -117,7 +117,7 @@ def test_mask_native_two_column_schema_fills_existing_mask_with_product(monkeypa
     monkeypatch.setattr(matching, "_load_store", lambda: store)
     monkeypatch.setattr(matching, "_save_store", lambda data: None)
 
-    proposal = matching.scan("mask", column="mask")
+    proposal = matching.scan("mask", column="category")
     assert proposal["rows"][0]["proposed"] == "PRODA"
     assert proposal["add_column"] is False
 
@@ -269,7 +269,7 @@ def test_inline_product_index_falls_back_across_mixed_parquet_schemas(monkeypatc
 
 
 @pytest.mark.parametrize("target,column,filename,source", [
-    ("mask", "mask", "mask_info.csv", "reticle_id,mask\nRET_A,\n"),
+    ("mask", "category", "mask_info.csv", "reticle_id,category\nRET_A,\n"),
     ("vehicle", "vehicle", "Vehicle_matching.csv", "vehicle,step_id,step_desc\n,S20,PHOTO\n"),
 ])
 def test_native_product_column_scan_apply_preserves_schema(monkeypatch, tmp_path, target, column, filename, source):
@@ -303,13 +303,13 @@ def test_mask_target_reads_and_applies_mask_info_csv(monkeypatch, tmp_path):
 
     mask_info = tmp_path / "mask_info.csv"
     legacy_mask = tmp_path / "mask.csv"
-    mask_info.write_text("reticle_id,mask,product\nRET_A,MASK_A,\n", encoding="utf-8")
+    mask_info.write_text("reticle_id,category,product\nRET_A,MASK_A,\n", encoding="utf-8")
     legacy_mask.write_text("reticle_id,mask\nLEGACY,OLD\n", encoding="utf-8")
     monkeypatch.setattr(matching, "_db_root", lambda: tmp_path)
 
     columns, rows = matching._read_csv("mask")
     assert matching.TARGETS["mask"]["file"] == "mask_info.csv"
-    assert columns == ["reticle_id", "mask", "product"]
+    assert columns == ["reticle_id", "category", "product"]
     assert rows[0]["reticle_id"] == "RET_A"
 
     proposal = {
@@ -332,7 +332,7 @@ def test_mask_target_reads_and_applies_mask_info_csv(monkeypatch, tmp_path):
 
     columns, rows = matching._read_csv("mask")
     assert result["file"] == "mask_info.csv"
-    assert columns == ["reticle_id", "mask", "product"]
+    assert columns == ["reticle_id", "category", "product"]
     assert rows[0]["product"] == "PRODA"
     assert legacy_mask.read_text(encoding="utf-8") == "reticle_id,mask\nLEGACY,OLD\n"
 
@@ -355,7 +355,7 @@ def test_apply_rejects_stale_proposal_for_missing_column(monkeypatch, tmp_path):
     from core import matching_fill as matching
 
     source = tmp_path / "mask_info.csv"
-    source.write_text("reticle_id,mask\nRET_A,MASK_A\n", encoding="utf-8")
+    source.write_text("reticle_id,category\nRET_A,MASK_A\n", encoding="utf-8")
     proposal = {
         "target": "mask", "column": "product", "file": source.name,
         "scanned_at": "2026-09-03T09:00:00", "applied": False,
@@ -366,7 +366,7 @@ def test_apply_rejects_stale_proposal_for_missing_column(monkeypatch, tmp_path):
 
     with pytest.raises(ValueError, match="열이 없어"):
         matching.apply_proposal("mask", column="product", expected_scanned_at=proposal["scanned_at"])
-    assert source.read_text(encoding="utf-8") == "reticle_id,mask\nRET_A,MASK_A\n"
+    assert source.read_text(encoding="utf-8") == "reticle_id,category\nRET_A,MASK_A\n"
 
 
 def test_apply_preserves_mixed_case_header_and_marks_canonical_proposal(monkeypatch, tmp_path):

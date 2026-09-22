@@ -2963,6 +2963,63 @@ def read_reference_file(kind: str) -> dict:
             "source_modified_ns": path.stat().st_mtime_ns}
 
 
+def product_reference_rows(vehicle: str) -> dict:
+    """Return existing TEG/MAIN reference rows for one vehicle.
+
+    Product creation is allowed before either reference table is populated.  When
+    operators have already added rows through FileBrowser, this small filtered
+    payload lets the creation dialog reuse them without downloading the complete
+    shared CSV files to the browser.
+    """
+    requested = str(vehicle or "").strip()
+    if not requested:
+        raise ValueError("vehicle을 입력해 주세요")
+    target = requested.casefold()
+
+    def selected(kind: str, fields: tuple[tuple[str, tuple[str, ...]], ...]) -> tuple[list[dict], str]:
+        try:
+            payload = read_reference_file(kind)
+        except FileNotFoundError:
+            return [], str(reference_file_path(kind))
+        columns = [str(column).strip().casefold() for column in payload["columns"]]
+        indexes = {column: index for index, column in enumerate(columns)}
+        vehicle_index = next((indexes[name] for name in ("vehicle", "mask") if name in indexes), None)
+        if vehicle_index is None:
+            return [], payload["path"]
+        rows: list[dict] = []
+        for source in payload["rows"]:
+            if str(source[vehicle_index] if vehicle_index < len(source) else "").strip().casefold() != target:
+                continue
+            row: dict[str, str] = {}
+            for canonical, aliases in fields:
+                index = next((indexes[alias] for alias in aliases if alias in indexes), None)
+                row[canonical] = (str(source[index]).strip()
+                                  if index is not None and index < len(source) else "")
+            rows.append(row)
+        return rows, payload["path"]
+
+    tegs, teg_path = selected("teg_location", (
+        ("teg", ("teg",)),
+        ("top_cell", ("top_cell", "topcell")),
+        ("direction", ("direction", "flat_zone", "flatzone", "flat")),
+        ("ebeam_X", ("ebeam_x",)),
+        ("ebeam_Y", ("ebeam_y",)),
+        ("teg_w", ("teg_w", "width")),
+        ("teg_h", ("teg_h", "height")),
+    ))
+    mains, main_path = selected("main_chip_info", (
+        ("chip_name", ("chip_name", "chipname", "chip", "main")),
+        ("chipsize_x", ("chipsize_x", "chip_size_x", "size_x")),
+        ("chipsize_y", ("chipsize_y", "chip_size_y", "size_y")),
+        ("purpose", ("purpose",)),
+    ))
+    return {
+        "ok": True, "vehicle": requested,
+        "tegs": tegs, "main_chips": mains,
+        "teg_path": teg_path, "main_chip_path": main_path,
+    }
+
+
 def _validate_reference_columns(kind: str, columns: list[str]) -> None:
     norms = {str(c).strip().casefold() for c in columns}
     missing = []
@@ -3467,10 +3524,15 @@ def update_product_identity(current_vehicle: str, vehicle: str, node_path: str,
     }
 
 
-def create_product_from_table(text: str, vehicle: str, tegs: list[dict[str, Any]],
-                              main_chip: dict[str, Any] | None, username: str,
+def create_product_from_table(text: str, vehicle: str, tegs: list[dict[str, Any]] | None,
+                              main_chip: dict[str, Any] | list[dict[str, Any]] | None, username: str,
                               node_path: str = "", product_code: str = "") -> dict:
-    """제품 geometry를 등록하고 Teg_location/Main_chip_info를 아래로 append한다."""
+    """제품 geometry를 등록하고 입력된 TEG/MAIN 기준행만 제품 단위로 저장한다.
+
+    Teg_location과 Main_chip_info는 후속 입력 자료다. 둘 다 없어도 제품 geometry와
+    Chip_Radius shot은 먼저 생성하며, FileBrowser에서 미리 넣은 동일 vehicle 행은
+    건드리지 않는다.
+    """
     veh = str(vehicle or "").strip()[:200]
     if not veh:
         raise ValueError("vehicle을 입력해 주세요")
@@ -3483,23 +3545,31 @@ def create_product_from_table(text: str, vehicle: str, tegs: list[dict[str, Any]
     if veh.casefold() in existing:
         raise ValueError(f"이미 등록된 제품입니다: {veh}")
     clean_tegs: list[dict[str, Any]] = []
-    if not isinstance(tegs, list) or not tegs:
-        raise ValueError("Teg_location에 추가할 TEG를 1개 이상 입력해 주세요")
-    for index, raw in enumerate(tegs, 1):
+    for index, raw in enumerate(tegs if isinstance(tegs, list) else [], 1):
         raw = raw if isinstance(raw, dict) else {}
         name = str(raw.get("teg") or "").strip()[:200]
         if not name:
             raise ValueError(f"TEG {index}행의 teg를 입력해 주세요")
         direction = str(raw.get("direction") or "").strip()[:40]
-        if not direction:
-            raise ValueError(f"TEG {index}행의 direction을 입력해 주세요")
-        numbers: dict[str, float] = {}
-        for key in ("ebeam_x", "ebeam_y", "teg_w", "teg_h"):
+        numbers: dict[str, float | None] = {}
+        for key in ("ebeam_x", "ebeam_y"):
             try:
                 number = float(raw.get(key))
             except (TypeError, ValueError):
                 raise ValueError(f"TEG {index}행의 {key}가 숫자가 아닙니다")
-            if not math.isfinite(number) or (key in ("teg_w", "teg_h") and number <= 0):
+            if not math.isfinite(number):
+                raise ValueError(f"TEG {index}행의 {key}가 유효하지 않습니다")
+            numbers[key] = number
+        for key in ("teg_w", "teg_h"):
+            raw_number = raw.get(key)
+            if raw_number in (None, ""):
+                numbers[key] = None
+                continue
+            try:
+                number = float(raw_number)
+            except (TypeError, ValueError):
+                raise ValueError(f"TEG {index}행의 {key}가 숫자가 아닙니다")
+            if not math.isfinite(number) or number <= 0:
                 raise ValueError(f"TEG {index}행의 {key}가 유효하지 않습니다")
             numbers[key] = number
         clean_tegs.append({
@@ -3508,22 +3578,27 @@ def create_product_from_table(text: str, vehicle: str, tegs: list[dict[str, Any]
             "direction": direction, **numbers,
         })
 
-    clean_main = None
-    if preview["one_by_one"]:
-        raw = main_chip if isinstance(main_chip, dict) else {}
+    raw_mains = (main_chip if isinstance(main_chip, list) else
+                 [main_chip] if isinstance(main_chip, dict) else [])
+    clean_mains: list[dict[str, Any]] = []
+    for index, raw in enumerate(raw_mains, 1):
+        raw = raw if isinstance(raw, dict) else {}
         chip_name = str(raw.get("chip_name") or "").strip()[:200]
         if not chip_name:
-            raise ValueError("Shot 1×1 제품은 chip_name을 입력해 주세요")
+            raise ValueError(f"Main {index}행의 chip_name을 입력해 주세요")
         sizes = {}
         for key in ("chipsize_x", "chipsize_y"):
             try:
                 number = float(raw.get(key))
             except (TypeError, ValueError):
-                raise ValueError(f"{key}가 숫자가 아닙니다")
+                raise ValueError(f"Main {index}행의 {key}가 숫자가 아닙니다")
             if not math.isfinite(number) or number <= 0:
-                raise ValueError(f"{key}는 0보다 커야 합니다")
+                raise ValueError(f"Main {index}행의 {key}는 0보다 커야 합니다")
             sizes[key] = number
-        clean_main = {"vehicle": veh, "chip_name": chip_name, **sizes}
+        clean_mains.append({
+            "vehicle": veh, "chip_name": chip_name, **sizes,
+            "purpose": str(raw.get("purpose") or "").strip()[:200],
+        })
 
     note = f"TEG 제품 추가: {veh}"
     shots = _product_shots(info, float(preview["wafer_edge_mm"]))
@@ -3534,10 +3609,14 @@ def create_product_from_table(text: str, vehicle: str, tegs: list[dict[str, Any]
         "chip_radius": f"{float(shot['r']):.{PRODUCT_RADIUS_DECIMALS}f}",
     } for shot in shots]
     with _LOCK:
-        # 참조행을 먼저 검증/append하고 제품 geometry는 마지막에 공개한다.
-        teg_result = _append_frame_rows("teg_location", clean_tegs, username, note)
-        main_result = (_append_frame_rows("main_chip_info", [clean_main], username, note)
-                       if clean_main is not None else None)
+        # 입력한 참조행은 FileBrowser의 같은 vehicle 행을 교체한다. 입력하지 않은
+        # 표는 그대로 두므로 기준자료 준비 전에도 shot 제품을 먼저 만들 수 있다.
+        teg_result = (_append_frame_rows(
+            "teg_location", clean_tegs, username, note, replace_vehicle=veh,
+        ) if clean_tegs else None)
+        main_result = (_append_frame_rows(
+            "main_chip_info", clean_mains, username, note, replace_vehicle=veh,
+        ) if clean_mains else None)
         radius_result = _append_frame_rows("chip_radius", radius_rows, username, note)
         product_result = _save_product_info_row(
             veh, info, clean_path, username, note, raw_text=text,

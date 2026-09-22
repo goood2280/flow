@@ -207,6 +207,7 @@ function ResourceSparkline({label,rows,metric,color,hours}){
 
 const FARM_ANIM=`@keyframes fabFarm{0%{transform:translateX(0)}50%{transform:translateX(10px)}100%{transform:translateX(0)}}`;
 const HISTORY_PAGE_SIZE=100;
+const DOWNLOAD_HISTORY_PAGE_SIZE=50;
 const USER_PAGE_SIZE=50;
 
 function HistoryPager({offset=0,limit=HISTORY_PAGE_SIZE,total=0,hasMore=false,loading=false,onPage}){
@@ -337,7 +338,7 @@ export default function My_Admin({user}){
   const[logLoading,setLogLoading]=useState(false);const[logError,setLogError]=useState("");
   const logRequestRef=useRef(0);
   const[dlOffset,setDlOffset]=useState(0);
-  const[dlPage,setDlPage]=useState({total:0,offset:0,limit:HISTORY_PAGE_SIZE,has_more:false});
+  const[dlPage,setDlPage]=useState({total:0,offset:0,limit:DOWNLOAD_HISTORY_PAGE_SIZE,has_more:false});
   const[dlLoading,setDlLoading]=useState(false);const[dlError,setDlError]=useState("");
   const dlRequestRef=useRef(0);
 
@@ -397,7 +398,7 @@ export default function My_Admin({user}){
 
   const loadDl=(offset=dlOffset)=>{
     const requestId=++dlRequestRef.current;
-    const q=new URLSearchParams({limit:String(HISTORY_PAGE_SIZE),offset:String(offset)});
+    const q=new URLSearchParams({limit:String(DOWNLOAD_HISTORY_PAGE_SIZE),offset:String(offset)});
     if(!isAdmin&&user?.username)q.set("username",user.username);
     if(dlFilter.q)q.set("q",dlFilter.q);
     if(dlFilter.source)q.set("source",dlFilter.source);
@@ -405,7 +406,7 @@ export default function My_Admin({user}){
     return sf("/api/filebrowser/download-history?"+q.toString()).then(d=>{
       if(requestId!==dlRequestRef.current)return;
       setDlHistory(d.logs||[]);
-      setDlPage({total:Number(d.total)||0,offset:Number(d.offset)||0,limit:Number(d.limit)||HISTORY_PAGE_SIZE,has_more:!!d.has_more});
+      setDlPage({total:Number(d.total)||0,offset:Number(d.offset)||0,limit:Number(d.limit)||DOWNLOAD_HISTORY_PAGE_SIZE,has_more:!!d.has_more});
     }).catch(e=>{if(requestId===dlRequestRef.current){setDlHistory([]);setDlError(e.message||"다운로드 이력을 불러오지 못했습니다.");}})
       .finally(()=>{if(requestId===dlRequestRef.current)setDlLoading(false);});
   };
@@ -908,14 +909,14 @@ export default function My_Admin({user}){
           <input value={dlFilter.q} onChange={e=>{setDlOffset(0);setDlFilter(f=>({...f,q:e.target.value}));}}
             placeholder="사용자·대상·상세 검색"
             style={{padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,minWidth:220}}/>
-          <span style={{fontSize:13,color:"var(--text-secondary)"}}>총 {dlPage.total.toLocaleString()}건</span>
+          <span style={{fontSize:13,color:"var(--text-secondary)"}}>전체 기록 보존 · {DOWNLOAD_HISTORY_PAGE_SIZE}건씩 표시 · 총 {dlPage.total.toLocaleString()}건</span>
         </div>
         {dlError&&<Banner tone="danger" style={{marginBottom:10}}>{dlError}</Banner>}
         {dlLoading&&<div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:8}}>다운로드 이력을 불러오는 중…</div>}
-        <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto"}}>
+        <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto",maxHeight:620}}>
         <table style={{width:"100%",minWidth:1180,tableLayout:"fixed",borderCollapse:"collapse",fontSize:14}}>
           <colgroup>{[190,190,110,null,130,140,70,90].map((width,i)=><col key={i} style={width?{width}:undefined}/>)}</colgroup>
-          <thead><tr>{["시간","구분","사용자","대상","상세","컬럼","행","크기"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
+          <thead style={{position:"sticky",top:0,zIndex:1}}><tr>{["시간","구분","사용자","대상","상세","컬럼","행","크기"].map(h=><th key={h} style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",color:"var(--text-secondary)",fontSize:14,borderBottom:"1px solid var(--border)"}}>{h}</th>)}</tr></thead>
           <tbody>
             {!dlLoading&&combinedDownloads.length===0&&<tr><td colSpan={8} style={{padding:20,textAlign:"center",color:"var(--text-secondary)"}}>다운로드 이력 없음</td></tr>}
             {combinedDownloads.map((d,i)=><DownloadHistoryRow key={`${d.timestamp}-${d.username}-${d.source}-${d.target}-${i}`} download={d}/>)}
@@ -2028,21 +2029,23 @@ function ActiveUserBarChart({data,period}){
   const maxValue=Math.max(0,...rows.map(row=>row.value));
   const axisMax=Math.max(2,Math.ceil(maxValue/2)*2);
   const middle=axisMax/2;
-  const label=(key)=>period==="daily"
-    ? String(key).slice(2).replaceAll("-",".")
-    : String(key).replace("-",".");
-  const periodLabel=period==="daily"?"일":"월";
+  const label=(key)=>period==="monthly"
+    ? String(key).replace("-",".")
+    : String(key).slice(2).replaceAll("-",".");
+  const periodLabel={daily:"일",weekly:"주",monthly:"월"}[period]||"기간";
+  const barWidth=period==="daily"?62:period==="weekly"?54:46;
+  const gap=period==="daily"?5:period==="weekly"?8:12;
   return(<div style={{display:"grid",gridTemplateColumns:"38px minmax(0,1fr)",gap:8,minWidth:0}}>
     <div aria-hidden="true" style={{height:250,display:"flex",flexDirection:"column",justifyContent:"space-between",alignItems:"flex-end",padding:"20px 0 28px",boxSizing:"border-box",fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace"}}>
       <span>{axisMax}</span><span>{middle}</span><span>0</span>
     </div>
     <div style={{overflowX:"auto",paddingBottom:2}}>
-      <div style={{height:250,minWidth:period==="daily"?Math.max(780,rows.length*68):Math.max(660,rows.length*72),position:"relative",borderBottom:"1px solid var(--border)"}}>
-        <div role="img" aria-label={`${periodLabel}별 활성 사용자 수 막대 차트`} style={{position:"absolute",inset:"20px 0 28px 0",display:"flex",alignItems:"flex-end",gap:period==="daily"?5:12,padding:"0 6px",boxSizing:"border-box"}}>
+      <div style={{height:250,minWidth:Math.max(660,rows.length*(barWidth+gap)),position:"relative",borderBottom:"1px solid var(--border)"}}>
+        <div role="img" aria-label={`${periodLabel}별 활성 사용자 수 막대 차트`} style={{position:"absolute",inset:"20px 0 28px 0",display:"flex",alignItems:"flex-end",gap,padding:"0 6px",boxSizing:"border-box"}}>
           {[0,50,100].map(top=><div key={top} aria-hidden="true" style={{position:"absolute",left:0,right:0,top:top+"%",borderTop:"1px dashed var(--border)",opacity:top===100?0:0.75}}/>)}
           {rows.map(row=>{
             const pct=row.value?Math.max(2,100*row.value/axisMax):0;
-            return <div key={row.key} title={`${row.key} · 활성 사용자 ${row.value}명`} aria-label={`${row.key}, 활성 사용자 ${row.value}명`} style={{height:"100%",flex:period==="daily"?"0 0 62px":"1 0 38px",minWidth:period==="daily"?62:38,position:"relative"}}>
+            return <div key={row.key} title={`${row.key}${period==="weekly"?" 시작 주":""} · 활성 사용자 ${row.value}명`} aria-label={`${row.key}, 활성 사용자 ${row.value}명`} style={{height:"100%",flex:`1 0 ${barWidth}px`,minWidth:barWidth,position:"relative"}}>
               {row.value>0&&<span style={{position:"absolute",left:"50%",bottom:`calc(${pct}% + 4px)`,transform:"translateX(-50%)",fontSize:12,fontWeight:700,color:"var(--text-primary)"}}>{row.value}</span>}
               <div style={{position:"absolute",left:"50%",bottom:0,transform:"translateX(-50%)",width:"min(100%, 34px)",height:pct+"%",minHeight:row.value?4:0,borderRadius:"5px 5px 1px 1px",background:"var(--accent)",opacity:0.86,transition:"height .25s ease"}}/>
               <span style={{position:"absolute",left:"50%",top:"calc(100% + 7px)",transform:"translateX(-50%)",fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace",whiteSpace:"nowrap"}}>{label(row.key)}</span>
@@ -2284,6 +2287,7 @@ function ChatPromptsPanel(){
 function ActivityDashboardPanel(){
   const [days,setDays]=useState(0);
   const [userPeriod,setUserPeriod]=useState("monthly");
+  const [periodPage,setPeriodPage]=useState(0);
   const [summary,setSummary]=useState(null);
   const [features,setFeatures]=useState(null);
   const [err,setErr]=useState("");
@@ -2304,6 +2308,7 @@ function ActivityDashboardPanel(){
     sf("/api/admin/activity/features?days="+days).then(d=>{if(requestId===summaryRequestRef.current)setFeatures(d);}).catch(()=>{});
   };
   useEffect(()=>{reload();return()=>{summaryRequestRef.current++;};},[days]);
+  useEffect(()=>{setPeriodPage(0);},[days,userPeriod]);
   useEffect(()=>{
     const element=eventSectionRef.current;
     if(!element)return;
@@ -2341,8 +2346,25 @@ function ActivityDashboardPanel(){
   </div>);
   const maxUser=summary?Math.max(0,...Object.values(_obj(summary.by_user))):0;
   const maxAct=summary?Math.max(0,...Object.values(_obj(summary.by_action))):0;
-  const maxDay=summary?Math.max(0,...Object.values(_obj(summary.by_day))):0;
-  const activeUserData=userPeriod==="daily"?summary?.active_users_by_day:summary?.active_users_by_month;
+  const periodConfig={
+    daily:{label:"일별",activeKey:"active_users_by_day",activityKey:"by_day",pageSize:30,recentLabel:"최근 30일"},
+    weekly:{label:"주별",activeKey:"active_users_by_week",activityKey:"by_week",pageSize:16,recentLabel:"최근 26주"},
+    monthly:{label:"월별",activeKey:"active_users_by_month",activityKey:"by_month",pageSize:12,recentLabel:"최근 12개월"},
+  }[userPeriod];
+  const fullActiveUserData=_obj(summary?.[periodConfig.activeKey]);
+  const fullActivityData=_obj(summary?.[periodConfig.activityKey]);
+  const periodKeys=Object.keys(fullActiveUserData);
+  const periodPageCount=Math.max(1,Math.ceil(periodKeys.length/periodConfig.pageSize));
+  const safePeriodPage=Math.min(periodPage,periodPageCount-1);
+  const periodEnd=Math.max(0,periodKeys.length-safePeriodPage*periodConfig.pageSize);
+  const periodStart=Math.max(0,periodEnd-periodConfig.pageSize);
+  const visiblePeriodKeys=periodKeys.slice(periodStart,periodEnd);
+  const activeUserData=Object.fromEntries(visiblePeriodKeys.map(key=>[key,fullActiveUserData[key]||0]));
+  const activityPeriodData=Object.fromEntries(visiblePeriodKeys.map(key=>[key,fullActivityData[key]||0]));
+  const maxPeriodActivity=Math.max(0,...Object.values(activityPeriodData));
+  const periodRange=visiblePeriodKeys.length
+    ? `${visiblePeriodKeys[0]} ~ ${visiblePeriodKeys[visiblePeriodKeys.length-1]}`
+    : "표시할 기간 없음";
   return(<div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:16,minWidth:0}}>
     <div style={{gridColumn:"1 / -1",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
       <span style={{fontSize:14,fontWeight:700}}>활동 대시보드</span>
@@ -2355,13 +2377,18 @@ function ActivityDashboardPanel(){
       <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14,flexWrap:"wrap"}}>
         <div>
           <div style={{fontSize:15,fontWeight:800}}>활성 사용자 수</div>
-          <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:3}}>기간 내 한 번 이상 활동한 고유 사용자 · {days===0?"보존 중인 전체 기록":userPeriod==="daily"?"최근 30일":"최근 12개월"}</div>
+          <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:3}}>기간 내 한 번 이상 활동한 고유 사용자 · {days===0?"보존 중인 전체 기록":periodConfig.recentLabel}{userPeriod==="weekly"?" · 주 시작은 월요일":""}</div>
         </div>
         <div style={{marginLeft:"auto",display:"flex",padding:3,borderRadius:7,background:"var(--bg-tertiary)",border:"1px solid var(--border)"}}>
-          {[["daily","일별"],["monthly","월별"]].map(([key,text])=><button key={key} type="button" aria-pressed={userPeriod===key} onClick={()=>setUserPeriod(key)} style={{border:0,borderRadius:5,padding:"5px 13px",cursor:"pointer",fontSize:13,fontWeight:700,background:userPeriod===key?"var(--bg-secondary)":"transparent",color:userPeriod===key?"var(--accent)":"var(--text-secondary)",boxShadow:userPeriod===key?"0 1px 3px rgba(15,23,42,.12)":"none"}}>{text}</button>)}
+          {[["daily","일별"],["weekly","주별"],["monthly","월별"]].map(([key,text])=><button key={key} type="button" aria-pressed={userPeriod===key} onClick={()=>setUserPeriod(key)} style={{border:0,borderRadius:5,padding:"5px 13px",cursor:"pointer",fontSize:13,fontWeight:700,background:userPeriod===key?"var(--bg-secondary)":"transparent",color:userPeriod===key?"var(--accent)":"var(--text-secondary)",boxShadow:userPeriod===key?"0 1px 3px rgba(15,23,42,.12)":"none"}}>{text}</button>)}
         </div>
       </div>
       {summary?<ActiveUserBarChart data={activeUserData} period={userPeriod}/>:<div style={{height:250,display:"grid",placeItems:"center",color:"var(--text-secondary)",fontSize:14}}>로딩…</div>}
+      {summary&&<div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:8,marginTop:10,flexWrap:"wrap"}}>
+        <span style={{fontSize:13,color:"var(--text-secondary)",marginRight:4}}>{periodRange} · {periodKeys.length.toLocaleString()}개 구간</span>
+        <Button variant="subtle" disabled={periodStart<=0} onClick={()=>setPeriodPage(page=>Math.min(periodPageCount-1,page+1))}>← 과거</Button>
+        <Button variant="subtle" disabled={safePeriodPage<=0} onClick={()=>setPeriodPage(page=>Math.max(0,page-1))}>최근 →</Button>
+      </div>}
     </div>
     <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>유저별</div>
@@ -2374,9 +2401,9 @@ function ActivityDashboardPanel(){
       </div>
     </div>
     <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
-      <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>일자별</div>
+      <div style={{fontSize:14,fontWeight:700,marginBottom:10}}>{periodConfig.label} 활동 건수</div>
       <div style={{maxHeight:420,overflowY:"auto"}}>
-        {summary?_entries(summary.by_day).map(([d,v])=>barItem(d,v,maxDay,OK.fg)):<span style={{color:"var(--text-secondary)",fontSize:14}}>로딩…</span>}
+        {summary?_entries(activityPeriodData).map(([d,v])=>barItem(d,v,maxPeriodActivity,OK.fg)):<span style={{color:"var(--text-secondary)",fontSize:14}}>로딩…</span>}
       </div>
     </div>
     <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>

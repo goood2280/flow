@@ -39,7 +39,7 @@ SUPPORTED_MATCHING_FILES = {
     "knob_ppid.csv",
     "ppid_knob.csv",
     "mask.csv",
-    # reticle_id → mask 룰북 + 선택적 제품/공정 메타데이터
+    # reticle_id → category(mask 이름) 룰북 + 선택적 제품/공정 메타데이터
     "mask_info.csv",
     "inline_matching.csv",
     "inline_step_match.csv",

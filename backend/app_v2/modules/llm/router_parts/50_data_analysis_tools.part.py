@@ -294,7 +294,8 @@ def _handle_flowi_dashboard_wip_view(
     from routers import dashboard as _dashboard
 
     product_hint = _product_hint(prompt, product)
-    axis = "step_desc" if "step_desc" in str(prompt or "").lower() else "step_id"
+    prompt_lower = str(prompt or "").lower()
+    axis = "step_id" if "step_id" in prompt_lower else "step_desc"
     bin_match = re.search(r"(?:bin|구간)(?:\s*(?:간격|size))?\s*[:=]?\s*(\d{1,6})", str(prompt or ""), flags=re.I)
     bin_size = max(1, min(100000, int(bin_match.group(1)))) if bin_match else 30000
     split_match = re.search(r"\b((?:KNOB|MASK|FAB)_[A-Za-z0-9_.-]+)\b", str(prompt or ""), flags=re.I)
@@ -328,6 +329,8 @@ def _handle_flowi_dashboard_wip_view(
         "axis": payload.get("axis") or axis,
         "bin_size": int(payload.get("bin_size") or bin_size),
         "split_col": payload.get("split_col") or "",
+        "split_cols": payload.get("split_cols") if isinstance(payload.get("split_cols"), list) else [],
+        "split_options": payload.get("split_options") if isinstance(payload.get("split_options"), list) else [],
         "generated_at": payload.get("generated_at") or "",
     }
     return _flowi_set_inline_type({

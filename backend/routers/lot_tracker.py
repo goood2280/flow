@@ -14,13 +14,12 @@ def get_lot_tracker(
     reference_lot_id: str = Query("", max_length=500),
     target_step_id: str = Query("", max_length=100),
     product: str = Query("", max_length=100),
-    dummy: bool = Query(False),
 ):
     user = current_user(request)
     tabs, _ = parse_tab_tokens(user.get("tabs", ""))
     if user.get("role") != "admin" and "lottracker" not in tabs and not is_page_manager(user, "lottracker"):
         raise HTTPException(403, "LOT Tracker access is not granted")
     try:
-        return track_lot(lot_id, reference_lot_id, target_step_id, product, dummy=dummy)
+        return track_lot(lot_id, reference_lot_id, target_step_id, product)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc

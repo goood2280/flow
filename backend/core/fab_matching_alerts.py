@@ -9,8 +9,9 @@ module makes Flow authoritative instead:
 * a PPID without an explicit rule for the step's function step becomes
   ``ro_ppid`` and can be added to ``ppid_knob.csv`` from the existing page;
 * a FAB ``reticle_id`` absent from ``mask_info.csv`` becomes ``missing_reticle``
-  and can be added with its product name in the existing mask column. Reticle
-  identity is global, so alerts merge across products. CSV headers stay intact.
+  and can be added with its mask name in the existing category column and its
+  matched vehicle in the existing product column. Reticle identity is global,
+  so alerts merge across products. CSV headers stay intact.
 
 The public shape deliberately matches the old valve-alert API so bookmarked
 URLs and the page permission key (``valve``) do not need a migration.
@@ -59,9 +60,10 @@ PLAN_DIR = PATHS.data_root / "splittable"
 
 PPID_KNOB_FILE = "ppid_knob.csv"
 VEHICLE_MATCHING_FILE = "Vehicle_matching.csv"
-# reticle_id → 제품명(mask) 룰북. 기존 열을 유지하며 전역 reticle_id로 판정한다.
+# reticle_id → mask 이름(category) 룰북. product에는 매칭된 vehicle을
+# 기록하되, 모든 값은 기존 열에만 쓴다.
 MASK_INFO_FILE = "mask_info.csv"
-MASK_INFO_COLUMNS = ["reticle_id", "mask"]
+MASK_INFO_COLUMNS = ["reticle_id", "category", "product"]
 
 DEFAULT_CFG = {
     "config_schema_version": CONFIG_SCHEMA_VERSION,
@@ -720,7 +722,7 @@ def _alerts_for_product(product: dict, observations: list[dict],
         if not reticle_id or _norm(reticle_id) in known_reticles:
             continue
         step_ids = list(evidence.get("step_ids") or [])
-        # mask_info.csv에 제품 메타데이터 열이 있어도 reticle→mask 규칙은 전역이다.
+        # mask_info.csv에 제품 메타데이터 열이 있어도 reticle→category(mask 이름) 규칙은 전역이다.
         # 알람 ID도 reticle_id로만 만들어 여러 제품의 동일 누락은 한 번만 판정한다.
         alert_id = f"fab-reticle|{_norm(reticle_id)}"
         alerts.append({**common(alert_id, step_ids[0] if step_ids else "", evidence),
@@ -987,7 +989,7 @@ def list_alerts() -> dict:
             prior = merged_by_id.get(alert["id"])
             if prior is None:
                 alert["products"] = [alert.get("product")] if alert.get("product") else []
-                # mask_info.csv 의 reticle→mask 규칙은 전 제품 공용이라 알람은 한 줄로
+                # mask_info.csv 의 reticle→category(mask 이름) 규칙은 전 제품 공용이라 알람은 한 줄로
                 # 합치되, 화면에서 제품을 골랐을 때는 그 제품에서 발견한 근거만
                 # 보여줄 수 있도록 합치기 전 수치를 함께 보존한다.
                 alert["product_evidence"] = [{
@@ -1611,7 +1613,8 @@ def apply_batch(changes: list[dict], note: str = "", username: str = "") -> dict
         knob_columns, knob_rows = _read_csv(knob_path)
         mask_columns, mask_rows = _read_csv(mask_path)
         mask_reticle_column = _mask_info_column(mask_columns, "reticle_id")
-        mask_value_column = _mask_info_column(mask_columns, "mask")
+        mask_category_column = _mask_info_column(mask_columns, "category")
+        mask_product_column = _mask_info_column(mask_columns, "product")
         # Validate only files this batch writes. Never extend pipeline schemas.
         kinds = {kind for kind, _, _ in normalized}
         if "match_step" in kinds:
@@ -1625,7 +1628,8 @@ def apply_batch(changes: list[dict], note: str = "", username: str = "") -> dict
                          for column in ("feature_name", "rule_order", "operator", "value", "category")}
         if "add_mask" in kinds:
             mask_reticle_column = _require_column(mask_columns, mask_path.name, "reticle_id")
-            mask_value_column = _require_column(mask_columns, mask_path.name, "mask")
+            mask_category_column = _require_column(mask_columns, mask_path.name, "category")
+            mask_product_column = _require_column(mask_columns, mask_path.name, "product")
 
         step_changes = 0
         ppid_changes = 0
@@ -1717,9 +1721,9 @@ def apply_batch(changes: list[dict], note: str = "", username: str = "") -> dict
         for kind, alert, raw in normalized:
             if kind != "add_mask":
                 continue
-            mask = str(raw.get("mask") or "").strip()
+            mask = str(raw.get("category") or raw.get("mask") or "").strip()
             if not mask:
-                raise ValueError(f"mask(제품명)가 비어있습니다: {alert.get('id')}")
+                raise ValueError(f"mask 이름이 비어있습니다: {alert.get('id')}")
             reticle_id = str(alert.get("reticle_id") or "").strip()
             if not reticle_id:
                 raise ValueError(f"reticle_id 가 비어있습니다: {alert.get('id')}")
@@ -1727,15 +1731,23 @@ def apply_batch(changes: list[dict], note: str = "", username: str = "") -> dict
                               if _norm(row.get(mask_reticle_column)) == _norm(reticle_id)), None)
             if duplicate:
                 raise ValueError(
-                    f"이미 등록된 reticle: {reticle_id} → {duplicate.get(mask_value_column)}")
+                    f"이미 등록된 reticle: {reticle_id} → {duplicate.get(mask_category_column)}")
+            vehicle = str(alert.get("vehicle") or alert.get("product") or "").strip()
+            if not vehicle:
+                raise ValueError(f"product에 기록할 vehicle이 없습니다: {alert.get('id')}")
             new_row = {column: "" for column in mask_columns}
-            new_row.update({mask_reticle_column: reticle_id, mask_value_column: mask})
+            new_row.update({
+                mask_reticle_column: reticle_id,
+                mask_category_column: mask,
+                mask_product_column: vehicle,
+            })
             mask_rows.append(new_row)
             mask_changes += 1
             result = {"alert_id": alert["id"], "type": kind, "file": mask_path.name,
-                      "product": alert.get("product"),
+                      "vehicle": vehicle, "product": vehicle,
                       "products": list(alert.get("products") or []),
-                      "reticle_id": reticle_id, "mask": mask, "batch_id": batch_id}
+                      "reticle_id": reticle_id, "mask": mask, "category": mask,
+                      "batch_id": batch_id}
             results.append(result)
             decisions.append({**result, "type": "missing_reticle", "action": "add_mask", "by": actor,
                               "detail": str(raw.get("note") or "").strip() or f"{reticle_id} → {mask}"})

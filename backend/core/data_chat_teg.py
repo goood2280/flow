@@ -443,7 +443,8 @@ def _native_teg_view(product, names, payload):
     if len(shots) > MAX_VISUAL_SHOTS or len(shots) * len(names) > MAX_VISUAL_TEG_POSITIONS:
         return None
     wanted = {name.casefold() for name in names}
-    return {"product": product, "geometry": payload.get("geometry"),
+    return {"product": product, "vehicle": payload.get("vehicle") or product,
+            "geometry": payload.get("geometry"), "display": payload.get("display") or {"mode": "none"},
             "shots": [{k: s.get(k) for k in ("x", "y", "mm_x", "mm_y", "radius", "synthetic")} for s in shots],
             "tegs": [{k: t.get(k) for k in ("teg", "ebeam_x", "ebeam_y", "teg_w", "teg_h", "chip_w", "chip_h", "flat_zone")}
                      for t in payload.get("tegs", []) if str(t.get("teg") or "").casefold() in wanted],

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FlowPlotlyChart } from "../../components/PlotlyChart";
+import { FlowPlotlyChart, WipStackedBar } from "../../components/PlotlyChart";
 import SplitTableSnapshotView from "../../components/SplitTableSnapshotView";
 import { sf } from "../../lib/api";
 import "./HomeDataChat.css";
@@ -419,6 +419,19 @@ function isProductRequest(tool) {
     || (Array.isArray(tool?.missing) && tool.missing.some((item) => asText(item).toLowerCase() === "product"));
 }
 
+function isHumanInLoopTool(tool) {
+  if (!tool || typeof tool !== "object") return false;
+  const hasCandidates = (groups) => Array.isArray(groups)
+    && groups.some((group) => Array.isArray(group?.candidates) && group.candidates.length > 0);
+  return isProductRequest(tool)
+    || Boolean(tool.needs_input)
+    || Boolean(tool.clarification?.kind)
+    || hasCandidates(tool.teg_candidates)
+    || hasCandidates(tool.split_candidates)
+    || tool.approval?.status === "pending"
+    || (Array.isArray(tool.missing) && tool.missing.length > 0);
+}
+
 function ProductClarification({ tool, onSubmit, disabled = false }) {
   const clarification = tool?.clarification;
   const options = productOptions(tool);
@@ -447,7 +460,7 @@ function ProductClarification({ tool, onSubmit, disabled = false }) {
       {options.length > 0 && (
         <div className="home-data-chat__product-options">
           <span className="home-data-chat__product-prompt">{title}</span>
-          <div className="home-data-chat__actions">
+          <div className="home-data-chat__actions is-choice-list">
             {options.map((option) => (
               <button type="button" key={option.value} disabled={disabled} onClick={() => onSubmit(option.value)}>
                 {option.label}
@@ -587,7 +600,7 @@ function BatchContent({ response, onExplore, onOpenWorkspace, canRespond }) {
             {child.tool && isProductRequest(child.tool) && (
               <ProductClarification tool={child.tool} onSubmit={onExplore} disabled={!canRespond} />
             )}
-            {child.tool && onOpenWorkspace && (child.tool.feature || child.tool.chart_result || child.tool.table) && (
+            {child.tool && onOpenWorkspace && !isHumanInLoopTool(child.tool) && (child.tool.feature || child.tool.chart_result || child.tool.table) && (
               <button type="button" className="home-data-chat__batch-workspace-btn" onClick={() => onOpenWorkspace(child.tool)}>🖥️ 작업창 열기</button>
             )}
           </section>
@@ -722,92 +735,10 @@ function ModelStatus({ refreshKey = 0, probeKey = 0, turnUsage = null }) {
   );
 }
 
-function WorkspaceTeg({ tool, filterText = "", onExplore }) {
-  const ctx = tool.context || {};
-  const table = tool.table;
-  const rows = resultRows(table);
-  const firstRow = rows[0] || {};
-  const product = ctx.product || tool.product || firstRow.product || "-";
-  const tegName = tool.teg || ctx.target_teg || firstRow.teg || (Array.isArray(ctx.teg_names) ? ctx.teg_names[0] : "-");
-  const relatedTegs = Array.isArray(tool.related_tegs) ? tool.related_tegs : [];
-
+function WorkspaceTeg({ tool }) {
   return (
     <div className="home-workspace__teg-container">
-      <div className="home-workspace__meta-bar">
-        <span className="home-workspace__meta-item">제품: <strong>{product}</strong></span>
-        <span className="home-workspace__meta-item">클릭 확인 TEG: <strong>{tegName}</strong></span>
-        {tool.map_name && <span className="home-workspace__meta-item">Mapfile: <strong>{tool.map_name}</strong></span>}
-      </div>
-
-      <div className="home-workspace__card-grid">
-      <div className="home-workspace__card">
-          <div className="home-workspace__card-label">조회 제품</div>
-          <div className="home-workspace__card-value">{product}</div>
-        </div>
-        <div className="home-workspace__card">
-          <div className="home-workspace__card-label">확인한 TEG 키</div>
-          <div className="home-workspace__card-value is-highlight">{tegName}</div>
-        </div>
-        <div className="home-workspace__card">
-          <div className="home-workspace__card-label">검출된 위치 수</div>
-          <div className="home-workspace__card-value">{rows.length}개 위치</div>
-        </div>
-        <div className="home-workspace__card">
-          <div className="home-workspace__card-label">{firstRow.abs_x !== undefined ? "웨이퍼 절대 좌표" : "샷 내 좌표"} (X, Y)</div>
-        <div className="home-workspace__card-value">
-            {firstRow.abs_x !== undefined
-              ? `(${firstRow.abs_x}, ${firstRow.abs_y}) mm`
-              : firstRow.ebeam_x !== undefined
-                ? `(${firstRow.ebeam_x}, ${firstRow.ebeam_y}) mm`
-                : "-"}
-          </div>
-        </div>
-      </div>
-
-      {onExplore && product !== "-" && tegName !== "-" && (
-        <div className="home-workspace__quick-explore-bar">
-          <span className="home-workspace__explore-label">TEG 다시 조회:</span>
-          <button type="button" className="home-workspace__explore-chip"
-            onClick={() => onExplore(`${product} ${tegName} TEG 위치 어디있어?`)}>
-            위치
-          </button>
-          <button type="button" className="home-workspace__explore-chip"
-            onClick={() => onExplore(`${product} ${tegName} TEG 절대 좌표 알려줘`)}>
-            절대 좌표
-          </button>
-        </div>
-      )}
-
-      {relatedTegs.length > 0 && onExplore && (
-        <div className="home-workspace__teg-picker">
-          <div className="home-workspace__picker-header">
-            <span>🖱️ 다른 TEG 클릭하여 바로 찾아가기:</span>
-          </div>
-          <div className="home-workspace__teg-chips">
-            {relatedTegs.map((teg) => (
-              <button
-                key={teg}
-                type="button"
-                className={`home-workspace__teg-btn${teg === tegName ? " is-active" : ""}`}
-                onClick={() => onExplore(`${product} ${teg} TEG 위치 보여줘`)}
-                title={`${product}의 ${teg} TEG 위치로 즉시 전환`}
-              >
-                {teg}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
       <TegChatMaps maps={tool.teg_maps} view={tool.teg_view} />
-
-      {table && (
-        <DataTable
-          table={table}
-          downloadName={`teg_${product}_${tegName}`}
-          filterText={filterText}
-        />
-      )}
     </div>
   );
 }
@@ -952,6 +883,85 @@ function WorkspaceLocation({ tool, filterText = "", onExplore }) {
 }
 
 function WorkspaceDashboard({ tool, filterText = "" }) {
+  const initialChart = tool.chart_result?.kind === "dashboard_wip_split" ? tool.chart_result : null;
+  const [dashboard, setDashboard] = useState(initialChart);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    setDashboard(initialChart);
+    setError("");
+  }, [initialChart]);
+
+  const changeSplit = async (splitCol) => {
+    if (!dashboard || loading) return;
+    setLoading(true);
+    setError("");
+    try {
+      const query = new URLSearchParams({
+        product: dashboard.product || "",
+        bin_size: String(dashboard.bin_size || 30000),
+        split_col: splitCol,
+        axis: dashboard.axis || "step_desc",
+        exclude_root_prefix: "Z",
+      });
+      const next = await sf(`/api/dashboard/wip-split?${query.toString()}`);
+      setDashboard({
+        ...dashboard,
+        ...next,
+        kind: "dashboard_wip_split",
+        chart_type: "wip_stacked",
+        title: `${next.product || dashboard.product || "ALL"} WIP × Split Dashboard`,
+      });
+    } catch (err) {
+      setError(err?.message || String(err));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (dashboard) {
+    const options = Array.isArray(dashboard.split_options) ? dashboard.split_options : [];
+    const columns = options.length
+      ? options.map((option) => option?.col).filter(Boolean)
+      : (Array.isArray(dashboard.split_cols) ? dashboard.split_cols : []);
+    return (
+      <div className="home-workspace__dashboard-container">
+        <div className="home-workspace__dashboard-toolbar">
+          <div>
+            <span>제품</span>
+            <strong>{dashboard.product || "ALL"}</strong>
+          </div>
+          <label>
+            <span>Split 기준 열</span>
+            <select value={dashboard.split_col || ""} disabled={loading || !columns.length} onChange={(event) => changeSplit(event.target.value)}>
+              {columns.map((column) => <option key={column} value={column}>{column}</option>)}
+            </select>
+          </label>
+          <div className="home-workspace__dashboard-stat">
+            <span>총 WAFER</span>
+            <strong>{Number(dashboard.total_wafers || 0).toLocaleString()}</strong>
+          </div>
+          <div className="home-workspace__dashboard-stat">
+            <span>SPLIT 매칭</span>
+            <strong>{dashboard.total_wafers ? `${Math.round((Number(dashboard.matched_wafers || 0) / Number(dashboard.total_wafers)) * 100)}%` : "0%"}</strong>
+          </div>
+          {loading && <span className="home-workspace__dashboard-loading">조회 중…</span>}
+        </div>
+        {error && <div className="home-workspace__dashboard-error">{error}</div>}
+        <div className="home-workspace__dashboard-chart" aria-label="STEP 구간별 WAFER 물량 막대 차트">
+          <div className="home-workspace__dashboard-chart-title">STEP 구간별 WAFER 물량 · {dashboard.split_col || "split 없음"}</div>
+          <WipStackedBar
+            bins={dashboard.bins || []}
+            splitValues={dashboard.split_values || []}
+            unassignedLabel={dashboard.unassigned_label || "(미지정)"}
+            axis={dashboard.axis || "step_desc"}
+            height={420}
+          />
+        </div>
+      </div>
+    );
+  }
+
   const table = tool.table;
   const rows = resultRows(table);
   const first = rows[0] || {};
@@ -1080,7 +1090,7 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
                 <span className="home-workspace__badge is-live">● 실시간 연동 ({lastUpdated})</span>
               )}
             </div>
-            {info.subtitle && <div className="home-workspace__subtitle">{info.subtitle}</div>}
+            {!isTegView && info.subtitle && <div className="home-workspace__subtitle">{info.subtitle}</div>}
           </div>
         </div>
 
@@ -1129,7 +1139,7 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
         </div>
       </div>
 
-      <div className="home-workspace__filter-bar">
+      {!isTegView && <div className="home-workspace__filter-bar">
         <span className="home-workspace__filter-icon">🔍</span>
         <input
           type="text"
@@ -1148,10 +1158,10 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
             ✕
           </button>
         )}
-      </div>
+      </div>}
 
       <div className="home-workspace__body">
-        {notices.length > 0 && (
+        {!isTegView && notices.length > 0 && (
           <div className="home-workspace__notices">
             {notices.map((notice) => <div key={notice}>{notice}</div>)}
           </div>
@@ -1170,14 +1180,14 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
           </details>
         )}
 
-        {tool.chart_result && (
+        {tool.chart_result && tool.chart_result.kind !== "dashboard_wip_split" && (
           <div className="home-workspace__chart">
             <FlowPlotlyChart chart={tool.chart_result} cfg={tool.chart_result} dark={false} />
           </div>
         )}
 
         {isTegView ? (
-          <WorkspaceTeg tool={tool} filterText={filterText} onExplore={onExplore} />
+          <WorkspaceTeg tool={tool} />
         ) : feature === "splittable" || tool.action?.startsWith("splittable") ? (
           <WorkspaceSplitTable tool={tool} filterText={filterText} onDecision={onDecision} onNavigate={onNavigate} />
         ) : feature === "location" || tool.action?.startsWith("lot_progress") ? (
@@ -1306,7 +1316,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
       const lastToolMsg = [...loadedMessages].reverse().find((m) => m.response?.tool);
       if (lastToolMsg?.response?.tool) {
         const tool = lastToolMsg.response.tool;
-        const feature = isProductRequest(tool) ? null : (tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null)));
+        const feature = isHumanInLoopTool(tool) ? null : (tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null)));
         if (feature) {
           setActiveWorkspace({
             feature,
@@ -1364,7 +1374,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
 
   const focusWorkspace = (tool) => {
     if (!tool) return;
-    const feature = isProductRequest(tool) ? null : (tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null)));
+    const feature = isHumanInLoopTool(tool) ? null : (tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null)));
     if (!feature) return;
     setActiveWorkspace({
       feature,
@@ -1404,7 +1414,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
       if (response?.usage && typeof response.usage === "object") setTurnUsage(response.usage);
       setModelRefreshKey((value) => value + 1);
       const tool = response?.tool && typeof response.tool === "object" ? response.tool : null;
-      const feature = isProductRequest(tool) ? null : (tool?.feature || (tool?.chart_result ? "chart" : (tool?.table ? "table" : null)));
+      const feature = isHumanInLoopTool(tool) ? null : (tool?.feature || (tool?.chart_result ? "chart" : (tool?.table ? "table" : null)));
 
       if (feature) {
         setActiveWorkspace((prev) => {
@@ -1423,7 +1433,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
           };
         });
         setWorkspaceOpen(true);
-      } else if (decision) {
+      } else if (decision || isHumanInLoopTool(tool)) {
         setActiveWorkspace(null);
         setWorkspaceOpen(false);
       }
@@ -1527,7 +1537,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                 ? msgTool.split_candidates.filter((group) => group && Array.isArray(group.candidates) && group.candidates.length)
                 : [];
               const msgFeature = msgTool?.feature || (msgTool?.chart_result ? "chart" : (msgTool?.table ? "table" : null));
-              const info = msgFeature && !isProductRequest(msgTool) ? featureInfo(msgFeature, msgTool) : null;
+              const info = msgFeature && !isHumanInLoopTool(msgTool) ? featureInfo(msgFeature, msgTool) : null;
               const isCurrent = activeWorkspace && activeWorkspace.tool === msgTool;
               const canRespond = message.role === "assistant" && message.id === latestMessageId && !loading;
               const isBatchMessage = Array.isArray(message.response?.questions) && message.response.questions.length > 0;
@@ -1565,7 +1575,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                       {splitCandidateGroups.map((group, groupIndex) => (
                         <div className="home-data-chat__candidate-group" key={`split-cand-${groupIndex}`}>
                           <span>{group.title || "Split 조건을 선택하세요"}</span>
-                          <div className="home-data-chat__actions" aria-label="Split 후보 선택">
+                          <div className="home-data-chat__actions is-choice-list" aria-label="Split 후보 선택">
                             {group.candidates.map((cand, candIdx) => {
                               const label = cand.label || cand.value || cand;
                               const promptText = cand.prompt || cand.value || cand;
@@ -1591,7 +1601,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                       {tegCandidateGroups.map((group, groupIndex) => (
                         <div className="home-data-chat__candidate-group" key={`${asText(group.requested)}-${groupIndex}`}>
                           <span>{group.requested ? `“${asText(group.requested)}” 후보를 선택하세요` : "TEG 후보를 선택하세요"}</span>
-                          <div className="home-data-chat__actions" aria-label="TEG 후보 선택">
+                          <div className="home-data-chat__actions is-choice-list" aria-label="TEG 후보 선택">
                             {group.candidates.map((candidate) => {
                               const name = asText(candidate).trim();
                               return name ? <button type="button" key={name} disabled={loading} onClick={() => submit(null, name)}>{name}</button> : null;
@@ -1601,7 +1611,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                       ))}
 
                       {msgTool.approval?.status === "pending" && asText(msgTool.approval?.id).trim() && (
-                        <div className="home-data-chat__actions" aria-label="스플릿 변경 승인">
+                        <div className="home-data-chat__actions is-choice-list" aria-label="스플릿 변경 승인">
                           <button type="button" disabled={loading} onClick={() => submit(null, `승인 ${msgTool.approval.id}`)}>
                             승인하고 반영
                           </button>

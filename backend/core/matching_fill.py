@@ -91,7 +91,8 @@ TARGETS: dict[str, dict[str, Any]] = {
             "reticle_id", "mask_version", "mask_vendor", "photo_step",
             "product", "step_id", "step_desc",
         ),
-        "fill_columns": ("product", "mask", "step_id", "step_desc"),
+        # mask 이름은 별도 mask 열을 만들지 않고 기존 category 열에 저장한다.
+        "fill_columns": ("product", "category", "step_id", "step_desc"),
         "match_source": "fab_reticle",
     },
     "vm": {
@@ -119,7 +120,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
 # 채울 수 있는 열. PPID 대상은 FAB에서 product/step_id를 찾은 뒤 Vehicle에서
 # step_desc를 보강한다. module은 기존 step 번호 구간표/Vehicle 이름 매칭을 쓴다.
-FILL_COLUMNS = ("product", "vehicle", "mask", "step_id", "step_desc", "module")
+FILL_COLUMNS = ("product", "vehicle", "category", "step_id", "step_desc", "module")
 MODULE_COL = "module"
 # step_id = 앞 영문자 + 숫자(6자리 관행) + 꼬리. 구간 판정은 숫자 부분만 본다.
 _STEP_RE = re.compile(r"^\s*([A-Za-z]+)\s*(\d+)")
@@ -597,7 +598,7 @@ def _scan_fab_process(target: str, spec: dict, cols: list[str], rows: list[dict]
         values: list[str] = []
         seen: set[str] = set()
         for match in matches:
-            value = str(match.get("product" if target == "mask" and column == "mask" else column) or "").strip()
+            value = str(match.get("product" if target == "mask" and column == "category" else column) or "").strip()
             key = value.casefold()
             if value and key not in seen:
                 seen.add(key)

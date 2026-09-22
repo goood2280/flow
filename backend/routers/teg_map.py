@@ -30,7 +30,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from core import teg_check as _tc
 from core import teg_map as _tm
@@ -170,17 +170,18 @@ class ProductPreviewReq(BaseModel):
 class ProductTegReq(BaseModel):
     teg: str
     top_cell: str = ""
-    direction: str
+    direction: str = ""
     ebeam_x: float
     ebeam_y: float
-    teg_w: float
-    teg_h: float
+    teg_w: float | None = None
+    teg_h: float | None = None
 
 
 class ProductMainChipReq(BaseModel):
     chip_name: str
     chipsize_x: float
     chipsize_y: float
+    purpose: str = ""
 
 
 class ProductCreateReq(BaseModel):
@@ -188,8 +189,9 @@ class ProductCreateReq(BaseModel):
     vehicle: str
     node_path: str
     product_code: str = ""
-    tegs: list[ProductTegReq]
+    tegs: list[ProductTegReq] = Field(default_factory=list)
     main_chip: ProductMainChipReq | None = None
+    main_chips: list[ProductMainChipReq] = Field(default_factory=list)
 
 
 class ProductIdentityReq(BaseModel):
@@ -206,6 +208,14 @@ def product_preview(req: ProductPreviewReq, _user=Depends(_require_teg_user)):
         raise HTTPException(400, str(e))
 
 
+@router.get("/product-reference-rows")
+def product_reference_rows_get(vehicle: str = Query(...), _user=Depends(_require_teg_user)):
+    try:
+        return _tm.product_reference_rows(vehicle)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
 @router.post("/products")
 def product_create(req: ProductCreateReq, user=Depends(_require_teg_user)):
     if not _tm.can_access_node_path(user, req.node_path):
@@ -214,7 +224,8 @@ def product_create(req: ProductCreateReq, user=Depends(_require_teg_user)):
         out = _tm.create_product_from_table(
             req.text, req.vehicle,
             [item.model_dump() for item in req.tegs],
-            req.main_chip.model_dump() if req.main_chip else None,
+            ([item.model_dump() for item in req.main_chips]
+             if req.main_chips else req.main_chip.model_dump() if req.main_chip else None),
             user.get("username", ""),
             req.node_path,
             product_code=req.product_code,

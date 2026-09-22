@@ -260,8 +260,9 @@ def normalize_inline_measurements(lf: pl.LazyFrame) -> pl.LazyFrame:
         return lf
 
 
-def scan_long_fab(product: str, db_root: Path) -> Optional[pl.LazyFrame]:
-    lf = _scan_hive(db_root, FAB_ROOT, product)
+def scan_long_fab(product: str, db_root: Path, folder: str = FAB_ROOT) -> Optional[pl.LazyFrame]:
+    """Scan one product from the selected physical FAB database folder."""
+    lf = _scan_hive(db_root, folder, product)
     return normalize_fab_history(lf) if lf is not None else None
 
 

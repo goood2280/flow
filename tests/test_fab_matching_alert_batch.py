@@ -116,7 +116,9 @@ def test_ppid_classification_resolves_shared_step_and_preserves_header_casing(tm
 @pytest.mark.parametrize("kind,filename,columns,extra", [
     ("match_step", alerts.VEHICLE_MATCHING_FILE, ["product", "step_id"], {"step_desc": "ETCH"}),
     ("classify_ppid", alerts.PPID_KNOB_FILE, ["feature_name", "value"], {"category": "A"}),
-    ("add_mask", alerts.MASK_INFO_FILE, ["reticle_id"], {"mask": "prodA"}),
+    # 기존 mask 열이 있어도 category/product가 없으면 새 열을 추가하지 않고 거부한다.
+    ("add_mask", alerts.MASK_INFO_FILE, ["reticle_id", "mask"], {"mask": "prodA"}),
+    ("add_mask", alerts.MASK_INFO_FILE, ["reticle_id", "category"], {"category": "MASK_A"}),
 ])
 def test_batch_rejects_missing_required_columns_without_schema_change(
         tmp_path, monkeypatch, kind, filename, columns, extra):
@@ -182,7 +184,8 @@ def test_batch_groups_versions_and_resolves_ppid_from_new_step(tmp_path, monkeyp
 
 def test_batch_adds_mask_info_rows_and_versions_the_file(tmp_path, monkeypatch):
     mask_path = tmp_path / alerts.MASK_INFO_FILE
-    _write_csv(mask_path, ["reticle_id", "mask"], [{"reticle_id": "RAA001", "mask": "MASK_A"}])
+    _write_csv(mask_path, ["reticle_id", "category", "product"],
+               [{"reticle_id": "RAA001", "category": "MASK_A", "product": "V0"}])
 
     source_alerts = [
         {"id": "fab-reticle|RAA002", "type": "missing_reticle", "vehicle": "V1", "product": "P1",
@@ -200,7 +203,7 @@ def test_batch_adds_mask_info_rows_and_versions_the_file(tmp_path, monkeypatch):
     monkeypatch.setattr(alerts, "request_scan", lambda: {"ok": True})
 
     result = alerts.apply_batch([
-        {"type": "add_mask", "id": "fab-reticle|RAA002", "mask": "MASK_B"},
+        {"type": "add_mask", "id": "fab-reticle|RAA002", "category": "MASK_B"},
         {"type": "add_mask", "id": "fab-reticle|RAA003", "mask": "MASK_C"},
     ], username="tester")
 
@@ -208,15 +211,21 @@ def test_batch_adds_mask_info_rows_and_versions_the_file(tmp_path, monkeypatch):
     # 마스크만 바뀐 배치는 mask_info.csv 한 파일에 버전 1개만 남긴다.
     assert [name for name, _ in version_calls] == [alerts.MASK_INFO_FILE]
     columns, rows = alerts._read_csv(mask_path)
-    assert columns == ["reticle_id", "mask"]
-    assert [(row["reticle_id"], row["mask"]) for row in rows] == [
-        ("RAA001", "MASK_A"), ("RAA002", "MASK_B"), ("RAA003", "MASK_C")]
+    assert columns == ["reticle_id", "category", "product"]
+    assert [(row["reticle_id"], row["category"], row["product"]) for row in rows] == [
+        ("RAA001", "MASK_A", "V0"),
+        ("RAA002", "MASK_B", "V1"),
+        ("RAA003", "MASK_C", "V1"),
+    ]
+    assert all("mask" not in row for row in rows)
     assert {row["action"] for row in decisions} == {"add_mask"}
+    assert {row["category"] for row in decisions} == {"MASK_B", "MASK_C"}
 
 
 def test_batch_rejects_reticle_already_in_mask_info(tmp_path, monkeypatch):
     mask_path = tmp_path / alerts.MASK_INFO_FILE
-    _write_csv(mask_path, ["reticle_id", "mask"], [{"reticle_id": "raa001", "mask": "MASK_A"}])
+    _write_csv(mask_path, ["reticle_id", "category", "product"],
+               [{"reticle_id": "raa001", "category": "MASK_A", "product": "V1"}])
     source = {"id": "fab-reticle|RAA001", "type": "missing_reticle", "product": "P1",
               "step_id": "S1", "reticle_id": "RAA001"}
     monkeypatch.setattr(alerts, "PATHS", SimpleNamespace(db_root=tmp_path))
@@ -229,12 +238,12 @@ def test_batch_rejects_reticle_already_in_mask_info(tmp_path, monkeypatch):
     else:
         raise AssertionError("duplicate reticle must fail")
     _, rows = alerts._read_csv(mask_path)
-    assert [row["mask"] for row in rows] == ["MASK_A"]
+    assert [row["category"] for row in rows] == ["MASK_A"]
 
 
 def test_missing_reticle_alerts_skip_known_reticles(tmp_path, monkeypatch):
-    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "mask"],
-               [{"reticle_id": "RAA001", "mask": "MASK_A"}])
+    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "category"],
+               [{"reticle_id": "RAA001", "category": "MASK_A"}])
     _write_csv(tmp_path / alerts.VEHICLE_MATCHING_FILE, ["vehicle", "product", "step_id", "step_desc"],
                [{"vehicle": "V1", "product": "P1", "step_id": "S1", "step_desc": "ETCH"}])
     _write_csv(tmp_path / alerts.PPID_KNOB_FILE,
@@ -270,7 +279,7 @@ def test_missing_reticle_alerts_skip_known_reticles(tmp_path, monkeypatch):
 
 
 def test_unmatched_step_alert_includes_lot_and_wafer_example(tmp_path, monkeypatch):
-    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "mask"], [])
+    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "category"], [])
     _write_csv(tmp_path / alerts.VEHICLE_MATCHING_FILE,
                ["vehicle", "product", "step_id", "step_desc"], [])
     _write_csv(tmp_path / alerts.PPID_KNOB_FILE,
@@ -292,7 +301,7 @@ def test_unmatched_step_alert_includes_lot_and_wafer_example(tmp_path, monkeypat
 
 
 def test_unmatched_step_alert_carries_same_area_matching_step_signatures(tmp_path, monkeypatch):
-    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "mask"], [])
+    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "category"], [])
     _write_csv(tmp_path / alerts.VEHICLE_MATCHING_FILE,
                ["vehicle", "product", "step_id", "step_desc"], [
                    {"vehicle": "V1", "product": "P1", "step_id": "S_MATCH",
@@ -482,7 +491,7 @@ def test_list_alerts_reports_the_product_being_scanned_right_now(tmp_path, monke
 
 
 def test_step_exception_without_product_applies_to_every_product(tmp_path, monkeypatch):
-    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "mask"], [])
+    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "category"], [])
     _write_csv(tmp_path / alerts.VEHICLE_MATCHING_FILE,
                ["vehicle", "product", "step_id", "step_desc"], [])
     _write_csv(tmp_path / alerts.PPID_KNOB_FILE,
@@ -511,7 +520,7 @@ def test_step_exception_without_product_applies_to_every_product(tmp_path, monke
 
 
 def test_step_exception_scoped_to_one_product_leaves_others_alerting(tmp_path, monkeypatch):
-    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "mask"], [])
+    _write_csv(tmp_path / alerts.MASK_INFO_FILE, ["reticle_id", "category"], [])
     _write_csv(tmp_path / alerts.VEHICLE_MATCHING_FILE,
                ["vehicle", "product", "step_id", "step_desc"], [])
     _write_csv(tmp_path / alerts.PPID_KNOB_FILE,

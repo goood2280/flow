@@ -312,10 +312,14 @@ Parquet를 여는 실제 검사는 `FLOW_SERVER_ROLE=worker`인 개발 서버에
   해당 split의 `RO`로 빠지는 PPID unique 값만 PPID 알람으로 표시
 - 신규 step 알람은 제품 범위와 PPID/EQP ID/EQP MODEL의 포함·시작·일치 조건으로
   예외 처리 가능하며, 해당 step의 어느 행이라도 조건에 맞으면 step 전체를 제외
+- 신규 `reticle_id`는 `mask_info.csv`의 기존 `category` 열에 mask 이름,
+  기존 `product` 열에 해당 vehicle 이름을 저장하며 새 열을 만들지 않음
 
 알람 화면에서 PPID를 분류하면 해당 split의 RO 앞에 다음 Rule 번호로
 `ppid_knob.csv`에 추가하고, 신규 step을 매칭하면 제품·vehicle·step 정보를
-`Vehicle_matching.csv`에 추가합니다. 두 작업 모두 파일탐색기의 단일 파일 저장
+`Vehicle_matching.csv`에 추가하고, 신규 reticle의 mask 이름과 vehicle은
+`mask_info.csv` 기존 `category`·`product` 열에 각각 추가합니다. 필수 열이
+없으면 새 열을 만들지 않고 반영을 거부합니다. 이 작업들은 파일탐색기의 단일 파일 저장
 흐름을 사용해 버전 스냅샷과 변경 메모를 남기고, 매칭 캐시 갱신과 기존 파일
 동기화를 수행한 뒤 개발 worker의 재검사를 요청합니다. 알람 전송용 S3 bucket/prefix
 설정은 더 이상 사용하지 않습니다.

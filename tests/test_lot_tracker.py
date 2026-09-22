@@ -1,4 +1,6 @@
 import datetime as dt
+import json
+from types import SimpleNamespace
 
 import polars as pl
 
@@ -18,7 +20,7 @@ def test_lot_tracker_exact_lot_history_dpml_and_reference_eta(monkeypatch):
     ]
     desc = {"S0": "00.0 PHOTO START", "S1": "01.0 LITHO MASK", "S2": "02.0 ET"}
     monkeypatch.setattr(lot_tracker, "_product_candidates", lambda lot_id, product: ["P"])
-    monkeypatch.setattr(lot_tracker, "scan_long_fab", lambda product, db_root: pl.DataFrame(rows).lazy())
+    monkeypatch.setattr(lot_tracker, "scan_long_fab", lambda *args: pl.DataFrame(rows).lazy())
     monkeypatch.setattr(lot_tracker, "lookup_lot_progress", lambda **kw: [])
     monkeypatch.setattr(lot_tracker, "describe_step", lambda sid, product: {"step_desc": desc[sid]})
 
@@ -49,6 +51,43 @@ def test_history_retains_real_tkin_for_arrival(monkeypatch):
     monkeypatch.setattr(lot_tracker, "describe_step", lambda *a: {})
     product, history = lot_tracker._history("AZCVC.1", ["PRODC1"])
     assert lot_tracker.build_timeline(history, product)[0]["tkin_time"] == "2026-09-12T00:00:00"
+
+
+def test_fab_source_prefers_filebrowser_display_name(tmp_path, monkeypatch):
+    db_root = tmp_path / "db"
+    data_root = tmp_path / "data"
+    (db_root / "mounted_fab_history").mkdir(parents=True)
+    (db_root / "1.RAWDATA_DB").mkdir()
+    data_root.mkdir()
+    (data_root / "filebrowser_settings.json").write_text(json.dumps({
+        "db_name_aliases": {
+            "mounted_fab_history": "FAB",
+            "1.RAWDATA_DB": "Legacy FAB",
+        }
+    }), encoding="utf-8")
+    monkeypatch.setattr(lot_tracker, "PATHS", SimpleNamespace(db_root=db_root, data_root=data_root))
+
+    assert lot_tracker._fab_source_roots() == ["mounted_fab_history"]
+
+
+def test_fab_source_falls_back_to_rawdata_db(tmp_path, monkeypatch):
+    db_root = tmp_path / "db"
+    data_root = tmp_path / "data"
+    (db_root / "1.RAWDATA_DB").mkdir(parents=True)
+    data_root.mkdir()
+    monkeypatch.setattr(lot_tracker, "PATHS", SimpleNamespace(db_root=db_root, data_root=data_root))
+
+    assert lot_tracker._fab_source_roots() == ["1.RAWDATA_DB"]
+
+
+def test_demo_named_lot_is_searched_in_fab_instead_of_generated(monkeypatch):
+    monkeypatch.setattr(lot_tracker, "_product_candidates", lambda lot_id, product: ["P"])
+    monkeypatch.setattr(lot_tracker, "_history", lambda lot_id, candidates: ("", []))
+
+    result = lot_tracker.track_lot("DEMO-LOT-01", product="PRODA")
+
+    assert result["ok"] is False
+    assert result["lot"] is None
 
 
 def test_dpml_counts_distinct_photo_layers_not_numeric_gap():

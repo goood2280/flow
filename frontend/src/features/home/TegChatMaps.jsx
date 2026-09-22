@@ -1,5 +1,6 @@
-import { lazy, Suspense, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { FlowPlotlyChart } from "../../components/PlotlyChart";
+import { sf } from "../../lib/api";
 
 // Keep the home chat read-only, but render the same geometry as the native TEG
 // page.  The page module owns the SVG implementation; loading these exports on
@@ -35,7 +36,10 @@ export default function TegChatMaps({ maps, view }) {
     <h4>샷 내 위치 · 실제 크기</h4>
     <FlowPlotlyChart chart={{ ...config, chart_type: "scatter", points: shotPoints }} cfg={config}
       geometryOverlay={{ shapes: shotShapes, xRange: [Math.min(...boundsX)-1, Math.max(...boundsX)+1], yRange: [Math.min(...boundsY)-1, Math.max(...boundsY)+1] }} />
-    <small>실제 shot 중심과 TEG 기준 좌표(mm)를 표시합니다. 점은 TEG 기준점이고, 사각형은 기준 파일에 있는 실제 크기입니다.</small>
+    <div className="home-teg-view__coordinates">
+      <strong>선택된 TEG 좌표</strong>
+      {shot.tegs.map((teg) => <span key={teg.teg}>{teg.teg} · ({teg.x_mm}, {teg.y_mm}) mm</span>)}
+    </div>
     {shot.tegs.filter((t) => !t.geometry_available).map((t) => <p key={t.teg}>{t.teg}: {t.unavailable_reason}</p>)}
   </section>;
 }
@@ -53,25 +57,52 @@ function NativeTegView({ view }) {
     tegs.map((item, index) => [item.teg, colors[index % colors.length]]),
   ), [tegs]);
   const tegColor = (name) => colorMap.get(name) || colors[0];
+  const selectedRows = tegs.filter((item) => selectedTegs.has(item.teg));
+  const [shapeData, setShapeData] = useState(null);
+  const [shapeLoading, setShapeLoading] = useState(false);
+  useEffect(() => {
+    let active = true;
+    const mode = data?.display?.mode;
+    if (!["image", "dev_grid"].includes(mode) || !data?.vehicle) {
+      setShapeData(null);
+      return () => { active = false; };
+    }
+    setShapeLoading(true);
+    sf(`/api/teg-map/image/shapes?vehicle=${encodeURIComponent(data.vehicle)}`)
+      .then((result) => { if (active) setShapeData(result || null); })
+      .catch(() => { if (active) setShapeData(null); })
+      .finally(() => { if (active) setShapeLoading(false); });
+    return () => { active = false; };
+  }, [data?.display?.mode, data?.vehicle]);
+  const dieCells = data?.display?.mode === "dev_grid"
+    ? (shapeData?.dev_cells || [])
+    : data?.display?.mode === "image"
+      ? (shapeData?.image_cells || [])
+      : [];
   if (!data?.geometry || !data?.shots?.length || !tegs.length) return null;
 
   return (
     <Suspense fallback={<p role="status">TEG 위치 화면을 불러오는 중…</p>}>
       <section aria-label="TEG 위치 그림" style={{ display: "grid", gap: 12 }}>
         <h4>TEG 위치 조회 · 웨이퍼 맵</h4>
-        <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap", overflowX: "auto" }}>
+        <div style={{ overflowX: "auto" }}>
           <NativeWaferMap data={data} selectedTegs={selectedTegs} tegColor={tegColor}
             selectedShot={selectedShot} onShotClick={setSelectedShot} light />
-          <div style={{ minWidth: 220, fontSize: 12, lineHeight: 1.6 }}>
-            <b>{view.product || data.vehicle || "제품"}</b>
-            <div>선택 TEG: {selectedNames.join(", ") || "없음"}</div>
-            <div>단위: mm · shot 중심 및 TEG 실제 크기 기준</div>
-            {selectedShot && <div>선택 Shot: ({selectedShot.x}, {selectedShot.y}) · 중심 ({selectedShot.mm_x}, {-selectedShot.mm_y}) mm</div>}
-          </div>
         </div>
-        <h4>샷 내 위치 · 실제 크기</h4>
-        <div style={{ overflowX: "auto" }}>
-          <NativeShotZoom data={data} selectedTegs={selectedTegs} tegColor={tegColor} size={480} />
+        <h4>샷 확대 · 격자와 TEG 위치</h4>
+        <div className="home-teg-view__shot-row">
+          <div style={{ overflowX: "auto" }}>
+            <NativeShotZoom data={data} selectedTegs={selectedTegs} tegColor={tegColor} dieCells={dieCells} size={480} />
+            {shapeLoading && <small>샷 격자를 불러오는 중…</small>}
+          </div>
+          <div className="home-teg-view__coordinates">
+            <strong>선택된 TEG 좌표</strong>
+            {selectedRows.map((teg) => (
+              <span key={teg.teg}>
+                {teg.teg} · ({Number(teg.ebeam_x).toLocaleString(undefined, { maximumFractionDigits: 6 })}, {Number(teg.ebeam_y).toLocaleString(undefined, { maximumFractionDigits: 6 })}) mm
+              </span>
+            ))}
+          </div>
         </div>
       </section>
     </Suspense>

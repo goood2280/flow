@@ -1850,6 +1850,74 @@ def test_create_one_by_one_product_appends_reference_csvs_and_edm_versions(tmp_p
     assert saved_cfg[-1]["vehicles"]["NEW"]["mode"] == "none"
 
 
+def test_create_product_without_teg_or_main_keeps_preloaded_reference_rows(tmp_path, monkeypatch):
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg.update({"layout_file": "Chip_Radius.csv", "teg_file": "Teg_location.csv",
+                "main_chip_file": "Main_chip_info.csv", "vehicles": {},
+                "check": teg_map._clean_check({})})
+    (tmp_path / "Chip_Radius.csv").write_text(
+        "Mask,chip_x_adj,chip_y_adj,Chip_Radius\nOLD,0,0,0\n", encoding="utf-8")
+    teg_text = ("vehicle,teg,ebeam_x,ebeam_y,teg_w,teg_h,flat_zone,top_cell\n"
+                "NEW,H_TEG,10,20,,,h,TOP_A\n")
+    main_text = ("vehicle,chip_name,chipsize_x,chipsize_y,purpose\n"
+                 "NEW,MAIN01,5000,4000,TEG\n")
+    (tmp_path / "Teg_location.csv").write_text(teg_text, encoding="utf-8")
+    (tmp_path / "Main_chip_info.csv").write_text(main_text, encoding="utf-8")
+    saved_cfg = []
+    versions = []
+    monkeypatch.setattr(teg_map.roots, "get_db_root", lambda: tmp_path)
+    monkeypatch.setattr(teg_map, "teg_dir", lambda: tmp_path / "teg_location")
+    monkeypatch.setattr(teg_map, "load_cfg", lambda: cfg)
+    monkeypatch.setattr(teg_map, "vehicles", lambda: ["OLD"])
+    monkeypatch.setattr(teg_map, "save_cfg", lambda patch: saved_cfg.append(patch) or cfg)
+    monkeypatch.setattr(
+        teg_map, "_snapshot_edm_file",
+        lambda path, username, note, backup=None: versions.append(path.name) or {"display_version": "v1.0"},
+    )
+
+    result = teg_map.create_product_from_table(
+        PRODUCT_PASTE, "NEW", [], None, "tester", "2나노 / 2나노A",
+    )
+
+    assert result["shot_count"] > 0
+    assert result["files"]["teg_location"] is None
+    assert result["files"]["main_chip_info"] is None
+    assert (tmp_path / "Teg_location.csv").read_text(encoding="utf-8") == teg_text
+    assert (tmp_path / "Main_chip_info.csv").read_text(encoding="utf-8") == main_text
+    assert set(versions) == {"Chip_Radius.csv", teg_map.PRODUCT_INFO_FILE_NAME}
+    assert saved_cfg[-1]["product_nodes"]["NEW"] == "2나노 / 2나노A"
+
+
+def test_product_reference_rows_filters_vehicle_and_maps_file_columns(tmp_path, monkeypatch):
+    cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
+    cfg.update({"teg_file": "Teg_location.csv", "main_chip_file": "Main_chip_info.csv"})
+    (tmp_path / "Teg_location.csv").write_text(
+        "vehicle,teg,topcell,flat,ebeam_x,ebeam_y,width,height\n"
+        "OTHER,H_OLD,OLD,H,1,2,3,4\n"
+        "veh_a,H_NEW,TOP_A,V(R),10,20,,\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "Main_chip_info.csv").write_text(
+        "vehicle,chip_name,chip_size_x,chip_size_y,purpose\n"
+        "VEH_A,MAIN01,5000,4000,TEG\n"
+        "OTHER,MAIN99,1,2,IP\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(teg_map.roots, "get_db_root", lambda: tmp_path)
+    monkeypatch.setattr(teg_map, "load_cfg", lambda: cfg)
+
+    result = teg_map.product_reference_rows("VEH_A")
+
+    assert result["tegs"] == [{
+        "teg": "H_NEW", "top_cell": "TOP_A", "direction": "V(R)",
+        "ebeam_X": "10", "ebeam_Y": "20", "teg_w": "", "teg_h": "",
+    }]
+    assert result["main_chips"] == [{
+        "chip_name": "MAIN01", "chipsize_x": "5000", "chipsize_y": "4000",
+        "purpose": "TEG",
+    }]
+
+
 def test_update_legacy_product_replaces_radius_rows_and_uses_exact_geometry(tmp_path, monkeypatch):
     cfg = copy.deepcopy(teg_map.DEFAULT_CFG)
     cfg.update({

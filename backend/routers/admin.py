@@ -1767,8 +1767,9 @@ def activity_summary(days: int = Query(0), _admin=Depends(require_admin), includ
       - by_user: { username: count } (top 20)
       - by_action: { action: count } (top 30)
       - by_tab:    { tab: count }
-      - by_day:    { "YYYY-MM-DD": count }
+      - by_day / by_week / by_month: 기간 단위별 이벤트 수
       - active_users_by_day: 전체 보존 기간(기간 필터 시 최근 30일)의 일별 순 사용자 수
+      - active_users_by_week: 전체 보존 기간(기간 필터 시 최근 26주)의 주별 순 사용자 수
       - active_users_by_month: 전체 보존 기간(기간 필터 시 최근 12개월)의 월별 순 사용자 수
       - recent:    최근 3000건 (내림차순)
     """

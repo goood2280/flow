@@ -383,7 +383,7 @@ Vehicle_matching은 현재 제품의 공정 귀속과 공통 공정 설명을 �
 
 - `inline_matching.csv`: `product,step_id,item_id,item_desc,matching_table`. 필수 의미는 제품·step·item이며 item_desc는 설명이다. `INLINE_<item_id>` 메타데이터와 제품/공정 연결에 쓰인다. matching_table만 적고 좌표 테이블 본문을 만들지 않으면 shot 좌표가 생기지 않는다. 4절의 전용 shot 룰북과 중복·충돌하지 않게 관리한다.
 - `vm_matching.csv`: `step_desc,item_id`를 기준으로 `VM_<step_desc>_<item_id>`를 연결하고 실제 제품별 step_id는 Vehicle_matching에서 확장한다. VM에 제품 정보를 임의 추가해 Vehicle의 제품 귀속을 대신하지 않는다.
-- `mask_info.csv`: 매칭 채우기는 `reticle_id`를 FAB 원천 reticle_id와 대조하고 같은 제품·step의 Vehicle 정보에서 step_desc를 가져온다. `mask_version,mask_vendor,photo_step` 및 `product,step_id,step_desc`는 해당 메타데이터다. PPID 분류 룰북과는 다른 키를 사용한다.
+- `mask_info.csv`: `reticle_id` 별 mask 이름은 기존 `category` 열에, 해당 vehicle 이름은 기존 `product` 열에 저장하며 `mask` 등 새 열을 추가하지 않는다. 필수 열이 없으면 파일을 변경하지 않고 반영을 거부한다. 매칭 채우기는 `reticle_id`를 FAB 원천 reticle_id와 대조하고 같은 제품·step의 Vehicle 정보에서 step_desc를 가져온다. `mask_version,mask_vendor,photo_step` 및 `product,step_id,step_desc`는 해당 메타데이터다. PPID 분류 룰북과는 다른 키를 사용한다.
 
 매칭 채우기의 원천 스캔 결과는 검토할 제안이다. 제품/공정/설명을 확인한 뒤 기존 승인·저장 절차를 이용한다. 실제 데이터 없이 문서 예시만으로 운영 기준을 채우지 않는다.
 

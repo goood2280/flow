@@ -1942,6 +1942,7 @@ function InlineMapSetting({ data, vehicle, onVehicleChange }) {
 
 const PRODUCT_INFO_COLUMNS = ["Item", "X", "Y"];
 const TEG_LOCATION_COLUMNS = ["teg", "top_cell", "direction", "ebeam_X", "ebeam_Y", "teg_w", "teg_h"];
+const MAIN_CHIP_COLUMNS = ["chip_name", "chipsize_x", "chipsize_y", "purpose"];
 
 function normalizedTegDirection(value) {
   const key = String(value || "").trim().toLowerCase().replace(/\s+/g, "");
@@ -1959,14 +1960,15 @@ function ProductCreateModal({ open, onClose, onCreated }) {
   const [productCode, setProductCode] = useState("");
   const [nodePath, setNodePath] = useState("");
   const [tegRows, setTegRows] = useState(() => normalizeSpreadsheetRows([], TEG_LOCATION_COLUMNS));
-  const [mainChip, setMainChip] = useState({ chip_name: "", chipsize_x: "", chipsize_y: "" });
+  const [mainRows, setMainRows] = useState(() => normalizeSpreadsheetRows([], MAIN_CHIP_COLUMNS));
+  const [referenceStatus, setReferenceStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
     if (!open) return;
     setStep(1); setProductRows(normalizeSpreadsheetRows([], PRODUCT_INFO_COLUMNS)); setPreview(null); setVehicle(""); setProductCode(""); setNodePath("");
     setTegRows(normalizeSpreadsheetRows([], TEG_LOCATION_COLUMNS));
-    setMainChip({ chip_name: "", chipsize_x: "", chipsize_y: "" });
+    setMainRows(normalizeSpreadsheetRows([], MAIN_CHIP_COLUMNS)); setReferenceStatus("");
     setBusy(false); setError("");
   }, [open]);
   const text = useMemo(() => spreadsheetTextFromRows(productRows, PRODUCT_INFO_COLUMNS), [productRows]);
@@ -1978,13 +1980,36 @@ function ProductCreateModal({ open, onClose, onCreated }) {
       direction: normalizedTegDirection(row.direction),
       ebeam_x: row.ebeam_X,
       ebeam_y: row.ebeam_Y,
-      teg_w: row.teg_w,
-      teg_h: row.teg_h,
+      teg_w: String(row.teg_w || "").trim() ? row.teg_w : null,
+      teg_h: String(row.teg_h || "").trim() ? row.teg_h : null,
     })), [tegRows]);
+  const mainPayload = useMemo(() => mainRows
+    .filter(row => MAIN_CHIP_COLUMNS.some(column => String(row?.[column] || "").trim()))
+    .map(row => ({
+      chip_name: row.chip_name,
+      chipsize_x: row.chipsize_x,
+      chipsize_y: row.chipsize_y,
+      purpose: row.purpose,
+    })), [mainRows]);
+  const hasGridValues = (rows, columns) => rows.some(row =>
+    columns.some(column => String(row?.[column] || "").trim()));
   const inspect = async () => {
     setBusy(true); setError("");
     try {
-      const result = await postJson(`${API}/product-preview`, { text, vehicle });
+      const [result, references] = await Promise.all([
+        postJson(`${API}/product-preview`, { text, vehicle }),
+        sf(`${API}/product-reference-rows?vehicle=${encodeURIComponent(vehicle)}`)
+          .catch(e => ({ error: String(e.message || e), tegs: [], main_chips: [] })),
+      ]);
+      if (!hasGridValues(tegRows, TEG_LOCATION_COLUMNS) && references.tegs?.length) {
+        setTegRows(normalizeSpreadsheetRows(references.tegs, TEG_LOCATION_COLUMNS));
+      }
+      if (!hasGridValues(mainRows, MAIN_CHIP_COLUMNS) && references.main_chips?.length) {
+        setMainRows(normalizeSpreadsheetRows(references.main_chips, MAIN_CHIP_COLUMNS));
+      }
+      setReferenceStatus(references.error
+        ? `기준 파일 자동 불러오기 실패 · ${references.error}`
+        : `동일 vehicle 자동 불러오기 · Teg_location ${references.tegs?.length || 0}행 · Main ${references.main_chips?.length || 0}행`);
       setPreview(result); setStep(3);
     } catch (e) { setError(String(e.message || e)); }
     finally { setBusy(false); }
@@ -1994,7 +2019,7 @@ function ProductCreateModal({ open, onClose, onCreated }) {
     try {
       const result = await postJson(`${API}/products`, {
         text, vehicle, node_path: nodePath, product_code: productCode, tegs: tegPayload,
-        main_chip: preview?.one_by_one ? mainChip : null,
+        main_chips: mainPayload,
       });
       toast.ok(`${result.vehicle} 제품 생성됨 · Chip_Radius ${result.shot_count} shots`);
       if (onCreated) await onCreated(result);
@@ -2003,7 +2028,6 @@ function ProductCreateModal({ open, onClose, onCreated }) {
     finally { setBusy(false); }
   };
   const values = preview?.values || {};
-  const mainReady = !preview?.one_by_one || Object.values(mainChip).every(value => String(value || "").trim());
   const valueRows = [
     ["Chip Size(um)", values.chip_size_x_um, values.chip_size_y_um],
     ["S/L Size(um)", values.sl_size_x_um, values.sl_size_y_um],
@@ -2084,32 +2108,35 @@ function ProductCreateModal({ open, onClose, onCreated }) {
           <div style={{ marginTop: 8, fontSize: 12, color: "var(--muted)", lineHeight: 1.6 }}>
             Chip_Radius.csv 추가 예정: {preview.shot_count} shots · Shot의 네 꼭짓점이 {preview.wafer_edge_mm}mm 안에
             모두 들어오는 경우만 포함하며 경계에 딱 맞닿는 Shot도 포함합니다. · {preview.one_by_one
-              ? "Shot 1×1 · Main 정보 필수"
+              ? "Shot 1×1 · Main 정보는 나중에 입력 가능"
               : `칩 격자 ${values.shot_cols}×${values.shot_rows} 자동 설정`}
           </div>
         </section>
         <section style={{ display: "flex", flexDirection: "column", gap: 8, border: "1px solid var(--line)", borderRadius: 7, padding: 10 }}>
           <b style={{ fontSize: 12 }}>저장 대상</b>
           <div style={{ fontSize: 12, lineHeight: 1.6 }}><b>제품 분류</b> · {nodePath}<br/><b>제품명</b> · {vehicle}</div>
-          {preview.one_by_one && <div style={{ border: "1px solid var(--line)", borderRadius: 6, padding: 10 }}>
-            <b style={{ display: "block", fontSize: 12, marginBottom: 3 }}>Shot 1×1 · Main 정보 필수</b>
-            <div style={{ fontSize: 11, color: "var(--muted)", marginBottom: 7 }}>chip_name과 X/Y 크기를 받아 Main_chip_info.csv에 추가합니다.</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr 1fr", gap: 6 }}>
-              <input aria-label="Main chip_name" value={mainChip.chip_name} onChange={e => setMainChip(v => ({ ...v, chip_name: e.target.value }))}
-                placeholder="chip_name" style={{ ...inputStyle, width: "100%" }} />
-              <input aria-label="Main chipsize_x" type="number" step="any" value={mainChip.chipsize_x} onChange={e => setMainChip(v => ({ ...v, chipsize_x: e.target.value }))}
-                placeholder="chipsize_x" style={{ ...inputStyle, width: "100%" }} />
-              <input aria-label="Main chipsize_y" type="number" step="any" value={mainChip.chipsize_y} onChange={e => setMainChip(v => ({ ...v, chipsize_y: e.target.value }))}
-                placeholder="chipsize_y" style={{ ...inputStyle, width: "100%" }} />
-            </div>
+          <div style={{ fontSize: 11, color: "var(--muted)" }}>
+            Teg_location과 Main 정보가 비어 있어도 Shot과 제품은 먼저 생성됩니다.
+          </div>
+          {referenceStatus && <div style={{ fontSize: 11, color: referenceStatus.includes("실패") ? "var(--danger)" : "var(--ok)" }}>
+            {referenceStatus}
           </div>}
-          {!preview.one_by_one && <div style={{ fontSize: 11, color: "var(--muted)" }}>Shot이 1×1이 아니므로 Main_chip_info는 생성하지 않습니다.</div>}
         </section>
       </div>
       <section style={{ display: "grid", gap: 8, border: "1px solid var(--line)", borderRadius: 7, padding: 10 }}>
         <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+          <b style={{ fontSize: 12 }}>Main 정보</b>
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>동일 vehicle의 Main_chip_info 행을 자동으로 불러오며 Excel 표를 직접 붙여넣을 수도 있습니다.</span>
+          <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 800 }}>{mainPayload.length}개 입력</span>
+        </div>
+        <SpreadsheetPasteGrid columns={MAIN_CHIP_COLUMNS} rows={mainRows} onChange={setMainRows}
+          ariaLabel="Main_chip_info 추가 행" minRows={10} maxRows={200} maxHeight={365}
+          columnLabels={{ chip_name: "chip_name", chipsize_x: "chipsize_x", chipsize_y: "chipsize_y", purpose: "purpose" }} />
+      </section>
+      <section style={{ display: "grid", gap: 8, border: "1px solid var(--line)", borderRadius: 7, padding: 10 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
           <b style={{ fontSize: 12 }}>Teg_location 붙여넣기</b>
-          <span style={{ fontSize: 11, color: "var(--muted)" }}>Excel의 7열 표를 그대로 붙여넣으면 Teg_location.csv에 제품명과 함께 추가됩니다.</span>
+          <span style={{ fontSize: 11, color: "var(--muted)" }}>동일 vehicle 행을 자동으로 불러옵니다. 비워 두면 기존 파일 행을 유지하고, 기존 행이 없어도 제품 생성은 가능합니다.</span>
           <span style={{ marginLeft: "auto", fontSize: 11, fontWeight: 800 }}>{tegPayload.length}개 입력</span>
         </div>
         <SpreadsheetPasteGrid columns={TEG_LOCATION_COLUMNS} rows={tegRows} onChange={setTegRows}
@@ -2122,7 +2149,7 @@ function ProductCreateModal({ open, onClose, onCreated }) {
       <div className="ds-modal__actions">
         <Button onClick={() => { setStep(2); setError(""); }} disabled={busy}>← 제품 형상 수정</Button>
         <Button onClick={onClose} disabled={busy}>취소</Button>
-        <Button variant="primary" onClick={create} disabled={busy || !vehicle.trim() || !nodePath.trim() || !tegPayload.length || !mainReady}>{busy ? "저장 중…" : "최종 저장 및 제품 생성"}</Button>
+        <Button variant="primary" onClick={create} disabled={busy || !vehicle.trim() || !nodePath.trim()}>{busy ? "저장 중…" : "최종 저장 및 제품 생성"}</Button>
       </div>
     </div>}
   </Modal>;

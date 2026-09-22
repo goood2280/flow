@@ -103,7 +103,7 @@ SYNCABLE_DB_ROOT_FILES = {
     "inline_matching.csv",
     "vm_matching.csv",
     "mask.csv",
-    # FAB 매칭알람이 reticle_id → mask 를 채워 넣는 룰북
+    # FAB 매칭알람이 reticle_id → category(mask 이름)를 채워 넣는 룰북
     "mask_info.csv",
     "inline_item_map.csv",
     "inline_step_match.csv",

@@ -10,7 +10,7 @@
   PUT  /api/valve-alerts/config         자동 검사 사용 여부와 제품 간격 저장
   POST /api/valve-alerts/classify-ppid  ro_ppid → ppid_knob.csv 다음 Rule 로 추가
   POST /api/valve-alerts/match-step     unmatched_step → Vehicle_matching.csv 추가
-  POST /api/valve-alerts/add-mask       missing_reticle → mask_info.csv 에 reticle_id,mask 추가
+  POST /api/valve-alerts/add-mask       missing_reticle → mask_info.csv 기존 reticle_id,category,product에 추가
   GET  /api/valve-alerts/plan-anomalies SplitTable KNOB plan/actual 불일치 목록
   POST /api/valve-alerts/plan-anomalies/apply 선택 PPID를 plan 이름으로 ppid_knob.csv 반영
   POST /api/valve-alerts/ack            반영불필요/해제(active)

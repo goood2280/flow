@@ -1,7 +1,21 @@
 {
-  "version": "10.4.303",
+  "version": "10.4.304",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.304",
+      "date": "2026-09-22",
+      "tag": "fix",
+      "title": "홈 에이전트 작업창·TEG 제품 생성·운영 조회 정합화",
+      "changes": [
+        "[마스크 등록] 미등록 reticle의 mask 이름은 mask_info.csv의 기존 category 열에, 해당 vehicle 이름은 기존 product 열에 저장하고 새 열을 만들지 않도록 수정.",
+        "[화면·매칭채우기] 매칭알람 입력 열과 mask_info 매칭채우기 대상을 category로 통일하고 기존 CSV 스키마를 보존.",
+        "[홈 에이전트 대시보드] 제품 대시보드 요청에 대시보드 탭과 같은 WIP 스택 막대차트를 즉시 표시하고 작업창에서 Split 기준 열을 바꿔 재조회할 수 있도록 개선.",
+        "[홈 에이전트 TEG·확인 선택] TEG 위치 작업창을 웨이퍼 맵·격자 포함 샷 확대·선택 TEG 좌표로 간소화하고, 사용자 확인 선택지는 세로 배치하며 확인 대기 중 우측 작업창을 숨김.",
+        "[TEG 제품 생성] Teg_location·Main_chip_info 기존 vehicle 행을 자동 불러오고 두 기준표가 비어 있어도 제품 geometry와 shot을 먼저 생성할 수 있도록 개선.",
+        "[Lot Tracker·활동 대시보드] 설정된 FAB 별칭 원천을 사용하는 랏 이력 조회와 일·주·월 활성 사용자/활동 이력 페이지 탐색을 보강."
+      ]
+    },
     {
       "version": "10.4.303",
       "date": "2026-09-22",

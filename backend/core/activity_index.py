@@ -121,6 +121,11 @@ def _window(days):
     return (dt.date.today() - dt.timedelta(days=days - 1)).isoformat() if days else ""
 
 
+def _week_start(value):
+    day = value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value))
+    return day - dt.timedelta(days=day.weekday())
+
+
 def summary(source, days=0, include_recent=True):
     days = _days(days)
     cutoff = _window(days)
@@ -146,16 +151,35 @@ def summary(source, days=0, include_recent=True):
         month_start = f"{start_month // 12:04d}-{start_month % 12 + 1:02d}"
         month_end = f"{end_month // 12:04d}-{end_month % 12 + 1:02d}"
         monthly = dict(db.execute("SELECT substr(day,1,7) m, COUNT(DISTINCT user) FROM events WHERE authenticated=1 AND substr(day,1,7) BETWEEN ? AND ? GROUP BY m",
-                                 (month_start, month_end)).fetchall())
+                                  (month_start, month_end)).fetchall())
+        end_week = _week_start(end_day) if not days and last else _week_start(today)
+        start_week = _week_start(start_day) if not days and first else end_week - dt.timedelta(weeks=25)
+        week_sql = "date(day, '-' || ((CAST(strftime('%w', day) AS INTEGER) + 6) % 7) || ' days')"
+        weekly = dict(db.execute(
+            f"SELECT {week_sql} w, COUNT(DISTINCT user) FROM events "
+            "WHERE authenticated=1 AND day BETWEEN ? AND ? GROUP BY w",
+            (start_week.isoformat(), end_day.isoformat() if not days and last else today.isoformat()),
+        ).fetchall())
+        by_week = dict(db.execute(
+            f"SELECT {week_sql} w, COUNT(*) FROM events WHERE {where} GROUP BY w ORDER BY w",
+            args,
+        ).fetchall())
+        by_month = dict(db.execute(
+            f"SELECT substr(day,1,7) m, COUNT(*) FROM events WHERE {where} GROUP BY m ORDER BY m",
+            args,
+        ).fetchall())
         recent = [json.loads(row[0]) for row in db.execute(f"SELECT payload FROM events WHERE {where} ORDER BY timestamp DESC, id LIMIT 3000", args)] if include_recent else []
         result = {
             "window_days": days, "activity_start": first, "activity_end": last,
             "total": db.execute(f"SELECT COUNT(*) FROM events WHERE {where}", args).fetchone()[0],
             "unattributed_count": db.execute("SELECT COUNT(*) FROM events WHERE day IS NOT NULL AND day >= ? AND authenticated=0", args).fetchone()[0],
             "by_user": counts("user", 20), "by_action": counts("action", 30),
-            "by_tab": counts("tab"), "by_day": counts("day"), "recent": recent,
+            "by_tab": counts("tab"), "by_day": counts("day"),
+            "by_week": by_week, "by_month": by_month, "recent": recent,
             "active_users_by_day": {(start_day + dt.timedelta(days=i)).isoformat(): daily.get((start_day + dt.timedelta(days=i)).isoformat(), 0)
                                     for i in range((end_day - start_day).days + 1)},
+            "active_users_by_week": {(start_week + dt.timedelta(weeks=i)).isoformat(): weekly.get((start_week + dt.timedelta(weeks=i)).isoformat(), 0)
+                                      for i in range(((end_week - start_week).days // 7) + 1)},
             "active_users_by_month": {f"{i // 12:04d}-{i % 12 + 1:02d}": monthly.get(f"{i // 12:04d}-{i % 12 + 1:02d}", 0)
                                       for i in range(start_month, end_month + 1)},
         }
