@@ -8,6 +8,7 @@
 */
 import { useEffect, useMemo, useState } from "react";
 import { sf, postJson } from "../../lib/api";
+import { canManagePage } from "../../lib/permissions";
 import PageGear from "../../components/PageGear";
 import Modal from "../../components/Modal";
 import { toast } from "../../components/Toast";
@@ -73,7 +74,7 @@ export default function My_Calendar({ user }) {
   const [myGroups, setMyGroups] = useState([]);
 
   const monthStr = ym(view);
-  const isAdmin = user?.role === "admin";
+  const isAdmin = canManagePage(user, "calendar");
 
   const reload = () => {
     setLoading(true);

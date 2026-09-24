@@ -1,7 +1,18 @@
 {
-  "version": "10.4.310",
+  "version": "10.4.311",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.311",
+      "date": "2026-09-24",
+      "tag": "feat",
+      "title": "GAA 구조 모델·관리자 지식·제품별 MTS 연결",
+      "changes": [
+        "[GAA] 3층 NS 기본 모델과 Gate, S/D, MOL, BEOL 및 well 구조를 3D로 표시하고 NS 층수·CD·간격·높이·형상을 조절.",
+        "[제품 지식] 관리자 공통 구조 지식과 제품 Wiki의 step ID·item ID 앵커를 연결해 제품별 구조 치수를 반영.",
+        "[홈 에이전트] Gemma 기반 구조 수정 경로와 측정 항목 해석, 대시보드·ET·Inline 차트 및 리포트 흐름 개선."
+      ]
+    },
     {
       "version": "10.4.310",
       "date": "2026-09-24",

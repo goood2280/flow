@@ -30,6 +30,9 @@ router = APIRouter(prefix="/api/home-agent", tags=["home-agent"])
 class OrchestrateRequest(BaseModel):
     prompt: str
     top_k: int | None = 2
+    # 멀티턴 도구(ETA 등)가 이전 턴 상태를 이어받기 위한 대화 context.
+    # 프론트는 이미 전송 중이며, 없는 경우 무시된다.
+    context: dict[str, Any] | None = None
 
 
 class RunToolRequest(BaseModel):
@@ -80,6 +83,7 @@ def orchestrate(request: Request, body: OrchestrateRequest):
                 user=me,
                 top_k=max(1, min(10, int(body.top_k or 2))),
                 request=request,
+                context=body.context if isinstance(body.context, dict) else None,
             )
     except flowi_gate.FlowiBusy as busy:
         return _busy_reply(busy)
@@ -309,14 +313,18 @@ def run_tool(request: Request, body: RunToolRequest):
     step_input = body.input or {}
     if "prompt" not in step_input:
         step_input["prompt"] = step_input.get("query") or ""
-    exec_out = home_orchestrator._execute_step(tool, step_input, request=request, user=me)
+    from core import llm_usage
+    role = str(me.get("role") or "user")
+    with llm_usage.turn_budget(home_orchestrator.home_turn_limit(role)):
+        exec_out = home_orchestrator._execute_step(tool, step_input, request=request, user=me)
+    usage = home_orchestrator.home_usage_block()
     audit.record(
         request,
         action=f"home_agent:run-tool:{name}",
         detail=f"ok={exec_out.get('ok')} ms={exec_out.get('ms', 0)}",
         tab="home",
     )
-    return {
+    out: dict[str, Any] = {
         "ok": bool(exec_out.get("ok")),
         "tool": name,
         "kind": tool.get("kind"),
@@ -327,4 +335,7 @@ def run_tool(request: Request, body: RunToolRequest):
         "result_preview": exec_out.get("result_preview", ""),
         "result": exec_out.get("result"),
     }
+    if usage is not None:
+        out["usage"] = usage
+    return out
 

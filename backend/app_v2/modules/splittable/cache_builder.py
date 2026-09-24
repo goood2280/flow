@@ -56,6 +56,7 @@ _CACHE_FORMAT_MARKER = ".cache_format.json"
 # 실패하면 None 을 반환해 기존 전체 재빌드로 폴백한다.
 _ROOT_FINGERPRINT_FILE = ".root_fingerprints.json"
 _BUILD_COMPLETE_FILE = ".build_complete.json"
+_BUILD_PROGRESS_FILE = ".build_progress.json"
 # 해시 합이 Int64 를 넘지 않도록 32bit 소수로 접는다 (root 당 수만 행이어도 여유).
 _FINGERPRINT_FOLD_PRIME = 4294967291
 
@@ -204,20 +205,49 @@ def _source_signature(path: Path) -> dict:
     return {"path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
 
 
-def completed_cache_matches(out_dir: Path, source: Path) -> bool:
+def _root_file_stats(out_dir: Path) -> dict:
+    """One directory pass; temporary outputs are never ready roots."""
+    try:
+        with os.scandir(out_dir) as entries:
+            return {entry.name: entry.stat() for entry in entries
+                    if entry.name.endswith(".parquet")
+                    and not entry.name.endswith(".tmp.parquet") and entry.is_file()}
+    except OSError:
+        return {}
+
+
+def completed_cache_matches(out_dir: Path, source: Path, *, file_stats=None) -> bool:
     """Completion does not depend on optional content-fingerprint optimization."""
     try:
         marker = out_dir / _BUILD_COMPLETE_FILE
         meta = json.loads(marker.read_text("utf-8"))
         completed_ns = marker.stat().st_mtime_ns
+        if file_stats is None:
+            file_stats = _root_file_stats(out_dir)
         return (meta.get("format") == _CACHE_FORMAT_VERSION
                 and meta.get("source") == _source_signature(source)
                 and isinstance(meta.get("roots"), list)
-                and all((out_dir / _safe_root_filename(root)).is_file()
-                        and (out_dir / _safe_root_filename(root)).stat().st_mtime_ns <= completed_ns
+                and bool(meta["roots"])
+                and all(_safe_root_filename(root) in file_stats
+                        and file_stats[_safe_root_filename(root)].st_mtime_ns <= completed_ns
                         for root in meta["roots"]))
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError):
         return False
+
+
+def _resumable_roots(out_dir: Path, source_sig: dict) -> dict:
+    """Resume only outputs written for this exact source generation."""
+    try:
+        meta = json.loads((out_dir / _BUILD_PROGRESS_FILE).read_text("utf-8"))
+        if meta.get("format") != _CACHE_FORMAT_VERSION or meta.get("source") != source_sig:
+            return {}
+        files = _root_file_stats(out_dir)
+        return {root: signature for root, signature in meta["roots"].items()
+                if _safe_root_filename(root) in files
+                and signature == [files[_safe_root_filename(root)].st_size,
+                                  files[_safe_root_filename(root)].st_mtime_ns]}
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        return {}
 
 
 def _build_checkpoint(should_cancel, on_chunk_done) -> None:
@@ -529,6 +559,9 @@ def build_pivoted_cache_for_product(
                 anchor_cols=[c for c in (root_col, lot_col, wf_col) if c],
                 on_batch=lambda: _build_checkpoint(should_cancel, on_chunk_done))
         if fingerprints is not None:
+            # Empty root IDs have no cache filename and must not poison the
+            # completion manifest after every otherwise successful build.
+            fingerprints = {root: value for root, value in fingerprints.items() if root.strip()}
             unique_roots = sorted(fingerprints.keys())
             previous = _load_root_fingerprints(out_dir) or {}
             # 지문 기록 이후에 다시 기록된 per-root 파일은 빌더 외부에서 쓰인
@@ -560,8 +593,12 @@ def build_pivoted_cache_for_product(
                 collect_streaming(lf.select(key_expr.alias("__root")).unique(), fallback=False)["__root"]
                 .drop_nulls().to_list()
             )
-            unique_roots = sorted(unique_roots)
-            build_roots = list(unique_roots)
+            unique_roots = sorted(root for root in unique_roots if str(root).strip())
+            resumed_roots = _resumable_roots(out_dir, source_sig)
+            build_roots = [root for root in unique_roots if root not in resumed_roots]
+
+        if not unique_roots:
+            raise RuntimeError("pivot build has no valid root IDs")
 
         try:
             catalog_cols = [c for c in (root_col, lot_col, _detect_col(columns, "fab_lot_id", "fab_lot")) if c]
@@ -677,6 +714,9 @@ def build_pivoted_cache_for_product(
                         logger.debug("KNOB 사이드카 기록 실패 (%s/%s): %s", canonical, safe_root, exc)
                 if fingerprints is not None:
                     committed_fingerprints[root_id_str] = fingerprints[root_id_str]
+                else:
+                    stat = final_path.stat()
+                    resumed_roots[root_id_str] = [stat.st_size, stat.st_mtime_ns]
 
             gc.collect()
             # Retain confirmed roots after an interrupted attempt. Readiness
@@ -684,6 +724,10 @@ def build_pivoted_cache_for_product(
             # resume checkpoint and never marks unfinished roots as built.
             if fingerprints is not None:
                 _save_root_fingerprints(out_dir, committed_fingerprints, complete=False)
+            else:
+                _write_json_atomic(out_dir / _BUILD_PROGRESS_FILE, {
+                    "format": _CACHE_FORMAT_VERSION, "source": source_sig, "roots": resumed_roots,
+                })
 
             # lease keepalive — 30 분 TTL 을 청크마다 밀어 준다. 이게 없으면 30 분
             # 넘는 빌드에서 lease 가 stale 로 판정돼 다른 서버가 같은 제품을 동시에

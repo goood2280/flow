@@ -130,6 +130,11 @@ FLOWI_EXCLUDE_FILES = {
     'tests/test_flowi_chart_sql_contract.py',
 }
 
+LOCAL_EXCLUDE_FILES = {
+    # Local import-graph probe is intentionally ignored by Git and not deployed.
+    'frontend/scripts/test-page-loading.mjs',
+}
+
 
 def gather_files():
     seen = set()
@@ -149,7 +154,7 @@ def gather_files():
             rel = p.relative_to(ROOT).as_posix()
         except ValueError:
             return
-        if rel in FLOWI_EXCLUDE_FILES or rel.startswith(FLOWI_EXCLUDE_PREFIXES):
+        if rel in FLOWI_EXCLUDE_FILES or rel in LOCAL_EXCLUDE_FILES or rel.startswith(FLOWI_EXCLUDE_PREFIXES):
             return
         seen.add(p)
         out.append(p)

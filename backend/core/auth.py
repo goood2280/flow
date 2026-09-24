@@ -248,45 +248,15 @@ def require_admin(request: Request) -> dict:
 # 저장소: admin_settings.json 의 `page_admins: { "<page_id>": ["user1", "user2"] }`.
 # page_id 는 프론트 탭 이름과 맞춘다. 과거 plural/legacy key 는 읽을 때 canonical key 로 흡수한다.
 # global admin 은 언제나 통과 — 이 맵에 추가로 넣을 필요 없음.
-CANONICAL_PAGE_IDS = (
-    "filebrowser",
-    "dashboard",
-    "chartbuilder",
-    "templatereport",
-    "autoreport",
-    "lotrequest",
-    "splittable",
-    "lotmanage",
-    "productwiki",
-    "tracker",
-    "lottracker",
-    "inform",
-    "meeting",
-    "calendar",
-    "tablemap",
-    "groups",
-    "messages",
-    # Existing Agent tab key. Kept canonical for live deployments.
-    "diagnosis",
-    "knowledge",
-    "agent",
-    # v9.2.x: Valve 파이프라인 알람 판정 페이지.
-    "valve",
-    # v9.3.x: TEG 위치 조회 (WF MAP) 페이지.
-    "teg",
-    # 제품별 BIN/MSR TABLE을 TEG die 좌표에 컬러링하는 Yield Map.
-    "yieldmap",
-    # ET 측정시간 (root lot × step_id × PGM(pt) 소요시간) 페이지.
-    "ettime",
-    # ET 다운로드 (vehicle reformatter REAL/ADDP index 추출) 페이지.
-    "reformatize",
-    # 붙여넣은 표를 사용자 정의 규칙으로 검사하는 페이지.
-    "dcop",
-    # Flow-i 채팅 사용 권한 — 홈 채팅 + home agent orchestrate 진입 게이트.
-    "flowi",
-    # 매칭 CSV 의 product 열을 raw DB 스캔으로 채우는 페이지 (관리자 승인 후 반영).
-    "matchfill",
-)
+# 실제 사이드바 페이지(pageManifest.jsx)의 home/admin 제외 목록. 내부 경로와
+# 폐기된 키는 새 위임 대상으로 허용하지 않는다.
+DELEGABLE_PAGE_IDS = frozenset({
+    "filebrowser", "dashboard", "splittable", "lotmanage", "productwiki",
+    "ramcache", "matchfill", "chartbuilder", "templatereport", "autoreport",
+    "lotrequest", "lotlocation", "inform", "meeting", "calendar", "tracker",
+    "lottracker", "valve", "teg", "yieldmap", "ettime", "reformatize", "dcop",
+})
+GRANTABLE_TAB_IDS = DELEGABLE_PAGE_IDS | {"flowi"}
 PAGE_ID_ALIASES = {
     "flow-i": "flowi",
     "flow_i": "flowi",
@@ -370,6 +340,20 @@ def parse_tab_tokens(raw: Any) -> tuple[list[str], dict[str, list[str]]]:
     return tabs, subs
 
 
+def user_tab_tokens(user: dict) -> tuple[list[str], dict[str, list[str]]]:
+    """Read the current users.csv grant; session tokens do not contain tabs."""
+    if (user or {}).get("role") == "admin":
+        return sorted(GRANTABLE_TAB_IDS), {tab: list(subs) for tab, subs in TAB_SUBTABS.items()}
+    if "tabs" in (user or {}):
+        return parse_tab_tokens(user.get("tabs"))
+    username = str((user or {}).get("username") or "")
+    if not username:
+        return [], {}
+    from routers.auth import read_users
+    row = next((item for item in read_users() if item.get("username") == username), None)
+    return parse_tab_tokens((row or {}).get("tabs", ""))
+
+
 def user_subtabs(user: dict) -> dict[str, list[str]]:
     """유저의 {tab: 허용 소탭} 맵. admin 은 전체."""
     if (user or {}).get("role") == "admin":
@@ -402,7 +386,7 @@ def get_page_admins() -> dict:
                 merged: dict[str, list[str]] = {}
                 for raw_key, raw_users in pa.items():
                     key = canonical_page_id(raw_key)
-                    if not key:
+                    if key not in DELEGABLE_PAGE_IDS:
                         continue
                     cur = merged.setdefault(key, [])
                     for username in _clean_usernames(raw_users):
@@ -450,7 +434,7 @@ def _user_tabs(user: dict) -> list[str] | str:
     for part in parts:
         # v9.1.x: "tab:subtab" 토큰 유지 — 유효하지 않은 토큰은 제거.
         tab = canonical_tab_token(part)
-        if tab and tab not in seen:
+        if tab and tab.split(":", 1)[0] in GRANTABLE_TAB_IDS and tab not in seen:
             seen.add(tab)
             out.append(tab)
     return out
@@ -534,7 +518,7 @@ def effective_permissions_bulk(users: list[dict]) -> list[dict]:
         user = user or {}
         username = str(user.get("username") or "").strip()
         role = str(user.get("role") or "user").strip() or "user"
-        manager_pages = list(CANONICAL_PAGE_IDS) if role == "admin" else sorted(
+        manager_pages = sorted(DELEGABLE_PAGE_IDS) if role == "admin" else sorted(
             page for page, page_users in pa.items() if username in (page_users or [])
         )
         if role == "admin":
@@ -559,7 +543,7 @@ def effective_permissions(user: dict) -> dict:
     username = str((user or {}).get("username") or "").strip()
     role = str((user or {}).get("role") or "user").strip() or "user"
     pa = get_page_admins()
-    manager_pages = list(CANONICAL_PAGE_IDS) if role == "admin" else sorted(
+    manager_pages = sorted(DELEGABLE_PAGE_IDS) if role == "admin" else sorted(
         page for page, users in pa.items() if username in (users or [])
     )
     return {
@@ -581,6 +565,18 @@ def require_page_manager(page_id: str):
         if is_page_manager(u, canonical):
             return u
         raise HTTPException(403, f"Admin or page manager ({canonical}) only")
+    return _dep
+
+
+def require_page_manager_any(*page_ids: str):
+    """Allow a management operation shared by explicitly named pages."""
+    pages = tuple(canonical_page_id(page_id) for page_id in page_ids)
+
+    def _dep(request: Request) -> dict:
+        user = current_user(request)
+        if any(is_page_manager(user, page) for page in pages):
+            return user
+        raise HTTPException(403, "Page manager only")
     return _dep
 
 

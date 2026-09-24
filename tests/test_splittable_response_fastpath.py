@@ -123,3 +123,72 @@ def test_remote_submission_is_not_cache_completion_and_allows_offline_fallback(m
     enqueue = splittable._enqueue_pivot_cache_build if kind == "pivot" else splittable._enqueue_fab_lot_index_build
     assert enqueue("P", reason="cache_miss")
     assert len(options) == 1 and options[0]["local_fallback"] is True
+
+
+@pytest.fixture
+def isolated_view_cache(monkeypatch, tmp_path):
+    from collections import OrderedDict
+    from routers import splittable
+
+    monkeypatch.setattr(splittable, "_VIEW_CACHE", OrderedDict())
+    monkeypatch.setattr(splittable, "_VIEW_CACHE_BYTES", 0)
+    monkeypatch.setattr(splittable, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(splittable, "_view_cache_max_bytes", lambda: 200_000)
+    monkeypatch.setattr(splittable, "_view_disk_cache_enabled", lambda: True)
+    return splittable
+
+
+def test_stale_disk_payload_remains_stale_after_ram_promotion(isolated_view_cache):
+    st = isolated_view_cache
+    key, hard, old_soft, new_soft = ("P", "R"), ("input",), ("old",), ("new",)
+    st._view_disk_cache_write(key, hard, old_soft, {"rows_compact": [{"a": ["S1"]}]})
+
+    assert st._split_view_cache_get(key, hard, new_soft)[0] == "stale"
+    assert st._split_view_cache_get(key, hard, new_soft)[0] == "stale"
+    st._split_view_cache_put(key, hard, new_soft, {"rows_compact": [{"a": ["S2"]}]})
+    freshness, payload = st._split_view_cache_get(key, hard, new_soft)
+    assert freshness == "fresh" and payload["rows_compact"][0]["a"] == ["S2"]
+    assert st._split_view_cache_get(key, ("edited",), new_soft) == ("miss", None)
+
+
+def test_oversized_response_uses_disk_without_evicting_hot_lots(isolated_view_cache):
+    st = isolated_view_cache
+    small = {"rows_compact": [{"a": ["S1"]}]}
+    large = {"rows_compact": [{"a": ["X" * 250_000]}]}
+    st._split_view_cache_put(("P", "hot"), (), (), small)
+    st._split_view_cache_put(("P", "large"), (), (), large)
+
+    assert ("P", "hot") in st._VIEW_CACHE
+    assert ("P", "large") not in st._VIEW_CACHE
+    assert st._VIEW_CACHE_BYTES <= st._view_cache_max_bytes()
+    assert st._split_view_cache_get(("P", "large"), (), ()) == ("fresh", large)
+    assert ("P", "large") not in st._VIEW_CACHE
+
+
+def test_view_cache_accounts_for_long_values_plans_and_metadata(isolated_view_cache):
+    st = isolated_view_cache
+    payload = {"rows_compact": [{"a": ["actual"], "p": {"0": "P" * 50_000}}],
+               "all_columns": ["COLUMN_" + "X" * 100_000]}
+    assert st._estimate_view_payload_bytes(payload) > 150_000
+    # The second large entry must evict the first instead of accumulating.
+    st._split_view_cache_put_memory(("P", "R1"), (), (), payload)
+    st._split_view_cache_put_memory(("P", "R2"), (), (), payload)
+    assert list(st._VIEW_CACHE) == [("P", "R2")]
+    assert st._VIEW_CACHE_BYTES <= st._view_cache_max_bytes()
+
+
+def test_ready_view_reuses_diagnostics_but_refreshes_s0(monkeypatch):
+    from routers import splittable as st
+
+    monkeypatch.setattr(st, "_knob_s0_for_root", lambda *_: {"KNOB_A": {"value": "history"}})
+    monkeypatch.setattr(st, "_knob_current_s0_for_product", lambda *_: {"KNOB_A": {"value": "current"}})
+    def unexpected(*args, **kwargs):
+        pytest.fail("ready response must not reaggregate the entire root RAM cache")
+    monkeypatch.setattr(st, "_product_ram_cache_response_meta", unexpected)
+    payload = {"product": "P", "root_lot_id": "R", "rows_compact": [{"_param": "KNOB_A"}],
+               "lookup_cache": {}, "product_cache": {"hit": True}}
+    result = st._attach_split_view_runtime_fields(payload, None, payload_cache_hit=True)
+    assert result["product_cache"] == {"hit": True}
+    assert result["s0_by_knob"]["KNOB_A"]["value"] == "history"
+    assert result["s0_edit_by_knob"]["KNOB_A"]["value"] == "current"
+    assert "s0_by_knob" not in payload

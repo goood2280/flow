@@ -198,6 +198,7 @@ DEFAULT_FILEBROWSER_SETTINGS = {
     "schema_column_page_size": DEFAULT_SCHEMA_COLUMN_PAGE_SIZE,
     "csv_rules": {},
     "file_descriptions": {},
+    "file_name_aliases": {},
     "hidden_db_dirs": ["reformatter"],
     "db_name_aliases": {},
     "versioned_single_file_dirs": ["reformatter"],

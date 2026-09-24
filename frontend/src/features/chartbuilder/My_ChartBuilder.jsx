@@ -62,7 +62,7 @@ const JOIN_HOWS=[
   {how:"semi",short:"오른쪽에 있는 왼쪽 행만",desc:"오른쪽에 key 가 있는 왼쪽 행만 남기고, 오른쪽 열은 붙이지 않습니다. 값은 필요 없고 '오른쪽에 존재하는가'로 거르기만 할 때 씁니다(행이 늘지 않습니다)."},
   {how:"anti",short:"오른쪽에 없는 왼쪽 행만",desc:"semi 의 반대로, 오른쪽에 key 가 없는 왼쪽 행만 남깁니다. 매칭 실패분을 뽑아 원인을 볼 때 씁니다."},
 ];
-const DERIVED_GRID_COLUMNS=["name","columns","separator"];
+const DERIVED_GRID_COLUMNS=["name","columns","separator","operation","segments"];
 const FILTER_GRID_COLUMNS=["column","operator","values"];
 const DERIVED_GRID_MAX_ROWS=20;
 const FILTER_GRID_MAX_ROWS=50;
@@ -70,6 +70,7 @@ function normalizeDerivedRows(rows){return normalizeSpreadsheetRows(rows,DERIVED
 function normalizeFilterRows(rows){return normalizeSpreadsheetRows(rows,FILTER_GRID_COLUMNS,{minRows:4,maxRows:FILTER_GRID_MAX_ROWS});}
 function cleanDerivedColumns(rows){
   return(rows||[]).map(row=>({
+    ...(row?.operation==="split_prefix"?{operation:"split_prefix",segments:Number(row.segments)||1}:{}),
     name:text(row?.name).trim(),
     columns:listValues(row?.columns),
     separator:row?.separator==null||text(row.separator)===""?"_":text(row.separator).slice(0,8),
@@ -258,6 +259,7 @@ function definitionFromForm(sources,joins,maxRows,chart={}){
     }
     const rootLots=listValues(source.runtime_root_lot_ids||[]),wafers=listValues(source.runtime_wafer_ids||[]);
     const linkedPairs=Array.isArray(source.runtime_lot_wafer_pairs)?source.runtime_lot_wafer_pairs.filter(pair=>text(pair?.root_lot_id).trim()&&text(pair?.wafer_id).trim()):[];
+    if(linkedPairs.length)lines.push(`LOT_WAFER_PAIRS = ${JSON.stringify(linkedPairs)}`);
     if(!linkedPairs.length&&rootLots.length)lines.push(`ROOT_LOTS = ${rootLots.join(", ")}`);
     if(!linkedPairs.length&&wafers.length)lines.push(`WAFERS = ${wafers.join(", ")}`);
     if(source.apply_reformatter){
@@ -265,7 +267,8 @@ function definitionFromForm(sources,joins,maxRows,chart={}){
       if(text(source.reformatter_items).trim())lines.push(`ITEMS = ${text(source.reformatter_items).trim()}`);
       if(text(source.reformatter_agg).trim())lines.push(`AGG = ${text(source.reformatter_agg).trim().toUpperCase()}`);
     }
-    cleanDerivedColumns(source.derived_columns).forEach(row=>lines.push(`DERIVE = ${row.name} | columns=${row.columns.join(",")} | separator=${row.separator}`));
+    if(source.reformatter_agg_scope==="wafer")lines.push("AGG_SCOPE = wafer");
+    cleanDerivedColumns(source.derived_columns).forEach(row=>lines.push(`DERIVE = ${row.name} | columns=${row.columns.join(",")} | separator=${row.separator}${row.operation==="split_prefix"?` | operation=split_prefix | segments=${row.segments}`:""}`));
     cleanRuntimeFilters(source.runtime_filters).forEach(row=>lines.push(`FILTER = ${row.column} | operator=${row.operator} | values=${row.values.join(",")}`));
     lines.push("");
   });
@@ -985,7 +988,7 @@ function EtExpressionModal({
 }
 
 export default function My_ChartBuilder({user}){
-  const canUseLlm=user?.role==="admin";
+  const canUseLlm=canManagePage(user,"chartbuilder");
   const[roots,setRoots]=useState([]);
   const[sources,setSources]=useState([newSource(1)]);
   const[joins,setJoins]=useState([]);
@@ -1062,6 +1065,7 @@ export default function My_ChartBuilder({user}){
   const[assistantReply,setAssistantReply]=useState(null);
   useEffect(()=>{sf("/api/filebrowser/roots?fast=true").then(d=>setRoots([
     ...(d.roots||[]),
+    {name:"ML_TABLE",display_name:"ML_TABLE · INLINE 평균 / VM / KNOB",structure:"virtual"},
     {name:"YIELD_SHOT",display_name:"WF MAP · Full Shot",granularity:"shot",structure:"virtual"},
   ])).catch(e=>toast.error(e.message));},[]);
   const loadHistory=(query=historySearch)=>{
@@ -1171,7 +1175,7 @@ export default function My_ChartBuilder({user}){
   const formSource=source=>({...source,runtime_recent_days:recentDaysValue(source)||"",runtime_date_column:text(source?.runtime_date_column),derived_columns:normalizeDerivedRows(source?.derived_columns),runtime_filters:normalizeFilterRows(source?.runtime_filters)});
   const requestSource=(source,linkedRows=[])=>{
     const resolved=resolveSourceRoot(source),days=recentDaysValue(resolved);
-    const pairs=(linkedRows||[]).map(row=>({root_lot_id:text(row.root_lot_id).trim(),wafer_id:text(row.wafer_id).trim()})).filter(row=>row.root_lot_id&&row.wafer_id);
+    const pairs=(linkedRows?.length?linkedRows:(resolved.runtime_lot_wafer_pairs||[])).map(row=>({root_lot_id:text(row.root_lot_id).trim(),wafer_id:text(row.wafer_id).trim()})).filter(row=>row.root_lot_id&&row.wafer_id);
     const roots=pairs.length?listValues(pairs.map(row=>row.root_lot_id)):listValues(resolved.runtime_root_lot_ids||[]);
     const wafers=pairs.length?listValues(pairs.map(row=>row.wafer_id)):listValues(resolved.runtime_wafer_ids||[]);
     return{...resolved,runtime_recent_days:days,runtime_date_column:days?(text(resolved.runtime_date_column).trim()||DEFAULT_DATE_COLUMN):"",runtime_root_lot_ids:roots,runtime_wafer_ids:wafers,runtime_lot_wafer_pairs:pairs,derived_columns:cleanDerivedColumns(resolved.derived_columns),runtime_filters:cleanRuntimeFilters(resolved.runtime_filters)};
@@ -1714,15 +1718,15 @@ export default function My_ChartBuilder({user}){
     };
   },[chart,axisFonts,chartTitle,xAxisLabel,yAxisLabel,pointSize,markerOpacity,lineWidth,xMin,xMax,yMin,yMax,yScale,showGrid,legendPosition,boxPoints,showLegend,specLowCol,specHighCol,waferRenderMode,waferSpecLow,waferSpecHigh]);
   const isPie=chartType==="pie"||chartType==="donut";
-  const chatChartConfigKey=user?.role==="admin"?JSON.stringify(currentChartConfig()):"";
+  const chatChartConfigKey=canUseLlm?JSON.stringify(currentChartConfig()):"";
   const chatColumnsKey=JSON.stringify(columns);
   useEffect(()=>{
-    if(user?.role!=="admin")return;
+    if(!canUseLlm)return;
     try{
       const definition_code=definitionFromForm(sources.map(source=>requestSource(source,colorListPreview.rows)),sources.length>1?joins:[],maxRows,JSON.parse(chatChartConfigKey));
       sessionStorage.setItem(`flow:chat:chart:${user?.username||""}`,JSON.stringify({definition_code,columns:JSON.parse(chatColumnsKey)}));
     }catch{}
-  },[user?.role,user?.username,sources,joins,maxRows,chatChartConfigKey,colorListPreview.rows,chatColumnsKey]);
+  },[canUseLlm,user?.username,sources,joins,maxRows,chatChartConfigKey,colorListPreview.rows,chatColumnsKey]);
 
   // 상자별 통계는 그림과 같은 묶음(색 계열 × x 값)에서 낸다 — 표와 그림이 어긋나면 안 된다.
   const boxBuckets=useMemo(()=>chartType==="box"&&Array.isArray(displayChart?.points)?boxBucketsFromPoints(displayChart.points,colorCol):[],[chartType,displayChart,colorCol]);

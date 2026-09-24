@@ -176,6 +176,143 @@ function Segmented({ value, onChange, options }) {
   );
 }
 
+function VolumeDistributionCard({ title, subtitle, data, loading, error, dark, controls = null }) {
+  const rows = Array.isArray(data?.rows) ? data.rows : EMPTY_ARR;
+  const groups = rows.map((row) => ({
+    label: String(row.label || "(미지정)"),
+    value: Number(row.wafer_count || 0),
+    count: Number(row.lot_count || 0),
+    percent: Number(Number(row.share_pct || 0).toFixed(1)),
+  }));
+  return (
+    <div style={{ ...cardStyle, padding: "10px 12px 12px", minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10, marginBottom: 4, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 12.5, fontWeight: 650 }}>{title}</div>
+          <div style={{ fontSize: 10.5, color: "var(--text-secondary)", marginTop: 2 }}>{subtitle}</div>
+        </div>
+        {controls}
+      </div>
+      {loading && !data ? <div style={{ minHeight: 220, display: "grid", placeItems: "center" }}><Loading /></div> : error ? (
+        <div style={{ minHeight: 220, display: "grid", placeItems: "center", color: BAD.fg, fontSize: 12 }}>{error}</div>
+      ) : !rows.length ? (
+        <div style={{ minHeight: 220, display: "grid", placeItems: "center", color: "var(--text-secondary)", fontSize: 12 }}>표시할 물량이 없습니다.</div>
+      ) : <>
+        <div style={{ opacity: loading ? 0.55 : 1, transition: "opacity .15s" }}>
+          <FlowPlotlyChart
+            chart={{ chart_type: "bar_horizontal", groups, x_label: data?.group_by === "product" ? "제품" : "LOT_TYPE", y_label: "WAFER", hide_title: true }}
+            cfg={{ chart_type: "bar_horizontal", hide_title: true, show_legend: false, compact: true, use_svg: true }}
+            height={220}
+            dark={dark}
+          />
+        </div>
+        <div style={{ overflow: "auto", maxHeight: 190, marginTop: 2 }}>
+          <table style={{ borderCollapse: "collapse", width: "100%", fontSize: 11.5, ...numFont }}>
+            <thead><tr>
+              <th style={{ ...th, textAlign: "left" }}>{data?.group_by === "product" ? "제품" : "LOT_TYPE"}</th>
+              <th style={{ ...th, textAlign: "right" }}>WAFER</th>
+              <th style={{ ...th, textAlign: "right" }}>LOT</th>
+              <th style={{ ...th, textAlign: "right" }}>비중</th>
+            </tr></thead>
+            <tbody>{rows.map((row) => <tr key={row.label}>
+              <td style={{ ...td, textAlign: "left" }}>{row.label || "(미지정)"}</td>
+              <td style={{ ...td, textAlign: "right", fontWeight: 650 }}>{nf(row.wafer_count)}</td>
+              <td style={{ ...td, textAlign: "right" }}>{nf(row.lot_count)}</td>
+              <td style={{ ...td, textAlign: "right", color: "var(--text-secondary)" }}>{Number(row.share_pct || 0).toFixed(1)}%</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+        <div style={{ fontSize: 10.5, color: "var(--text-secondary)", textAlign: "right", marginTop: 6, ...numFont }}>
+          합계 {nf(data?.total_wafers)} wafer · {nf(data?.total_lots)} lot
+        </div>
+      </>}
+    </div>
+  );
+}
+
+function VolumeDistributionSection({ product, products, dark, refreshKey }) {
+  const [productData, setProductData] = useState(null);
+  const [productLoading, setProductLoading] = useState(true);
+  const [productError, setProductError] = useState("");
+  const [lotData, setLotData] = useState(null);
+  const [lotLoading, setLotLoading] = useState(false);
+  const [lotError, setLotError] = useState("");
+  const [ownProduct, setOwnProduct] = useState("");
+  const productSeq = useRef(0);
+  const lotSeq = useRef(0);
+  const current = String(product || "").trim();
+  const allSelected = !current || current.toUpperCase() === "ALL";
+  const choices = useMemo(() => mergeProductOrder([
+    ...(products || EMPTY_ARR), ...(productData?.products || EMPTY_ARR),
+  ], []), [products, productData?.products]);
+  const lotProduct = allSelected ? ownProduct : current;
+
+  useEffect(() => {
+    if (allSelected && (!ownProduct || !choices.includes(ownProduct)) && choices.length) setOwnProduct(choices[0]);
+  }, [allSelected, choices, ownProduct]);
+
+  useEffect(() => {
+    const seq = ++productSeq.current;
+    const controller = new AbortController();
+    setProductLoading(true);
+    setProductError("");
+    sf(`${API}/volume-distribution?product=ALL&group_by=product`, { signal: controller.signal })
+      .then((response) => { if (seq === productSeq.current) setProductData(response); })
+      .catch((error) => { if (error?.name !== "AbortError" && seq === productSeq.current) setProductError(error.message || String(error)); })
+      .finally(() => { if (seq === productSeq.current) setProductLoading(false); });
+    return () => controller.abort();
+  }, [refreshKey]);
+
+  useEffect(() => {
+    const seq = ++lotSeq.current;
+    const controller = new AbortController();
+    if (!lotProduct) {
+      setLotData(null);
+      setLotError("");
+      setLotLoading(false);
+      return () => controller.abort();
+    }
+    setLotLoading(true);
+    setLotError("");
+    setLotData(null);
+    sf(`${API}/volume-distribution?product=${encodeURIComponent(lotProduct)}&group_by=lot_type`, { signal: controller.signal })
+      .then((response) => { if (seq === lotSeq.current) setLotData(response); })
+      .catch((error) => { if (error?.name !== "AbortError" && seq === lotSeq.current) setLotError(error.message || String(error)); })
+      .finally(() => { if (seq === lotSeq.current) setLotLoading(false); });
+    return () => controller.abort();
+  }, [lotProduct, refreshKey]);
+
+  return (
+    <section aria-label="WAFER 물량 구성" style={{ display: "grid", gap: 8 }}>
+      <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ fontSize: 13, fontWeight: 650 }}>WAFER 물량 구성</div>
+        <div style={{ fontSize: 10.5, color: "var(--text-secondary)" }}>전체 현재 물량 · wafer 수 · Root Lot 제외 없음</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(340px, 1fr))", gap: 10, alignItems: "start" }}>
+        <VolumeDistributionCard
+          title="전체 제품 물량 비중"
+          subtitle="모든 제품의 wafer 물량과 점유율"
+          data={productData}
+          loading={productLoading}
+          error={productError}
+          dark={dark}
+        />
+        <VolumeDistributionCard
+          title={`${lotProduct || "제품"} LOT_TYPE 물량`}
+          subtitle="선택 제품 안에서 lot_type별 wafer 물량과 점유율"
+          data={lotData}
+          loading={lotLoading}
+          error={lotError}
+          dark={dark}
+          controls={allSelected ? <select value={ownProduct} onChange={(event) => setOwnProduct(event.target.value)} style={selStyle} aria-label="LOT_TYPE 물량 제품 선택">
+            {choices.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select> : <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>현재 제품</span>}
+        />
+      </div>
+    </section>
+  );
+}
+
 // Split 기준 열 선택 — 열이 수백 개라 네이티브 select 로는 찾기가 어렵다.
 // 입력창은 검색 필터, 그 아래는 지금까지처럼 그룹(KNOB/MASK/FAB/기타)별 스크롤 목록.
 function SplitColSelect({ value, groups, onChange, style }) {
@@ -391,6 +528,7 @@ function WipSplitPanel({ user }) {
   const [binSize, setBinSize] = useState(30000);
   const [binInput, setBinInput] = useState("30000");
   const [splitCol, setSplitCol] = useState("");
+  const [selectedSplitValue, setSelectedSplitValue] = useState("");
   // 제품 '전체' — 서버가 split 조인을 건너뛰고 제품 자체를 색 구분 축으로 돌려준다.
   const isAllProducts = String(product || "").toUpperCase() === "ALL";
   const [axis, setAxis] = useState("step_desc");
@@ -425,6 +563,7 @@ function WipSplitPanel({ user }) {
 
   // ex 는 톱니바퀴 설정값 — 기본 인자라 호출 시점의 현재 값이 그대로 쓰인다.
   const fetchData = (p, b, s, a, lt, ex = excludeRootPrefix) => {
+    setSelectedSplitValue("");
     const seq = ++fetchSeqRef.current;
     fetchControllerRef.current?.abort();
     const controller = new AbortController();
@@ -528,10 +667,22 @@ function WipSplitPanel({ user }) {
     });
     return { series, bins: cbins, otherLabel, foldedCount };
   }, [bins, splitValues, unassigned, axis]);
+  const activeSplitValue = splitValues.includes(selectedSplitValue) ? selectedSplitValue : "";
+  const shownChart = useMemo(() => activeSplitValue ? {
+    series: [activeSplitValue],
+    bins: chart.bins.map((bin, index) => ({
+      ...bin,
+      splits: { [activeSplitValue]: Number(bins[index]?.splits?.[activeSplitValue] || 0) },
+    })),
+  } : chart, [chart, bins, activeSplitValue]);
+  const selectedSplitTotal = activeSplitValue
+    ? bins.reduce((sum, bin) => sum + Number(bin.splits?.[activeSplitValue] || 0), 0)
+    : 0;
 
   const colorMap = useMemo(
-    () => buildSeriesColors(chart.series, { dark, missingLabel: unassigned, otherLabel: chart.otherLabel }),
-    [chart.series, chart.otherLabel, dark, unassigned],
+    () => buildSeriesColors(activeSplitValue && !chart.series.includes(activeSplitValue) ? [...chart.series, activeSplitValue] : chart.series,
+      { dark, missingLabel: unassigned, otherLabel: chart.otherLabel }),
+    [chart.series, chart.otherLabel, activeSplitValue, dark, unassigned],
   );
   const foldedColor = colorMap[chart.otherLabel] || "var(--text-secondary)";
   const colorOf = (v) => colorMap[v] || foldedColor;
@@ -717,6 +868,14 @@ function WipSplitPanel({ user }) {
             />
           </FilterField>
         )}
+        <FilterField title="Split 값별 물량">
+          <select style={{ ...selStyle, minWidth: 150 }} value={activeSplitValue}
+            disabled={!splitValues.length || loading}
+            onChange={(event) => setSelectedSplitValue(event.target.value)}>
+            <option value="">전체 Split</option>
+            {splitValues.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+        </FilterField>
         {data && !isAllProducts && !(data.split_cols || []).length && (
           // 신규 제품이 latest cache 에는 떴는데 나눌 축이 하나도 없는 경우 —
           // 무엇이 없어서 못 나누는지 화면에서 바로 알려준다.
@@ -730,6 +889,7 @@ function WipSplitPanel({ user }) {
         <Button variant="subtle" onClick={() => fetchData(product, binSize, splitCol, axis, lotType)} disabled={loading}>{loading ? "조회 중…" : "새로고침"}</Button>
         <div style={{ marginLeft: "auto", display: "flex", gap: 20, alignItems: "flex-end", flexWrap: "wrap" }}>
           <Stat title="총 WAFER" value={nf(grandTotal)} sub={`${product || "-"} · latest cache`} />
+          {activeSplitValue && <Stat title="선택 Split WAFER" value={nf(selectedSplitTotal)} sub={activeSplitValue} />}
           <Stat title="SPLIT 매칭" value={`${matchedPct}%`} sub={`${nf(data?.matched_wafers ?? 0)} wafer`} />
           <Stat title="STEP 구간" value={nf(bins.length)} sub={axis === "step_desc" ? "step_desc 그룹" : `간격 ${nf(data?.bin_size ?? binSize)}`} />
           <Stat title="캐시 갱신" value={<span style={{ fontSize: 12.5, fontWeight: 600 }}>{(data?.generated_at || "-").replace("T", " ").slice(5, 16)}</span>} />
@@ -773,15 +933,15 @@ function WipSplitPanel({ user }) {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 6 }}>
           <div style={{ fontSize: 12.5, fontWeight: 650, whiteSpace: "nowrap" }}>
             STEP 구간별 WAFER 물량
-            <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}> · {isAllProducts ? "제품별" : (splitCol || "split 없음")}</span>
+            <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}> · {isAllProducts ? "제품별" : (splitCol || "split 없음")}{activeSplitValue ? ` = ${activeSplitValue}` : ""}</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 10.5, color: "var(--text-secondary)" }}>
             <span>
-              세로 {norm === "percent" ? "구간 내 비중" : "WAFER"} · 가로 {axis === "step_desc" ? "STEP_DESC 앞 숫자" : `step_id 구간 시작값 (간격 ${nf(data?.bin_size ?? binSize)})`}
+              세로 {activeSplitValue || norm !== "percent" ? "WAFER" : "구간 내 비중"} · 가로 {axis === "step_desc" ? "STEP_DESC 앞 숫자" : `step_id 구간 시작값 (간격 ${nf(data?.bin_size ?? binSize)})`}
               {chart.foldedCount ? ` · 하위 ${chart.foldedCount}종 기타` : ""}
               {data?.exclude_root_prefix ? ` · ${data.exclude_root_prefix}* root_lot 제외 ${nf(data.excluded_wafers || 0)}` : ""}
             </span>
-            <Segmented value={norm} onChange={setNorm} options={NORM_CHOICES} />
+            {!activeSplitValue && <Segmented value={norm} onChange={setNorm} options={NORM_CHOICES} />}
           </div>
         </div>
 
@@ -820,12 +980,12 @@ function WipSplitPanel({ user }) {
           {loading && !data ? <Loading /> : (
             <div style={{ opacity: loading ? 0.55 : 1, transition: "opacity .15s" }}>
               <WipStackedBar
-                bins={chart.bins}
-                splitValues={chart.series}
+                bins={shownChart.bins}
+                splitValues={shownChart.series}
                 dark={dark}
                 unassignedLabel={unassigned}
                 otherLabel={chart.otherLabel}
-                norm={norm}
+                norm={activeSplitValue ? "count" : norm}
                 height={chartH}
                 axis={axis}
                 onSegmentClick={openDrill}
@@ -837,6 +997,8 @@ function WipSplitPanel({ user }) {
           막대 클릭 = 구간×split lot/wafer 목록 · 레전드 클릭 = 해당 split 숨김 · 더블클릭 = 단독 보기
         </div>
       </div>
+
+      <VolumeDistributionSection product={product} products={availableProducts} dark={dark} refreshKey={data} />
 
       {/* 드릴다운 — 클릭한 구간×split 의 root_lot/wafer 전량 */}
       {drill && (

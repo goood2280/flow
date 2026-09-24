@@ -39,7 +39,7 @@ function storedTabTokens() {
   try {
     const u = JSON.parse(localStorage.getItem("hol_user") || "null");
     if (!u) return null;
-    if (u.role === "admin" || u.tabs === "__all__") return "__all__";
+    if (u.role === "admin") return "__all__";
     const raw = Array.isArray(u.tabs) ? u.tabs.join(",") : String(u.tabs || "");
     return raw.split(",").map((s) => s.trim()).filter(Boolean);
   } catch {
@@ -51,6 +51,10 @@ export function allowedSubTabs(tabKey) {
   const key = canonicalPageId(tabKey);
   const catalog = (SUB_TABS[key] || []).map((s) => s.key);
   const tokens = storedTabTokens();
+  try {
+    const user = JSON.parse(localStorage.getItem("hol_user") || "null");
+    if (canManagePage(user, key)) return catalog;
+  } catch { /* no stored session */ }
   if (tokens === null || tokens === "__all__") return catalog;
   const subs = [];
   let bare = false;
@@ -86,11 +90,11 @@ export function grantedTabKeys(userTabs) {
 export function canAccessTab(user, userTabs, tabKey) {
   if (REMOVED_TAB_KEYS.has(tabKey)) return false;
   if (tabKey === "home") return true;
-  if (userTabs === "__all__") return true;
+  if (tabKey === "flowi") return isAdmin(user) || grantedTabKeys(userTabs).includes("flowi");
   const tabConfig = TABS.find((item) => item.key === tabKey);
-  // PI 처리 담당자는 페이지 위임만 받아도 랏 요청 보드에 바로 진입할 수 있다.
-  // (일반 요청자는 기존 탭 권한으로 진입.)
-  if (tabKey === "lotrequest" && isPageAdmin(user, tabKey)) return true;
+  if (!tabConfig) return false;
+  if (isAdmin(user)) return true;
+  if (tabKey !== "admin" && isPageAdmin(user, tabKey)) return true;
   if (tabConfig?.adminOnly && !isAdmin(user)) {
     // strictAdmin: page-admin 위임으로도 노출 불가.
     if (tabConfig?.strictAdmin || tabKey === "admin" || !isPageAdmin(user, tabKey)) return false;

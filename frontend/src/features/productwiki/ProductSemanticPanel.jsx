@@ -55,12 +55,12 @@ export default function ProductSemanticPanel({ product: fixedProduct = "", admin
   const canConfirm = (record) => record?.is_current !== false && (admin || canManagePage(user, "productwiki") || record?.created_by === user?.username);
   const diagnostics = Array.isArray(data?.diagnostics) ? data.diagnostics : Array.isArray(data?.overview?.diagnostics) ? data.overview.diagnostics : [];
   return <section className="pw-semantic" aria-label="제품 용어와 구조 연결" style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 18, display: "grid", gap: 12 }}>
-    <h3 style={{ margin: 0 }}>제품 · Inline 별칭과 모듈 / 세부 구조 {pendingCount > 0 && <small style={{ color: "var(--warning, #b45309)" }}>· 확인 대기 {pendingCount}건</small>}</h3>
+    <h3 style={{ margin: 0 }}>제품 · Inline/ET 별칭과 모듈 / 세부 구조 {pendingCount > 0 && <small style={{ color: "var(--warning, #b45309)" }}>· 확인 대기 {pendingCount}건</small>}</h3>
     <p className="pw-muted">기록 원문과 해석 초안을 보존합니다. 실제 Step·Item 연결은 확인 후 공용 지식에 반영하며, 홈 Flow-i에서도 같은 연결을 참고합니다.</p>
     {admin && !reviewOnly && <>
       <Button disabled={busy} onClick={() => act(async () => {
         const value = await post("/bootstrap", {}); setCatalog(value); await reload();
-        setMessage(value.warning || "실제 DB 제품·모듈·Step·Inline 아이템을 확인했습니다.");
+        setMessage(value.warning || "실제 DB 제품·모듈·Step·Inline/ET 아이템을 확인했습니다.");
       })}>{busy ? "처리 중…" : "실제 DB에서 초기 Semantic 생성"}</Button>
       <small>FAB/INLINE 파일의 식별 열을 제한된 범위로 읽습니다. 측정값은 읽지 않으며, 표본에서 빠진 항목은 추측하지 않습니다.</small>
       {catalog?.generated_at && <span>기준 생성: {new Date(catalog.generated_at).toLocaleString()} · 제품 {catalog.product_names?.length || 0}개</span>}
@@ -81,7 +81,7 @@ export default function ProductSemanticPanel({ product: fixedProduct = "", admin
         })}>설명 저장 · LLM 구조화</Button>
       </>}
       {diagnostics.length > 0 && <Banner tone="warning"><span role="status">{diagnostics.join(" ")}</span></Banner>}
-      <details><summary>관찰된 제품 공정 순서 · Inline 아이템 ({data?.steps?.length || 0} Step / {measurements.length} 조합)</summary>
+      <details><summary>관찰된 제품 공정 순서 · Inline/ET 아이템 ({data?.steps?.length || 0} Step / {measurements.length} 조합)</summary>
          <div style={{ maxHeight: 250, overflow: "auto" }}><table><thead><tr><th>모듈</th><th>Step</th><th>공정 설명</th><th>Item</th><th>아이템 설명</th><th>출처</th><th>갱신</th></tr></thead><tbody>
           {(measurements.length ? measurements : data?.steps || []).map((row, i) => <tr key={i}><td>{row.module}</td><td>{row.step_id}</td><td>{row.step_desc}</td><td>{row.item_id || "—"}</td><td>{row.item_desc}</td><td>{row.source || row.source_type || "—"}</td><td>{row.updated_at ? new Date(row.updated_at).toLocaleString() : "—"}</td></tr>)}
         </tbody></table></div>

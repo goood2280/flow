@@ -608,6 +608,27 @@ def _file_description_for(file: str, fallback: str = "", settings: dict | None =
     return str(fallback or "")
 
 
+def _normalize_file_name_aliases(raw) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    aliases: dict[str, str] = {}
+    for raw_file, raw_display in list(raw.items())[:5000]:
+        key = _clean_rule_file_key(str(raw_file or ""))
+        display = str(raw_display or "").strip()
+        if display and len(display) <= 80:
+            aliases[key] = display
+    return aliases
+
+
+def _file_display_name(file: str, fallback: str = "", settings: dict | None = None) -> str:
+    settings = settings or _load_filebrowser_settings()
+    needle = str(file or "").strip().replace("\\", "/").casefold()
+    for key, display in (settings.get("file_name_aliases") or {}).items():
+        if str(key).casefold() == needle and str(display or "").strip():
+            return str(display).strip()
+    return Path(str(fallback or file).replace("\\", "/")).name
+
+
 def _normalize_filebrowser_settings(raw) -> dict:
     data = copy.deepcopy(DEFAULT_FILEBROWSER_SETTINGS)
     if not isinstance(raw, dict):
@@ -649,6 +670,7 @@ def _normalize_filebrowser_settings(raw) -> dict:
     data["schema_column_page_size"] = max(1, min(MAX_SCHEMA_COLUMN_PAGE_SIZE, schema_page))
     data["csv_rules"] = _normalize_csv_rules(raw.get("csv_rules") or {})
     data["file_descriptions"] = _normalize_file_descriptions(raw.get("file_descriptions") or {})
+    data["file_name_aliases"] = _normalize_file_name_aliases(raw.get("file_name_aliases") or {})
     data["db_name_aliases"] = _normalize_db_name_aliases(raw.get("db_name_aliases") or {})
     data["auto_s3_upload_on_save"] = bool(raw.get("auto_s3_upload_on_save", data.get("auto_s3_upload_on_save", False)))
     data["preview_cache_enabled"] = bool(raw.get("preview_cache_enabled", data.get("preview_cache_enabled", True)))

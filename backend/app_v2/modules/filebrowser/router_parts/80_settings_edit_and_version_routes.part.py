@@ -174,7 +174,7 @@ def filebrowser_sql_history(request: Request, limit: int = Query(50, ge=1, le=20
             return False
         if entry.get("event") != "history":
             return False
-        if role == "admin":
+        if _can_manage_filebrowser(me):
             return True
         return str(entry.get("username") or "") == username
 

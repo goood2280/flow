@@ -57,13 +57,12 @@ def _require_base_file_access(request: Request, file: str, access_scope: str = "
         return me, None
 
     from core import teg_map as _teg_map
-    from core.auth import canonical_tab_token, is_page_manager
+    from core.auth import is_page_manager, user_tab_tokens
 
     me = current_user(request)
     if not is_page_manager(me, "teg"):
-        raw_tabs = me.get("tabs") or []
-        tabs = raw_tabs if isinstance(raw_tabs, list) else str(raw_tabs).split(",")
-        if not any(canonical_tab_token(tab) == "teg" for tab in tabs):
+        tabs, _ = user_tab_tokens(me)
+        if "teg" not in tabs:
             raise HTTPException(403, "TEG page permission required")
 
     target = _resolve_base_file_for_version(file).resolve()
@@ -824,7 +823,13 @@ def _latest_version_content(vdir: Path) -> Path | None:
     return sorted(metas, key=lambda x: x[0])[-1][1] if metas else None
 
 
-def _snapshot_change_summary(current: Path, previous: Path | None, file: str = "") -> dict:
+def _snapshot_change_summary(
+    current: Path,
+    previous: Path | None,
+    file: str = "",
+    *,
+    table_diff: dict | None = None,
+) -> dict:
     if previous is None or not previous.exists():
         return {"label": "초기 버전", "rows_delta": None, "columns_delta": None, "changed_cells": None, "added_rows": 0, "deleted_rows": 0, "modified_rows": 0}
     cur_profile = _file_profile(current)
@@ -860,7 +865,8 @@ def _snapshot_change_summary(current: Path, previous: Path | None, file: str = "
             "removed_columns_count": len(removed_columns),
             "checksum_equal": diff.get("checksum_equal"),
         }
-    table_diff = _diff_table_between(current, previous, file=file)
+    if table_diff is None:
+        table_diff = _diff_table_between(current, previous, file=file)
     counts = table_diff.get("counts") if isinstance(table_diff, dict) else {}
     added_rows = int(counts.get("added") or 0) if isinstance(counts, dict) else 0
     deleted_rows = int(counts.get("deleted") or 0) if isinstance(counts, dict) else 0
@@ -1222,8 +1228,10 @@ def _snapshot_base_file_version(
         display_version = _bump_semver("v1.0", rows=rows, columns=cols, prev_rows=prev_rows, prev_columns=prev_cols)
     else:
         display_version = _next_semver(vdir, rows=rows, columns=cols)
-    change_summary = _snapshot_change_summary(target, previous_for_diff, file=file)
     save_diff_table = _diff_table_between(target, previous_for_diff, file=file)
+    change_summary = _snapshot_change_summary(
+        target, previous_for_diff, file=file, table_diff=save_diff_table,
+    )
     meta = {
         "version": version,
         "display_version": display_version,
@@ -1290,7 +1298,9 @@ def _list_base_file_versions(file: str) -> list[dict]:
         if latest_storage and str(storage_version) == latest_storage:
             profile_override = _post_save_profile_matching_current(meta, current_profile)
         change_summary = meta.get("change_summary") or {}
-        if not any(change_summary.get(k) for k in ("added_rows", "deleted_rows", "modified_rows", "added_columns", "removed_columns", "columns_delta")):
+        # A saved version with zero changes already has a complete summary. Rebuilding
+        # its diff here rereads both version files on every history refresh.
+        if not all(k in change_summary for k in ("added_rows", "deleted_rows", "modified_rows", "columns_delta")):
             content_fp = vdir / str(meta.get("content_file") or "")
             try:
                 diff_table = _diff_table_between(content_fp, _previous_version_content(file, storage_version), file=file)

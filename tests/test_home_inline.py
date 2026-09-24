@@ -4,6 +4,7 @@ import polars as pl
 import pytest
 
 from core import data_chat, data_chat_inline as inline, llm_adapter, product_semantics
+from core.paths import PATHS
 
 
 @pytest.fixture
@@ -27,6 +28,8 @@ def database(tmp_path, monkeypatch):
     monkeypatch.setattr(product_semantics, "resolve_terms", lambda *args, **kwargs: [])
     monkeypatch.setattr(inline.semantic_measure_catalog, "match_terms", lambda *args, **kwargs: [])
     monkeypatch.setattr(product_semantics, "PATHS", SimpleNamespace(db_root=tmp_path))
+    # flow-data 오버레이(matching_store)까지 fake 환경으로 격리한다.
+    monkeypatch.setattr(PATHS, "data_root", tmp_path)
     tmp_path.joinpath("Inline_matching.csv").write_text(
         "product,step_id,item_id,item_desc\nPRODA,A100,I1,ABC CD\nPRODA,A200,I2,ABC TCD\nPRODB,B100,I10,ABC CD\n", encoding="utf-8")
     return path
@@ -35,6 +38,22 @@ def database(tmp_path, monkeypatch):
 def bind(monkeypatch, **extra):
     row = {"kind": "measurements", "source_type": "INLINE", "step_id": "A100", "item_id": "I1", "term": "ABC CD", "reference_id": "confirmed-id", **extra}
     monkeypatch.setattr(product_semantics, "resolve_terms", lambda *args, **kwargs: [row])
+
+
+@pytest.mark.parametrize("alias", ["VM", "IM", "가상계측"])
+def test_virtual_measurements_use_vm_and_keep_family_on_trend(database, monkeypatch, alias):
+    frame = pl.read_parquet(database).with_columns(pl.Series("VM_I1", [101., 102., 103.]))
+    frame = frame.drop("FAB_PHOTO_tkout_time")
+    frame.write_parquet(database)
+    bind(monkeypatch, source_type="VM")
+    first = data_chat.execute(f"PRODA ABC CD {alias} 보여줘", {}, None)
+    assert first["ok"], first
+    assert first["tool"]["query_scope"]["column"] == "VM_I1"
+    assert first["tool"]["action"] == "vm.values"
+    second = data_chat.execute("Trend 보여줘", first["context"], None)
+    assert second["ok"], second
+    assert second["tool"]["action"] == "vm.trend"
+    assert second["tool"]["chart_result"]["points"][0]["y"] == 102.
 
 
 def test_semantic_direct_values_exact_fab_lot(database, monkeypatch):

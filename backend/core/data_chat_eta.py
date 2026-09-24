@@ -65,7 +65,7 @@ def _tracker(request, query, reference=""):
 
     return get_lot_tracker(request=request, lot_id=query["lot_id"],
                            reference_lot_id=reference, target_step_id=query["target_step_id"],
-                           product=query["product"], dummy=False)
+                           product=query["product"])
 
 
 def _valid_forecast(result, query):

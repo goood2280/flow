@@ -64,13 +64,45 @@ def _approved_plan(resolved, text, context):
 def _status(result):
     tool = result.get("tool") or {}
     state = result.get("context") or {}
-    if tool.get("missing") or (tool.get("approval") or {}).get("status") == "pending" or any(
-        state.get(k) for k in ("pending_product_prompt", "pending_semantic_selection", "pending_teg_selection", "pending_split_id", "pending_report_id", "pending_split_query", "pending_custom_selection", "pending_split_choice", "pending_eta", "pending_inline")
+    if tool.get("needs_input") or tool.get("missing") or (tool.get("approval") or {}).get("status") == "pending" or any(
+        state.get(k) for k in ("pending_product_prompt", "pending_semantic_selection", "pending_teg_selection", "pending_split_id", "pending_report_id", "pending_split_query", "pending_custom_selection", "pending_split_choice", "pending_eta", "pending_inline", "pending_et")
     ):
         return "needs_input"
     if result.get("ok") is False or tool.get("ok") is False or tool.get("error") or tool.get("blocked"):
         return "failed"
     return "completed"
+
+
+def _evidence(result):
+    """Adapt the active turn's observed results to the Home interpretation panel.
+
+    execution_trace.illustrative_* contains recipes, not executed SQL or sources.
+    Never promote those explanations to evidence.
+    """
+    route = result.get("routing_trace") or {}
+    tool = result.get("tool") or {}
+    state = result.get("context") or {}
+    scope = {**state, **(tool.get("context") or {}), **(tool.get("slots") or {})}
+    action = route.get("action") or tool.get("action") or tool.get("feature") or "clarification"
+    query = {}
+    if tool.get("executed_sql"):
+        query["sql"] = str(tool["executed_sql"])
+    return {
+        "semantic": {"slot_hints": route.get("bindings") or {}},
+        "steps": [{
+            "tool": action,
+            "title": action,
+            "status": route.get("status") or _status(result),
+            "ok": _status(result) == "completed",
+            "reason": route.get("rule_title") or "",
+            "source": "active_home_turn",
+            "ms": route.get("elapsed_ms", 0),
+            "targets": {key: str(scope[key]) for key in ("product", "root_lot_id", "lot_id", "file") if scope.get(key)},
+            "sources": list(tool.get("sources") or []),
+            "query": query,
+            "warnings": list(tool.get("warnings") or []),
+        }],
+    }
 
 
 def _one(question, context, request, history):
@@ -109,6 +141,9 @@ def _one(question, context, request, history):
         "status": _status(result), "sources": tool.get("sources") or [], "missing": tool.get("missing") or [],
         "events": events, "elapsed_ms": round((time.monotonic() - start) * 1000),
     }
+    result["evidence"] = _evidence(result)
+    from core.data_chat_interpretation import describe
+    result["interpretation"] = describe(question, result)
     return result
 
 
@@ -152,5 +187,9 @@ def execute(prompt, context, request, history=None):
             output = data_chat.reply(f"질문 {len(questions)}개 중 {completed}개 처리 완료. 질문별 결과를 확인하세요.",
                                      context=active, tool=last.get("tool"), ok=completed == len(questions))
             output.update(questions=results, batch={"total": len(questions), "completed": completed, "max_questions": flowi_routing.MAX_QUESTIONS})
+            output["evidence"] = {"semantic": {}, "steps": [
+                step for row in results
+                for step in (row.get("response", {}).get("evidence") or {}).get("steps", [])
+            ]}
         output["usage"] = {**usage, "llm_calls_remaining": usage["llm_call_limit"] - usage["llm_calls_used"], **llm_usage.snapshot()}
         return output

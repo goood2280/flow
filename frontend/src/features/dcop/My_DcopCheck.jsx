@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import PageGear from "../../components/PageGear";
 import { Button, EmptyState, Input, PageHeader, Pill, Select } from "../../components/UXKit";
 import { sf } from "../../lib/api";
+import { canManagePage } from "../../lib/permissions";
 
 // 서버 영속 저장소 도입 전 브라우저에 저장하던 키. 서버 파일이 아직 없으면 이
 // 값을 한 번 자동 이관하고, 이후에도 API 장애 시 임시 사본으로만 유지한다.
@@ -757,7 +758,7 @@ function RuleEditor({ settings, setSettings, headers, canEdit, storeState, onSav
 export default function MyDcopCheck({ user }) {
   const legacySettingsRef = useRef(null);
   if (legacySettingsRef.current === null) legacySettingsRef.current = loadSettings();
-  const assumedCanEdit = user?.role === "admin" || (user?.page_manager || []).includes("dcop");
+  const assumedCanEdit = canManagePage(user, "dcop");
   const [settings, setSettings] = useState(legacySettingsRef.current);
   const [settingsReady, setSettingsReady] = useState(false);
   const [canEdit, setCanEdit] = useState(assumedCanEdit);

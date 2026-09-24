@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 from core import teg_check as _tc
 from core import teg_map as _tm
 from core import teg_shape as _teg_shape
-from core.auth import canonical_tab_token, current_user, require_admin, require_page_manager
+from core.auth import current_user, is_page_manager, require_page_manager, user_tab_tokens
 
 router = APIRouter(prefix="/api/teg-map", tags=["teg-map"])
 
@@ -47,16 +47,14 @@ MAX_TEG_SELECTION = 30
 
 
 def _is_teg_manager(user: dict) -> bool:
-    return (user.get("role") == "admin"
-            or "teg" in (user.get("page_manager") or []))
+    return is_page_manager(user, "teg")
 
 
 def _require_teg_user(user=Depends(current_user)) -> dict:
     if _is_teg_manager(user):
         return user
-    raw = user.get("tabs") or []
-    values = raw if isinstance(raw, list) else str(raw).split(",")
-    if any(canonical_tab_token(value) == "teg" for value in values):
+    tabs, _ = user_tab_tokens(user)
+    if "teg" in tabs:
         return user
     raise HTTPException(403, "TEG page permission required")
 
@@ -93,7 +91,7 @@ def _config_payload(*, include_product_access: bool = False) -> dict:
 
 @router.get("/config")
 def config_get(user=Depends(current_user)):
-    return _config_payload(include_product_access=user.get("role") == "admin")
+    return _config_payload(include_product_access=_is_teg_manager(user))
 
 
 class ConfigReq(BaseModel):
@@ -117,7 +115,7 @@ def config_put(req: ConfigReq, user=Depends(_require_manager)):
         raise HTTPException(400, f"설정값 오류: {e}")
     from core.audit import record_user as _audit_user
     _audit_user(user.get("username", ""), "teg-map:config_save")
-    return _config_payload(include_product_access=user.get("role") == "admin")
+    return _config_payload(include_product_access=_is_teg_manager(user))
 
 
 class ReferenceFileSaveReq(BaseModel):
@@ -305,7 +303,7 @@ class ProductAccessReq(BaseModel):
 
 
 @router.get("/product-access")
-def product_access_get(_admin=Depends(require_admin)):
+def product_access_get(_admin=Depends(_require_manager)):
     from routers.auth import read_users
     users = [str(row.get("username") or "").strip() for row in read_users()
              if row.get("status") == "approved" and str(row.get("username") or "").strip()]
@@ -318,7 +316,7 @@ def product_access_get(_admin=Depends(require_admin)):
 
 
 @router.put("/product-access")
-def product_access_put(req: ProductAccessReq, admin=Depends(require_admin)):
+def product_access_put(req: ProductAccessReq, admin=Depends(_require_manager)):
     cfg = _tm.save_cfg({
         "product_nodes": req.product_nodes,
         "product_codes": req.product_codes,
@@ -395,14 +393,13 @@ class InlineMapTableReq(BaseModel):
 
 
 @router.get("/inline-map-settings")
-def inline_map_settings_get(_admin=Depends(require_admin)):
-    """DB root/confidential 데이터지만 global admin에게만 반환한다."""
+def inline_map_settings_get(_admin=Depends(_require_manager)):
     out = _tm.load_inline_map_settings()
     return {"ok": True, **out}
 
 
 @router.put("/inline-map-settings")
-def inline_map_settings_put(req: InlineMapTableReq, admin=Depends(require_admin)):
+def inline_map_settings_put(req: InlineMapTableReq, admin=Depends(_require_manager)):
     try:
         out = _tm.save_inline_map_table(
             req.table_name,
@@ -423,7 +420,7 @@ def inline_map_settings_put(req: InlineMapTableReq, admin=Depends(require_admin)
 
 
 @router.delete("/inline-map-settings")
-def inline_map_settings_delete(table_name: str = Query(...), admin=Depends(require_admin)):
+def inline_map_settings_delete(table_name: str = Query(...), admin=Depends(_require_manager)):
     try:
         out = _tm.delete_inline_map_table(table_name)
     except LookupError as e:

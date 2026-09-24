@@ -26,6 +26,7 @@ orchestrate_stream(prompt, user) → generator: SSE event chunk dict 시퀀스.
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -57,6 +58,13 @@ _REACT_DECISION_TIMEOUT_S = 8
 _REACT_DEFAULT_DEADLINE_S = 90
 _REACT_ADMIN_DEFAULT_DEADLINE_S = 300
 _REACT_ADMIN_DEFAULT_MAX_ITERS = 16
+# 홈 요청 스코프 LLM 예산. 분당 window(25)보다 한 단계 낮게 둬 1질문이
+# 전역 쿼터를 통째로 먹지 않게 한다. 정확도 우선이라 여유 있게 잡고,
+# env 로만 조정한다 (config/는 seed-only).
+_HOME_TURN_LLM_LIMIT_ENV = "FLOW_HOME_TURN_LLM_LIMIT"
+_HOME_TURN_LLM_ADMIN_LIMIT_ENV = "FLOW_HOME_TURN_LLM_ADMIN_LIMIT"
+HOME_TURN_LLM_LIMIT = 20
+HOME_TURN_LLM_ADMIN_LIMIT = 24
 HOME_AGENT_RUNS_DIR = PATHS.data_root / "home_agent_runs"
 _RUN_ID_PREFIX = "home_flowi"
 _MAX_SNAPSHOT_RUNS = 120
@@ -81,6 +89,8 @@ _RUNTIME_BASE_EDGES: tuple[dict[str, str], ...] = (
 KEYWORD_WEIGHTS: list[tuple[re.Pattern[str], dict[str, float]]] = [
     (re.compile(r"\b(sql|join|쿼리|조인)\b", re.I), {"sql_workspace": 3.0, "filebrowser": 1.0}),
     (re.compile(r"(차트|그래프|시각화|chart|plot|trend)", re.I), {"chart": 2.5, "dashboard": 2.0}),
+    (re.compile(r"(대시보드|dashboard)", re.I), {"chart": 1.5, "dashboard": 2.5}),
+    (re.compile(r"(어디|어딨|어디있|위치|현위치|현재위치)", re.I), {"lot": 2.0, "fab": 1.0}),
     (re.compile(r"(평균|중앙값|avg|median|집계|aggregate)", re.I), {"chart": 1.2, "dashboard": 1.2}),
     (re.compile(r"(lot|wafer|fab|로트|웨이퍼)", re.I), {"lot": 2.0, "fab": 1.5}),
     (re.compile(r"(knob|mask|스플릿|split|splittable)", re.I), {"splittable": 2.5, "knob": 2.0}),
@@ -218,6 +228,7 @@ def _safe_public_tool(tool: dict[str, Any]) -> dict[str, Any]:
         "row_count",
         "warnings",
         "sources",
+        "context",
         "blocked",
         "reject_reason",
         "requires_confirmation",
@@ -966,6 +977,55 @@ def react_available() -> bool:
     return _react_loop_enabled()
 
 
+def home_turn_limit(role: str = "user") -> int:
+    """홈 요청 스코프 LLM 상한. 일반 20·admin 24, env override, [1, 25] clamp.
+
+    분당 window(25)보다 낮게 둬 1질문이 전역 쿼터를 고갈시키지 않게 한다.
+    """
+    if role == "admin":
+        raw = str(os.environ.get(_HOME_TURN_LLM_ADMIN_LIMIT_ENV, "")).strip()
+        try:
+            value = int(raw) if raw else HOME_TURN_LLM_ADMIN_LIMIT
+        except (TypeError, ValueError):
+            value = HOME_TURN_LLM_ADMIN_LIMIT
+        return max(1, min(25, value))
+    raw = str(os.environ.get(_HOME_TURN_LLM_LIMIT_ENV, "")).strip()
+    try:
+        value = int(raw) if raw else HOME_TURN_LLM_LIMIT
+    except (TypeError, ValueError):
+        value = HOME_TURN_LLM_LIMIT
+    return max(1, min(25, value))
+
+
+def _with_home_turn_budget(func):
+    """홈 진입점을 turn_budget 으로 감싼다. sync 함수·제너레이터 모두 지원.
+
+    planner 결정·런타임·최종 요약을 같은 요청 카운터로 합산하고, 상한 초과 시
+    reserve 단계에서 차단해 무한 호출을 막는다. 기존 turn_budget 이 있으면
+    공유한다 (llm_usage.turn_budget 의 재진입 규칙).
+    """
+    if inspect.isgeneratorfunction(func):
+        @functools.wraps(func)
+        def gen_wrapper(*args: Any, **kwargs: Any) -> Iterator[dict[str, Any]]:
+            from core import llm_usage
+            user = kwargs.get("user")
+            if user is None and len(args) >= 2:
+                user = args[1]
+            with llm_usage.turn_budget(home_turn_limit(_user_role(user if isinstance(user, dict) else None))):
+                yield from func(*args, **kwargs)
+        return gen_wrapper
+
+    @functools.wraps(func)
+    def sync_wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        from core import llm_usage
+        user = kwargs.get("user")
+        if user is None and len(args) >= 2:
+            user = args[1]
+        with llm_usage.turn_budget(home_turn_limit(_user_role(user if isinstance(user, dict) else None))):
+            return func(*args, **kwargs)
+    return sync_wrapper
+
+
 def _react_deadline_seconds(role: str = "user") -> int:
     """End-to-end ReAct budget. 일반 유저는 75~120초 밴드(기본 90초)로 Home UI
     응답 목표를 지키고, admin 은 긴 분석 루프를 위해 최대 10분까지 허용한다
@@ -1123,6 +1183,13 @@ def _plan_with_llm(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, A
     except Exception:
         knowledge_text = ""
     knowledge_section = f"# 도메인 지식 카드\n{knowledge_text}\n\n" if knowledge_text else ""
+    try:
+        from core import structure_model
+        structure_context = structure_model.prompt_context("", prompt, max_chars=1500)
+    except Exception:
+        structure_context = {}
+    structure_section = (f"# 공통 3D 구조 지식\n{json.dumps(structure_context, ensure_ascii=False)}\n\n"
+                         if structure_context else "")
 
     system = (
         "You are Flow-i's home agent planner. Pick the minimum set of tools from "
@@ -1132,6 +1199,7 @@ def _plan_with_llm(prompt: str, tools: list[dict[str, Any]]) -> list[dict[str, A
     user_prompt = (
         f"# 사용자 요청\n{prompt}\n\n"
         f"{knowledge_section}"
+        f"{structure_section}"
         f"# 사용 가능한 도구 카탈로그\n{tools_text}\n\n"
         "# 출력 형식 (JSON, 다른 텍스트 금지)\n"
         "{\n"
@@ -1348,6 +1416,12 @@ def _decide_next_action(
     tools_text = _format_tool_catalog(enabled_tools)
     remaining = max(0, int(max_steps) - int(step_index))
     obs_text = json.dumps(observations, ensure_ascii=False)[:6000] if observations else "(없음)"
+    try:
+        from core import structure_model
+        structure_context = structure_model.prompt_context("", prompt, max_chars=1500)
+    except Exception:
+        structure_context = {}
+    structure_text = json.dumps(structure_context, ensure_ascii=False) if structure_context else "(관련 없음)"
     system = (
         "You are Flow-i's home agent controller running a ReAct loop. "
         "Each turn you either call exactly ONE tool from the catalog, ask the USER "
@@ -1363,6 +1437,7 @@ def _decide_next_action(
     user_prompt = (
         f"# 사용자 목표\n{prompt}\n\n"
         f"# 의미 분석(semantic frame)\n{json.dumps(semantic_summary, ensure_ascii=False)[:1500]}\n\n"
+        f"# 공통 3D 구조 지식\n{structure_text}\n\n"
         f"# 사용 가능한 도구 카탈로그\n{tools_text}\n\n"
         f"# 지금까지의 관찰(observations)\n{obs_text}\n\n"
         f"# 남은 단계: {remaining}\n\n"
@@ -1388,6 +1463,7 @@ def _decide_next_action(
         native_prompt = (
             f"# User goal\n{prompt}\n\n"
             f"# Resolved semantics\n{json.dumps(semantic_summary, ensure_ascii=False)[:2000]}\n\n"
+            f"# Common 3D structure knowledge\n{structure_text}\n\n"
             f"# Prior observations\n{obs_text}\n\n"
             f"# Remaining steps\n{remaining}"
         )
@@ -1561,6 +1637,12 @@ def dashboard_agent_result_from_source_runtime_result(result: dict[str, Any]) ->
 def _dashboard_tool_from_result_output(output: dict[str, Any], warnings: list[str] | None = None) -> dict[str, Any]:
     if not isinstance(output, dict):
         return {}
+    intent = str(output.get("intent") or "")
+    action = str(output.get("action") or "")
+    chart_result = output.get("chart_result") if isinstance(output.get("chart_result"), dict) else {}
+    is_dashboard_chart = str(chart_result.get("kind") or "").startswith("dashboard_")
+    if "dashboard" not in intent and "dashboard" not in action and not is_dashboard_chart:
+        return {}
     dashboard = output.get("dashboard") if isinstance(output.get("dashboard"), dict) else {}
     chart_result = output.get("chart_result") if isinstance(output.get("chart_result"), dict) else {}
     if not chart_result and isinstance(dashboard.get("chart_result"), dict):
@@ -1583,6 +1665,14 @@ def _dashboard_tool_from_result_output(output: dict[str, Any], warnings: list[st
         tool["chart_result"] = deepcopy(chart_result)
         tool["chart_type"] = chart_result.get("chart_type") or output.get("chart_type") or ""
         tool["config"] = deepcopy(output.get("config") or chart_result.get("config") or {})
+    table = output.get("table") if isinstance(output.get("table"), dict) else {}
+    if isinstance(table.get("rows"), list):
+        tool["table"] = deepcopy(table)
+        context = output.get("context")
+        tool["context"] = deepcopy(context) if isinstance(context, dict) else {}
+    for extra in ("chart_panels", "download_job", "slots", "filters", "sources"):
+        if output.get(extra) is not None:
+            tool[extra] = deepcopy(output.get(extra))
     if output.get("blocked") or output.get("needs_input"):
         tool["blocked"] = True
         question = _short_text(output.get("question"), 240)
@@ -1601,6 +1691,51 @@ def _tool_from_tool_calls(tool_calls: Any) -> dict[str, Any]:
         tool = _dashboard_tool_from_result_output(output, call.get("warnings") if isinstance(call.get("warnings"), list) else [])
         if tool:
             return tool
+        if isinstance(output, dict):
+            table = output.get("table") if isinstance(output.get("table"), dict) else {}
+            has_table = isinstance(table.get("rows"), list)
+            clarification = output.get("clarification") if isinstance(output.get("clarification"), dict) else {}
+            missing = output.get("missing") if isinstance(output.get("missing"), list) else []
+            # 표·선택지·추가입력 carrying unit 결과도 오른쪽·왼쪽 패널에 그대로 노출.
+            if has_table or clarification or missing or output.get("needs_input"):
+                passthrough: dict[str, Any] = {
+                    "type": "table" if has_table else "message",
+                    "feature": _short_text(output.get("feature") or call.get("tool") or "", 80),
+                    "action": _short_text(output.get("action") or "", 80),
+                    "intent": _short_text(output.get("intent") or "", 80),
+                    "answer": _short_text(output.get("answer"), 2000),
+                    "warnings": _safe_string_list(call.get("warnings") if isinstance(call.get("warnings"), list) else output.get("warnings"), 12),
+                }
+                if has_table:
+                    passthrough["table"] = deepcopy(table)
+                    context = output.get("context")
+                    passthrough["context"] = deepcopy(context) if isinstance(context, dict) else {}
+                if clarification:
+                    passthrough["clarification"] = deepcopy(clarification)
+                if missing:
+                    passthrough["missing"] = _safe_string_list(missing, 20)
+                if output.get("needs_input"):
+                    passthrough["needs_input"] = True
+                for extra in ("teg_candidates", "split_candidates", "approval", "sources",
+                              "chart_result", "chart_panels", "download_job", "slots",
+                              "filters", "context"):
+                    if output.get(extra) is not None:
+                        passthrough[extra] = deepcopy(output.get(extra))
+                return passthrough
+    for call in reversed(tool_calls):
+        if not isinstance(call, dict):
+            continue
+        output = call.get("output") if isinstance(call.get("output"), dict) else {}
+        # 표 없는 위치 답변(low_confidence 안내 등)도 Location 뷰 매핑 유지.
+        if isinstance(output, dict) and output.get("feature") == "location":
+            return {
+                "type": "message",
+                "feature": "location",
+                "action": _short_text(output.get("action") or "", 80),
+                "intent": _short_text(output.get("intent") or "", 80),
+                "answer": _short_text(output.get("answer"), 2000),
+                "warnings": _safe_string_list(output.get("warnings"), 12),
+            }
     return {}
 
 
@@ -1616,6 +1751,15 @@ _UNIT_FEATURE_KEYS: dict[str, tuple[str, ...]] = {
     "split_nav": ("splittable",),
     "step_lookup": ("filebrowser", "splittable", "dashboard"),
     "ppid_knob": ("filebrowser", "splittable"),
+    "dashboard_wip": ("dashboard",),
+    "lotmanage_table": ("lotmanage", "lot_management"),
+    "knob_lead_lots": ("filebrowser",),
+    "need_product": (),
+    "inline_values": ("filebrowser",),
+    "inline_radius_plot": ("filebrowser",),
+    "eta_forecast": ("lottracker", "tracker"),
+    "et_download": ("reformatize", "filebrowser"),
+    "et_time": ("ettime", "filebrowser"),
 }
 
 
@@ -1699,6 +1843,1447 @@ def _function_result_is_guidance(res: dict[str, Any], requested_name: str = "") 
     action = str(res.get("action") or "")
     intent = str(res.get("intent") or "")
     return action in _GENERIC_GUIDANCE_ACTIONS or intent.endswith("_guidance")
+
+
+# ── 홈 fast-path: 결정적 단축 경로 (LLM 없이) ─────────────────────────────
+# "대시보드 보여줘 / 선행랏 / 어디에 있어 / 랏관리" 류는 휴리스틱 점수나
+# planner 없이도 의도가 명확하므로 전용 러너로 바로 실행한다.
+_LOT_TOKEN_RE = re.compile(
+    r"\b(?:[A-Z][A-Z0-9]*\d[A-Z0-9]*(?:\.[A-Z0-9]+)?|[A-Z]{3,}\.\d+)\b"
+)
+_LOCATION_TERMS = ("어디", "어딨", "어딨어", "위치", "현위치", "현재위치", "where", "location")
+_MAPPING_QUESTION_RE = re.compile(
+    r"(step[_\s-]?id|function[_\s-]?step|step[_\s-]?desc)\s*(가|이|는|은|을|를)?\s*(뭐|무엇|알려|찾)",
+    re.IGNORECASE,
+)
+_DASHBOARD_SHOW_TERMS = ("보여", "띄워", "열어", "확인", "차트", "show", "display", "view", "open")
+_DASHBOARD_EXCLUDE_TERMS = ("scatter", "boxplot", "wafer map", "correlation", "heatmap", "trend")
+_LOTMANAGE_TERMS = ("랏관리", "lot관리", "lot manage", "lotmanage", "랏 관리")
+_LEAD_LOT_TERMS = ("선행랏", "선행", "가장 앞", "제일 앞", "맨 앞", "earliest", "first lot")
+_INLINE_LOT_RE = re.compile(r"(?<![\w.])([A-Za-z][A-Za-z0-9]{3,}\.[A-Za-z0-9]+)(?![\w.])")
+_INLINE_WAFER_RE = re.compile(r"(?:#|웨이퍼\s*|wafer\s*|wf\s*|슬롯\s*)0*(\d{1,2})(?![0-9])", re.I)
+_RADIUS_TERMS = ("radius", "반경")
+_PLOT_TERMS = ("plot", "그려", "차트", "scatter", "산점도")
+_ETA_STRONG_TERMS = ("도착", "예정", "예측", "eta", "완료시각", "완료 시각", "언제쯤")
+_ETA_TERMS = _ETA_STRONG_TERMS + ("언제",)
+_ETA_AFFIRM_RE = re.compile(r"^(맞아|맞어|맞습니다|맞음|응|어|예|네|그래|그렇지|오케이|ok|yes|정답|좋아)\b[.!?\s]*$", re.I)
+_ETDL_VERBS = ("뽑아", "뽑고", "추출", "다운로드", "download", "csv", "받아", "받어")
+_ETTIME_TERMS = ("측정시간", "측정 시간", "et time")
+_ET_DAYS_RE = re.compile(r"(\d{1,4})\s*일(?:치|간)?")
+_ET_SUFFIX_RE = re.compile(r"__ET_(PRODUCT|DAYS|ITEM)=([^\s]+(?: [^\s]+)*?)(?=\s+__ET_|\s*$)")
+_ET_STOPWORDS = {"ET", "DATA", "ETDATA", "FLOW", "FLOWI", "CSV", "INDEX", "PRODUCT", "DOWNLOAD"}
+
+
+def _et_prompt_parts(prompt: str) -> tuple[str, dict[str, str]]:
+    """__ET_PRODUCT/__ET_DAYS/__ET_ITEM suffix 분리 (값 공백 허용)."""
+    found: dict[str, str] = {}
+    kept: list[str] = []
+    current: str | None = None
+    for token in str(prompt or "").split():
+        if token.startswith("__ET_PRODUCT="):
+            current, found["product"] = "product", token[len("__ET_PRODUCT="):]
+        elif token.startswith("__ET_DAYS="):
+            current, found["days"] = "days", token[len("__ET_DAYS="):]
+        elif token.startswith("__ET_ITEM="):
+            current, found["item"] = "item", token[len("__ET_ITEM="):]
+        elif token.startswith("__") and "=" in token:
+            current = None
+            kept.append(token)
+        elif current in found:
+            found[current] += " " + token
+        else:
+            kept.append(token)
+    found = {key: value.strip() for key, value in found.items()}
+    return " ".join(kept).strip(), found
+
+
+def _et_days(prompt: str) -> int:
+    match = _ET_DAYS_RE.search(str(prompt or ""))
+    return max(0, min(int(match.group(1)), 3660)) if match else 0
+
+
+def _et_bare_lot(prompt: str, product: str = "") -> str:
+    """Dotted lot 우선, 없으면 제품·키워드가 아닌 단일 영문 토큰."""
+    dotted = _LOT_TOKEN_RE.search(str(prompt or ""))
+    if dotted:
+        return str(dotted.group(0) or "").upper()
+    try:
+        from core import semantic_hitl
+        norm = semantic_hitl.normalize_term
+    except Exception:
+        norm = lambda value: re.sub(r"[\s_-]+", "", str(value or "")).upper()  # noqa: E731
+    stop = {norm(w) for w in _ET_STOPWORDS} | {norm(product)}
+    cands = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9]{3,}", str(prompt or "")):
+        if norm(token) and norm(token) not in stop and token not in cands:
+            cands.append(token)
+    return cands[0].upper() if len(cands) == 1 else ""
+
+_FASTPATH_TITLES = {
+    "dashboard_wip": "WIP 대시보드",
+    "lotmanage_table": "랏관리 표",
+    "knob_lead_lots": "Knob 선행랏",
+    "need_product": "제품 선택",
+}
+
+
+def _fastpath_product(prompt: str) -> tuple[str, list[str]]:
+    """prompt 속 제품 후보. 정확히 1개면 (제품, 전체), 아니면 ("", 전체)."""
+    from core import data_chat
+    try:
+        products = data_chat.available_product_names()
+    except Exception:
+        return "", []
+    try:
+        matches = data_chat.product_candidates(prompt, products)
+    except Exception:
+        matches = []
+    if len(matches) == 1:
+        return str(matches[0]), products
+    return "", products
+
+
+def _fastpath_tool(name: str) -> dict[str, Any]:
+    try:
+        tool = tool_registry.get_tool(name)
+    except Exception:
+        tool = None
+    if isinstance(tool, dict) and tool.get("enabled"):
+        return tool
+    return {"name": name, "kind": "unit_ai", "title": _FASTPATH_TITLES.get(name, name),
+            "description": "홈 fast-path 전용 결정적 실행"}
+
+
+def _need_product_step(prompt: str, products: list[str]) -> dict[str, Any]:
+    options = [{"label": name, "value": name} for name in (products or [])[:20]]
+    return {
+        "tool": _fastpath_tool("need_product"),
+        "input": {"prompt": prompt, "need_products": options},
+        "reason": "제품 미확정 — 선택지 제시",
+        "source": "fastpath",
+    }
+
+
+def _plan_from_fastpath(
+    prompt: str,
+    user: dict[str, Any] | None = None,
+    request: Any | None = None,
+    context: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """fast-path plan 또는 None. (plan, meta) — meta.planner 는 fastpath:<kind>."""
+    text = str(prompt or "")
+    low = text.lower()
+
+    # Q1: WIP 대시보드 ("{제품} 대시보드 보여줘" — 바차트 + split 기준열 변경).
+    if ("대시보드" in text or "dashboard" in low):
+        show = any(term in low or term in text for term in _DASHBOARD_SHOW_TERMS)
+        bare = text.strip() in ("대시보드", "dashboard", "wip dashboard")
+        excluded = any(term in low for term in _DASHBOARD_EXCLUDE_TERMS)
+        if (show or bare) and not excluded:
+            product, products = _fastpath_product(text)
+            if not product:
+                if products:
+                    return [_need_product_step(text, products)], {"planner": "fastpath:need_product", "step_count": 1}
+                return None, None
+            return [{
+                "tool": _fastpath_tool("dashboard_wip"),
+                "input": {"prompt": text, "product": product, "max_rows": 12},
+                "reason": f"WIP 대시보드 fast-path (product={product})",
+                "source": "fastpath",
+            }], {"planner": "fastpath:dashboard_wip", "step_count": 1}
+
+    # Q2: Knob 선행랏 ("{제품} 23.0 RELIABILITY PPID23_2 … 선행랏").
+    if any(term in text for term in _LEAD_LOT_TERMS):
+        product, products = _fastpath_product(text)
+        if not product:
+            if products:
+                return [_need_product_step(text, products)], {"planner": "fastpath:need_product", "step_count": 1}
+            return None, None
+        return [{
+            "tool": _fastpath_tool("knob_lead_lots"),
+            "input": {"prompt": text, "product": product, "max_rows": 12},
+            "reason": f"Knob 선행랏 fast-path (product={product})",
+            "source": "fastpath",
+        }], {"planner": "fastpath:knob_lead_lots", "step_count": 1}
+
+    # ETA 도착예정 ("proda AZVBBA.1 BV200000에 언제도착해?" — Lot tracker + 그래프).
+    eta_plan, eta_meta = _plan_eta_fastpath(text, user=user, request=request, context=context)
+    if eta_plan:
+        return eta_plan, eta_meta
+
+    # ET DATA 추출 ("ET DATA 제품명 ~~~ 뽑아줘" — days/lot/alias HITL + 다운로드).
+    et_plan, et_meta = _plan_et_download_fastpath(text, user=user, context=context)
+    if et_plan:
+        return et_plan, et_meta
+
+    # ET 측정시간 ("제품명 AZBBV.1 ET측정시간 보여줘").
+    ett_plan, ett_meta = _plan_et_time_fastpath(text, user=user)
+    if ett_plan:
+        return ett_plan, ett_meta
+
+    # Inline 값/Radius ("{제품} {lot} PC BCD ..." — 별칭 해석 + HITL).
+    inline_plan, inline_meta = _plan_inline_fastpath(text, user)
+    if inline_plan:
+        return inline_plan, inline_meta
+
+    # Q3: 현재위치 ("AZAAA.1 어디에 있어" — step_desc 포함).
+    if any(term in low for term in _LOCATION_TERMS):
+        if _LOT_TOKEN_RE.search(text) and not _MAPPING_QUESTION_RE.search(text):
+            try:
+                from core import lot_wip
+                wip_question = lot_wip.is_wip_prompt(text)
+            except Exception:
+                wip_question = True
+            if wip_question:
+                product, _ = _fastpath_product(text)
+                return [{
+                    "tool": _fastpath_tool("lot_wip"),
+                    "input": {"prompt": text, "product": product, "max_rows": 30},
+                    "reason": "현재위치 fast-path (lot_wip)",
+                    "source": "fastpath",
+                }], {"planner": "fastpath:lot_wip", "step_count": 1}
+
+    # Q4: 랏관리 표 ("{제품} 랏관리 테이블").
+    if any(term in low or term in text for term in _LOTMANAGE_TERMS):
+        product, products = _fastpath_product(text)
+        if not product:
+            if products:
+                return [_need_product_step(text, products)], {"planner": "fastpath:need_product", "step_count": 1}
+            return None, None
+        return [{
+            "tool": _fastpath_tool("lotmanage_table"),
+            "input": {"prompt": text, "product": product, "max_rows": 50},
+            "reason": f"랏관리 fast-path (product={product})",
+            "source": "fastpath",
+        }], {"planner": "fastpath:lotmanage_table", "step_count": 1}
+
+    return None, None
+
+
+def _synthetic_request(user: dict[str, Any] | None) -> Any:
+    """라우터 가드(current_user)가 읽을 수 있는 최소 Request. request=None 대체용."""
+    from starlette.requests import Request
+    scope = {
+        "type": "http", "http_version": "1.1", "method": "GET", "scheme": "http",
+        "path": "/", "raw_path": b"/", "query_string": b"", "headers": [],
+        "client": ("home_fastpath", 0), "server": ("home_fastpath", 80),
+    }
+    request = Request(scope)
+    request.state.user = dict(user or {})
+    return request
+
+
+def _run_dashboard_wip_view(
+    prompt: str,
+    product: str,
+    request: Any | None,
+    user: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """대시보드 앱과 같은 WIP × Split 바차트(chart_result kind=dashboard_wip_split).
+
+    split 기준열 변경은 오른쪽 WorkspaceDashboard 의 changeSplit 이 같은
+    /api/dashboard/wip-split 으로 갱신한다.
+    """
+    from routers import dashboard as dashboard_router
+    prompt_lower = str(prompt or "").lower()
+    axis = "step_id" if "step_id" in prompt_lower else "step_desc"
+    split_match = re.search(r"\b((?:KNOB|MASK|FAB)_[A-Za-z0-9_.-]+)\b", str(prompt or ""), flags=re.I)
+    split_col = split_match.group(1) if split_match else ""
+    req = request if request is not None else _synthetic_request(user)
+    payload = dashboard_router.wip_split_summary(
+        request=req,
+        product=product,
+        bin_size=30000,
+        split_col=split_col,
+        axis=axis,
+        exclude_root_prefix="Z",
+        lot_type="",
+    )
+    bins = payload.get("bins") if isinstance(payload.get("bins"), list) else []
+    split_values = payload.get("split_values") if isinstance(payload.get("split_values"), list) else []
+    selected = str(payload.get("product") or product or "ALL")
+    total = int(payload.get("total_wafers") or 0)
+    chart_result = {
+        "ok": True,
+        "kind": "dashboard_wip_split",
+        "chart_type": "wip_stacked",
+        "title": f"{selected} WIP × Split Dashboard",
+        "product": selected,
+        "bins": bins,
+        "split_values": split_values,
+        "unassigned_label": payload.get("unassigned_label") or "(unassigned)",
+        "total_wafers": total,
+        "matched_wafers": int(payload.get("matched_wafers") or 0),
+        "axis": payload.get("axis") or axis,
+        "bin_size": int(payload.get("bin_size") or 30000),
+        "split_col": payload.get("split_col") or "",
+        "split_cols": payload.get("split_cols") if isinstance(payload.get("split_cols"), list) else [],
+        "split_options": payload.get("split_options") if isinstance(payload.get("split_options"), list) else [],
+        "generated_at": payload.get("generated_at") or "",
+    }
+    return {
+        "handled": True,
+        "intent": "dashboard_wip_view",
+        "action": "dashboard.wip_split.read",
+        "feature": "dashboard",
+        "answer": f"{selected} WIP 대시보드를 바로 표시합니다. 총 {total:,} wafer입니다.",
+        "chart_result": chart_result,
+        "slots": {"product": selected, "axis": chart_result["axis"],
+                  "bin_size": chart_result["bin_size"], "split_col": chart_result["split_col"]},
+        "source_ids": ["/api/dashboard/wip-split"],
+        "sources": ["wip-split latest cache", "ML_TABLE split"],
+    }
+
+
+def _step_order_key(step_id: Any) -> tuple:
+    """WIP 선행(가장 앞) 판정용 정렬 키 — 영문 prefix + 숫자 청크 순."""
+    parts = re.findall(r"[A-Za-z]+|\d+", str(step_id or "").upper())
+    return tuple(int(part) if part.isdigit() else part for part in parts)
+
+
+def _run_knob_lead_lots(
+    prompt: str,
+    product: str,
+    max_rows: int = 12,
+) -> dict[str, Any]:
+    """ML_TABLE_{product} 에서 prompt 의 knob 값을 가진 wafer 중 WIP step 이
+    가장 앞선 demolish 순으로 반환한다. step_desc 는 Vehicle_matching 에서."""
+    import polars as pl
+    from core import lot_progress_cache, lot_wip
+
+    clean = re.sub(r"(?i)^ML_TABLE_", "", str(product or "").strip())
+    ml_path = PATHS.db_root / f"ML_TABLE_{clean}.parquet"
+    if ml_path is None or not ml_path.is_file():
+        for candidate in sorted(PATHS.db_root.glob("ML_TABLE_*.parquet")):
+            if candidate.stem[len("ML_TABLE_"):].upper() == clean.upper():
+                ml_path = candidate
+                break
+    if ml_path is None or not ml_path.is_file():
+        return {"handled": False, "error": f"ML_TABLE_{clean} 없음"}
+    norm = lambda value: re.sub(r"[\s_]+", "", str(value or "")).upper()
+    flat = lambda value: re.sub(r"_", "", norm(value))
+    prompt_norm, prompt_flat = norm(prompt), flat(prompt)
+    schema = pl.scan_parquet(ml_path).collect_schema()
+    knob_cols = [name for name in schema.names() if name.upper().startswith("KNOB")]
+    matched_col = ""
+    for name in knob_cols:
+        suffix = re.sub(r"(?i)^KNOB_", "", name)
+        if norm(suffix) and norm(suffix) in prompt_norm:
+            matched_col = name
+            break
+    if not matched_col:
+        return {"handled": False, "error": "knob 컬럼 특정 실패"}
+    values = (
+        pl.scan_parquet(ml_path)
+        .select(matched_col)
+        .collect()[matched_col]
+        .drop_nulls().unique().to_list()
+    )
+    matched_value = ""
+    for value in values:
+        text = str(value or "")
+        if not text:
+            continue
+        if norm(text) in prompt_norm or flat(text) in prompt_flat or prompt_flat in flat(text):
+            matched_value = text
+            break
+    if not matched_value:
+        return {"handled": False, "error": f"{matched_col} 값 특정 실패"}
+    frame = (
+        pl.scan_parquet(ml_path)
+        .filter(pl.col(matched_col).cast(pl.String, strict=False) == matched_value)
+        .select(["ROOT_LOT_ID", "LOT_ID", "WAFER_ID"])
+        .collect()
+    )
+    if frame.is_empty():
+        return {"handled": True, "intent": "knob_lead_lots", "action": "knob_lead_lots.read",
+                "feature": "filebrowser",
+                "answer": f"{clean} ML_TABLE 에서 {matched_col}={matched_value} 인 wafer 가 없습니다.",
+                "table": {"kind": "knob_lead_lots", "title": "Knob 선행랏", "columns": [], "rows": [], "total": 0},
+                "context": {"product": clean}}
+    state = lot_progress_cache.read_lot_progress_cache(allow_stale=True)
+    wip_index: dict[tuple[str, str], dict] = {}
+    for row in state.get("items") or []:
+        if not isinstance(row, dict):
+            continue
+        key = (str(row.get("root_lot_id") or "").upper(), str(row.get("wafer_id") or "").upper())
+        if key[0] and key not in wip_index:
+            wip_index[key] = row
+    joined = []
+    for row in frame.to_dicts():
+        key = (str(row.get("ROOT_LOT_ID") or "").upper(), str(row.get("WAFER_ID") or "").upper())
+        wip = wip_index.get(key)
+        if not wip or not str(wip.get("step_id") or "").strip():
+            continue
+        joined.append({"root": str(row.get("ROOT_LOT_ID") or ""), "wafer": str(row.get("WAFER_ID") or ""),
+                       "lot": str(row.get("LOT_ID") or ""), "step_id": str(wip.get("step_id") or ""),
+                       "func_step": str(wip.get("function_step") or wip.get("func_step") or ""),
+                       "product": str(wip.get("product") or clean)})
+    joined.sort(key=lambda item: _step_order_key(item["step_id"]))
+    top = joined[:max(1, min(int(max_rows or 12), 50))]
+    out_rows = []
+    for item in top:
+        desc = lot_wip.describe_step(item["step_id"], item["product"])
+        out_rows.append({
+            "root_lot_id": item["root"], "wafer_id": item["wafer"], "lot_id": item["lot"],
+            "step_id": item["step_id"],
+            "step_desc": desc.get("step_desc") or item["func_step"],
+            "function_step": item["func_step"],
+            "knob": f"{matched_col}={matched_value}", "product": item["product"],
+        })
+    columns = ["root_lot_id", "wafer_id", "lot_id", "step_id", "step_desc", "function_step", "knob", "product"]
+    columns = [col for col in columns if any(row.get(col) for row in out_rows)] or columns
+    head = top[0] if top else {}
+    head_desc = ((lot_wip.describe_step(head.get("step_id", ""), head.get("product", "")) or {}).get("step_desc")
+                 or head.get("func_step", ""))
+    answer = (
+        f"{clean} ML_TABLE 에서 {matched_col}={matched_value} 인 wafer {len(joined):,}건 중 "
+        f"WIP 기준 가장 앞선 step 은 {head.get('step_id', '-')} "
+        f"({head_desc}) 입니다. "
+        f"선행 {len(top):,}건을 표로 표시합니다." if top else
+        f"{clean} ML_TABLE 에서 {matched_col}={matched_value} 조건은 {frame.height:,}건이나, "
+        f"현재 WIP 에 남은 wafer 가 없습니다."
+    )
+    return {
+        "handled": True,
+        "intent": "knob_lead_lots",
+        "action": "knob_lead_lots.read",
+        "feature": "filebrowser",
+        "answer": answer,
+        "table": {"kind": "knob_lead_lots", "title": f"Knob 선행랏 ({matched_col}={matched_value})",
+                  "columns": columns,
+                  "rows": [{col: row.get(col, "") for col in columns} for row in out_rows],
+                  "total": len(joined)},
+        "context": {"product": clean},
+        "sources": [ml_path.name, "lot_progress_latest_cache", "Vehicle_matching.csv"],
+    }
+
+
+def _run_fastpath_tool(
+    name: str,
+    step_input: dict[str, Any],
+    request: Any | None,
+    user: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """fast-path 전용 tool 실행. handled dict, 실패면 handled=False."""
+    prompt = str(step_input.get("prompt") or "")
+    product = str(step_input.get("product") or "")
+    if name == "dashboard_wip":
+        return _run_dashboard_wip_view(prompt, product, request, user)
+    if name == "lotmanage_table":
+        from core import data_chat_features
+        req = request if request is not None else _synthetic_request(user)
+        res = data_chat_features.execute_feature(
+            "lot_management.table", {"product": product}, req)
+        # execute_feature 는 성공 시 예외 없이 tool 반환 (handled 키 없음).
+        res = dict(res)
+        res["handled"] = True
+        table = res.get("table") if isinstance(res.get("table"), dict) else {}
+        total = table.get("total", len(table.get("rows") or [])) if isinstance(table, dict) else 0
+        res["answer"] = f"{product} 랏관리에 {total:,}건이 등록되어 있습니다."
+        return res
+    if name == "knob_lead_lots":
+        try:
+            max_rows = int(step_input.get("max_rows") or 12)
+        except (TypeError, ValueError):
+            max_rows = 12
+        return _run_knob_lead_lots(prompt, product, max_rows=max_rows)
+    if name in ("inline_values", "inline_radius_plot"):
+        ask = str(step_input.get("inline_ask") or "")
+        if ask in ("candidates", "map", "no_map"):
+            return _inline_ask_result(ask, step_input)
+        if name == "inline_values":
+            return _run_inline_values(step_input)
+        return _run_inline_radius_plot(step_input)
+    if name == "eta_forecast":
+        return _run_eta_forecast(step_input, request=request, user=user)
+    if name == "et_download":
+        return _run_et_download(step_input, request=request, user=user)
+    if name == "et_time":
+        return _run_et_time(step_input, request=request, user=user)
+    if name == "need_product":
+        options = step_input.get("need_products") or step_input.get("options") or []
+        if not options:
+            from core import data_chat
+            try:
+                names = data_chat.available_product_names()
+            except Exception:
+                names = []
+            options = [{"label": item, "value": item} for item in (names or [])[:20]]
+        return {
+            "handled": True,
+            "intent": "need_product",
+            "action": "ask_product",
+            "feature": "clarify",
+            "answer": "어느 제품으로 조회할까요? 제품을 선택해 주세요.",
+            "missing": ["product"],
+            "needs_input": True,
+            "clarification": {"kind": "product", "title": "제품 선택", "options": options,
+                              "allow_other": True, "placeholder": "제품명 직접 입력"},
+        }
+    return {"handled": False, "error": f"unknown fastpath tool: {name}"}
+
+
+def _inline_prompt_parts(prompt: str) -> tuple[str, str, str, str]:
+    """후속턴 기계 판독 suffix(__INLINE_STEP/__INLINE_ITEM/__MAP) 분리.
+
+    값에 공백이 있을 수 있어(예: item "5.0 PC") 다음 __KEY= 토큰 전까지
+    누적한다.
+    """
+    step_id, item_id, map_name = "", "", ""
+    kept: list[str] = []
+    current: list[str] | None = None
+    for token in str(prompt or "").split():
+        if token.startswith("__INLINE_STEP="):
+            current = None
+            step_id = token[len("__INLINE_STEP="):]
+            current = "step"
+        elif token.startswith("__INLINE_ITEM="):
+            current = None
+            item_id = token[len("__INLINE_ITEM="):]
+            current = "item"
+        elif token.startswith("__MAP="):
+            current = None
+            map_name = token[len("__MAP="):]
+            current = "map"
+        elif token.startswith("__") and "=" in token:
+            current = None
+            kept.append(token)
+        elif current == "step":
+            step_id += " " + token
+        elif current == "item":
+            item_id += " " + token
+        elif current == "map":
+            map_name += " " + token
+        else:
+            kept.append(token)
+    clean = " ".join(kept).strip()
+    return clean, step_id.strip(), item_id.strip(), map_name.strip()
+
+
+def _inline_candidate_label(candidate: dict[str, Any]) -> str:
+    desc = str(candidate.get("desc") or candidate.get("item_desc") or "").strip()
+    base = f"{candidate.get('step_id', '')} / {candidate.get('item_id', '')}"
+    rows = candidate.get("lot_rows")
+    suffix = f" · {rows}건" if isinstance(rows, int) and rows > 0 else ""
+    return f"{base}{f' ({desc})' if desc else ''}{suffix}"
+
+
+def _plan_inline_fastpath(
+    prompt: str,
+    user: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """Inline 별칭 값 조회 / Radius plot. (plan, meta) 또는 (None, None).
+
+    lot 토큰 + 제품 확정 + 별칭 후보가 있어야 한다. 후보·map 이 모호하면
+    clarification HITL 로 되묻고, 선택값에 기계 판독 suffix 를 심어 다음 턴에
+    실행한다.
+    """
+    from core import inline_alias
+    text = str(prompt or "")
+    low = text.lower()
+    lot_match = _INLINE_LOT_RE.search(text)
+    inline_kw = ("inline" in low or "인라인" in text)
+    location_kw = any(term in low for term in _LOCATION_TERMS)
+    product, products = _fastpath_product(text)
+    if not product:
+        # 제품 없이 lot만 있으면 위치 조회일 수 있다 — Inline 신호가 없으면 양보.
+        if location_kw and not inline_kw:
+            return None, None
+        if (lot_match or inline_kw) and products:
+            return [_need_product_step(text, products)], {"planner": "fastpath:need_product", "step_count": 1}
+        return None, None
+    clean, pinned_step, pinned_item, map_name = _inline_prompt_parts(text)
+    candidates = inline_alias.resolve_candidates(product, clean)
+    if not candidates:
+        # 측정 별칭 신호가 없으면 다른 경로(위치 등)에 양보한다.
+        return None, None
+    lot_match = _INLINE_LOT_RE.search(text)
+    root_lot = str(lot_match.group(1) or "").upper() if lot_match else ""
+    if not root_lot:
+        # 점 없는 bare root(A1021 등)는 DB 대조로만 확정한다.
+        root_lot = inline_alias.find_root_in_text(product, clean)
+        if not root_lot:
+            return None, None
+    is_radius = ("radius" in low or "반경" in text) and any(t in low or t in text for t in _PLOT_TERMS)
+    wafer_match = _INLINE_WAFER_RE.search(text)
+    wafer = wafer_match.group(1) if wafer_match else ""
+    tool_name = "inline_radius_plot" if is_radius else "inline_values"
+
+    chosen: dict[str, Any] | None = None
+    if pinned_step and pinned_item:
+        chosen = {"step_id": pinned_step, "item_id": pinned_item}
+    else:
+        narrowed = inline_alias.disambiguate_by_lot(product, root_lot, candidates)
+        with_rows = [c for c in narrowed if int(c.get("lot_rows") or 0) > 0]
+        pool = with_rows or narrowed
+        if len(pool) == 1:
+            chosen = {"step_id": str(pool[0].get("step_id") or ""),
+                      "item_id": str(pool[0].get("item_id") or "")}
+    if chosen is None:
+        narrowed = inline_alias.disambiguate_by_lot(product, root_lot, candidates)
+        options = [{"label": _inline_candidate_label(c),
+                    "value": f"{clean} __INLINE_STEP={c.get('step_id', '')} __INLINE_ITEM={c.get('item_id', '')}"}
+                   for c in narrowed]
+        return [{
+            "tool": _fastpath_tool(tool_name),
+            "input": {"prompt": text, "product": product, "root_lot": root_lot, "wafer": wafer,
+                      "inline_ask": "candidates",
+                      "candidates": [{"step_id": c.get("step_id"), "item_id": c.get("item_id"),
+                                      "label": _inline_candidate_label(c)} for c in narrowed]},
+            "reason": "Inline 후보 선택 필요",
+            "source": "fastpath",
+        }], {"planner": f"fastpath:{tool_name}_ask", "step_count": 1}
+
+    if is_radius and not map_name:
+        maps = inline_alias.available_maps(product, chosen["step_id"], chosen["item_id"])
+        suggested = list(maps.get("suggested") or [])
+        others = [t["table_name"] for t in (maps.get("tables") or [])
+                  if isinstance(t, dict) and t.get("table_name") and t["table_name"] not in suggested]
+        ordered = suggested + others
+        if not ordered:
+            return [{
+                "tool": _fastpath_tool(tool_name),
+                "input": {"prompt": text, "product": product, "root_lot": root_lot, "wafer": wafer,
+                          "step_id": chosen["step_id"], "item_id": chosen["item_id"],
+                          "inline_ask": "no_map"},
+                "reason": "등록된 Inline map 없음 안내",
+                "source": "fastpath",
+            }], {"planner": f"fastpath:{tool_name}_ask", "step_count": 1}
+        base = f"{clean} __INLINE_STEP={chosen['step_id']} __INLINE_ITEM={chosen['item_id']}"
+        options = [{"label": name, "value": f"{base} __MAP={name}"} for name in ordered[:20]]
+        return [{
+            "tool": _fastpath_tool(tool_name),
+            "input": {"prompt": text, "product": product, "root_lot": root_lot, "wafer": wafer,
+                      "step_id": chosen["step_id"], "item_id": chosen["item_id"],
+                      "inline_ask": "map", "map_options": ordered[:20]},
+            "reason": "Inline map 선택 필요",
+            "source": "fastpath",
+        }], {"planner": f"fastpath:{tool_name}_ask", "step_count": 1}
+
+    return [{
+        "tool": _fastpath_tool(tool_name),
+        "input": {"prompt": text, "product": product, "root_lot": root_lot, "wafer": wafer,
+                  "step_id": chosen["step_id"], "item_id": chosen["item_id"], "map_name": map_name},
+        "reason": f"Inline fast-path ({chosen['step_id']}/{chosen['item_id']})",
+        "source": "fastpath",
+    }], {"planner": f"fastpath:{tool_name}", "step_count": 1}
+
+
+def _inline_ask_result(kind: str, step_input: dict[str, Any]) -> dict[str, Any]:
+    """후보/map 선택 HITL 결과 (clarification)."""
+    if kind == "candidates":
+        options = []
+        for cand in step_input.get("candidates") or []:
+            if not isinstance(cand, dict):
+                continue
+            label = str(cand.get("label") or f"{cand.get('step_id')} / {cand.get('item_id')}")
+            value = f"{_inline_prompt_parts(str(step_input.get('prompt') or ''))[0]} __INLINE_STEP={cand.get('step_id', '')} __INLINE_ITEM={cand.get('item_id', '')}"
+            options.append({"label": label, "value": value})
+        return {
+            "handled": True, "intent": "inline_ask_candidates", "action": "inline.ask",
+            "feature": "inline",
+            "answer": "같은 별칭의 측정 후보가 여러 개입니다. 어떤 측정으로 조회할까요?",
+            "missing": ["inline_candidate"], "needs_input": True,
+            "clarification": {"kind": "inline_candidate", "title": "측정 후보를 선택하세요",
+                              "options": options, "allow_other": False},
+        }
+    if kind == "map":
+        clean, step_id, item_id, _map = _inline_prompt_parts(str(step_input.get("prompt") or ""))
+        step_id = step_id or str(step_input.get("step_id") or "")
+        item_id = item_id or str(step_input.get("item_id") or "")
+        options = [{"label": name, "value": f"{clean} __INLINE_STEP={step_id} __INLINE_ITEM={item_id} __MAP={name}"}
+                   for name in (step_input.get("map_options") or [])]
+        return {
+            "handled": True, "intent": "inline_ask_map", "action": "inline.ask",
+            "feature": "inline",
+            "answer": "어떤 map으로 매칭할까요? Inline map setting에서 선택하세요.",
+            "missing": ["inline_map"], "needs_input": True,
+            "clarification": {"kind": "inline_map", "title": "어떤 map으로 매칭할까요?",
+                              "options": options, "allow_other": False},
+        }
+    return {
+        "handled": True, "intent": "inline_ask_nomap", "action": "inline.ask",
+        "feature": "inline",
+        "answer": "해당 (step_id, item_id)에 등록된 Inline map이 없습니다. TEG 위치조회의 Inline map setting에 먼저 등록해 주세요.",
+        "missing": ["inline_map"], "needs_input": True,
+    }
+
+
+def _run_inline_values(step_input: dict[str, Any]) -> dict[str, Any]:
+    from core import inline_alias
+    product = str(step_input.get("product") or "")
+    root_lot = str(step_input.get("root_lot") or "")
+    wafer = str(step_input.get("wafer") or "")
+    step_id = str(step_input.get("step_id") or "")
+    item_id = str(step_input.get("item_id") or "")
+    if not (product and root_lot and step_id and item_id):
+        return {"handled": False, "error": "Inline 조회 인자 부족"}
+    result = inline_alias.query_values(product, root_lot, step_id, item_id, wafer_id=wafer)
+    if not result.get("ok"):
+        return {"handled": False, "error": str(result.get("error") or "INLINE 조회 실패")}
+    avg_rows = result.get("avg_rows") or []
+    lines = [f"- wafer {row['wafer_id']}: avg {row['avg']} (n={row['n']})" for row in avg_rows[:30]]
+    if len(avg_rows) > 30:
+        lines.append(f"… 외 {len(avg_rows) - 30} wafer")
+    site_note = "SITE 필터 적용" if result.get("site_filtered") else "SITE 열 없음 — 전체 subitem"
+    answer = (f"{product} {root_lot} {step_id}/{item_id} wafer별 avg "
+              f"({len(avg_rows)} wafer, {result.get('total', 0)} shots, {site_note}).\n" + "\n".join(lines))
+    return {
+        "handled": True, "intent": "inline_values", "action": "inline.values",
+        "feature": "inline",
+        "answer": answer,
+        "table": {"kind": "inline_wafer_avg", "title": f"wafer별 avg ({step_id}/{item_id})",
+                  "columns": ["wafer_id", "n", "avg"],
+                  "rows": [{"wafer_id": r["wafer_id"], "n": r["n"], "avg": r["avg"]} for r in avg_rows],
+                  "total": len(avg_rows)},
+        "context": {"product": product, "root_lot_id": root_lot},
+        "sources": ["1.RAWDATA_DB_INLINE", "Inline_matching.csv"],
+        "filters": result.get("filters", {}),
+        "warnings": result.get("warnings", []),
+    }
+
+
+def _run_inline_radius_plot(step_input: dict[str, Any]) -> dict[str, Any]:
+    from core import inline_alias
+    product = str(step_input.get("product") or "")
+    root_lot = str(step_input.get("root_lot") or "")
+    wafer = str(step_input.get("wafer") or "")
+    step_id = str(step_input.get("step_id") or "")
+    item_id = str(step_input.get("item_id") or "")
+    map_name = str(step_input.get("map_name") or "")
+    if not (product and root_lot and step_id and item_id and map_name):
+        return {"handled": False, "error": "Radius plot 인자 부족 (map 선택 필요)"}
+    result = inline_alias.radius_panels(product, root_lot, step_id, item_id, map_name, wafer_id=wafer)
+    if not result.get("ok"):
+        return {"handled": False, "error": str(result.get("error") or "Radius plot 실패")}
+    panels = result.get("panels") or []
+    table = {"kind": "inline_radius_summary", "title": f"Radius plot 요약 ({map_name})",
+             "columns": ["wafer_id", "n"],
+             "rows": [{"wafer_id": p["wafer_id"], "n": p["n"]} for p in panels],
+             "total": len(panels)}
+    answer = (f"{product} {root_lot} {step_id}/{item_id} — map '{map_name}' 매칭, "
+              f"{len(panels)} wafer, {result.get('total_points', 0)} points. "
+              f"x=Radius, y=fab_value scatter + 3차 fitting.")
+    tool: dict[str, Any] = {
+        "handled": True, "intent": "inline_radius_plot", "action": "inline.radius_plot",
+        "feature": "inline",
+        "answer": answer,
+        "table": table,
+        "chart_panels": [{"title": p["title"], "chart": p["chart"]} for p in panels],
+        "context": {"product": product, "root_lot_id": root_lot},
+        "sources": ["1.RAWDATA_DB_INLINE", "Inline_matching.csv", "Inline map setting", "Chip_Radius.csv"],
+        "filters": result.get("filters", {}),
+        "warnings": result.get("warnings", []),
+    }
+    return tool
+
+
+def _norm_step_text(value: Any) -> str:
+    """step_desc 유사 비교용 정규화 (_·공백·대소문자 waive)."""
+    return re.sub(r"[\s_\-]+", "", str(value or "")).upper()
+
+
+def _leading_number(value: Any) -> str:
+    match = re.match(r"\s*(\d+(?:\.\d+)?)", str(value or ""))
+    return match.group(1) if match else ""
+
+
+def _eta_step_chunk(prompt: str, product: str = "", lot: str = "") -> str:
+    text = str(prompt or "")
+    for token in (product, lot):
+        if token:
+            text = re.sub(r"(?<![\w])" + re.escape(token) + r"(?![\w])", " ", text, flags=re.I)
+    text = re.sub(r"도착|언제쯤|언제|예정|예측|\bETA\b|완료\s*시각|해줘|해\s*줘|보여\s*줘|알려\s*줘|주세요|에$", " ", text, flags=re.I)
+    return re.sub(r"\s+", " ", text).strip(" ?.!-")
+
+
+def _eta_preset_steps(product: str) -> list[dict[str, str]]:
+    """Lot tracker 톱니바퀴 preset (flow-data) — 제품별 [{step_id, step_desc}]."""
+    try:
+        from routers import lot_tracker
+        doc = lot_tracker._load_preset_doc()
+    except Exception:
+        return []
+    if not isinstance(doc, dict):
+        return []
+    for key in (product, str(product or "").upper(), str(product or "").strip()):
+        rows = doc.get(key)
+        if isinstance(rows, list) and rows:
+            return [r for r in rows if isinstance(r, dict) and r.get("step_id")]
+    return []
+
+
+def _eta_vehicle_steps(product: str) -> list[dict[str, str]]:
+    """Vehicle_matching.csv 제품 행 — [{step_id, step_desc}]."""
+    try:
+        from core import matching_store
+        rows, _path = matching_store.read_csv_rows("Vehicle_matching.csv")
+    except Exception:
+        return []
+    out = []
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        prod = str(row.get("product") or row.get("vehicle") or "")
+        if product and prod and prod.upper() != str(product).upper():
+            # vehicle 표기는 제품과 다를 수 있어 product 열이 있을 때만 필터.
+            if str(row.get("product") or "") and prod.upper() != str(product).upper():
+                continue
+        step_id = str(row.get("step_id") or "").strip()
+        if step_id:
+            out.append({"step_id": step_id, "step_desc": str(row.get("step_desc") or "").strip()})
+    return out
+
+
+def _eta_step_candidates(prompt: str, product: str, lot: str = "") -> list[dict[str, Any]]:
+    """step_desc 유사 후보. Inline 별칭 매칭이 item_desc 포함보다 우선한다."""
+    chunk = _eta_step_chunk(prompt, product, lot)
+    if not chunk or len(chunk) < 2:
+        return []
+    chunk_norm = _norm_step_text(chunk)
+    chunk_num = _leading_number(chunk)
+    words = [w for w in re.split(r"\s+", chunk) if len(w) >= 2]
+    word_norms = [_norm_step_text(w) for w in words]
+
+    alias_steps: set[str] = set()
+    try:
+        from core import inline_alias
+        for cand in inline_alias.resolve_candidates(product, chunk):
+            if cand.get("step_id"):
+                alias_steps.add(str(cand["step_id"]).upper())
+    except Exception:
+        pass
+
+    seen: dict[str, dict[str, Any]] = {}
+    for source, rows in (("tracker_preset", _eta_preset_steps(product)),
+                         ("vehicle_matching", _eta_vehicle_steps(product))):
+        for row in rows:
+            step_id = str(row.get("step_id") or "").strip()
+            step_desc = str(row.get("step_desc") or "").strip()
+            if not step_id or step_id.upper() in seen:
+                continue
+            desc_norm = _norm_step_text(step_desc)
+            score = 0
+            if chunk_norm and chunk_norm == desc_norm:
+                score = 100
+            elif word_norms and all(w and w in desc_norm for w in word_norms):
+                score = 60
+                if chunk_num and chunk_num == _leading_number(step_desc):
+                    score = 85
+            elif chunk_num and chunk_num == _leading_number(step_desc):
+                score = 45
+            if step_id.upper() in alias_steps:
+                score += 60
+            if score >= 50:
+                seen[step_id.upper()] = {"step_id": step_id, "step_desc": step_desc,
+                                         "source": source, "score": score}
+    return sorted(seen.values(), key=lambda r: (-r["score"], r["step_id"]))[:5]
+
+
+def _plan_eta_fastpath(
+    prompt: str,
+    user: dict[str, Any] | None = None,
+    request: Any | None = None,
+    context: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """ETA 도착예정 fastpath. (plan, meta) 또는 (None, None).
+
+    step_id 직접 지정이면 data_chat_eta 로 곧장, step_desc면 유사 후보 확인
+    HITL → 확정 후 Lot tracker 참고 lot 질문 → 결과 순으로 진행한다.
+    """
+    from core import data_chat_eta
+    text = str(prompt or "")
+    low = text.lower()
+    base = dict(context) if isinstance(context, dict) else {}
+    prior = base.get("eta_query") if isinstance(base.get("eta_query"), dict) else {}
+    proposal = base.get("eta_proposal") if isinstance(base.get("eta_proposal"), dict) else {}
+
+    # 0. step 확정 응답 (옵션 선택은 self-contained 문장으로 바로 파싱됨).
+    if proposal and proposal.get("step_id") and proposal.get("lot_id"):
+        picked = ""
+        marker = re.search(r"__ETA_STEP=([^\s]+)", text)
+        if marker:
+            picked = marker.group(1)
+        elif _ETA_AFFIRM_RE.match(text.strip()):
+            picked = str(proposal.get("step_id") or "")
+        step_tok = re.search(r"\b[A-Z]{1,3}\d{5,6}[A-Z0-9]{0,4}\b", text)
+        if step_tok and not picked:
+            picked = step_tok.group(0).upper()
+        if picked:
+            product = str(proposal.get("product") or "")
+            full = f"{product} {proposal['lot_id']} {picked}에 언제도착해?"
+            return [{
+                "tool": _fastpath_tool("eta_forecast"),
+                "input": {"prompt": full, "product": product, "context": base, "max_rows": 12},
+                "reason": f"ETA step 확정 ({picked})",
+                "source": "fastpath",
+            }], {"planner": "fastpath:eta_forecast", "step_count": 1}
+
+    # 1. 의도 감지.
+    strong = any(term in low or term in text for term in _ETA_STRONG_TERMS)
+    lot_like = bool(_LOT_TOKEN_RE.search(text))
+    follow = bool(prior.get("lot_id")) and bool(
+        base.get("pending_eta") or any(term in low or term in text for term in _ETA_TERMS) or lot_like)
+    if not (strong or follow):
+        return None, None
+
+    # 2. 제품 확정.
+    product, products = _fastpath_product(text)
+    if not product:
+        ctx_product = str(base.get("confirmed_product") or base.get("product") or prior.get("product") or "")
+        if ctx_product:
+            product = ctx_product.upper()
+        elif products:
+            return [_need_product_step(text, products)], {"planner": "fastpath:need_product", "step_count": 1}
+        else:
+            return None, None
+
+    # 3. step_id 직접 지정이면 곧장 dispatch.
+    if re.search(r"\b[A-Z]{1,3}\d{5,6}[A-Z0-9]{0,4}\b", text):
+        return [{
+            "tool": _fastpath_tool("eta_forecast"),
+            "input": {"prompt": text, "product": product, "context": base, "max_rows": 12},
+            "reason": "ETA fast-path (Lot tracker)",
+            "source": "fastpath",
+        }], {"planner": "fastpath:eta_forecast", "step_count": 1}
+
+    # 4. step_desc 유사 후보 → 확인 HITL (1건이면 확정 제안, 복수면 선택).
+    lot_match = _LOT_TOKEN_RE.search(text) or data_chat_eta._LOT.search(text)
+    lot = str(lot_match.group(0) if lot_match else "").upper()
+    candidates = _eta_step_candidates(text, product, lot)
+    if candidates:
+        return [{
+            "tool": _fastpath_tool("eta_forecast"),
+            "input": {"prompt": text, "product": product, "lot": lot, "context": base,
+                      "inline_ask": "eta_step", "candidates": candidates, "max_rows": 12},
+            "reason": "ETA 목표공정 확인 필요",
+            "source": "fastpath",
+        }], {"planner": "fastpath:eta_forecast_ask", "step_count": 1}
+
+    # 5. 나머지는 data_chat_eta 상태머신에 위임 (lot/target/reference 순차 질문).
+    return [{
+        "tool": _fastpath_tool("eta_forecast"),
+        "input": {"prompt": text, "product": product, "context": base, "max_rows": 12},
+        "reason": "ETA fast-path (Lot tracker)",
+        "source": "fastpath",
+    }], {"planner": "fastpath:eta_forecast", "step_count": 1}
+
+
+def _eta_forecast_chart(tool: dict[str, Any]) -> dict[str, Any] | None:
+    """forecast points → 경과일 line chart."""
+    forecast = tool.get("forecast") if isinstance(tool.get("forecast"), dict) else {}
+    points = [p for p in (forecast.get("points") or []) if isinstance(p, dict)]
+    if len(points) < 2:
+        return None
+    chart_points = []
+    for index, point in enumerate(points):
+        try:
+            y = float(point.get("elapsed_days"))
+        except (TypeError, ValueError):
+            continue
+        chart_points.append({
+            "x": index,
+            "x_label": str(point.get("step_label") or point.get("step_id") or ""),
+            "y": y,
+            "step_id": str(point.get("step_id") or ""),
+            "eta": str(point.get("eta") or ""),
+        })
+    if len(chart_points) < 2:
+        return None
+    lot_id = str(tool.get("lot_id") or "")
+    target = str(tool.get("target_step_id") or "")
+    return {"kind": "line", "chart_type": "line",
+            "title": f"{lot_id} {target} 예상 진행",
+            "x_label": "공정", "y_label": "경과일", "points": chart_points}
+
+
+def _eta_ask_step_result(step_input: dict[str, Any]) -> dict[str, Any]:
+    product = str(step_input.get("product") or "")
+    lot = str(step_input.get("lot") or "")
+    candidates = [c for c in (step_input.get("candidates") or []) if isinstance(c, dict)][:5]
+    options = []
+    for cand in candidates:
+        label = f"{cand.get('step_id', '')} ({cand.get('step_desc', '') or '설명없음'}) — 이 공정 맞나요?"
+        value = f"{product} {lot} {cand.get('step_id', '')}에 언제도착해?"
+        options.append({"label": label, "value": value})
+    first = candidates[0] if candidates else {}
+    return {
+        "handled": True, "intent": "eta_ask_step", "action": "eta.ask_step",
+        "feature": "eta",
+        "answer": f"{product} {lot}의 목표 공정을 확인해 주세요. '{_eta_step_chunk(str(step_input.get('prompt') or ''), product, lot)}'와(과) 비슷한 공정을 찾았습니다.",
+        "missing": ["target_step_id"], "needs_input": True,
+        "clarification": {"kind": "eta_step", "title": "이 공정이 맞나요?",
+                          "options": options, "allow_other": True,
+                          "placeholder": "Step ID 직접 입력 (예: BV200000)"},
+        "_context": {**(step_input.get("context") if isinstance(step_input.get("context"), dict) else {}),
+                     "eta_proposal": {"product": product, "lot_id": lot,
+                                      "step_id": str(first.get("step_id") or ""),
+                                      "step_desc": str(first.get("step_desc") or "")}},
+    }
+
+
+def _run_eta_forecast(step_input: dict[str, Any], request: Any | None,
+                      user: dict[str, Any] | None) -> dict[str, Any]:
+    from core import data_chat_eta
+    if str(step_input.get("inline_ask") or "") == "eta_step":
+        return _eta_ask_step_result(step_input)
+    prompt = str(step_input.get("prompt") or "")
+    product = str(step_input.get("product") or "")
+    base = step_input.get("context") if isinstance(step_input.get("context"), dict) else {}
+    ctx = dict(base)
+    if product:
+        ctx["confirmed_product"] = product
+    req = request if request is not None else _synthetic_request(user)
+    try:
+        res = data_chat_eta.dispatch(prompt, ctx, req)
+    except Exception as exc:
+        return {"handled": False, "error": f"ETA 조회 실패: {exc}"}
+    if res is None:
+        return {"handled": False, "error": "ETA 판단 불가"}
+    tool = dict(res.get("tool") or {})
+    # 참고 lot 선택지는 "참고 {lot}" 형태로 — data_chat_eta 가 lots[0]을
+    # target이 아닌 reference 로 잡도록 (전체문 재구성 시 lots[0]이 꼬임).
+    clar = tool.get("clarification")
+    if isinstance(clar, dict) and isinstance(clar.get("options"), list):
+        fixed = []
+        for opt in clar["options"]:
+            if not isinstance(opt, dict):
+                continue
+            value = str(opt.get("value") or opt.get("label") or "")
+            if value and "__" not in value and not value.startswith("참고"):
+                value = f"참고 {value}"
+            fixed.append({**opt, "value": value})
+        tool["clarification"] = {**clar, "options": fixed}
+    out = {"handled": True, "feature": "eta",
+           "answer": str(res.get("reply") or ""),
+           "ok": bool(res.get("ok", True)),
+           **{k: v for k, v in tool.items() if k != "feature"},
+           "_context": res.get("context") if isinstance(res.get("context"), dict) else base}
+    chart = _eta_forecast_chart(tool)
+    if chart:
+        out["chart_result"] = chart
+    return out
+
+
+def _et_products(me: dict[str, Any] | None) -> list[str]:
+    """reformatize ET 제품 목록."""
+    from routers import reformatize as rf
+    try:
+        rows = (rf.products(me or {}).get("products") or [])
+    except Exception:
+        return []
+    return [str(r.get("product") or "").strip() for r in rows
+            if isinstance(r, dict) and str(r.get("product") or "").strip()]
+
+
+def _match_et_product(prompt: str, products: list[str]) -> str:
+    try:
+        from core import semantic_hitl
+        norm = semantic_hitl.normalize_term
+    except Exception:
+        norm = lambda value: re.sub(r"[\s_-]+", "", str(value or "")).upper()  # noqa: E731
+    text = norm(prompt)
+    for name in products:
+        if name and norm(name) and norm(name) in text:
+            return name
+    return ""
+
+
+def _plan_et_download_fastpath(
+    prompt: str,
+    user: dict[str, Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """ET DATA 추출 fastpath. 제품 → 기간/랏 → alias → 다운로드 순 HITL."""
+    text = str(prompt or "")
+    low = text.lower()
+    has_et = ("et data" in low or "etdata" in low
+              or (re.search(r"\bet\b", low) and any(v in low or v in text for v in _ETDL_VERBS)))
+    if not has_et or "측정시간" in text or "측정 시간" in text or "et time" in low:
+        return None, None
+    if not any(v in low or v in text for v in _ETDL_VERBS):
+        return None, None
+    me = user if isinstance(user, dict) else {}
+    products = _et_products(me)
+    clean, suffix = _et_prompt_parts(text)
+    base = context if isinstance(context, dict) else {}
+    draft = base.get("et_draft") if isinstance(base.get("et_draft"), dict) else {}
+    if draft.get("product"):
+        # 자유 입력 후속(랏/일수/항목): 초안과 병합해 이어간다.
+        product = str(draft.get("product") or "")
+        try:
+            draft_days = int(draft.get("days") or 0)
+        except (TypeError, ValueError):
+            draft_days = 0
+        days = _et_days(clean)
+        if suffix.get("days", "").isdigit():
+            days = max(0, min(int(suffix["days"]), 3660))
+        if not days:
+            days = draft_days
+        lot = _et_bare_lot(clean, product) or str(draft.get("lot") or "")
+        return [{
+            "tool": _fastpath_tool("et_download"),
+            "input": {"prompt": text, "product": product, "days": days, "lot": lot, "max_rows": 12},
+            "reason": f"ET 다운로드 fast-path ({product}, 초안 이어감)",
+            "source": "fastpath",
+        }], {"planner": "fastpath:et_download", "step_count": 1}
+    product = str(suffix.get("product") or "") or _match_et_product(clean, products)
+    if not product:
+        if products:
+            options = [{"label": name, "value": f"{clean} __ET_PRODUCT={name}"} for name in products[:12]]
+            return [{
+                "tool": _fastpath_tool("et_download"),
+                "input": {"prompt": text, "product": "", "inline_ask": "et_product",
+                          "product_options": [o["label"] for o in options]},
+                "reason": "ET 제품 선택 필요",
+                "source": "fastpath",
+            }], {"planner": "fastpath:et_download_ask", "step_count": 1}
+        return None, None
+    days = _et_days(clean)
+    if suffix.get("days", "").isdigit():
+        days = max(0, min(int(suffix["days"]), 3660))
+    lot = _et_bare_lot(clean, product)
+    if not days and not lot:
+        return [{
+            "tool": _fastpath_tool("et_download"),
+            "input": {"prompt": text, "product": product, "inline_ask": "et_scope"},
+            "reason": "ET 기간/랏 선택 필요",
+            "source": "fastpath",
+        }], {"planner": "fastpath:et_download_ask", "step_count": 1}
+    return [{
+        "tool": _fastpath_tool("et_download"),
+        "input": {"prompt": text, "product": product, "days": days, "lot": lot, "max_rows": 12},
+        "reason": f"ET 다운로드 fast-path ({product})",
+        "source": "fastpath",
+    }], {"planner": "fastpath:et_download", "step_count": 1}
+
+
+def _et_draft(step_input: dict[str, Any]) -> dict[str, Any]:
+    """ET 멀티턴 초안 (다음 턴 입력 병합용)."""
+    try:
+        days = int(step_input.get("days") or 0)
+    except (TypeError, ValueError):
+        days = 0
+    return {"product": str(step_input.get("product") or ""),
+            "days": days, "lot": str(step_input.get("lot") or "")}
+
+
+def _et_ask_result(kind: str, step_input: dict[str, Any]) -> dict[str, Any]:
+    prompt = str(step_input.get("prompt") or "")
+    clean, _suffix = _et_prompt_parts(prompt)
+    draft = _et_draft(step_input)
+    if kind == "et_product":
+        options = [{"label": name, "value": f"{clean} __ET_PRODUCT={name}"}
+                   for name in (step_input.get("product_options") or [])]
+        return {
+            "handled": True, "intent": "et_download_ask", "action": "et_download.ask",
+            "feature": "reformatize",
+            "answer": "ET DATA를 뽑을 제품을 선택해 주세요.",
+            "missing": ["product"], "needs_input": True,
+            "clarification": {"kind": "product", "title": "ET 제품 선택",
+                              "options": options, "allow_other": True,
+                              "placeholder": "제품명 직접 입력"},
+            "_context": {"et_draft": draft},
+        }
+    if kind == "et_scope":
+        options = [{"label": f"최근 {days}일치", "value": f"{clean} __ET_DAYS={days}"}
+                   for days in (3, 5, 7, 30)]
+        return {
+            "handled": True, "intent": "et_download_ask", "action": "et_download.ask",
+            "feature": "reformatize",
+            "answer": "며칠치 뽑아드릴까요? 아님 어떤 랏 뽑아드릴까요? 랏 ID를 직접 입력해도 됩니다.",
+            "missing": ["days_lot"], "needs_input": True,
+            "clarification": {"kind": "et_scope", "title": "며칠치? 아님 어떤 랏?",
+                              "options": options, "allow_other": True,
+                              "placeholder": "롯 ID 입력 (예: A1021)"},
+            "_context": {"et_draft": draft},
+        }
+    if kind == "et_alias":
+        carry = ""
+        try:
+            days = int(step_input.get("days") or 0)
+        except (TypeError, ValueError):
+            days = 0
+        if days:
+            carry += f" __ET_DAYS={days}"
+        if str(step_input.get("lot") or ""):
+            carry += f" {step_input.get('lot')}"
+        options = [{"label": name, "value": f"{clean} __ET_ITEM={name}{carry}"}
+                   for name in (step_input.get("alias_options") or [])]
+        return {
+            "handled": True, "intent": "et_download_ask", "action": "et_download.ask",
+            "feature": "reformatize",
+            "answer": "어떤 ET 항목으로 뽑을까요?",
+            "missing": ["et_alias"], "needs_input": True,
+            "clarification": {"kind": "et_alias", "title": "ET 항목 선택",
+                              "options": options, "allow_other": True,
+                              "placeholder": "항목 alias 직접 입력"},
+            "_context": {"et_draft": draft},
+        }
+    return {"handled": False, "error": f"unknown et ask: {kind}"}
+
+
+def _run_et_download(step_input: dict[str, Any], request: Any | None,
+                     user: dict[str, Any] | None) -> dict[str, Any]:
+    from routers import reformatize as rf
+    ask = str(step_input.get("inline_ask") or "")
+    if ask in ("et_product", "et_scope", "et_alias"):
+        return _et_ask_result(ask, step_input)
+    prompt = str(step_input.get("prompt") or "")
+    clean, suffix = _et_prompt_parts(prompt)
+    me = user if isinstance(user, dict) else {}
+    product = str(step_input.get("product") or suffix.get("product") or "")
+    if not product:
+        product = _match_et_product(clean, _et_products(me))
+    if not product:
+        return {"handled": False, "error": "ET 제품 특정 실패"}
+    days = int(step_input.get("days") or 0)
+    if suffix.get("days", "").isdigit():
+        days = max(0, min(int(suffix["days"]), 3660))
+    if not days:
+        days = _et_days(clean)
+    lot = str(step_input.get("lot") or "") or _et_bare_lot(clean, product)
+    if not days and not lot:
+        step_input = {**step_input, "prompt": prompt, "product": product, "inline_ask": "et_scope"}
+        return _et_ask_result("et_scope", step_input)
+    try:
+        items_payload = rf.list_items(product, me)
+    except Exception as exc:
+        return {"handled": False, "error": f"ET 항목 조회 실패: {exc}"}
+    aliases = [str(r.get("alias") or "").strip() for r in (items_payload.get("items") or [])
+               if isinstance(r, dict) and str(r.get("alias") or "").strip()]
+    item = str(suffix.get("item") or "")
+    if not item:
+        try:
+            from core import semantic_hitl
+            norm = semantic_hitl.normalize_term
+        except Exception:
+            norm = lambda value: re.sub(r"[\s_-]+", "", str(value or "")).upper()  # noqa: E731
+        text_norm = norm(clean)
+        exact = next((a for a in sorted(aliases, key=len, reverse=True)
+                      if a and norm(a) and norm(a) in text_norm), "")
+        if exact:
+            item = exact
+        elif len(aliases) == 1:
+            item = aliases[0]
+    if not item:
+        step_input = {**step_input, "prompt": prompt, "product": product,
+                      "inline_ask": "et_alias", "alias_options": aliases[:12]}
+        return _et_ask_result("et_alias", step_input)
+    try:
+        job = rf.download_start(
+            rf.DownloadJobReq(product=product, items=[item], days=days, lot_filter=lot), me)
+    except Exception as exc:
+        return {"handled": False, "error": f"ET 다운로드 등록 실패: {exc}"}
+    job_id = str(job.get("job_id") or "")
+    scope = f"최근 {days}일" if days else f"랏 {lot}"
+    table = {"kind": "et_download_job", "title": "ET 다운로드 작업",
+             "columns": ["job_id", "상태", "파일"],
+             "rows": [{"job_id": job_id, "상태": str(job.get("status") or "대기열 등록"),
+                       "파일": f"{product}_reformatize.csv"}],
+             "total": 1}
+    return {
+        "handled": True, "intent": "et_download", "action": "reformatize.download.start",
+        "feature": "reformatize",
+        "answer": f"{product} {item} {scope} ET 다운로드를 대기열에 등록했습니다. (job {job_id})",
+        "table": table,
+        "download_job": {"job_id": job_id, "filename": f"{product}_reformatize.csv",
+                         "status_url": f"/api/reformatize/download/status?job_id={job_id}",
+                         "file_url": f"/api/reformatize/download/file?job_id={job_id}"},
+        "context": {},
+        "slots": {"product": product, "item": item, "days": days, "lot": lot},
+        "sources": ["/api/reformatize/download/start"],
+    }
+
+
+def _plan_et_time_fastpath(
+    prompt: str,
+    user: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]] | None, dict[str, Any] | None]:
+    """ET 측정시간 fastpath. 제품 → (추이 | 랏 측정) 분기."""
+    text = str(prompt or "")
+    low = text.lower()
+    if not any(term in low or term in text for term in _ETTIME_TERMS):
+        return None, None
+    if any(v in low or v in text for v in ("다운로드", "download", "뽑아", "추출")):
+        return None, None
+    me = user if isinstance(user, dict) else {}
+    from routers import et_time as et
+    req = _synthetic_request(me if me.get("username") else None)
+    try:
+        products = [str(v or "").strip() for v in
+                    (et.et_time_products(req, prefix="", limit=500).get("products") or []) if str(v or "").strip()]
+    except Exception:
+        products = []
+    product = _match_et_product(text, products)
+    if not product:
+        if products:
+            clean, _suffix = _et_prompt_parts(text)
+            options = [{"label": name, "value": f"{clean} __ET_PRODUCT={name}"} for name in products[:12]]
+            return [{
+                "tool": _fastpath_tool("et_time"),
+                "input": {"prompt": text, "product": "", "inline_ask": "et_product",
+                          "product_options": [o["label"] for o in options]},
+                "reason": "ET 측정시간 제품 선택 필요",
+                "source": "fastpath",
+            }], {"planner": "fastpath:et_time_ask", "step_count": 1}
+        return None, None
+    lot = _et_bare_lot(text, product)
+    trend = (any(term in low or term in text for term in ("추이", "trend", "개월", "장기")) and not lot)
+    months_match = re.search(r"(\d{1,3})\s*개월", text)
+    months = max(1, min(int(months_match.group(1)), 120)) if months_match else 12
+    if not trend and not lot:
+        return [{
+            "tool": _fastpath_tool("et_time"),
+            "input": {"prompt": text, "product": product, "inline_ask": "et_lot"},
+            "reason": "ET 측정시간 랏 선택 필요",
+            "source": "fastpath",
+        }], {"planner": "fastpath:et_time_ask", "step_count": 1}
+    return [{
+        "tool": _fastpath_tool("et_time"),
+        "input": {"prompt": text, "product": product, "lot": lot, "trend": trend,
+                  "months": months, "max_rows": 12},
+        "reason": f"ET 측정시간 fast-path ({product})",
+        "source": "fastpath",
+    }], {"planner": "fastpath:et_time", "step_count": 1}
+
+
+def _et_time_trend_chart(title: str, series: list[dict[str, Any]]) -> dict[str, Any] | None:
+    points = []
+    for entry in series or []:
+        name = str(entry.get("name") or "")
+        for point in entry.get("points") or []:
+            if not isinstance(point, dict):
+                continue
+            try:
+                y = float(point.get("y"))
+            except (TypeError, ValueError):
+                continue
+            points.append({"x": point.get("x"), "x_label": str(point.get("x_label") or point.get("bucket") or ""),
+                           "y": y, "series": name, "n": point.get("n")})
+    if not points:
+        return None
+    return {"kind": "scatter", "chart_type": "scatter", "title": title,
+            "x_label": "월", "y_label": "초", "color_by": "series", "points": points}
+
+
+def _run_et_time(step_input: dict[str, Any], request: Any | None,
+                 user: dict[str, Any] | None) -> dict[str, Any]:
+    ask = str(step_input.get("inline_ask") or "")
+    prompt = str(step_input.get("prompt") or "")
+    if ask == "et_product":
+        clean, _suffix = _et_prompt_parts(prompt)
+        options = [{"label": name, "value": f"{clean} __ET_PRODUCT={name}"}
+                   for name in (step_input.get("product_options") or [])]
+        return {"handled": True, "intent": "et_time_ask", "action": "et_time.ask",
+                "feature": "ettime",
+                "answer": "ET 측정시간을 조회할 제품을 선택해 주세요.",
+                "missing": ["product"], "needs_input": True,
+                "clarification": {"kind": "product", "title": "ET 제품 선택",
+                                  "options": options, "allow_other": True,
+                                  "placeholder": "제품명 직접 입력"}}
+    if ask == "et_lot":
+        return {"handled": True, "intent": "et_time_ask", "action": "et_time.ask",
+                "feature": "ettime",
+                "answer": "개별 측정시간을 조회할 Root Lot ID를 알려주세요.",
+                "missing": ["root_lot_id"], "needs_input": True}
+    from routers import et_time as et
+    me = user if isinstance(user, dict) else {}
+    req = request if request is not None else _synthetic_request(me if me.get("username") else None)
+    product = str(step_input.get("product") or "")
+    lot = str(step_input.get("lot") or "")
+    clean, suffix = _et_prompt_parts(prompt)
+    if suffix.get("product"):
+        product = suffix["product"]
+    if not product:
+        return {"handled": False, "error": "ET 제품 특정 실패"}
+    if not lot:
+        lot = _et_bare_lot(clean or prompt, product)
+    trend = bool(step_input.get("trend"))
+    months = max(1, min(int(step_input.get("months") or 12), 120))
+    try:
+        if trend or (not lot and any(t in prompt.lower() or t in prompt for t in ("추이", "trend", "개월", "장기"))):
+            payload = et.et_time_trend(req, product=product, months=months)
+            trend_map = payload.get("trend") if isinstance(payload.get("trend"), dict) else {}
+            ranked = []
+            for step_id, points in trend_map.items():
+                valid = [p for p in (points or []) if isinstance(p, dict)]
+                wafers = sum(int(p.get("wafers") or 0) for p in valid)
+                weighted = sum(float(p.get("avg_duration_sec") or 0) * int(p.get("wafers") or 0) for p in valid)
+                avg = weighted / wafers if wafers else 0.0
+                ranked.append((avg, wafers, str(step_id), valid))
+            ranked.sort(key=lambda row: (-row[0], -row[1], row[2]))
+            series = []
+            table_rows = []
+            for avg, wafers, step_id, points in ranked[:12]:
+                latest = points[-1] if points else {}
+                series.append({
+                    "name": step_id,
+                    "points": [{"x": idx, "x_label": str(p.get("month") or ""),
+                                "y": p.get("avg_duration_sec"), "n": p.get("wafers")} for idx, p in enumerate(points)],
+                })
+                table_rows.append({"step_id": step_id, "months": len(points), "wafers": wafers,
+                                   "period_avg_sec": round(avg, 1),
+                                   "latest_month": latest.get("month") or "",
+                                   "latest_avg": latest.get("avg_duration_text") or ""})
+            chart = _et_time_trend_chart(f"{product} 최근 {months}개월 ET 측정시간 추이", series)
+            tool: dict[str, Any] = {
+                "handled": True, "intent": "et_time_trend", "action": "et_time.trend",
+                "feature": "ettime",
+                "answer": f"{product} 최근 {months}개월 ET 측정시간 추이와 평균 시간이 큰 주요 step을 표시했습니다.",
+                "table": {"kind": "et_time_trend", "title": "ET 측정시간 추이",
+                          "columns": ["step_id", "months", "wafers", "period_avg_sec",
+                                      "latest_month", "latest_avg"],
+                          "rows": table_rows, "total": len(table_rows)},
+                "slots": {"product": product, "months": months},
+                "sources": [f"/api/et-time/trend?product={product}&months={months}"],
+            }
+            if chart:
+                tool["chart_result"] = chart
+            return tool
+        if not lot:
+            return {"handled": True, "intent": "et_time_ask", "action": "et_time.ask",
+                    "feature": "ettime",
+                    "answer": "개별 측정시간을 조회할 Root Lot ID를 알려주세요.",
+                    "missing": ["root_lot_id"], "needs_input": True}
+        payload = et.et_time_measure(req, product=product, root_lot_id=lot, lot_id="")
+    except Exception as exc:
+        return {"handled": False, "error": f"ET 측정시간 조회 실패: {exc}"}
+    rows = [r for r in (payload.get("rows") or []) if isinstance(r, dict)]
+    table = {"kind": "et_time_measure", "title": f"{lot} ET 측정시간",
+             "columns": sorted({k for r in rows for k in r}) if rows else [],
+             "rows": rows, "total": len(rows)}
+    total = payload.get("total_duration_text") or payload.get("total_sec") or ""
+    return {
+        "handled": True, "intent": "et_time_measure", "action": "et_time.measure",
+        "feature": "ettime",
+        "answer": f"{product} {lot}의 ET 측정시간입니다. {('합계 ' + str(total)) if total else ''}".strip(),
+        "table": table,
+        "slots": {"product": product, "root_lot_id": lot},
+        "sources": [f"/api/et-time/measure?product={product}&root_lot_id={lot}"],
+    }
+
+
+def _lot_wip_home_context(result: dict[str, Any]) -> dict[str, Any]:
+    """lot_wip 결과를 오른쪽 Location 뷰가 읽는 context 로 변환."""
+    context: dict[str, Any] = {}
+    target = result.get("target") if isinstance(result.get("target"), dict) else {}
+    filters = result.get("filters") if isinstance(result.get("filters"), dict) else {}
+    product = str(target.get("product") or filters.get("product") or "")
+    roots = filters.get("root_lot_ids") if isinstance(filters.get("root_lot_ids"), list) else []
+    lots = filters.get("lot_ids") if isinstance(filters.get("lot_ids"), list) else []
+    if product:
+        context["product"] = product
+    if roots and str(roots[0] or "").strip():
+        context["root_lot_id"] = str(roots[0])
+    elif str(target.get("root_lot_id") or "").strip():
+        context["root_lot_id"] = str(target.get("root_lot_id"))
+    if lots and str(lots[0] or "").strip():
+        context["lot_id"] = str(lots[0])
+    elif str(target.get("lot_id") or "").strip():
+        context["lot_id"] = str(target.get("lot_id"))
+    return context
 
 
 def _execute_step(
@@ -1953,6 +3538,35 @@ def _execute_step_impl(
                 out["sub_trace"] = deepcopy(res.get("trace") or [])
                 out["result_preview"] = _summarize_home_sql_join_dashboard_runtime_result(res)
                 return _finish_exec_out(out, t0)
+            if name in ("dashboard_wip", "lotmanage_table", "knob_lead_lots", "need_product",
+                            "inline_values", "inline_radius_plot",
+                            "eta_forecast", "et_download", "et_time"):
+                if not _unit_allowed(name, _allowed_feature_keys_for_user(user)):
+                    out.update({
+                        "ok": False,
+                        "blocked": True,
+                        "status": "blocked",
+                        "warnings": [f"'{name}' 기능 권한 없음"],
+                        "result_preview": f"권한 차단: '{name}' 은 현재 계정 탭 권한에 없는 기능입니다.",
+                        "result": {
+                            "handled": True,
+                            "blocked": True,
+                            "intent": "permission_denied",
+                            "answer": "현재 계정에는 이 기능 권한이 없어 실행할 수 없습니다. 관리자에게 해당 탭 권한을 요청하세요.",
+                        },
+                    })
+                    return _finish_exec_out(out, t0)
+                res = _run_fastpath_tool(name, step_input, request=request, user=user)
+                if res and res.get("handled"):
+                    out["ok"] = True
+                    out["result"] = res
+                    out["public_result"] = res
+                    out["result_preview"] = _summarize_result(res)
+                    out["raw_keys"] = sorted(res.keys())
+                else:
+                    out["ok"] = False
+                    out["result_preview"] = str((res or {}).get("error") or "fast-path 실행 실패")
+                return _finish_exec_out(out, t0)
             from core.flowi_units.dispatcher import try_dispatch
             prompt = str(step_input.get("prompt") or "").strip()
             product = str(step_input.get("product") or "")
@@ -1962,8 +3576,14 @@ def _execute_step_impl(
                 max_rows = 12
             res = try_dispatch(prompt, product=product, max_rows=max_rows, only=[name])
             if res and res.get("handled"):
+                res = dict(res)
+                if str(res.get("unit_ai") or name) == "lot_wip":
+                    # 위치 답변은 오른쪽 Location 뷰로 렌더한다.
+                    res["feature"] = "location"
+                    res["context"] = _lot_wip_home_context(res)
                 out["ok"] = True
                 out["result"] = res
+                out["public_result"] = res
                 out["result_preview"] = _summarize_result(res)
                 out["raw_keys"] = sorted(res.keys())
             else:
@@ -2529,6 +4149,89 @@ def _merge_step_input_with_parent(step_input: dict[str, Any], parent_context: di
     return merged
 
 
+def home_usage_block() -> dict[str, Any] | None:
+    """현재 홈 요청의 차감 블록. flowi_turn usage 와 동일 shape + turn_exhausted.
+
+    turn_budget 밖(예산 미적용 경로)이면 None. 이번 요청 합산(llm_calls_used)과
+    분당 window 스냅샷을 함께 담아 프론트가 "N회 차감 · 분당 잔여"를 표시한다.
+    """
+    try:
+        from core import llm_usage
+        turn = llm_usage.current_turn()
+        if turn is None:
+            return None
+        used = max(0, int(turn.get("llm_calls_used") or 0))
+        limit = max(0, int(turn.get("llm_call_limit") or 0))
+        return {
+            "llm_calls_used": used,
+            "llm_call_limit": limit,
+            "llm_calls_remaining": max(0, limit - used),
+            "turn_exhausted": bool(limit and used >= limit),
+            **llm_usage.snapshot(),
+        }
+    except Exception:
+        logger.debug("home usage block build failed", exc_info=True)
+        return None
+
+
+def _extract_step_query(result: dict[str, Any]) -> dict[str, Any]:
+    """공개 결과에서 쿼리 증거만 추린다. 없으면 {} (섹션 숨김용)."""
+    if not isinstance(result, dict):
+        return {}
+    query: dict[str, Any] = {}
+    for container_key in ("merged", "filter", "ai_sql", "sql_draft"):
+        container = result.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        for sql_key in ("display_sql", "sql", "where_sql", "applied_where_sql"):
+            text = _short_text(container.get(sql_key), 1000)
+            if text and not query.get("sql"):
+                query["sql"] = text
+        cols = _safe_string_list(container.get("selected_columns"), _MAX_PREVIEW_COLS)
+        if cols and not query.get("selected_columns"):
+            query["selected_columns"] = cols
+    for sql_key in ("display_sql", "sql", "where_sql", "applied_where_sql"):
+        text = _short_text(result.get(sql_key), 1000)
+        if text and not query.get("sql"):
+            query["sql"] = text
+    return query
+
+
+def build_response_evidence(
+    *,
+    trace: list[dict[str, Any]] | None,
+    semantic_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """왼쪽 해석 패널용 공개 증거 블록. 내부 추론 원문은 담지 않는다."""
+    steps: list[dict[str, Any]] = []
+    for row in trace or []:
+        if not isinstance(row, dict):
+            continue
+        result = row.get("result") if isinstance(row.get("result"), dict) else {}
+        step_input = row.get("input") if isinstance(row.get("input"), dict) else {}
+        targets = {
+            key: _short_text(step_input.get(key), 120)
+            for key in ("product", "root_lot_id", "lot_id", "file")
+            if _short_text(step_input.get(key), 120)
+        }
+        steps.append({
+            "tool": _short_text(row.get("tool"), 80),
+            "title": _short_text(row.get("title"), 120),
+            "kind": _short_text(row.get("kind"), 20),
+            "status": _short_text(row.get("status"), 20),
+            "ok": bool(row.get("ok")),
+            "reason": _short_text(row.get("reason"), 200),
+            "source": _short_text(row.get("source"), 60),
+            "ms": row.get("ms", 0),
+            "targets": targets,
+            "sources": _safe_string_list(result.get("sources"), 12),
+            "query": _extract_step_query(result),
+            "warnings": _safe_string_list(row.get("warnings"), 8),
+            "result_preview": _short_text(row.get("result_preview"), 400),
+        })
+    return {"semantic": semantic_summary if isinstance(semantic_summary, dict) else {}, "steps": steps}
+
+
 def _attach_runtime_result(
     out: dict[str, Any],
     *,
@@ -2544,6 +4247,25 @@ def _attach_runtime_result(
         out["reply"] = out.get("answer")
     if "tool" not in out:
         out["tool"] = _tool_from_tool_calls(out.get("tool_calls")) or _tool_summary_from_trace(trace)
+    # 멀티턴 fastpath(ETA 등)가 다음 턴에 이어쓸 대화 context 회수.
+    tool_calls = out.get("tool_calls") if isinstance(out.get("tool_calls"), list) else []
+    for call in tool_calls:
+        output = call.get("output") if isinstance(call, dict) and isinstance(call.get("output"), dict) else {}
+        carried = output.pop("_context", None) if isinstance(output, dict) else None
+        if isinstance(carried, dict) and "context" not in out:
+            out["context"] = carried
+    usage = home_usage_block()
+    if usage is not None:
+        out["usage"] = usage
+        if usage.get("turn_exhausted"):
+            meta = out.get("meta")
+            if isinstance(meta, dict):
+                meta["budget_exhausted"] = True
+    meta = out.get("meta") if isinstance(out.get("meta"), dict) else {}
+    out["evidence"] = build_response_evidence(
+        trace=trace,
+        semantic_summary=meta.get("semantic_summary") if isinstance(meta.get("semantic_summary"), dict) else None,
+    )
     snapshot = build_home_runtime_snapshot(
         prompt=prompt,
         result=out,
@@ -2804,16 +4526,23 @@ def _run_react_loop(
     }
 
 
+@_with_home_turn_budget
 def orchestrate(
     prompt: str,
     user: dict[str, Any] | None = None,
     top_k: int = 2,
     *,
     request: Any | None = None,
+    context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """홈 에이전트 메인 엔트리포인트.
 
     prompt → alias 매칭 → LLM planner (선택) → 휴리스틱 → step 실행 → trace + 응답.
+
+    요청 스코프 turn_budget 안에서 실행된다 (planner·런타임·최종 요약 합산,
+    상한은 home_turn_limit). 응답에는 usage·evidence 가 포함된다.
+    context 가 있으면 멀티턴 fastpath(ETA 등)가 이전 턴 상태를 이어받으며,
+    갱신된 context 를 응답의 "context" 로 돌려준다.
     """
     prompt = str(prompt or "").strip()
     if not prompt:
@@ -2867,10 +4596,17 @@ def orchestrate(
 
     plan: list[dict[str, Any]] | None = None
     meta: dict[str, Any] = {"planner": "heuristic"}
+    # 단일 패스도 왼쪽 해석 패널용 semantic frame 을 항상 포함한다.
+    single_pass_semantic = _semantic_frame_summary(_semantic_frame_for_prompt(prompt))
 
     plan = _plan_from_alias(prompt, tools)
     if plan:
         meta = {"planner": "alias", "step_count": len(plan)}
+    if not plan:
+        fast_plan, fast_meta = _plan_from_fastpath(prompt, user=user, request=request,
+                                                   context=context)
+        if fast_plan:
+            plan, meta = fast_plan, dict(fast_meta or {})
     if not plan and _llm_planner_enabled():
         plan = _plan_with_llm(prompt, tools)
         if plan:
@@ -2879,6 +4615,7 @@ def orchestrate(
         plan, hmeta = _plan_from_heuristic(prompt, top_k=top_k)
         meta.update(hmeta)
         meta["planner"] = "heuristic"
+    meta["semantic_summary"] = single_pass_semantic
 
     if not plan:
         return _attach_runtime_result({
@@ -3045,6 +4782,7 @@ def _orchestrate_stream_react(
     yield final
 
 
+@_with_home_turn_budget
 def orchestrate_stream(
     prompt: str,
     user: dict[str, Any] | None = None,
@@ -3055,7 +4793,7 @@ def orchestrate_stream(
     """SSE 용 generator. orchestrate 와 동일하지만 step 별로 event 를 yield 한다.
 
     소비 측 (FastAPI StreamingResponse)은 각 dict 를 `event: <type>\\ndata: <json>\\n\\n`
-    으로 직렬화한다.
+    으로 직렬화한다. 최종 reply 에는 usage·evidence 가 포함된다.
     """
     prompt = str(prompt or "").strip()
     if not prompt:
@@ -3076,16 +4814,22 @@ def orchestrate_stream(
         return
     plan: list[dict[str, Any]] | None = None
     meta: dict[str, Any] = {"planner": "heuristic"}
+    stream_semantic = _semantic_frame_summary(_semantic_frame_for_prompt(prompt))
     yield {
         "type": "status",
         "run_id": run_id,
         "stage": "semantic_layer",
         "status": "용어해석중",
         "graph": build_home_runtime_graph(statuses={"prompt_input": "success", "semantic_layer": "running"}),
+        "semantic": stream_semantic,
     }
     plan = _plan_from_alias(prompt, tools)
     if plan:
         meta = {"planner": "alias", "step_count": len(plan)}
+    if not plan:
+        fast_plan, fast_meta = _plan_from_fastpath(prompt, user=user)
+        if fast_plan:
+            plan, meta = fast_plan, dict(fast_meta or {})
     if not plan and _llm_planner_enabled():
         plan = _plan_with_llm(prompt, tools)
         if plan:
@@ -3094,6 +4838,7 @@ def orchestrate_stream(
         plan, hmeta = _plan_from_heuristic(prompt, top_k=top_k)
         meta.update(hmeta)
         meta["planner"] = "heuristic"
+    meta["semantic_summary"] = stream_semantic
     selected_units = [
         name
         for name in (

@@ -327,36 +327,52 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "", *, immediate: boo
     return True
 
 
-def _pivot_cache_needs_build(product: str, source_fp: Path) -> bool:
-    """Cheap completeness check; the worker performs the expensive fingerprint."""
+def _pivot_cache_artifact_status(product: str, source_fp: Path) -> dict:
+    """Validate published roots without loading the wide lookup candidate index."""
+    from app_v2.modules.splittable import cache_builder as builder
+    out_dir = _pivot_cache_path(product, "__probe__").parent
+    files = builder._root_file_stats(out_dir)
+    result = {"ready": False, "done": len(files), "built_ts": 0.0,
+              "message": "Pivot 완료 기록 또는 랏 파일이 없습니다"}
     try:
-        out_dir = _pivot_cache_path(product, "__probe__").parent
-        from app_v2.modules.splittable.cache_builder import completed_cache_matches
-        if completed_cache_matches(out_dir, source_fp):
-            return False
+        completion = out_dir / builder._BUILD_COMPLETE_FILE
+        if completion.is_file():
+            result["built_ts"] = completion.stat().st_mtime
+            result["ready"] = builder.completed_cache_matches(out_dir, source_fp, file_stats=files)
+            # A rejected new-format manifest must not fall back to an older
+            # fingerprint, which can hide a changed source or missing root.
+            result["message"] = (f"Pivot 빌드 완료 — {len(files):,} roots" if result["ready"] else
+                                 "Pivot 재빌드 필요 — 원본 변경 또는 미완료·누락된 랏 파일")
+            return result
         fingerprint_fp = out_dir / ".root_fingerprints.json"
         if not fingerprint_fp.is_file():
-            return True
-        if source_fp.stat().st_mtime > fingerprint_fp.stat().st_mtime:
-            return True
+            return result
+        fingerprint_stat = fingerprint_fp.stat()
+        result["built_ts"] = fingerprint_stat.st_mtime
+        if source_fp.stat().st_mtime_ns > fingerprint_stat.st_mtime_ns:
+            result["message"] = "Pivot 재빌드 필요 — 완료 기록 이후 원본이 변경되었습니다"
+            return result
         meta = json.loads(fingerprint_fp.read_text(encoding="utf-8"))
-        if meta.get("complete") is False:
-            return True
-        expected = {
-            str(value or "").strip()
-            for value in (
-                _ml_table_lookup.read_candidate_index(source_fp).get("root_lot_ids") or []
-            )
-            if str(value or "").strip()
-        }
-        if not expected:
-            return False
-        built = {str(value or "").strip() for value in (meta.get("roots") or {})}
-        if not expected.issubset(built):
-            return True
-        return sum(1 for _path in out_dir.glob("*.parquet")) < len(expected)
+        roots = meta.get("roots")
+        # Legacy successful builders wrote every source root to this manifest.
+        # Partial checkpoints explicitly carry complete=False. Check filenames,
+        # not a count that a stale or temporary parquet could accidentally fill.
+        result["ready"] = bool(
+            meta.get("format") == builder._CACHE_FORMAT_VERSION
+            and meta.get("complete") is not False and isinstance(roots, dict) and roots
+            and all(builder._safe_root_filename(root) in files
+                    and files[builder._safe_root_filename(root)].st_mtime_ns <= fingerprint_stat.st_mtime_ns
+                    for root in roots)
+        )
+        result["message"] = (f"Pivot 빌드 완료 — {len(files):,} roots" if result["ready"] else
+                             "Pivot 미완료 — 중단된 빌드 또는 누락된 랏 파일")
     except Exception:
-        return True
+        result["message"] = "Pivot 완료 기록을 확인할 수 없습니다"
+    return result
+
+
+def _pivot_cache_needs_build(product: str, source_fp: Path) -> bool:
+    return not _pivot_cache_artifact_status(product, source_fp)["ready"]
 
 
 def _auto_product_cache_role_key() -> str:
@@ -1652,7 +1668,10 @@ def _split_view_cache_get(key: tuple, hard_sig: tuple, soft_sig: tuple) -> tuple
     # 피한다. 디스크 엔트리도 동일 hard/soft 시그니처 계약을 사용한다.
     freshness, payload = _view_disk_cache_read(key, hard_sig, soft_sig)
     if payload is not None:
-        _split_view_cache_put_memory(key, hard_sig, soft_sig, payload)
+        # A stale disk payload must stay stale in RAM until recomputed. Using
+        # today's soft signature here falsely marked yesterday's labels fresh.
+        memory_soft_sig = soft_sig if freshness == "fresh" else ("disk-stale",)
+        _split_view_cache_put_memory(key, hard_sig, memory_soft_sig, payload)
         return freshness, dict(payload)
     return "miss", None
 
@@ -1684,13 +1703,14 @@ def _split_view_cache_put_memory(key: tuple, hard_sig: tuple, soft_sig: tuple, s
         old = _VIEW_CACHE.pop(key, None)
         if old is not None:
             _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - old[3])
-        _VIEW_CACHE[key] = (hard_sig, soft_sig, stored, approx_bytes)
-        _VIEW_CACHE_BYTES += approx_bytes
+        # Oversized responses remain available in the disk cache; one large
+        # request must neither bypass the RAM budget nor evict every hot lot.
+        if approx_bytes <= budget:
+            _VIEW_CACHE[key] = (hard_sig, soft_sig, stored, approx_bytes)
+            _VIEW_CACHE_BYTES += approx_bytes
         while _VIEW_CACHE and (
             len(_VIEW_CACHE) > _view_cache_max_entries() or _VIEW_CACHE_BYTES > budget
         ):
-            if len(_VIEW_CACHE) == 1:
-                break  # 방금 넣은 항목은 예산 초과라도 유지 (miss 반복 방지)
             _, evicted = _VIEW_CACHE.popitem(last=False)
             _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - evicted[3])
 
@@ -2051,7 +2071,11 @@ def _attach_split_view_runtime_fields(
             username,
             role,
         )
-    out["product_cache"] = _product_ram_cache_response_meta(out.get("product") or "")
+    # This is a diagnostic badge, like lookup_cache above. Reuse the snapshot
+    # already attached to the payload instead of traversing all cached roots
+    # and re-reading resource settings on every ready table response.
+    if "product_cache" not in out:
+        out["product_cache"] = _product_ram_cache_response_meta(product)
     # 마무리 메타(lookup_cache 재조회/related_issues/product_cache) — 캐시 히트
     # 응답에서도 도는 구간이라 여기가 무거우면 "캐시 히트인데 느리다" 가 된다.
     _lap(runtime_profile, "finish_ms")
@@ -2524,6 +2548,7 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
 
         def _prepare_view_frame(view_lf):
             view_schema = view_lf.collect_schema().names()
+            view_schema_set = set(view_schema)
             all_data = _view_data_columns(view_schema, lot_col, wf_col, fab_lot_col)
             tag_labels = _custom_tag_label_map(product)
             # purpose is a built-in SplitTable context row, not an opt-in TAG
@@ -2566,9 +2591,11 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
                 )
             if keep_fab_col and keep_fab_col in view_schema and keep_fab_col not in keep_cols:
                 keep_cols.append(keep_fab_col)
+            keep_cols_set = set(keep_cols)
             for c in sel:
-                if c in view_schema and c not in keep_cols:
+                if c in view_schema_set and c not in keep_cols_set:
                     keep_cols.append(c)
+                    keep_cols_set.add(c)
             q = view_lf.select(keep_cols) if keep_cols else view_lf
             # 여기까지가 컬럼 선택·rename·공정순 정렬 — 전부 파이썬이고 컬럼 수에
             # 비례한다(멀티 prefix 검색에서 커지는 쪽). collect 와 분리해야 어느

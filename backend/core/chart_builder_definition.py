@@ -20,9 +20,9 @@ QUERY_HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 FIELD_RE = re.compile(
-    r"^\s*(table|db|root|product|sql|query|select_cols?|columns?|reformatter|apply_reformatter|reformatter_items?|items|reformatter_agg|agg"
+    r"^\s*(table|db|root|product|sql|query|select_cols?|columns?|reformatter|apply_reformatter|reformatter_items?|items|reformatter_agg|agg|agg_scope"
     r"|recent_days?|recent|days|date_column|date_col|time_column|time_col"
-    r"|root_lots?|root_lot_ids?|wafers?|wafer_ids?"
+    r"|root_lots?|root_lot_ids?|wafers?|wafer_ids?|lot_wafer_pairs"
     r"|key|reformatize_key|rh_key|et_key|expression"
     r"|derive|derived|derived_column|combine|filter|filters?)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
@@ -63,6 +63,7 @@ FIELD_ALIASES = {
     "reformatter_items": "reformatter_items",
     "reformatter_agg": "reformatter_agg",
     "agg": "reformatter_agg",
+    "agg_scope": "reformatter_agg_scope",
     "key": "reformatize_key",
     "reformatize_key": "reformatize_key",
     "rh_key": "reformatize_key",
@@ -86,6 +87,7 @@ FIELD_ALIASES = {
     "wafers": "runtime_wafer_ids",
     "wafer_id": "runtime_wafer_ids",
     "wafer_ids": "runtime_wafer_ids",
+    "lot_wafer_pairs": "runtime_lot_wafer_pairs",
     "derive": "derived_columns",
     "derived": "derived_columns",
     "derived_column": "derived_columns",
@@ -165,10 +167,18 @@ def _parse_derived_column(value: str) -> dict[str, Any]:
     name = str(name or "").strip()[:80]
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
         raise ChartBuilderDefinitionError("DERIVE 이름은 영문/숫자/밑줄 열 이름이어야 합니다.")
-    if not columns or len(columns) > 12 or any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column) for column in columns):
+    if not columns or len(columns) > 12 or any(len(column) > 120 or any(c in column for c in "|\r\n") for column in columns):
         raise ChartBuilderDefinitionError("DERIVE columns는 쉼표로 구분한 1~12개 열 이름이어야 합니다.")
     separator = str(separator if separator is not None else "_").replace("\\t", "\t")[:8]
-    return {"name": name, "columns": columns, "separator": separator}
+    result = {"name": name, "columns": columns, "separator": separator}
+    operation = options.get("operation", "concat")
+    if operation not in {"concat", "split_prefix"}:
+        raise ChartBuilderDefinitionError("지원하지 않는 DERIVE operation입니다.")
+    if operation == "split_prefix":
+        if len(columns) != 1 or not separator or options.get("segments") not in {"1", "2", "3"}:
+            raise ChartBuilderDefinitionError("split_prefix는 원본 열 하나, 구분자와 segments 1~3이 필요합니다.")
+        result.update(operation=operation, segments=int(options["segments"]))
+    return result
 
 
 def _filter_operator(value: str) -> str:
@@ -206,6 +216,18 @@ def _assign_field(source: dict[str, Any], name: str, value: str, *, append_sql: 
     if not field:
         raise ChartBuilderDefinitionError(f"지원하지 않는 Query 항목입니다: {name}")
     cleaned = str(value or "").strip()
+    if field == "runtime_lot_wafer_pairs":
+        import json
+        try:
+            pairs = json.loads(cleaned)
+        except (ValueError, TypeError) as exc:
+            raise ChartBuilderDefinitionError("LOT_WAFER_PAIRS는 Root Lot·Wafer 객체의 JSON 배열이어야 합니다.") from exc
+        if not isinstance(pairs, list) or not 1 <= len(pairs) <= 200 or any(
+            not isinstance(p, dict) or any(not isinstance(p.get(k), str) or not p[k].strip() or len(p[k]) > 160
+            for k in ("root_lot_id", "wafer_id")) for p in pairs):
+            raise ChartBuilderDefinitionError("LOT_WAFER_PAIRS는 root_lot_id와 wafer_id가 있는 1~200개 객체여야 합니다.")
+        source[field] = [{k: p[k].strip() for k in ("root_lot_id", "wafer_id")} for p in pairs]
+        return
     if field == "derived_columns":
         rows = source.setdefault(field, [])
         if len(rows) >= MAX_DERIVED_COLUMNS:
@@ -220,6 +242,11 @@ def _assign_field(source: dict[str, Any], name: str, value: str, *, append_sql: 
         return
     if field == "apply_reformatter":
         source[field] = cleaned.casefold() in {"1", "true", "yes", "y", "on", "사용", "적용"}
+        return
+    if field == "reformatter_agg_scope":
+        if cleaned not in {"package", "wafer"}:
+            raise ChartBuilderDefinitionError("AGG_SCOPE는 package 또는 wafer여야 합니다.")
+        source[field] = cleaned
         return
     if field == "reformatter_agg":
         normalized = _normalize_reformatter_agg(cleaned)
@@ -697,7 +724,7 @@ def _source_dict(source: Any) -> dict[str, Any]:
         for key in (
             "id", "root", "product", "sql", "select_cols", "apply_reformatter", "reformatter_items", "reformatter_agg",
             "runtime_recent_days", "runtime_date_column",
-            "runtime_root_lot_ids", "runtime_wafer_ids", "runtime_lot_wafer_pairs",
+            "runtime_root_lot_ids", "runtime_wafer_ids", "runtime_lot_wafer_pairs", "reformatter_agg_scope",
             "derived_columns", "runtime_filters",
         )
     }
@@ -876,6 +903,9 @@ def format_chart_builder_definition(
         root_lot_ids = [str(value).strip() for value in (source.get("runtime_root_lot_ids") or []) if str(value).strip()]
         wafer_ids = [str(value).strip() for value in (source.get("runtime_wafer_ids") or []) if str(value).strip()]
         linked_pairs = [pair for pair in (source.get("runtime_lot_wafer_pairs") or []) if isinstance(pair, dict) and str(pair.get("root_lot_id") or "").strip() and str(pair.get("wafer_id") or "").strip()]
+        if linked_pairs:
+            import json
+            lines.append("LOT_WAFER_PAIRS = " + json.dumps(linked_pairs, ensure_ascii=False, separators=(",", ":")))
         if root_lot_ids and not linked_pairs:
             lines.append(f"ROOT_LOTS = {', '.join(root_lot_ids[:200])}")
         if wafer_ids and not linked_pairs:
@@ -888,6 +918,8 @@ def format_chart_builder_definition(
             reformatter_agg = str(source.get("reformatter_agg") or "").strip().casefold()
             if reformatter_agg:
                 lines.append(f"AGG = {reformatter_agg.upper()}")
+        if source.get("reformatter_agg_scope") == "wafer":
+            lines.append("AGG_SCOPE = wafer")
         for derived in source.get("derived_columns") or []:
             if not isinstance(derived, dict):
                 continue
@@ -896,6 +928,8 @@ def format_chart_builder_definition(
             if name and columns:
                 separator = str(derived.get("separator") if derived.get("separator") is not None else "_").replace("\t", "\\t")
                 lines.append(f"DERIVE = {name} | columns={','.join(columns)} | separator={separator}")
+                if derived.get("operation") == "split_prefix":
+                    lines[-1] += f" | operation=split_prefix | segments={derived.get('segments', 1)}"
         for item in source.get("runtime_filters") or []:
             if not isinstance(item, dict):
                 continue

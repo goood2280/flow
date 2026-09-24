@@ -1091,7 +1091,7 @@ def delete_note(req: NoteDeleteReq, request: Request):
         target = next((e for e in entries if e.get("id") == req.id), None)
         if not target:
             raise HTTPException(404, "note not found")
-        if role != "admin" and target.get("username") != username:
+        if not is_page_manager(me, "splittable") and target.get("username") != username:
             raise HTTPException(403, "only author or admin can delete")
         entries = [e for e in entries if e.get("id") != req.id]
         _save_notes(entries)

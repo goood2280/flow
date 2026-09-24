@@ -69,6 +69,22 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
                 context.pop("eta_query", None)
                 context.pop("pending_inline", None)
                 context.pop("inline_query", None)
+                context.pop("pending_inline_chart", None)
+                context.pop("inline_chart_query", None)
+                for key in ("pending_por", "pending_ml_chart", "ml_chart_query", "pending_et_chart", "et_chart_query", "pending_dashboard", "dashboard_query"):
+                    context.pop(key, None)
+                context.pop("pending_wafer_map", None)
+                context.pop("wafer_map_query", None)
+                context.pop("pending_et", None)
+                context.pop("et_query", None)
+            # Chart selection is an explicit client input, unlike server-owned
+            # product confirmations and pending approval identifiers.
+            if "selected_report_charts" in body.context:
+                from core.data_chat_report import _selected_chart_snapshots
+                try:
+                    context["selected_report_charts"] = _selected_chart_snapshots(body.context)
+                except (ValueError, HTTPException) as exc:
+                    raise HTTPException(400, str(getattr(exc, "detail", exc))) from exc
             # These keys are server-owned, refreshed for this turn only.
             context.pop("personalization", None)
             context.pop("selected_skill", None)

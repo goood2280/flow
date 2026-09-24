@@ -1687,7 +1687,7 @@ class RootLotRamCacheRefreshReq(BaseModel):
 @router.get("/match-cache/status")
 def match_cache_status(request: Request, product: str = Query("")):
     me = current_user(request)
-    if me.get("role") != "admin":
+    if not is_page_manager(me, "splittable"):
         raise HTTPException(403, "admin only")
     try:
         from core.runtime_limits import splittable_match_cache_enabled

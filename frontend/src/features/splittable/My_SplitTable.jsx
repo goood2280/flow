@@ -814,7 +814,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       .finally(()=>setOverridePreviewLoading(false));
   },[selProd,effectivePreviewSource]);
   const role = useUserRole(user);
-  const isAdmin = role.isAdmin;
+  const isAdmin = role.canManagePage("splittable");
   const canManage = role.canManagePage("splittable");
   const splitPerfEnabled=isAdmin&&isSplitViewPerformanceEnabled(typeof window!=="undefined"?window.location.search:"");
   const splitPerfPendingRef=useRef(null);

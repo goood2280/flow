@@ -5,6 +5,7 @@ import { Banner, Button, Input, PageShell, Select } from "../../components/ui";
 import { authSrc, sf } from "../../lib/api";
 import { canManagePage } from "../../lib/permissions";
 import { sanitizeHtml } from "../../lib/sanitizeHtml";
+import StructureModelWorkspace from "../structure/StructureModelWorkspace";
 import "./My_ProductWiki.css";
 
 const API = "/api/product-wiki";
@@ -134,7 +135,8 @@ function markdownToHtml(md) {
 
 export default function My_ProductWiki({ user }) {
   const [products, setProducts] = useState([]);
-  const [product, setProduct] = useState("");
+  const [product, setProduct] = useState(() => new URLSearchParams(window.location.search).get("product") || "");
+  const [modelOpen, setModelOpen] = useState(false);
   const [doc, setDoc] = useState(null);
   const [loading, setLoading] = useState(false);
   const [catalogLoading, setCatalogLoading] = useState(true);
@@ -171,7 +173,7 @@ export default function My_ProductWiki({ user }) {
         const list = data.products || [];
         setProducts(list);
         if (list.length > 0) {
-          setProduct((prev) => prev || list[0]);
+          setProduct((prev) => list.includes(prev) ? prev : list[0]);
         }
       })
       .catch((err) => {
@@ -575,7 +577,11 @@ export default function My_ProductWiki({ user }) {
               className="pw-product-select"
               value={product}
               disabled={catalogLoading || busy || loading}
-              onChange={(e) => setProduct(e.target.value)}
+              onChange={(e) => {
+                const next = e.target.value;
+                setProduct(next);
+                window.history.replaceState(window.history.state, "", `/productwiki${next ? `?product=${encodeURIComponent(next)}` : ""}`);
+              }}
             >
               <option value="">제품을 선택하세요</option>
               {products.map((p) => (
@@ -614,6 +620,11 @@ export default function My_ProductWiki({ user }) {
           <span>{notice}</span>
         </Banner>
       )}
+
+      {product && <details className="pw-structure-model" onToggle={(event) => setModelOpen(event.currentTarget.open)}>
+        <summary>{product} · GAA 구조 3D</summary>
+        {modelOpen && <StructureModelWorkspace fixedProduct={product} admin={user?.role === "admin"}/>}
+      </details>}
 
       {/* ── Direct Issue Registration Box ── */}
       {product && (

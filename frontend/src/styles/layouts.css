@@ -168,6 +168,35 @@
   max-width: min(94vw, 2400px);
 }
 
+.home-page.is-flowi-open {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.home-page.is-flowi-open .home-flowi-panel {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  animation: none;
+}
+
+.home-page.is-flowi-open .home-data-chat,
+.home-page.is-flowi-open .home-data-chat.has-workspace {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .home-top-section,
 .home-bottom-section {
   width: 100%;

@@ -81,7 +81,7 @@ def test_exact_example_chain_keeps_target_and_uses_native_tkout(tracker_data, mo
     assert "도착 시각은" in third["reply"]
     assert calls[-1] == {"request": calls[-1]["request"], "lot_id": "AVDFS.1",
                          "reference_lot_id": "AZCVC.1", "target_step_id": "CS100000",
-                         "product": "PRODC1", "dummy": False}
+                         "product": "PRODC1"}
 
 
 def test_missing_exact_target_history_never_uses_fallback_eta(tracker_data):

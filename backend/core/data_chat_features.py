@@ -346,7 +346,10 @@ def execute_feature(action: str, params: dict | None, request: Any) -> dict:
             hours=hours,
         )
         tool = _base_tool("dashboard", action, "/api/dashboard/stuck-lots")
-        tool["table"] = _plain_table(data.get("lots"), total=int(data.get("count") or 0))
+        tool["table"] = _plain_table(data.get("lots"), columns=[
+            "product", "root_lot_id", "current_fab_lot_id", "current_step_id",
+            "stuck_hours", "current_time", "progress_pct",
+        ], total=int(data.get("count") or 0))
         tool["context"] = {
             "product": str(data.get("product") or product),
             "days": days,

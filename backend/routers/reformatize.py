@@ -22,14 +22,18 @@ Endpoints:
 """
 from __future__ import annotations
 
+import ast
 import datetime as dt
 import hashlib
+import inspect
 import json
 import logging
+import math
 import multiprocessing
 import os
 import queue
 import re
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -40,7 +44,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app_v2.shared.source_adapter import resolve_named_child
-from core.auth import current_user, is_page_manager, require_admin
+from core.auth import current_user, is_page_manager, require_page_manager
 from core.paths import PATHS
 from core.utils import (
     download_content_disposition, download_filename,
@@ -1213,7 +1217,7 @@ def list_items(product: str = Query(...), user=Depends(current_user)):
         raise HTTPException(400, f"'{product}' 에 매칭되는 vehicle reformatter CSV 가 없습니다")
     table = load_vehicle_table(csv_fp)
     hidden = _hidden_aliases(csv_fp.name)
-    is_admin = user.get("role") == "admin"
+    is_admin = is_page_manager(user, "reformatize")
     items = [{
         "alias": r["alias"],
         "category": r["category"],
@@ -1236,7 +1240,7 @@ class VisibilityReq(BaseModel):
 
 
 @router.post("/visibility")
-def visibility_save(req: VisibilityReq, admin=Depends(require_admin)):
+def visibility_save(req: VisibilityReq, admin=Depends(require_page_manager("reformatize"))):
     """관리자: reformatter(vehicle CSV)별 유저 비공개 항목 저장 — 기본 전부 공개.
 
     CSV 에 실존하는 alias 만 저장하고, 빈 목록이면 항목 자체를 지워 기본
@@ -1261,24 +1265,117 @@ def visibility_save(req: VisibilityReq, admin=Depends(require_admin)):
 
 # ── 집계(aggregation) — shot 단위 wide 를 (root_lot_id, wafer_id, step_id,
 #    PGM(pt)) 그룹으로 요약해서 뽑는 옵션 ─────────────────────────────
+# 집계 지정은 단일 문자열(히스토리·대기열·파일명과 호환):
+#   ""=raw, max|min|median|avg|std, p90|p10(legacy),
+#   pct:<q> (예: pct:20 → 20 percentile, 0~100),
+#   below:<v> (값 이하 shot 비율 %, inclusive), above:<v> (값 이상 shot 비율 %),
+#   cp|cpk|pp|ppk:<lsl>,<usl> (예: cpk:0.2,0.8)
+# Cp/Cpk 와 Pp/Ppk 는 shot-package grain 에서는 군내/전체 산포 구분이 없어
+# 같은 그룹 표준편차(표본, ddof=1)로 계산하므로 같은 값이 나온다 — 친숙한
+# 라벨로 고를 수 있게 네 이름 모두 제공한다.
 _AGG_METHODS = ("max", "min", "median", "avg", "std", "p90", "p10")
 
+_AGG_HELP = [
+    {"name": "MAX", "agg": "max", "desc": "그룹 내 최대", "params": []},
+    {"name": "MIN", "agg": "min", "desc": "그룹 내 최소", "params": []},
+    {"name": "MEDIAN", "agg": "median", "desc": "그룹 내 중앙값", "params": []},
+    {"name": "AVG", "agg": "avg", "desc": "그룹 내 평균", "params": []},
+    {"name": "STD", "agg": "std", "desc": "그룹 내 표준편차 (표본, ddof=1)", "params": []},
+    {"name": "P90 / P10", "agg": "p90", "desc": "90 / 10 percentile (legacy 단축형)", "params": []},
+    {"name": "PERCENTILE q", "agg": "pct:20", "desc": "q percentile (q: 0~100, 선형보간). 예: pct:20", "params": ["q"]},
+    {"name": "BELOW_SPEC_PCT v", "agg": "below:0.5", "desc": "값 이하(≤ v) shot 비율 0~100%. 예: below:0.5", "params": ["v"]},
+    {"name": "ABOVE_SPEC_PCT v", "agg": "above:0.5", "desc": "값 이상(≥ v) shot 비율 0~100%. 예: above:0.5", "params": ["v"]},
+    {"name": "Cp LSL,USL", "agg": "cp:0.2,0.8", "desc": "(USL−LSL)/(6σ)", "params": ["lsl", "usl"]},
+    {"name": "Cpk LSL,USL", "agg": "cpk:0.2,0.8", "desc": "min(USL−μ, μ−LSL)/(3σ)", "params": ["lsl", "usl"]},
+    {"name": "Pp LSL,USL", "agg": "pp:0.2,0.8", "desc": "(USL−LSL)/(6σ) — 이 grain 에서는 Cp 와 동일", "params": ["lsl", "usl"]},
+    {"name": "Ppk LSL,USL", "agg": "ppk:0.2,0.8", "desc": "min(USL−μ, μ−LSL)/(3σ) — 이 grain 에서는 Cpk 와 동일", "params": ["lsl", "usl"]},
+]
 
-def _agg_expr(col: str, method: str) -> pl.Expr:
+
+def _parse_agg(method: str) -> dict:
+    """집계 문자열 → 정규화 spec. 실패는 400 (화면에 바로 보이는 입력 오류)."""
+    text = str(method or "").strip().lower()
+    if text in _AGG_METHODS:
+        if text == "p90":
+            return {"kind": "pct", "q": 90.0, "label": "P90"}
+        if text == "p10":
+            return {"kind": "pct", "q": 10.0, "label": "P10"}
+        return {"kind": text, "label": text.upper()}
+    if ":" in text:
+        kind, _, raw = text.partition(":")
+        kind, raw = kind.strip(), raw.strip()
+        if kind in ("pct", "percentile", "p"):
+            try:
+                q = float(raw)
+            except ValueError:
+                raise HTTPException(400, f"percentile 값이 숫자가 아닙니다: '{raw}' (예: pct:20)")
+            if not math.isfinite(q) or q < 0 or q > 100:
+                raise HTTPException(400, f"percentile 은 0~100 이어야 합니다: '{raw}'")
+            return {"kind": "pct", "q": q, "label": f"P{q:g}"}
+        if kind in ("below", "below_spec_pct"):
+            try:
+                v = float(raw)
+            except ValueError:
+                raise HTTPException(400, f"below_spec_pct 기준값이 숫자가 아닙니다: '{raw}' (예: below:0.5)")
+            if not math.isfinite(v):
+                raise HTTPException(400, f"below_spec_pct 기준값이 유효하지 않습니다: '{raw}'")
+            return {"kind": "below", "v": v, "label": f"BELOW_SPEC_PCT({v:g})"}
+        if kind in ("above", "above_spec_pct"):
+            try:
+                v = float(raw)
+            except ValueError:
+                raise HTTPException(400, f"above_spec_pct 기준값이 숫자가 아닙니다: '{raw}' (예: above:0.5)")
+            if not math.isfinite(v):
+                raise HTTPException(400, f"above_spec_pct 기준값이 유효하지 않습니다: '{raw}'")
+            return {"kind": "above", "v": v, "label": f"ABOVE_SPEC_PCT({v:g})"}
+        if kind in ("cp", "cpk", "pp", "ppk"):
+            parts = [p.strip() for p in raw.split(",")]
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                raise HTTPException(400, f"{kind.upper()} 는 LSL,USL 두 값이 필요합니다 (예: {kind}:0.2,0.8)")
+            try:
+                lsl, usl = float(parts[0]), float(parts[1])
+            except ValueError:
+                raise HTTPException(400, f"{kind.upper()} LSL/USL 이 숫자가 아닙니다: '{raw}'")
+            if not math.isfinite(lsl) or not math.isfinite(usl):
+                raise HTTPException(400, f"{kind.upper()} LSL/USL 이 유효하지 않습니다: '{raw}'")
+            if usl <= lsl:
+                raise HTTPException(400, f"{kind.upper()} 는 USL > LSL 이어야 합니다: LSL={lsl:g}, USL={usl:g}")
+            return {"kind": kind, "lsl": lsl, "usl": usl,
+                    "label": f"{kind.upper()}({lsl:g},{usl:g})"}
+    raise HTTPException(400, f"지원하지 않는 집계 방식 '{method}' — 허용: {', '.join(_AGG_METHODS)}, pct:q, below:v, above:v, cp|cpk|pp|ppk:lsl,usl")
+
+
+def _agg_expr(col: str, method) -> pl.Expr:
+    """집계 한 컬럼 식. method 는 기존 방식 문자열 또는 _parse_agg spec."""
+    spec = _parse_agg(method) if isinstance(method, str) else method
+    kind = spec.get("kind", "")
     e = pl.col(col).cast(pl.Float64, strict=False)
-    if method == "max":
+    if kind == "max":
         return e.max()
-    if method == "min":
+    if kind == "min":
         return e.min()
-    if method == "median":
+    if kind == "median":
         return e.median()
-    if method == "avg":
+    if kind == "avg":
         return e.mean()
-    if method == "std":
+    if kind == "std":
         return e.std()
-    if method == "p90":
-        return e.quantile(0.9, "linear")
-    return e.quantile(0.1, "linear")  # p10
+    if kind == "pct":
+        return e.quantile(float(spec["q"]) / 100.0, "linear")
+    if kind == "below":
+        return (e <= float(spec["v"])).mean() * 100.0
+    if kind == "above":
+        return (e >= float(spec["v"])).mean() * 100.0
+    if kind in ("cp", "pp"):
+        lsl, usl = float(spec["lsl"]), float(spec["usl"])
+        sd = e.std()
+        return pl.when(sd > 0).then((usl - lsl) / (6.0 * sd)).otherwise(None)
+    if kind in ("cpk", "ppk"):
+        lsl, usl = float(spec["lsl"]), float(spec["usl"])
+        mu, sd = e.mean(), e.std()
+        cap = pl.when((usl - mu) < (mu - lsl)).then(usl - mu).otherwise(mu - lsl)
+        return pl.when(sd > 0).then(cap / (3.0 * sd)).otherwise(None)
+    raise HTTPException(400, f"지원하지 않는 집계 방식 '{kind}'")
 
 
 def _ensure_pgm(wide: pl.DataFrame) -> pl.DataFrame:
@@ -1350,16 +1447,26 @@ def _point_cnt_filter(wide: pl.DataFrame, spec: str) -> pl.DataFrame:
     )
 
 
-def _aggregate(wide: pl.DataFrame, alias_cols: list[str], method: str) -> pl.DataFrame:
+def _aggregate(wide: pl.DataFrame, alias_cols: list[str], method: str, scope: str = "package") -> pl.DataFrame:
     """wide(shot 단위) → (root_lot_id, wafer_id, step_id, pgm) 그룹 집계."""
-    method = str(method or "").strip().lower()
-    if method not in _AGG_METHODS:
-        raise HTTPException(400, f"지원하지 않는 집계 방식 '{method}' — 허용: {', '.join(_AGG_METHODS)}")
-    w, keys = _aggregation_frame(wide)
+    spec = _parse_agg(method)
+    if scope == "wafer":
+        keys = ["root_lot_id", "wafer_id"]
+        if any(key not in wide.columns for key in keys):
+            raise HTTPException(400, "Wafer 집계에 Root Lot·Wafer 키가 필요합니다.")
+        w = wide.with_columns(
+            pl.col("root_lot_id").cast(pl.String).str.strip_chars().str.to_uppercase(),
+            pl.col("wafer_id").cast(pl.String).str.strip_chars().str.to_uppercase()
+              .str.replace(r"^(?:WF|W)", "").str.replace(r"^0+(\d+)$", "${1}"),
+        )
+    elif scope == "package":
+        w, keys = _aggregation_frame(wide)
+    else:
+        raise HTTPException(400, "지원하지 않는 ET 집계 범위입니다.")
     cols = [c for c in alias_cols if c in w.columns]
     if not cols:
         raise HTTPException(400, "집계할 index 컬럼이 없습니다 — Index 항목을 선택하세요")
-    aggs = [pl.len().alias("shot_count")] + [_agg_expr(c, method).alias(c) for c in cols]
+    aggs = [pl.len().alias("shot_count")] + [_agg_expr(c, spec).alias(c) for c in cols]
     return w.group_by(keys, maintain_order=True).agg(aggs).sort(keys)
 
 
@@ -1491,6 +1598,7 @@ class RunReq(Filters):
     offset: int = 0
     limit: int = 0          # 0 → settings.page_rows
     items: list[str] = []   # 선택된 index alias — 비우면 전체
+    agg_scope: str = "package"
     agg: str = ""           # ""=shot raw, 또는 max/min/median/avg/std/p90/p10
     # 화면이 만든 1회용 토큰 — /run/progress 로 진행 상황을 폴링할 때 쓴다.
     progress_token: str = ""
@@ -1520,7 +1628,7 @@ def run(req: RunReq, user=Depends(current_user)):
     cfg = _settings()
     # 관리자가 비공개로 정한 항목은 유저 요청에서 서버측에서도 걸러낸다 —
     # UI 를 우회한 직접 API 호출로도 비공개 index 를 뽑을 수 없게.
-    is_admin = user.get("role") == "admin"
+    is_admin = is_page_manager(user, "reformatize")
     hidden = set() if is_admin else _hidden_aliases((_find_csv(req.product) or Path("")).name)
     req_items = [a for a in (req.items or []) if a not in hidden]
     if not is_admin and not (req.items or []) and hidden:
@@ -1548,17 +1656,19 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
             max_mb=cfg.get("max_download_mb", 500), auto_trim=True, progress=report)
     except HTTPException as exc:
         try:
-            _save_or_increment_reformatize_history(
-                req.product,
-                items=req_items,
-                filters=req,
-                agg=req.agg,
-                username=str(user.get("username") or ""),
-                history_id=req.history_id,
-                status="error",
-                error_message=str(exc.detail or ""),
-                elapsed_ms=round((time.monotonic() - t0) * 1000),
-            )
+            # Wafer-scope replay is owned by ChartBuilder, not package-based ET history.
+            if req.agg_scope == "package":
+                _save_or_increment_reformatize_history(
+                    req.product,
+                    items=req_items,
+                    filters=req,
+                    agg=req.agg,
+                    username=str(user.get("username") or ""),
+                    history_id=req.history_id,
+                    status="error",
+                    error_message=str(exc.detail or ""),
+                    elapsed_ms=round((time.monotonic() - t0) * 1000),
+                )
         except Exception as h_err:
             logger.warning("Failed to record failed reformatize history: %s", h_err)
         raise
@@ -1566,17 +1676,19 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
         logger.exception("reformatize run failed: product=%s", req.product)
         err_msg = f"계산 실패: {e}"
         try:
-            _save_or_increment_reformatize_history(
-                req.product,
-                items=req_items,
-                filters=req,
-                agg=req.agg,
-                username=str(user.get("username") or ""),
-                history_id=req.history_id,
-                status="error",
-                error_message=err_msg,
-                elapsed_ms=round((time.monotonic() - t0) * 1000),
-            )
+            # Wafer-scope replay is owned by ChartBuilder, not package-based ET history.
+            if req.agg_scope == "package":
+                _save_or_increment_reformatize_history(
+                    req.product,
+                    items=req_items,
+                    filters=req,
+                    agg=req.agg,
+                    username=str(user.get("username") or ""),
+                    history_id=req.history_id,
+                    status="error",
+                    error_message=err_msg,
+                    elapsed_ms=round((time.monotonic() - t0) * 1000),
+                )
         except Exception as h_err:
             logger.warning("Failed to record failed reformatize history: %s", h_err)
         raise HTTPException(500, err_msg)
@@ -1597,7 +1709,7 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
         report(f"{req.agg.strip().upper()} 집계 중")
         fixed = set(PIVOT_KEY_COLS) | set(PIVOT_META_COLS)
         value_cols = [c for c in out_cols if c not in fixed]
-        wide = _aggregate(wide, value_cols, req.agg)
+        wide = _aggregate(wide, value_cols, req.agg, req.agg_scope)
     limit = req.limit if 0 < req.limit <= PAGE_ROWS_MAX else cfg["page_rows"]
     offset = max(0, int(req.offset))
     page = wide.slice(offset, limit)
@@ -1628,22 +1740,24 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
     _items_txt = ",".join(req_items[:8]) + ("…" if len(req_items) > 8 else "") if req_items else "all"
     _audit_user(user.get("username", ""), "reformatize:run",
                 detail=f"product={req.product} items={_items_txt} agg={req.agg.strip() or 'raw'} "
-                       f"rows={wide.height} filter=[{_filter_desc(req) or '없음'}]",
+                       f"scope={req.agg_scope} rows={wide.height} filter=[{_filter_desc(req) or '없음'}]",
                 tab="reformatize")
     elapsed = round((time.monotonic() - t0) * 1000)
     try:
-        _save_or_increment_reformatize_history(
-            req.product,
-            items=req_items,
-            filters=req,
-            agg=req.agg,
-            username=str(user.get("username") or ""),
-            history_id=req.history_id,
-            status="success",
-            error_message="",
-            row_count=wide.height,
-            elapsed_ms=elapsed,
-        )
+        # Wafer-scope replay is owned by ChartBuilder, not package-based ET history.
+        if req.agg_scope == "package":
+            _save_or_increment_reformatize_history(
+                req.product,
+                items=req_items,
+                filters=req,
+                agg=req.agg,
+                username=str(user.get("username") or ""),
+                history_id=req.history_id,
+                status="success",
+                error_message="",
+                row_count=wide.height,
+                elapsed_ms=elapsed,
+            )
     except Exception as exc:
         logger.warning("Failed to auto-record reformatize history: %s", exc)
     return {
@@ -1662,6 +1776,7 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
         "notice": notice,
         "elapsed_ms": round((time.monotonic() - t0) * 1000),
     }
+
 
 
 # ── CSV 스트리밍 ────────────────────────────────────────────────────
@@ -1822,7 +1937,7 @@ def download(product: str = Query(...), lot_filter: str = Query(""),
                 wafer_filter=wafer_filter,
                 site_cnt_filter=site_cnt_filter, point_cnt_filter=point_cnt_filter,
                 days=days, date_from=date_from, date_to=date_to)
-    is_admin = user.get("role") == "admin"
+    is_admin = is_page_manager(user, "reformatize")
     wanted = _check_download_request(
         product, f, [s.strip() for s in items.split(",") if s.strip()], is_admin)
     wide, vehicle_csv, raw_rows = _build_download_frame(product, f, wanted, agg, is_admin)
@@ -2013,7 +2128,7 @@ def download_start(req: DownloadJobReq, user=Depends(current_user)):
     """다운로드 작업을 대기열에 넣고 job 상태를 즉시 돌려준다(블로킹 없음)."""
     from core import download_queue
 
-    is_admin = user.get("role") == "admin"
+    is_admin = is_page_manager(user, "reformatize")
     username = user.get("username", "")
     agg_method = str(req.agg or "").strip().lower()
     try:
@@ -2073,7 +2188,7 @@ def _job_for_user(job_id: str, user: dict):
     if job is None:
         raise HTTPException(404, "다운로드 작업을 찾을 수 없습니다 (만료되었거나 서버가 재시작됨) — "
                                  "다시 시도해 주세요")
-    if job.get("username") != user.get("username", "") and user.get("role") != "admin":
+    if job.get("username") != user.get("username", "") and not is_page_manager(user, "reformatize"):
         raise HTTPException(403, "다른 사용자의 다운로드 작업입니다")
     return job
 
@@ -2224,12 +2339,13 @@ def _run_test(product: str, items: list[TestItem], f: Filters, auto_trim: bool =
 
 
 @router.get("/formula-help")
-def formula_help(product: str = Query(""), _admin=Depends(require_admin)):
+def formula_help(product: str = Query(""), _admin=Depends(require_page_manager("reformatize"))):
     """수식 작성 도움말: 함수 목록 + 매뉴얼(row 단위) 함수 + (제품 지정 시) 참조 컬럼."""
     out = {
         "functions": FORMULA_HELP,
         "manual_functions": rowwise_function_help(),
         "manual_file": str(PATHS.data_root / "reformatter" / "manual_functions.py"),
+        "aggregations": _AGG_HELP,
         "columns": {},
     }
     if product:
@@ -2247,7 +2363,7 @@ def formula_help(product: str = Query(""), _admin=Depends(require_admin)):
 
 
 @router.post("/test")
-def test_run(req: TestReq, _admin=Depends(require_admin)):
+def test_run(req: TestReq, _admin=Depends(require_page_manager("reformatize"))):
     t0 = time.monotonic()
     out, test_aliases, errors, vehicle_csv, notice = _run_test(
         req.product, req.items, req, auto_trim=True, agg=req.agg)
@@ -2277,7 +2393,7 @@ def test_run(req: TestReq, _admin=Depends(require_admin)):
 
 
 @router.post("/test/download")
-def test_download(req: TestReq, admin=Depends(require_admin)):
+def test_download(req: TestReq, admin=Depends(require_page_manager("reformatize"))):
     out, test_aliases, _errors, vehicle_csv, _notice = _run_test(
         req.product, req.items, req, agg=req.agg)
     cfg = _settings()
@@ -2305,6 +2421,360 @@ def test_download(req: TestReq, admin=Depends(require_admin)):
         _download_name(req.product, req, admin.get("username", ""), agg=req.agg, suffix="ADDP-test"),
         on_done=_log,
     )
+
+
+# ── Python Lab: DataFrame 단위 reformatize 직접 실험 (관리자 전용) ──────
+# ADDP 수식(AST 화이트리스트)으로는 못 하는 window/max 변형을 AI 도움으로
+# 파이썬 코드째 짜서 실제 ET wide 데이터로 돌려본다. 계약은 하나:
+#   def run(wide: pl.DataFrame) -> pl.DataFrame
+# wide 는 _compute()가 만든 base wide(피벗+REAL+ADDP 완료본)이며, 새 index
+# 컬럼을 추가해 돌려주면 된다. 실행은 관리자 전용 + import/builtins 제한.
+_PYTHON_CODE_MAX_CHARS = 20_000
+_PYTHON_SNIPPETS_FILE = PATHS.data_root / "reformatter" / "python_snippets.json"
+_PYTHON_NEW_COLS_MAX = 50
+_ALLOWED_PYTHON_IMPORTS = {"polars", "pl", "math", "numpy", "np", "datetime", "re"}
+_BLOCKED_PYTHON_IMPORTS = {
+    "os", "sys", "subprocess", "socket", "shutil", "pathlib", "io",
+    "importlib", "ctypes", "threading", "multiprocessing", "pickle",
+    "marshal", "builtins", "runpy", "code", "pty", "signal",
+}
+_BLOCKED_PYTHON_NAMES = {
+    "__import__", "eval", "exec", "compile", "open", "input",
+    "exit", "quit", "help", "globals", "locals", "vars", "dir",
+    "getattr", "setattr", "delattr", "memoryview", "breakpoint",
+}
+_PYTHON_TEMPLATE = textwrap.dedent('''\
+    import polars as pl
+    import math
+
+    def run(wide: pl.DataFrame) -> pl.DataFrame:
+        """ET wide(shot 단위) -> 새 index 컬럼 추가 실험.
+
+        wide 컬럼 예: 기존 REAL/ADDP alias + raw ITEMID + key/meta
+        (root_lot_id, wafer_id, step_id, pgm, shot_x ...).
+        AI 에게 변형을 맡길 때는 아래 참고코드(MA_Window / max 집계)의
+        전체 소스를 함께 붙여넣으세요.
+        """
+        # 예1: 행단위 max 변형 — 두 index 중 큰 값
+        # out = wide.with_columns(
+        #     pl.max_horizontal("IDX_A", "IDX_B").alias("MY_MAX")
+        # )
+        # 예2: wafer 단위 평균 대비 편차 (auto report AVG/STD 와 동일 grain)
+        # out = wide.with_columns(
+        #     (
+        #         pl.col("VTH_IDX").cast(pl.Float64, strict=False)
+        #         - pl.col("VTH_IDX").cast(pl.Float64, strict=False).mean().over(
+        #             "root_lot_id", "wafer_id", "tkout_time")
+        #     ).alias("MY_DEV")
+        # )
+        # return out
+        return wide.with_columns(
+            pl.max_horizontal("IDX_A", "IDX_B").alias("MY_MAX")
+        )
+    ''')
+
+
+def _python_reference() -> dict:
+    """AI 변형용 참고코드 — window(MA_Window 전체) + max(집계 전체) 원문."""
+    ref: dict[str, str] = {}
+    try:
+        from core import vehicle_reformatter as _vr
+        for fname in ("_to_float", "_poly2_fit", "_ma_window_calc",
+                      "_f_ma_window", "_f_ma_ovl_index", "_f_ma_window_min"):
+            fn = getattr(_vr, fname, None)
+            if callable(fn):
+                try:
+                    ref[fname] = inspect.getsource(fn)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    try:
+        ref["_agg_expr"] = inspect.getsource(_agg_expr)
+    except Exception:
+        ref["_agg_expr"] = ""
+    try:
+        from core import reformatter as _rf
+        for fname in ("_f_max", "_f_min"):
+            fn = getattr(_rf, fname, None)
+            if callable(fn):
+                try:
+                    ref[f"reformatter.{fname}"] = inspect.getsource(fn)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    ref["REAL_scale"] = textwrap.dedent("""\
+        # REAL 규칙 (core/vehicle_reformatter.reformatize 발췌):
+        # alias = (item * scale) [abs]  — scale_applied 설정 시 scale 생략
+        expr = pl.col(itemid).cast(pl.Float64, strict=False)
+        expr = expr * float(scale)          # skip_real_scale=True 면 생략
+        if absolute:
+            expr = expr.abs()
+        wide = wide.with_columns(expr.alias(alias))
+        """)
+    ref["template"] = _PYTHON_TEMPLATE
+    ref["contract"] = textwrap.dedent("""\
+        # 계약: def run(wide: pl.DataFrame) -> pl.DataFrame
+        # - 입력 wide = base reformatize 결과 (pivot + REAL + ADDP 완료본)
+        # - 새 컬럼을 추가해 전체 DF 로 반환 (행 삭제/집계도 허용, 단 행수 폭증 금지)
+        # - 사용 가능: pl(polars), math, numpy(np, 설치 시), datetime, re
+        # - 금지: os/sys/subprocess/socket 등 시스템 import, open/eval/exec/__import__
+        """)
+    return ref
+
+
+def _validate_python_code(code: str) -> ast.Module:
+    if not code or not code.strip():
+        raise HTTPException(400, "Python 코드를 입력하세요 (def run(wide) 정의 필요)")
+    if len(code) > _PYTHON_CODE_MAX_CHARS:
+        raise HTTPException(400, f"코드가 너무 깁니다 ({len(code):,}자, 상한 {_PYTHON_CODE_MAX_CHARS:,}자)")
+    try:
+        tree = ast.parse(code, mode="exec")
+    except SyntaxError as e:
+        raise HTTPException(400, f"Python 문법 오류: {e}") from e
+    has_run = False
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            mods: list[str] = []
+            if isinstance(node, ast.Import):
+                mods = [str(a.name or "").split(".")[0] for a in node.names]
+            else:
+                mods = [str(node.module or "").split(".")[0]]
+            for m in mods:
+                ml = m.strip().lower()
+                if ml in _BLOCKED_PYTHON_IMPORTS:
+                    raise HTTPException(400, f"허용되지 않는 import 입니다: {m}")
+                if ml and ml not in _ALLOWED_PYTHON_IMPORTS and ml not in {"__future__"}:
+                    raise HTTPException(400, f"허용되지 않는 import 입니다: {m} (허용: polars/math/numpy/datetime/re)")
+        elif isinstance(node, ast.Name):
+            if node.id in _BLOCKED_PYTHON_NAMES:
+                raise HTTPException(400, f"허용되지 않는 이름입니다: {node.id}")
+        elif isinstance(node, ast.Attribute):
+            if str(node.attr or "").startswith("__"):
+                raise HTTPException(400, f"허용되지 않는 속성 접근입니다: {node.attr}")
+        elif isinstance(node, ast.FunctionDef):
+            if node.name == "run" and len(node.args.args) >= 1:
+                has_run = True
+    if not has_run:
+        raise HTTPException(400, "def run(wide) 함수가 필요합니다 — 템플릿을 불러와 수정하세요")
+    return tree
+
+
+def _exec_python_transform(wide_full: pl.DataFrame, code: str) -> tuple[pl.DataFrame, list[str]]:
+    """사용자 run(wide) 실행 → (결과 DF, 새 컬럼 목록). 검증 실패는 400."""
+    import builtins as _builtins_mod
+    _validate_python_code(code)
+    _real_import = _builtins_mod.__import__
+
+    def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        root = str(name or "").split(".")[0].strip().lower()
+        if root in _BLOCKED_PYTHON_IMPORTS or root not in _ALLOWED_PYTHON_IMPORTS:
+            raise ImportError(f"허용되지 않는 import 입니다: {name} (허용: polars/math/numpy/datetime/re)")
+        return _real_import(name, globals, locals, fromlist, level)
+
+    safe_builtins = {
+        "abs": abs, "min": min, "max": max, "sum": sum, "len": len,
+        "range": range, "list": list, "dict": dict, "set": set,
+        "tuple": tuple, "float": float, "int": int, "str": str,
+        "bool": bool, "round": round, "sorted": sorted,
+        "enumerate": enumerate, "zip": zip, "print": print,
+        "__import__": _guarded_import,
+    }
+    import datetime as _dt_mod
+    ns: dict = {
+        "pl": pl, "polars": pl, "math": __import__("math"),
+        "datetime": _dt_mod, "re": re,
+        "__builtins__": safe_builtins,
+    }
+    try:
+        import numpy as _np
+        ns["np"] = _np
+        ns["numpy"] = _np
+    except Exception:
+        pass
+    try:
+        exec(compile(code, "<reformatize-python-lab>", "exec"), ns)  # noqa: S102
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(400, f"코드 실행 준비 실패: {e}") from e
+    fn = ns.get("run")
+    if not callable(fn):
+        raise HTTPException(400, "run(wide) 함수를 찾을 수 없습니다")
+    before = set(wide_full.columns)
+    try:
+        result = fn(wide_full)
+    except Exception as e:
+        raise HTTPException(400, f"run(wide) 실행 오류: {e}") from e
+    if not isinstance(result, pl.DataFrame):
+        raise HTTPException(400, "run(wide) 은 polars DataFrame 을 반환해야 합니다")
+    if result.height > max(wide_full.height * 2, wide_full.height + 100_000):
+        raise HTTPException(400, "결과 행수가 입력의 2배를 넘습니다 — 행을 늘리는 join/ explode 를 확인하세요")
+    if result.width > wide_full.width + 100:
+        raise HTTPException(400, "결과 컬럼이 너무 많습니다 (새 컬럼 상한 초과)")
+    new_cols = [c for c in result.columns if c not in before]
+    if not new_cols:
+        raise HTTPException(400, "새 컬럼이 없습니다 — run(wide) 에서 새 index 컬럼을 추가하세요")
+    if len(new_cols) > _PYTHON_NEW_COLS_MAX:
+        raise HTTPException(400, f"새 컬럼이 너무 많습니다 ({len(new_cols)}개, 상한 {_PYTHON_NEW_COLS_MAX}개)")
+    return result, new_cols
+
+
+def _run_python_test(product: str, code: str, f: Filters, agg: str = ""):
+    """base wide + 사용자 run(wide) → (결과 DF[key+meta+새컬럼], 새컬럼, 에러, csv, notice)."""
+    cfg = _settings()
+    max_mb = cfg.get("max_download_mb", 500)
+    wide_full, _out_cols, base_errors, vehicle_csv, _table, _raw_rows, notice = _compute(
+        product, f, max_mb=max_mb, auto_trim=True)
+    result, new_cols = _exec_python_transform(wide_full, code)
+    errors = list(base_errors or [])
+    keys = [c for c in PIVOT_KEY_COLS if c in result.columns]
+    metas = [c for c in PIVOT_META_COLS if c in result.columns]
+    cols, seen = [], set()
+    for c in keys + metas + new_cols:
+        if c in result.columns and c not in seen:
+            cols.append(c)
+            seen.add(c)
+    out = result.select(cols)
+    out = _point_cnt_filter(out, f.point_cnt_filter)
+    agg_method = str(agg or "").strip().lower()
+    if agg_method:
+        value_cols = [c for c in new_cols if c in out.columns]
+        out = _aggregate(out, value_cols, agg_method)
+    return out, new_cols, errors, vehicle_csv, notice
+
+
+class TestPythonReq(Filters):
+    product: str
+    python_code: str = ""
+    offset: int = 0
+    limit: int = 0
+    agg: str = ""
+
+
+@router.get("/python-help")
+def python_help(product: str = Query(""), _admin=Depends(require_page_manager("reformatize"))):
+    """Python Lab 도움말: run(wide) 계약 + MA_Window/max 전체 소스 + 참조 컬럼."""
+    out: dict = {"reference": _python_reference(), "aggregations": _AGG_HELP, "columns": {}}
+    if product:
+        wide_full, out_cols, _e, vehicle_csv, table, _raw_rows, _notice = _compute(
+            product, Filters(), max_mb=_settings().get("max_download_mb", 500), auto_trim=True)
+        aliases = [r["alias"] for r in table if r["alias"] in wide_full.columns]
+        keys = [c for c in PIVOT_KEY_COLS if c in wide_full.columns]
+        metas = [c for c in PIVOT_META_COLS if c in wide_full.columns]
+        raw_items = [c for c in wide_full.columns
+                     if c not in aliases and c not in keys and c not in metas]
+        out["columns"] = {"aliases": aliases, "raw_items": raw_items,
+                          "keys": keys, "metas": metas}
+        out["vehicle_csv"] = vehicle_csv
+    return out
+
+
+@router.post("/test/python")
+def test_python_run(req: TestPythonReq, _admin=Depends(require_page_manager("reformatize"))):
+    t0 = time.monotonic()
+    out, new_cols, errors, vehicle_csv, notice = _run_python_test(
+        req.product, req.python_code, req, agg=req.agg)
+    cfg = _settings()
+    limit = req.limit if 0 < req.limit <= PAGE_ROWS_MAX else cfg["page_rows"]
+    offset = max(0, int(req.offset))
+    page = out.slice(offset, limit)
+    return {
+        "product": req.product,
+        "vehicle_csv": vehicle_csv,
+        "columns": list(page.columns),
+        "test_columns": new_cols,
+        "spec": {c: {"category": "python", "python": True} for c in new_cols if c in out.columns},
+        "rows": serialize_rows(page.to_dicts()),
+        "offset": offset,
+        "limit": limit,
+        "total_rows": out.height,
+        "rule_errors": errors,
+        "notice": notice,
+        "elapsed_ms": round((time.monotonic() - t0) * 1000),
+    }
+
+
+@router.post("/test/python/download")
+def test_python_download(req: TestPythonReq, admin=Depends(require_page_manager("reformatize"))):
+    out, new_cols, _errors, _vehicle_csv, _notice = _run_python_test(
+        req.product, req.python_code, req, agg=req.agg)
+    cfg = _settings()
+    _ensure_size_within_limit(out, cfg.get("max_download_mb", 500), context="Python 테스트 CSV 다운로드")
+
+    def _log(sent_bytes: int):
+        jsonl_append(DL_LOG, {
+            "source": "reformatize_python_test",
+            "username": admin.get("username", ""),
+            "product": req.product,
+            "sql": _filter_desc(req) + (f", agg={req.agg.strip().lower()}(root_lot·wafer·step·pgm)" if req.agg.strip() else ""),
+            "agg": req.agg.strip().lower(),
+            "rows": out.height, "cols": out.width,
+            "select_cols": "python: " + ", ".join(new_cols),
+            "size_mb": round(sent_bytes / 1e6, 2),
+        })
+        from core.audit import record_user as _audit_user
+        _audit_user(admin.get("username") or "anonymous", "reformatize:python-test-download",
+                    detail=f"product={req.product} rows={out.height} cols={out.width} "
+                           f"size_mb={round(sent_bytes / 1e6, 2)}",
+                    tab="reformatize")
+
+    return _csv_stream_response(
+        out,
+        _download_name(req.product, req, admin.get("username", ""), agg=req.agg, suffix="python-test"),
+        on_done=_log,
+    )
+
+
+def _load_python_snippets() -> dict:
+    raw = load_json(_PYTHON_SNIPPETS_FILE, {}) or {}
+    snips = raw.get("snippets") if isinstance(raw, dict) else None
+    return dict(snips) if isinstance(snips, dict) else {}
+
+
+@router.get("/python-snippets")
+def python_snippets_list(_admin=Depends(require_page_manager("reformatize"))):
+    snips = _load_python_snippets()
+    return {"snippets": [
+        {"name": k, "code": str(v.get("code") or ""),
+         "updated_at": str(v.get("updated_at") or ""),
+         "updated_by": str(v.get("updated_by") or "")}
+        for k, v in sorted(snips.items())]}
+
+
+class PythonSnippetSaveReq(BaseModel):
+    name: str
+    python_code: str
+
+
+@router.post("/python-snippets/save")
+def python_snippets_save(req: PythonSnippetSaveReq, admin=Depends(require_page_manager("reformatize"))):
+    name = str(req.name or "").strip()[:80]
+    if not name:
+        raise HTTPException(400, "스니펫 이름을 입력하세요")
+    _validate_python_code(req.python_code)
+    snips = _load_python_snippets()
+    snips[name] = {
+        "code": req.python_code,
+        "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "updated_by": admin.get("username", ""),
+    }
+    save_json(_PYTHON_SNIPPETS_FILE, {"version": 1, "snippets": snips})
+    return {"ok": True, "name": name}
+
+
+class PythonSnippetDelReq(BaseModel):
+    name: str = ""
+
+
+@router.post("/python-snippets/delete")
+def python_snippets_delete(req: PythonSnippetDelReq, _admin=Depends(require_page_manager("reformatize"))):
+    name = str(req.name or "").strip()
+    snips = _load_python_snippets()
+    snips.pop(name, None)
+    save_json(_PYTHON_SNIPPETS_FILE, {"version": 1, "snippets": snips})
+    return {"ok": True, "name": name}
 
 
 # ── ET 다운로드 검색식 및 히스토리 관리 ───────────────────────────────────

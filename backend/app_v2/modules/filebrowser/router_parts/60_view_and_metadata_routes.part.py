@@ -111,7 +111,7 @@ def _schema_for_product_source(root: str, product: str) -> tuple[dict[str, str],
         from core import yield_map as _yield_map
         frame = _yield_map.shot_yield_frame(product)
         return {str(name): str(dtype) for name, dtype in frame.schema.items()}, 0
-    if str(root or "").strip().upper() == "SPLITTABLE":
+    if str(root or "").strip().upper() in {"SPLITTABLE", "ML_TABLE"}:
         files = source_data_files(root=root, product=product)
         if not files:
             return {}, 0
@@ -310,7 +310,7 @@ def parquet_meta_invalidate(request: Request, root: str = Query(""), product: st
     from core.auth import current_user
     from core.parquet_perf import invalidate_meta
     me = current_user(request)
-    if me.get("role") != "admin":
+    if not _can_manage_filebrowser(me):
         raise HTTPException(403, "admin only")
     if file:
         _require_base_file_access(request, file)
@@ -933,7 +933,16 @@ def _chart_builder_derived_specs(values) -> list[dict]:
         separator = str(raw.get("separator") if raw.get("separator") is not None else "_")[:8]
         if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and columns and len(columns) <= 12 and key not in seen:
             seen.add(key)
-            out.append({"name": name, "columns": columns, "separator": separator})
+            spec = {"name": name, "columns": columns, "separator": separator}
+            operation = raw.get("operation", "concat")
+            if operation not in {"concat", "split_prefix"}:
+                raise HTTPException(status_code=400, detail="지원하지 않는 DERIVE operation입니다.")
+            if operation == "split_prefix":
+                segments = raw.get("segments")
+                if len(columns) != 1 or not separator or type(segments) is not int or segments not in {1, 2, 3}:
+                    raise HTTPException(status_code=400, detail="split_prefix는 원본 열 하나, 구분자와 segments 1~3이 필요합니다.")
+                spec.update(operation=operation, segments=segments)
+            out.append(spec)
         if len(out) >= 20:
             break
     return out
@@ -1170,10 +1179,15 @@ def _chart_builder_apply_derived_filters(
             actual.append(column)
         if not actual:
             continue
-        expression = pl.concat_str(
-            [pl.col(column).cast(pl.String, strict=False).fill_null("") for column in actual],
-            separator=item["separator"],
-        ).alias(item["name"])
+        if item.get("operation") == "split_prefix":
+            expression = (pl.col(actual[0]).cast(pl.String, strict=False).str.split(item["separator"])
+                          .list.slice(0, item["segments"]).list.join(item["separator"])
+                          .str.strip_chars_end(item["separator"]).alias(item["name"]))
+        else:
+            expression = pl.concat_str(
+                [pl.col(column).cast(pl.String, strict=False).fill_null("") for column in actual],
+                separator=item["separator"],
+            ).alias(item["name"])
         out = out.with_columns(expression)
 
     for item in _chart_builder_filter_specs(source.runtime_filters):
@@ -1529,6 +1543,7 @@ def _chart_builder_reformatter_frame(
         product=source.product,
         items=requested_items,
         agg=reformatter_agg,
+        agg_scope=source.reformatter_agg_scope,
         offset=0,
         limit=request_limit,
         days=max(0, min(3650, int(source.runtime_recent_days or 0))),
@@ -1706,7 +1721,7 @@ _CHART_ASSISTANT_TYPES = {
     "scatter", "line", "box", "bar", "bar_horizontal", "pie", "donut", "radius", "wafer_map",
 }
 _CHART_ASSISTANT_FIELDS = {
-    "type", "x", "y", "color", "trellis", "width", "height", "highlight", "show_legend",
+    "type", "title", "x", "y", "color", "trellis", "width", "height", "highlight", "show_legend",
     "x_font_size", "y_font_size", "color_rules", "color_else", "x_min", "x_max", "y_min", "y_max", "y_scale",
 }
 _CHART_ASSISTANT_JOIN_FIELDS = {"left", "right", "left_on", "right_on", "how"}
@@ -1752,6 +1767,14 @@ def _chart_assistant_deterministic_operations(
 
     def set_chart(field: str, value) -> None:
         operations.append({"scope": "chart", "field": field, "value": value})
+
+    title = re.search(r'''(?:제목|title)\s*(?:을|를|은|는|=|:)?\s*["'“‘](.+?)["'”’]''', prompt, re.I)
+    if not title:
+        title = re.search(r"(?:제목|title)\s*(?:을|를|은|는|=|:)?\s+(.+?)\s*(?:으로|로)\s*(?:바꿔|변경|설정)", prompt, re.I)
+    if title:
+        # Words inside a title are labels, not new sources, chart types or filters.
+        set_chart("title", title.group(1).strip())
+        return operations
 
     def explicit_size(labels: tuple[str, ...]) -> int | None:
         joined = "|".join(re.escape(label) for label in labels)
@@ -1988,6 +2011,8 @@ def _chart_assistant_apply_operations(
                 if value not in _CHART_ASSISTANT_TYPES:
                     warnings.append(f"지원하지 않는 차트 종류: {value}")
                     continue
+            elif field == "title":
+                value = re.sub(r"[\r\n]+", " ", str(value or "")).strip()[:200]
             elif field in {"x", "y", "trellis"}:
                 requested = str(value or "").strip()
                 value = _chart_assistant_column(requested, columns) if requested else ""
@@ -2182,6 +2207,7 @@ def _chart_builder_assistant_plan(req: ChartBuilderAssistantReq) -> dict:
 def chart_builder_assistant(req: ChartBuilderAssistantReq, request: Request):
     """Apply a validated, minimal natural-language patch on the operating API."""
     me = _require_filebrowser_user(request)
-    if str((me or {}).get("role") or "") != "admin":
+    from core.auth import is_page_manager
+    if not is_page_manager(me, "chartbuilder"):
         raise HTTPException(403, "LLM execution is admin-only during POC")
     return _chart_builder_assistant_plan(req)

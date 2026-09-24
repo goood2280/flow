@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from core import yield_map as _ym
 from core import teg_map as _tm
-from core.auth import canonical_tab_token, current_user, require_page_manager
+from core.auth import current_user, is_page_manager, require_page_manager, user_tab_tokens
 
 
 router = APIRouter(prefix="/api/yield-map", tags=["yield-map"])
@@ -34,11 +34,10 @@ def _matching_geometry_vehicle(user: dict, product: str) -> str:
 
 
 def _require_user(user=Depends(current_user)) -> dict:
-    if user.get("role") == "admin" or "yieldmap" in (user.get("page_manager") or []):
+    if is_page_manager(user, "yieldmap"):
         return user
-    raw = user.get("tabs") or []
-    values = raw if isinstance(raw, list) else str(raw).split(",")
-    if any(canonical_tab_token(value) == "yieldmap" for value in values):
+    tabs, _ = user_tab_tokens(user)
+    if "yieldmap" in tabs:
         return user
     raise HTTPException(403, "Yield Map page permission required")
 
@@ -157,7 +156,7 @@ def _et_index_map(req: EtIndexMapReq, user: dict) -> dict:
     )
     formula = ""
     if source == "test_addp":
-        if user.get("role") != "admin":
+        if not is_page_manager(user, "yieldmap"):
             raise HTTPException(403, "관리자만 Test ADDP를 WF MAP에서 실행할 수 있습니다")
         formula = str(req.addp_form or "").strip()
         if not alias or not formula:
@@ -213,7 +212,7 @@ def bootstrap(user=Depends(_require_user)):
         "geometry_products": visible_geometry,
         "inline_tables": inline_tables,
         "configs": configs,
-        "can_edit": user.get("role") == "admin" or "yieldmap" in (user.get("page_manager") or []),
+        "can_edit": is_page_manager(user, "yieldmap"),
     }
 
 

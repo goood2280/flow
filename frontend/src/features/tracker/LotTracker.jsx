@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { FlowPlotlyChart } from "../../components/PlotlyChart";
 import SpreadsheetPasteGrid, {
   normalizeSpreadsheetRows,
@@ -8,7 +8,7 @@ import {
   PageShell,
   Pill,
 } from "../../components/ui";
-import { sf } from "../../lib/api";
+import { postJson, sf } from "../../lib/api";
 import { buildDpmlComparison } from "./dpmlComparison";
 
 const REF_COLUMNS = ["lot_id"];
@@ -135,6 +135,16 @@ export default function LotTracker() {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [presetSteps, setPresetSteps] = useState([]);
+  const [presetBusy, setPresetBusy] = useState(false);
+  const [presetMsg, setPresetMsg] = useState("");
+  const [newStepId, setNewStepId] = useState("");
+  const [newStepDesc, setNewStepDesc] = useState("");
+  const [managedLots, setManagedLots] = useState([]);
+  const [lotFilter, setLotFilter] = useState("");
+  const helperReqId = useRef(0);
+
+  const trimProduct = String(form.product || "").trim();
 
   const handleRefRowsChange = (nextRows) => {
     setRefRows(nextRows);
@@ -148,6 +158,53 @@ export default function LotTracker() {
     setForm((prev) => ({ ...prev, reference_lot_id: "" }));
   };
 
+  // 제품별 목표 STEP 목록 + 랏관리 LOT 목록을 불러온다 (제안 리스트용).
+  const fetchHelpers = async (productKey) => {
+    const key = String(productKey || "").trim();
+    const my = helperReqId.current + 1;
+    helperReqId.current = my;
+    if (!key) {
+      setPresetSteps([]);
+      setManagedLots([]);
+      return;
+    }
+    try {
+      const ps = await sf(`/api/lot-tracker/preset-steps?product=${encodeURIComponent(key)}`);
+      if (helperReqId.current !== my) return;
+      setPresetSteps(Array.isArray(ps?.steps) ? ps.steps : []);
+    } catch (_) {
+      if (helperReqId.current === my) setPresetSteps([]);
+    }
+    try {
+      const t = await sf(`/api/lot-management/table?product=${encodeURIComponent(key)}&include_status=false`);
+      if (helperReqId.current !== my) return;
+      const seen = new Set();
+      const lots = [];
+      for (const row of t?.rows || []) {
+        const v = row?.values || {};
+        const lid = String(v.lot_id || "").trim();
+        if (!lid) continue;
+        const k = lid.toUpperCase();
+        if (seen.has(k)) continue;
+        seen.add(k);
+        lots.push({ lot_id: lid, purpose: String(v.purpose || "").trim() });
+      }
+      setManagedLots(lots);
+    } catch (_) {
+      if (helperReqId.current === my) setManagedLots([]);
+    }
+  };
+
+  useEffect(() => {
+    if (!trimProduct) {
+      setPresetSteps([]);
+      setManagedLots([]);
+      return;
+    }
+    const timer = setTimeout(() => { fetchHelpers(trimProduct); }, 400);
+    return () => clearTimeout(timer);
+  }, [trimProduct]);
+
   const executeSearch = async (searchForm) => {
     const targetForm = searchForm || form;
     if (!targetForm.lot_id.trim()) {
@@ -157,6 +214,7 @@ export default function LotTracker() {
     setBusy(true);
     setError("");
     setData(null);
+    fetchHelpers(targetForm.product);
     try {
       const query = new URLSearchParams();
       for (const [k, v] of Object.entries(targetForm)) {
@@ -207,6 +265,81 @@ export default function LotTracker() {
   );
   const dpmlSeries = dpmlPoints[0]?.series;
   const invalidDpml = comparisonDpml !== "" && (!Number.isFinite(Number(comparisonDpml)) || Number(comparisonDpml) <= 0);
+
+  // 목표 STEP 제안: 제품별 저장 목록에서 입력값으로 필터 (자유 입력도 그대로 가능).
+  const stepSuggestions = useMemo(() => {
+    const q = String(form.target_step_id || "").trim().toLowerCase();
+    return (presetSteps || [])
+      .filter((s) => !q
+        || String(s.step_id || "").toLowerCase().includes(q)
+        || String(s.step_desc || "").toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [presetSteps, form.target_step_id]);
+
+  // 참고 LOT 제안: 랏관리 LOT(lot_id + purpose)에서 그리드에 없는 것만.
+  const refGridIds = useMemo(() => new Set(
+    (refRows || []).map((r) => String(r.lot_id || "").trim().toUpperCase()).filter(Boolean)
+  ), [refRows]);
+
+  const lotSuggestions = useMemo(() => {
+    const q = String(lotFilter || "").trim().toLowerCase();
+    return (managedLots || [])
+      .filter((l) => !refGridIds.has(String(l.lot_id || "").toUpperCase()))
+      .filter((l) => !q
+        || String(l.lot_id || "").toLowerCase().includes(q)
+        || String(l.purpose || "").toLowerCase().includes(q))
+      .slice(0, 8);
+  }, [managedLots, lotFilter, refGridIds]);
+
+  const addRefLot = (lotId) => {
+    const id = String(lotId || "").trim().toUpperCase();
+    if (!id || refGridIds.has(id)) return;
+    const next = (refRows || []).map((r) => ({ ...(r || {}) }));
+    const idx = next.findIndex((r) => !String(r.lot_id || "").trim());
+    if (idx < 0) return;
+    next[idx] = { ...next[idx], lot_id: id };
+    handleRefRowsChange(next);
+  };
+
+  const savePresets = async (next) => {
+    const key = String(form.product || "").trim();
+    if (!key) {
+      setPresetMsg("product를 먼저 입력하세요.");
+      return;
+    }
+    setPresetBusy(true);
+    setPresetMsg("");
+    try {
+      const res = await postJson("/api/lot-tracker/preset-steps", { product: key, steps: next });
+      setPresetSteps(Array.isArray(res?.steps) ? res.steps : next);
+      setPresetMsg("저장됨");
+    } catch (err) {
+      setPresetMsg(err?.message || "저장 실패");
+    } finally {
+      setPresetBusy(false);
+    }
+  };
+
+  const addPresetStep = () => {
+    const sid = String(newStepId || "").trim().toUpperCase();
+    if (!sid) return;
+    if ((presetSteps || []).some((s) => String(s.step_id || "").toUpperCase() === sid)) {
+      setPresetMsg("이미 등록된 step입니다.");
+      return;
+    }
+    const next = [...(presetSteps || []), { step_id: sid, step_desc: String(newStepDesc || "").trim() }];
+    setPresetSteps(next);
+    setNewStepId("");
+    setNewStepDesc("");
+    savePresets(next);
+  };
+
+  const removePresetStep = (sid) => {
+    const key = String(sid || "").toUpperCase();
+    const next = (presetSteps || []).filter((s) => String(s.step_id || "").toUpperCase() !== key);
+    setPresetSteps(next);
+    savePresets(next);
+  };
 
   // X축은 숫자순으로 정렬되지만, 숫자에 따라 길이가 늘어나지 않는 균등 간격의 category(string) 축
   const categoryOrder = useMemo(() => {
@@ -318,7 +451,7 @@ export default function LotTracker() {
                       onChange={handleRefRowsChange}
                       aliases={{ lot: "lot_id", "lot id": "lot_id", lotid: "lot_id", reference_lot_id: "lot_id" }}
                       columnLabels={{ lot_id: "참고 lot id" }}
-                      placeholders={{ lot_id: "참고 lot id" }}
+                      placeholders={{ lot_id: "참고 lot id (직접 입력 가능)" }}
                       showRowNumbers={true}
                       minRows={5}
                       maxRows={5}
@@ -326,6 +459,53 @@ export default function LotTracker() {
                       minTableWidth={260}
                     />
                   </div>
+                  {trimProduct && (
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "var(--text-primary)" }}>
+                        랏관리 LOT에서 추가
+                      </div>
+                      {managedLots.length > 0 ? (
+                        <>
+                          <input
+                            value={lotFilter}
+                            placeholder="검색 (lot_id·purpose)"
+                            onChange={(event) => setLotFilter(event.target.value)}
+                            style={{ ...inputStyle, padding: "6px 10px", fontSize: 13 }}
+                          />
+                          {lotSuggestions.length > 0 ? (
+                            <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+                              {lotSuggestions.map((l) => (
+                                <button
+                                  key={l.lot_id}
+                                  type="button"
+                                  onClick={() => addRefLot(l.lot_id)}
+                                  style={{
+                                    display: "block", width: "100%", textAlign: "left",
+                                    padding: "6px 10px", background: "transparent", border: 0,
+                                    borderBottom: "1px solid var(--border)", cursor: "pointer",
+                                    fontSize: 13, fontFamily: "var(--font-mono)", color: "var(--text-primary)",
+                                  }}
+                                >
+                                  {l.lot_id}
+                                  {l.purpose ? (
+                                    <span style={{ color: "var(--text-secondary)" }}>({l.purpose})</span>
+                                  ) : null}
+                                </button>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                              조건에 맞는 추가 가능한 LOT이 없습니다.
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                          랏관리에 등록된 LOT이 없습니다. 그리드에 직접 입력도 가능합니다.
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Right: Target Step ID */}
@@ -352,13 +532,111 @@ export default function LotTracker() {
                     <label style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>목표 STEP ID</label>
                     <input
                       value={form.target_step_id}
-                      placeholder="예: AA800100"
+                      placeholder="예: AA800100 (직접 입력 가능)"
                       onChange={(event) => setForm({ ...form, target_step_id: event.target.value })}
-                      style={inputStyle}
+                      style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
                     />
+                    {stepSuggestions.length > 0 && (
+                      <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+                        {stepSuggestions.map((s) => (
+                          <button
+                            key={s.step_id}
+                            type="button"
+                            onClick={() => setForm((prev) => ({ ...prev, target_step_id: s.step_id }))}
+                            style={{
+                              display: "block", width: "100%", textAlign: "left",
+                              padding: "6px 10px", background: "transparent", border: 0,
+                              borderBottom: "1px solid var(--border)", cursor: "pointer",
+                              fontSize: 13, fontFamily: "var(--font-mono)", color: "var(--text-primary)",
+                            }}
+                          >
+                            {s.step_id}
+                            {s.step_desc ? (
+                              <span style={{ color: "var(--text-secondary)" }}>({s.step_desc})</span>
+                            ) : null}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
                       선택된 목표 step까지 참고 LOT들의 평균 진행 시간을 계산하여 도착 예정일을 예측합니다.
+                      목표 step은 참고 LOT에 있고 현재 공정보다 뒤쪽 단계여야 ETA가 계산됩니다.
                     </div>
+                  </div>
+                  <div style={{ display: "grid", gap: 5 }}>
+                    <label style={{ fontSize: 13, fontWeight: 700, color: "var(--text-primary)" }}>
+                      목표 STEP 목록 관리 (제품별 저장)
+                    </label>
+                    {trimProduct ? (
+                      <>
+                        <div style={{ display: "flex", gap: 6 }}>
+                          <input
+                            value={newStepId}
+                            placeholder="step_id"
+                            onChange={(event) => setNewStepId(event.target.value)}
+                            style={{ ...inputStyle, fontFamily: "var(--font-mono)" }}
+                          />
+                          <input
+                            value={newStepDesc}
+                            placeholder="step_desc (선택)"
+                            onChange={(event) => setNewStepDesc(event.target.value)}
+                            style={inputStyle}
+                          />
+                          <button
+                            type="button"
+                            onClick={addPresetStep}
+                            disabled={presetBusy}
+                            style={{
+                              padding: "0 14px", borderRadius: 6, border: "1px solid var(--border)",
+                              background: "var(--bg-tertiary)", cursor: presetBusy ? "not-allowed" : "pointer",
+                              fontWeight: 700, fontSize: 13, whiteSpace: "nowrap",
+                            }}
+                          >
+                            추가
+                          </button>
+                        </div>
+                        {presetSteps.length > 0 && (
+                          <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+                            {presetSteps.map((s) => (
+                              <div
+                                key={s.step_id}
+                                style={{
+                                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                                  padding: "6px 10px", borderBottom: "1px solid var(--border)",
+                                  fontSize: 13, fontFamily: "var(--font-mono)",
+                                }}
+                              >
+                                <span>
+                                  {s.step_id}
+                                  {s.step_desc ? (
+                                    <span style={{ color: "var(--text-secondary)" }}>({s.step_desc})</span>
+                                  ) : null}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => removePresetStep(s.step_id)}
+                                  disabled={presetBusy}
+                                  style={{
+                                    fontSize: 11, padding: "2px 8px", background: "transparent",
+                                    border: "1px solid var(--border)", borderRadius: 4,
+                                    cursor: presetBusy ? "not-allowed" : "pointer", color: "var(--text-secondary)",
+                                  }}
+                                >
+                                  삭제
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {presetMsg && (
+                          <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>{presetMsg}</div>
+                        )}
+                      </>
+                    ) : (
+                      <div style={{ fontSize: 11, color: "var(--text-secondary)" }}>
+                        product를 입력하면 해당 제품의 목표 STEP 목록을 등록할 수 있습니다 (관리자·lottracker 담당자만 저장).
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -444,9 +722,6 @@ export default function LotTracker() {
                     [`${lot.lot_id} (도착 예측)`]: "dash",
                     ...(dpmlSeries ? { [dpmlSeries]: "dash" } : {}),
                   },
-                  xaxis: {
-                    tickangle: -45,
-                  },
                   use_svg: true,
                   height: 440,
                 }}
@@ -480,6 +755,11 @@ export default function LotTracker() {
                   <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>평균 소요 기간</div>
                   <div style={{ fontSize: 20, fontWeight: 800, color: "var(--ok)" }}>{forecast.remaining_days ?? "-"} 일</div>
                   <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>{forecast.basis || "-"}</div>
+                  {!forecast.eta && (
+                    <div style={{ fontSize: 12, color: "var(--danger)", marginTop: 4 }}>
+                      목표 STEP까지 ETA를 계산하지 못했습니다. 목표 step이 참고 LOT에 있고 현재 공정보다 뒤쪽 단계인지 확인하세요.
+                    </div>
+                  )}
                 </div>
                 <div>
                   <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 4 }}>참고 LOT별 소요 기간</div>

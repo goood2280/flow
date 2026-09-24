@@ -9,7 +9,8 @@ Thread schema:
     "user": "<username>",
     "messages": [ {id, from, text, created_at}, ... ],
     "last_read_by_user":  "<iso>",   # any msg created_at > this & from != user  => unread
-    "last_read_by_admin": "<iso>",   # any msg created_at > this & from == user  => unread for admin
+    "last_read_by_admin": "<iso>",   # legacy read watermark for global admins
+    "last_read_by_admins": {"<manager>": "<iso>"},  # per-manager unread watermark
     "updated_at": "<iso>"
   }
 
@@ -22,9 +23,10 @@ from pydantic import BaseModel
 from typing import List, Optional
 from core.paths import PATHS
 from core.utils import load_json, save_json
-from core.notify import is_fresh_admin_notice, send_notify, send_to_admins
+from core.file_transaction import file_transaction
+from core.notify import is_fresh_admin_notice, send_notify
 from routers.auth import read_users
-from core.auth import verify_owner, require_admin  # v8.4.6 owner/admin checks
+from core.auth import verify_owner, current_user, get_page_admins
 
 router = APIRouter(prefix="/api/messages", tags=["messages"])
 
@@ -52,6 +54,22 @@ def _is_admin(username: str) -> bool:
     return False
 
 
+def _inquiry_managers() -> set[str]:
+    """Approved global admins and users with any delegated page management right."""
+    delegated = {name for names in get_page_admins().values() for name in names}
+    return {
+        u["username"] for u in read_users()
+        if u.get("status") == "approved"
+        and (u.get("role") == "admin" or u.get("username") in delegated)
+    }
+
+
+def _require_inquiry_manager(request: Request, username: str) -> None:
+    actor = current_user(request)
+    if actor.get("username") != username or username not in _inquiry_managers():
+        raise HTTPException(403, "Inquiry manager only")
+
+
 def _thread_path(user: str):
     safe = "".join(c for c in (user or "") if c.isalnum() or c in "_-.")[:60]
     if not safe:
@@ -65,6 +83,7 @@ def _empty_thread(user: str) -> dict:
         "messages": [],
         "last_read_by_user": "",
         "last_read_by_admin": "",
+        "last_read_by_admins": {},
         "updated_at": "",
     }
 
@@ -107,8 +126,11 @@ def _thread_unread_for_user(thread: dict) -> int:
     return cnt
 
 
-def _thread_unread_for_admin(thread: dict) -> int:
-    last_read = thread.get("last_read_by_admin") or ""
+def _thread_unread_for_admin(thread: dict, admin: str, global_admin: bool = False) -> int:
+    reads = thread.get("last_read_by_admins") or {}
+    last_read = reads.get(admin, "") if isinstance(reads, dict) else ""
+    if not last_read and global_admin:
+        last_read = thread.get("last_read_by_admin") or ""
     user = thread.get("user") or ""
     cnt = 0
     for m in thread.get("messages", []):
@@ -171,21 +193,20 @@ def user_send(req: SendReq, request: Request):
         raise HTTPException(400, "Empty message")
     if len(text) > 5000:
         raise HTTPException(400, "Too long (max 5000 chars)")
-    t = _load_thread(req.username)
-    msg = {"id": _new_id(), "from": req.username, "text": text, "created_at": _now()}
-    t["messages"].append(msg)
-    t["updated_at"] = msg["created_at"]
-    t["last_read_by_user"] = msg["created_at"]  # sender implicitly caught up
-    _save_thread(req.username, t)
-    # Bell-notify all admins
-    try:
-        send_to_admins(
-            f"Message from {req.username}",
-            text[:200] + ("…" if len(text) > 200 else ""),
-            "message",
-        )
-    except Exception:
-        pass
+    with file_transaction(_thread_path(req.username)):
+        t = _load_thread(req.username)
+        msg = {"id": _new_id(), "from": req.username, "text": text, "created_at": _now()}
+        t["messages"].append(msg)
+        t["updated_at"] = msg["created_at"]
+        t["last_read_by_user"] = msg["created_at"]  # sender implicitly caught up
+        _save_thread(req.username, t)
+    # Each manager gets their own bell item; a failed recipient must not block others.
+    for manager in _inquiry_managers() - {req.username}:
+        try:
+            send_notify(manager, f"Message from {req.username}",
+                        text[:200] + ("…" if len(text) > 200 else ""), "message")
+        except Exception:
+            pass
     return {"ok": True, "message": msg}
 
 
@@ -240,9 +261,10 @@ def unread_count(request: Request, username: str = Query(...)):
 @router.post("/mark_read")
 def user_mark_read(req: UserOnlyReq, request: Request):
     verify_owner(request, req.username)
-    t = _load_thread(req.username)
-    t["last_read_by_user"] = _now()
-    _save_thread(req.username, t)
+    with file_transaction(_thread_path(req.username)):
+        t = _load_thread(req.username)
+        t["last_read_by_user"] = _now()
+        _save_thread(req.username, t)
     return {"ok": True}
 
 
@@ -282,9 +304,8 @@ def notice_read(req: NoticeReadReq, request: Request):
 # ─── Admin endpoints ───
 @router.get("/admin/threads")
 def admin_threads(request: Request, admin: str = Query(...)):
-    verify_owner(request, admin)
-    if not _is_admin(admin):
-        raise HTTPException(403, "Admin only")
+    _require_inquiry_manager(request, admin)
+    global_admin = _is_admin(admin)
     out = []
     for fp in sorted(THREADS_DIR.glob("*.json")):
         try:
@@ -297,7 +318,7 @@ def admin_threads(request: Request, admin: str = Query(...)):
             out.append({
                 "user": user,
                 "total": len(msgs),
-                "unread_for_admin": _thread_unread_for_admin(t),
+                "unread_for_admin": _thread_unread_for_admin(t, admin, global_admin),
                 "last_at": t.get("updated_at") or last_msg.get("created_at", ""),
                 "last_from": last_msg.get("from", ""),
                 "last_preview": (last_msg.get("text") or "")[:120],
@@ -315,28 +336,25 @@ def admin_threads(request: Request, admin: str = Query(...)):
 
 @router.get("/admin/thread")
 def admin_get_thread(request: Request, admin: str = Query(...), user: str = Query(...)):
-    verify_owner(request, admin)
-    if not _is_admin(admin):
-        raise HTTPException(403, "Admin only")
+    _require_inquiry_manager(request, admin)
     return _load_thread(user)
 
 
 @router.post("/admin/reply")
 def admin_reply(req: AdminReplyReq, request: Request):
-    verify_owner(request, req.admin)
-    if not _is_admin(req.admin):
-        raise HTTPException(403, "Admin only")
+    _require_inquiry_manager(request, req.admin)
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(400, "Empty reply")
     if len(text) > 5000:
         raise HTTPException(400, "Too long (max 5000 chars)")
-    t = _load_thread(req.to_user)
-    msg = {"id": _new_id(), "from": req.admin, "text": text, "created_at": _now()}
-    t["messages"].append(msg)
-    t["updated_at"] = msg["created_at"]
-    t["last_read_by_admin"] = msg["created_at"]
-    _save_thread(req.to_user, t)
+    with file_transaction(_thread_path(req.to_user)):
+        t = _load_thread(req.to_user)
+        msg = {"id": _new_id(), "from": req.admin, "text": text, "created_at": _now()}
+        t["messages"].append(msg)
+        t["updated_at"] = msg["created_at"]
+        t.setdefault("last_read_by_admins", {})[req.admin] = msg["created_at"]
+        _save_thread(req.to_user, t)
     try:
         send_notify(
             req.to_user,
@@ -351,26 +369,24 @@ def admin_reply(req: AdminReplyReq, request: Request):
 
 @router.post("/admin/mark_read")
 def admin_mark_read(req: AdminThreadReq, request: Request):
-    verify_owner(request, req.admin)
-    if not _is_admin(req.admin):
-        raise HTTPException(403, "Admin only")
-    t = _load_thread(req.to_user)
-    t["last_read_by_admin"] = _now()
-    _save_thread(req.to_user, t)
+    _require_inquiry_manager(request, req.admin)
+    with file_transaction(_thread_path(req.to_user)):
+        t = _load_thread(req.to_user)
+        t.setdefault("last_read_by_admins", {})[req.admin] = _now()
+        _save_thread(req.to_user, t)
     return {"ok": True}
 
 
 @router.get("/admin/unread")
 def admin_unread(request: Request, admin: str = Query(...)):
     """Total unread replies across all threads, for admin dashboard."""
-    verify_owner(request, admin)
-    if not _is_admin(admin):
-        raise HTTPException(403, "Admin only")
+    _require_inquiry_manager(request, admin)
+    global_admin = _is_admin(admin)
     total = 0
     for fp in THREADS_DIR.glob("*.json"):
         t = load_json(fp, None)
         if t:
-            total += _thread_unread_for_admin(t)
+            total += _thread_unread_for_admin(t, admin, global_admin)
     return {"total": total}
 
 

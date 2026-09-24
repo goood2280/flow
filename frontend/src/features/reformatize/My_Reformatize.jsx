@@ -107,6 +107,33 @@ function hasAnyFilter(filters) {
     || f.days > 0 || f.date_from || f.date_to);
 }
 
+/* 파라미터형 집계 — 서버 집계 문자열(pct:20, below:0.5, cpk:0.2,0.8)과
+   화면 선택/입력칸 사이의 변환. agg state 자체는 인코딩 문자열 그대로
+   유지해서 조회·다운로드·테스트·이력에 그대로 흘려보낸다. */
+const AGG_KINDS = ["", "max", "min", "median", "avg", "std", "p90", "p10",
+  "pct", "below", "above", "cp", "cpk", "pp", "ppk"];
+function parseAgg(agg) {
+  const t = String(agg || "").trim().toLowerCase();
+  if (!t) return { kind: "" };
+  if (["max", "min", "median", "avg", "std", "p90", "p10"].includes(t)) return { kind: t };
+  const i = t.indexOf(":");
+  if (i < 0) return { kind: "__invalid" };
+  const kind = t.slice(0, i).trim();
+  const raw = t.slice(i + 1).trim();
+  if (kind === "pct" || kind === "percentile" || kind === "p") return { kind: "pct", q: raw };
+  if (kind === "below" || kind === "below_spec_pct") return { kind: "below", v: raw };
+  if (kind === "above" || kind === "above_spec_pct") return { kind: "above", v: raw };
+  if (["cp", "cpk", "pp", "ppk"].includes(kind)) {
+    const parts = raw.split(",");
+    return { kind, lsl: (parts[0] || "").trim(), usl: parts.length > 1 ? (parts[1] || "").trim() : "" };
+  }
+  return { kind: "__invalid" };
+}
+function aggKindOf(agg) {
+  const p = parseAgg(agg);
+  return AGG_KINDS.includes(p.kind) ? p.kind : "__invalid";
+}
+
 const cell = { padding: "5px 10px", borderBottom: "1px solid var(--border)", fontSize: 13, whiteSpace: "nowrap" };
 const head = {
   ...cell, position: "sticky", top: 0, background: "var(--bg-tertiary)",
@@ -575,8 +602,153 @@ function ItemSelectPanel({ items, selected, onToggle, isAdmin, hidden, onToggleH
 }
 
 /* 관리자 전용 ADDP 수식 테스트 패널 — 필터는 상단 조회 조건(filters)을 그대로 따른다 */
+/* ── Python Lab: DataFrame 단위 reformatize 직접 실험 (관리자 전용) ──
+   ADDP 수식(화이트리스트)으로는 못 하는 window/max 변형을 파이썬 코드째
+   짜서 실제 ET wide 데이터로 돌려본다. 계약: def run(wide) -> wide.
+   참고코드는 /python-help 에서 MA_Window/max 전체 소스를 그대로 보여준다 —
+   AI 에게 "이 코드 변형해줘" 하고 붙여넣으면 된다. */
+function PythonLabPanel({ product, filters, pageRows, agg }) {
+  const [code, setCode] = useState("");
+  const [ref, setRef] = useState(null);
+  const [snips, setSnips] = useState([]);
+  const [snipName, setSnipName] = useState("");
+  const [result, setResult] = useState(null);
+  const [offset, setOffset] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [dlBusy, setDlBusy] = useState(false);
+
+  useEffect(() => { setResult(null); setOffset(0); setRef(null); }, [product, agg]);
+
+  const loadRef = () => {
+    if (!product) { toast.warn("제품을 먼저 선택하세요"); return; }
+    sf(API + "/python-help?product=" + encodeURIComponent(product))
+      .then(d => {
+        setRef(d);
+        if (!code && d?.reference?.template) setCode(d.reference.template);
+      })
+      .catch(e => toast.error("참고코드 로딩 실패: " + (e.message || e)));
+  };
+  const loadSnips = () => {
+    sf(API + "/python-snippets").then(d => setSnips(d.snippets || [])).catch(() => {});
+  };
+  useEffect(() => { loadSnips(); }, []);
+
+  const run = (nextOffset = 0) => {
+    if (!code.trim()) { toast.warn("Python 코드(def run(wide))를 입력하세요"); return; }
+    setBusy(true);
+    postJson(API + "/test/python", { product, python_code: code, ...filterBody(filters), agg, offset: nextOffset, limit: pageRows })
+      .then(d => { setResult(d); setOffset(d.offset || 0); })
+      .catch(e => toast.error(e.message || "Python 테스트 실패"))
+      .finally(() => setBusy(false));
+  };
+  const download = () => {
+    if (!code.trim()) { toast.warn("Python 코드를 입력하세요"); return; }
+    setDlBusy(true);
+    dlPost(API + "/test/python/download", { product, python_code: code, ...filterBody(filters), agg }, `${product}_python_test.csv`)
+      .then(() => toast.ok("Python 테스트 CSV 다운로드 완료"))
+      .catch(e => toast.error(e.message || "다운로드 실패"))
+      .finally(() => setDlBusy(false));
+  };
+  const saveSnip = () => {
+    const name = snipName.trim();
+    if (!name) { toast.warn("스니펫 이름을 입력하세요"); return; }
+    if (!code.trim()) { toast.warn("저장할 코드를 입력하세요"); return; }
+    postJson(API + "/python-snippets/save", { name, python_code: code })
+      .then(() => { toast.ok(`스니펫 저장: ${name}`); loadSnips(); })
+      .catch(e => toast.error(e.message || "스니펫 저장 실패"));
+  };
+
+  const copyText = async (text) => {
+    try { await navigator.clipboard.writeText(text); toast.ok("복사됨 — AI 채팅에 붙여넣으세요"); }
+    catch (_) { toast.warn("복사 실패 — 직접 드래그해 복사하세요"); }
+  };
+
+  const total = result?.total_rows || 0;
+  const pageEnd = Math.min(offset + (result?.rows?.length || 0), total);
+  const refEntries = ref?.reference ? Object.entries(ref.reference).filter(([k]) => k !== "template" && k !== "contract") : [];
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
+        <Button variant="primary" disabled={busy || !product} onClick={() => run(0)}>{busy ? "계산 중…" : "Python 테스트 실행"}</Button>
+        <Button disabled={dlBusy || !product} onClick={download}>{dlBusy ? "다운로드 중…" : "⬇ Python CSV"}</Button>
+        <Button disabled={!product} onClick={loadRef}>📖 window/max 원문 + 템플릿 불러오기</Button>
+        <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>필터·행 수·집계는 상단 조회 조건을 따릅니다 · 계약: def run(wide) -&gt; wide</span>
+      </div>
+      <textarea value={code} onChange={e => setCode(e.target.value)}
+        placeholder={"def run(wide) -> wide: 새 index 컬럼을 추가해 반환 — '📖 원문 불러오기'로 템플릿·참고코드를 가져오세요"}
+        spellCheck={false}
+        style={{ ...inputStyle, width: "100%", minHeight: 220, fontFamily: "monospace", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre" }} />
+      <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
+        <input value={snipName} onChange={e => setSnipName(e.target.value)} placeholder="스니펫 이름 — 예: my_window_v2"
+          style={{ ...inputStyle, width: 220, fontFamily: "monospace" }} />
+        <Button onClick={saveSnip}>💾 스니펫 저장</Button>
+        {(snips || []).length > 0 && (
+          <select value="" onChange={e => {
+            const hit = (snips || []).find(s => s.name === e.target.value);
+            if (hit) { setCode(hit.code || ""); setSnipName(hit.name); toast.ok(`스니펫 불러옴: ${hit.name}`); }
+          }} style={{ ...inputStyle }}>
+            <option value="">저장된 스니펫 불러오기 ({(snips || []).length})</option>
+            {(snips || []).map(s => <option key={s.name} value={s.name}>{s.name}</option>)}
+          </select>
+        )}
+      </div>
+
+      {ref && (
+        <div style={{ fontSize: 12, color: "var(--text-secondary)", borderTop: "1px dashed var(--border)", paddingTop: 8, marginTop: 10 }}>
+          <div style={{ marginBottom: 6 }}>
+            <b>참고컬럼</b> — alias {(ref.columns?.aliases || []).length}개 · raw item {(ref.columns?.raw_items || []).length}개
+            {(ref.columns?.aliases || []).length > 0 && (
+              <span style={{ fontFamily: "monospace" }}> · 예: {(ref.columns.aliases || []).slice(0, 6).join(", ")}{(ref.columns.aliases || []).length > 6 ? " …" : ""}</span>
+            )}
+          </div>
+          <details open>
+            <summary style={{ cursor: "pointer" }}>📋 AI용 프롬프트 — 계약 + 템플릿 (클릭해 복사)</summary>
+            <pre style={{ background: "var(--bg-primary)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 220 }}>{ref.reference?.contract || ""}{"\n"}{ref.reference?.template || ""}</pre>
+            <Button onClick={() => copyText((ref.reference?.contract || "") + "\n" + (ref.reference?.template || ""))}>⧉ 계약+템플릿 복사</Button>
+          </details>
+          {refEntries.map(([key, src]) => (
+            <details key={key} style={{ marginTop: 4 }}>
+              <summary style={{ cursor: "pointer", fontFamily: "monospace" }}>{key} 전체 소스</summary>
+              <pre style={{ background: "var(--bg-primary)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 300 }}>{src}</pre>
+              <Button onClick={() => copyText(`# 참고원문: ${key}\n${src}`)}>⧉ {key} 복사</Button>
+            </details>
+          ))}
+        </div>
+      )}
+
+      {result?.rule_errors?.length > 0 && (
+        <Banner tone="warn" style={{ marginTop: 8, marginBottom: 8 }}>
+          {result.rule_errors.map((e, i) => <div key={i} style={{ fontSize: 12, fontFamily: "monospace" }}>{e}</div>)}
+        </Banner>
+      )}
+      {result?.notice && (
+        <Banner tone="info" style={{ marginTop: 8, marginBottom: 8 }}>ℹ️ {result.notice}</Banner>
+      )}
+      {result && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 6 }}>
+            <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>
+              새 컬럼 {result.test_columns?.length || 0}개 · 전체 {total.toLocaleString()}행 · {result.elapsed_ms}ms
+            </span>
+            <span style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
+              <Button disabled={offset <= 0 || busy} onClick={() => run(Math.max(0, offset - pageRows))}>← 이전</Button>
+              <span style={{ fontSize: 13, fontFamily: "monospace", color: "var(--text-secondary)" }}>
+                {total ? `${(offset + 1).toLocaleString()}–${pageEnd.toLocaleString()} / ${total.toLocaleString()}` : "0"}
+              </span>
+              <Button disabled={pageEnd >= total || busy} onClick={() => run(offset + pageRows)}>다음 →</Button>
+            </span>
+          </div>
+          <ResultTable result={result} highlight={result.test_columns} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AddpTestPanel({ product, filters, pageRows, agg }) {
   const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState("addp");
   const [items, setItems] = useState([{ alias: "", addp_form: "" }]);
   const [help, setHelp] = useState(null);
   const [result, setResult] = useState(null);
@@ -618,15 +790,23 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
   return (
     <div style={{ border: "1px dashed var(--accent)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, background: "var(--bg-secondary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={() => setOpen(o => !o)}>
-        <span style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)" }}>🧪 ADDP 수식 테스트</span>
+        <span style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)" }}>🧪 ADDP 수식 테스트 · Python Lab</span>
         <Pill tone="warn">관리자 전용</Pill>
         <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-          새 ADDP ITEM 수식을 vehicle CSV 반영 전에 실제 ET 데이터로 검증
+          새 ADDP 수식 또는 Python reformatize 코드를 실제 ET 데이터로 검증
         </span>
         <span style={{ marginLeft: "auto", color: "var(--text-secondary)" }}>{open ? "▲ 접기" : "▼ 펼치기"}</span>
       </div>
       {open && (
         <div style={{ marginTop: 10 }}>
+          <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+            <Button variant={mode === "addp" ? "primary" : undefined} onClick={() => setMode("addp")}>ADDP 수식</Button>
+            <Button variant={mode === "python" ? "primary" : undefined} onClick={() => setMode("python")}>🐍 Python 코드</Button>
+          </div>
+          {mode === "python" ? (
+            <PythonLabPanel product={product} filters={filters} pageRows={pageRows} agg={agg} />
+          ) : (
+          <>
           {/* 항목 편집 */}
           {items.map((it, i) => (
             <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
@@ -711,6 +891,8 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
               </div>
               <ResultTable result={result} highlight={result.test_columns} />
             </>
+          )}
+          </>
           )}
         </div>
       )}
@@ -1220,7 +1402,7 @@ function ReformatizeHistoryPanel({
 }
 
 export default function My_Reformatize({ user }) {
-  const isAdmin = user?.role === "admin";
+  const isAdmin = canManagePage(user, "reformatize");
   const [products, setProducts] = useState([]);
   const [product, setProduct] = useState("");
   const [filters, setFilters] = useState(EMPTY_FILTERS);
@@ -1233,7 +1415,7 @@ export default function My_Reformatize({ user }) {
   const [itemList, setItemList] = useState([]);          // vehicle CSV 의 REAL/ADDP 항목
   const [selItems, setSelItems] = useState(new Set());   // 선택된 alias (기본 없음)
   const [hiddenItems, setHiddenItems] = useState(new Set()); // (admin) 유저 비공개 alias
-  const [agg, setAgg] = useState("");                    // ""=shot raw, max/min/median/avg/std/p90/p10
+  const [agg, setAgg] = useState("");                    // ""=shot raw, 단순 집계 또는 인코딩 집계(pct:20, below:0.5, cpk:0.2,0.8)
   const [dlJob, setDlJob] = useState(null);              // 진행 중인 다운로드 작업(대기열)
   const [runPhase, setRunPhase] = useState(null);        // 조회 진행 상황 {phase, done, total}
   const [history, setHistory] = useState([]);
@@ -1943,7 +2125,7 @@ export default function My_Reformatize({ user }) {
           style={{
             ...inputStyle,
             width: "100%",
-            height: 48,
+            height: 82,
             minHeight: 38,
             maxHeight: 120,
             fontFamily: "'JetBrains Mono', monospace",
@@ -1997,14 +2179,75 @@ export default function My_Reformatize({ user }) {
           placeholder="PGM point 수 (예: 25,49)" title="조회 결과 PGM(25pt)의 실제 포인트 수로 PGM package 전체를 필터링합니다. 쉼표는 OR입니다."
           style={{ ...inputStyle, width: 190 }} />
         <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>집계</span>
-        <select value={agg} onChange={e => { setAgg(e.target.value); setResult(null); setOffset(0); setLastSource("filter"); }}
+        <select value={aggKindOf(agg)} onChange={e => {
+          const kind = e.target.value;
+          const prev = parseAgg(agg);
+          let next = "";
+          if (kind === "pct") next = "pct:50";
+          else if (kind === "below" || kind === "above") {
+            // below ↔ above 전환 시 기준값은 유지
+            const keep = (prev.kind === "below" || prev.kind === "above") ? (prev.v || "") : "";
+            next = `${kind}:${keep}`;
+          } else if (["cp", "cpk", "pp", "ppk"].includes(kind)) {
+            // 공정능력 지표끼리 전환 시 LSL/USL 유지
+            const keepL = (["cp", "cpk", "pp", "ppk"].includes(prev.kind)) ? (prev.lsl || "") : "";
+            const keepU = (["cp", "cpk", "pp", "ppk"].includes(prev.kind)) ? (prev.usl || "") : "";
+            next = `${kind}:${keepL},${keepU}`;
+          } else next = kind;
+          setAgg(next); setResult(null); setOffset(0); setLastSource("filter");
+        }}
           title="root_lot_id × wafer_id × step_id × PGM(pt) 그룹으로 index 를 집계해서 추출"
           style={{ ...inputStyle, width: 170 }}>
           <option value="">shot raw (chip_x_pos × chip_y_pos별)</option>
           {["max", "min", "median", "avg", "std", "p90", "p10"].map(m => (
             <option key={m} value={m}>{m.toUpperCase()}</option>
           ))}
+          <option value="pct">PERCENTILE (q 입력)</option>
+          <option value="below">BELOW_SPEC_PCT (기준값 이하 %)</option>
+          <option value="above">ABOVE_SPEC_PCT (기준값 이상 %)</option>
+          <option value="cp">Cp (LSL, USL)</option>
+          <option value="cpk">Cpk (LSL, USL)</option>
+          <option value="pp">Pp (LSL, USL)</option>
+          <option value="ppk">Ppk (LSL, USL)</option>
         </select>
+        {(() => {
+          const p = parseAgg(agg);
+          const touch = () => { setResult(null); setOffset(0); setLastSource("filter"); };
+          if (p.kind === "pct") return (
+            <input type="number" min={0} max={100} step="any" value={p.q ?? ""}
+              onChange={e => { setAgg(`pct:${e.target.value}`); touch(); }}
+              placeholder="q (0~100)"
+              title="percentile — 예: 20 → 하위 20% 경계값 (선형보간)"
+              style={{ ...inputStyle, width: 100 }} />
+          );
+          if (p.kind === "below") return (
+            <input type="number" step="any" value={p.v ?? ""}
+              onChange={e => { setAgg(`below:${e.target.value}`); touch(); }}
+              placeholder="기준값 v"
+              title="BELOW_SPEC_PCT — 기준값 이하(≤ v) shot 비율 0~100%"
+              style={{ ...inputStyle, width: 110 }} />
+          );
+          if (p.kind === "above") return (
+            <input type="number" step="any" value={p.v ?? ""}
+              onChange={e => { setAgg(`above:${e.target.value}`); touch(); }}
+              placeholder="기준값 v"
+              title="ABOVE_SPEC_PCT — 기준값 이상(≥ v) shot 비율 0~100%"
+              style={{ ...inputStyle, width: 110 }} />
+          );
+          if (["cp", "cpk", "pp", "ppk"].includes(p.kind)) return (
+            <>
+              <input type="number" step="any" value={p.lsl ?? ""}
+                onChange={e => { setAgg(`${p.kind}:${e.target.value},${p.usl ?? ""}`); touch(); }}
+                placeholder="LSL" title={`${p.kind.toUpperCase()} 하한 (LSL)`}
+                style={{ ...inputStyle, width: 90 }} />
+              <input type="number" step="any" value={p.usl ?? ""}
+                onChange={e => { setAgg(`${p.kind}:${p.lsl ?? ""},${e.target.value}`); touch(); }}
+                placeholder="USL" title={`${p.kind.toUpperCase()} 상한 (USL)`}
+                style={{ ...inputStyle, width: 90 }} />
+            </>
+          );
+          return null;
+        })()}
         {hasAnyFilter(filters) && (
           <Button onClick={() => setFilters(EMPTY_FILTERS)}>필터 초기화</Button>
         )}

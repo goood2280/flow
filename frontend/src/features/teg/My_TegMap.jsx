@@ -2324,8 +2324,8 @@ export default function My_TegMap({ user }) {
     setInitialMapCheckText("");
   }, [vehicle]);
 
-  const canEdit = user?.role === "admin" || (user?.page_manager || []).includes("teg");
-  const isAdmin = user?.role === "admin";
+  const canEdit = canManagePage(user, "teg");
+  const isAdmin = canEdit;
   const tegPageTokens = Array.isArray(user?.tabs)
     ? user.tabs
     : String(user?.tabs || "").split(",");

@@ -83,6 +83,7 @@ _DATA_TASK_PATHS = (
     "/api/flowi-learning/db-reference/generate",
     "/api/product-wiki/intake", "/api/product-wiki/compile",
     "/api/product-semantics/bootstrap", "/api/product-semantics/propose",
+    "/api/admin/domain-knowledge/preview",
 )
 
 ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"

@@ -5,6 +5,8 @@ export default defineConfig(({ mode }) => {
   const target = env.FLOW_DEV_API_URL || 'http://127.0.0.1:8080';
   return {
   plugins: [react()],
+  // Plotly's browser dependencies refer to the Node-style global alias.
+  define: { global: 'globalThis' },
   build: { emptyOutDir: true },
   // index.html 이 /favicon.svg 를 참조한다. publicDir 를 끄면 frontend/public 이
   // dist 로 복사되지 않아 모든 접속이 favicon 404 를 한 번씩 낸다 — 정상 배포인데도

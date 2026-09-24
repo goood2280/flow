@@ -23,12 +23,17 @@ def turn_budget(limit=6):
     if existing is not None:
         yield existing
         return
-    usage = {"llm_calls_used": 0, "llm_call_limit": max(0, min(6, int(limit)))}
+    usage = {"llm_calls_used": 0, "llm_call_limit": max(0, min(MAX_MINUTE_CALLS, int(limit)))}
     token = _TURN_USAGE.set(usage)
     try:
         yield usage
     finally:
         _TURN_USAGE.reset(token)
+
+
+def current_turn():
+    """현재 요청 스코프의 turn 카운터. turn_budget 밖이면 None."""
+    return _TURN_USAGE.get()
 
 
 def _path():
@@ -106,7 +111,11 @@ def snapshot():
 
 
 def reserve_attempt():
-    """Reserve before every outgoing attempt, shared across hosts and retries."""
+    """Reserve before every outgoing attempt, shared across hosts and retries.
+
+    과금 정책: 실제 provider 전송 1건당 1차감. capability 재시도·429 재전송·
+    연결 검사(probe=True)도 전송이 나가면 차감한다. 전송 없이 끝나는 경로
+    (breaker open·disabled·설정 오류)는 차감하지 않는다."""
     try:
         path = _path()
         with _store_lock(path):

@@ -22,7 +22,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from core.auth import current_user, is_page_manager, parse_tab_tokens
+from core.auth import current_user, is_page_manager, user_tab_tokens
 from core.paths import PATHS
 from core.rich_text import rich_text_has_content, sanitize_rich_html
 from core.utils import jsonl_append, load_json, save_json
@@ -113,7 +113,7 @@ def _user(request: Request) -> dict:
     user = current_user(request)
     if user.get("role") == "admin" or is_page_manager(user, "lotrequest"):
         return user
-    tabs, _ = parse_tab_tokens(user.get("tabs", ""))
+    tabs, _ = user_tab_tokens(user)
     if "lotrequest" not in tabs:
         raise HTTPException(403, "랏 배정/요청 탭 권한이 필요합니다")
     return user

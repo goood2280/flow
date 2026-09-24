@@ -295,23 +295,42 @@ def _cfg_path() -> Path:
 
 
 def inline_map_settings_path(for_write: bool = False) -> Path:
-    """Inline 좌표 매칭용 관리자 설정 파일 (DB root/confidential)."""
-    target = roots.get_db_root() / INLINE_MAP_DIR_NAME / INLINE_MAP_FILE_NAME
+    """Inline 좌표 매칭용 관리자 설정 파일 (flow-data 정본 우선).
+
+    쓰기는 항상 flow-data. 읽기 시 레거시(db_root)에만 있으면 최초 1회
+    flow-data 로 seed 복사한다."""
+    from core import matching_store
+    from core.paths import PATHS
     if for_write:
-        return target
-    if not target.is_file():
+        return matching_store.canonical_path(INLINE_MAP_FILE_NAME, PATHS.data_root)
+    flow = matching_store.canonical_path(INLINE_MAP_FILE_NAME, PATHS.data_root)
+    if flow.is_file():
+        return flow
+    try:
+        return matching_store.resolve(INLINE_MAP_FILE_NAME, db_root=roots.get_db_root(),
+                                      data_root=PATHS.data_root)
+    except Exception:
+        target = roots.get_db_root() / INLINE_MAP_DIR_NAME / INLINE_MAP_FILE_NAME
+        if target.is_file():
+            return target
         legacy = roots.get_db_root() / "credential" / INLINE_MAP_FILE_NAME
         if legacy.is_file():
             return legacy
-    return target
+        return flow
 
 
 def inline_shot_matching_path() -> Path:
-    """Inline ITEM → map 연결표 (DB root/confidential 우선, 레거시 DB root 호환)."""
-    confidential = roots.get_db_root() / "confidential" / INLINE_SHOT_MATCHING_FILE_NAME
-    if confidential.is_file():
-        return confidential
-    return roots.get_db_root() / INLINE_SHOT_MATCHING_FILE_NAME
+    """Inline ITEM → map 연결표 (flow-data 정본 우선, 레거시 호환 + seed 복사)."""
+    from core import matching_store
+    from core.paths import PATHS
+    try:
+        return matching_store.resolve(INLINE_SHOT_MATCHING_FILE_NAME, db_root=roots.get_db_root(),
+                                      data_root=PATHS.data_root)
+    except Exception:
+        confidential = roots.get_db_root() / "confidential" / INLINE_SHOT_MATCHING_FILE_NAME
+        if confidential.is_file():
+            return confidential
+        return roots.get_db_root() / INLINE_SHOT_MATCHING_FILE_NAME
 
 
 def _clean_inline_matching_rows(rows: Any) -> list[dict[str, str]]:
@@ -2630,7 +2649,8 @@ def user_departments(user: dict | None) -> list[str]:
 
 def can_access_root_node(user: dict | None, root_node: str, rules: dict | None = None) -> bool:
     user = user if isinstance(user, dict) else {}
-    if user.get("role") == "admin":
+    from core.auth import is_page_manager
+    if is_page_manager(user, "teg"):
         return True
     rules = rules if isinstance(rules, dict) else (load_cfg().get("node_access") or {})
     rule = next((value for root, value in rules.items()

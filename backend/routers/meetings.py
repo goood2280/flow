@@ -1300,7 +1300,8 @@ class MeetingAskReq(BaseModel):
 
 # ── permission helpers ─────────────────────────────────────────────
 def _is_admin(me: dict) -> bool:
-    return (me or {}).get("role") == "admin"
+    from core.auth import is_page_manager
+    return is_page_manager(me, "meeting")
 
 
 def _can_edit_meeting(me: dict, meeting: dict) -> bool:
@@ -1349,7 +1350,8 @@ def _next_session_idx(m: dict) -> int:
 # ── endpoints ──────────────────────────────────────────────────────
 def _meeting_visible(m: dict, username: str, role: str, my_gids: set) -> bool:
     """v8.8.2: group_ids 기반 가시성. admin/owner/creator 는 항상 가시."""
-    if role == "admin":
+    from core.auth import is_page_manager
+    if role == "admin" or is_page_manager(username, "meeting"):
         return True
     if m.get("owner") == username or m.get("created_by") == username:
         return True
@@ -1363,7 +1365,8 @@ def _meeting_visible(m: dict, username: str, role: str, my_gids: set) -> bool:
 
 
 def _my_meeting_group_ids(username: str, role: str) -> set:
-    if role == "admin":
+    from core.auth import is_page_manager
+    if role == "admin" or is_page_manager(username, "meeting"):
         try:
             from routers.groups import _load as _load_groups
             return {g.get("id") for g in _load_groups() if g.get("id")}

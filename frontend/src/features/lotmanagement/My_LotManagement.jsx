@@ -740,7 +740,7 @@ export default function My_LotManagement({ user }) {
                       initialFabLotId={viewLot}
                       initialCustomName={selectedCustom}
                       initialOpenNotes={viewLotNotes}
-                      initialTableFormat="split"
+                      initialTableFormat="cell"
                       embedded
                     />
                   </Suspense>
@@ -895,7 +895,7 @@ export default function My_LotManagement({ user }) {
             : tableError ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">랏 관리 표를 불러오지 못했습니다</div><div className="ds-feedback__message">{tableError}</div><Button variant="secondary" onClick={() => setTableReloadToken(value => value + 1)}>다시 시도</Button></div></div>
             : !work ? <div className="ds-feedback"><div className="ds-feedback__inner"><div className="ds-feedback__title">랏 관리 표가 준비되지 않았습니다</div><Button variant="secondary" onClick={() => setTableReloadToken(value => value + 1)}>다시 시도</Button></div></div>
             : <div className="flow-page__content">
-            {viewLot&&<section ref={splitViewRef} className="lot-management__split-preview"><div className="lot-management__split-preview-header"><strong>LOT {viewLot} SplitTable</strong><span className="u-muted">{selectedCustom ? `CUSTOM: ${selectedCustom}` : "기본 KNOB"}</span><Button className="u-push-right" variant="ghost" size="compact" onClick={() => {setViewLot("");setViewLotNotes(false);}}>닫기</Button></div><Suspense fallback={<Loading text="SplitTable 불러오는 중..."/>}><LazySplitTable key={`${product}:${viewLot}:${selectedCustom}:${viewRequestKey}`} user={user} initialProduct={product} initialFabLotId={viewLot} initialCustomName={selectedCustom} initialOpenNotes={viewLotNotes} initialTableFormat="split" embedded/></Suspense></section>}
+            {viewLot&&<section ref={splitViewRef} className="lot-management__split-preview"><div className="lot-management__split-preview-header"><strong>LOT {viewLot} SplitTable</strong><span className="u-muted">{selectedCustom ? `CUSTOM: ${selectedCustom}` : "기본 KNOB"}</span><Button className="u-push-right" variant="ghost" size="compact" onClick={() => {setViewLot("");setViewLotNotes(false);}}>닫기</Button></div><Suspense fallback={<Loading text="SplitTable 불러오는 중..."/>}><LazySplitTable key={`${product}:${viewLot}:${selectedCustom}:${viewRequestKey}`} user={user} initialProduct={product} initialFabLotId={viewLot} initialCustomName={selectedCustom} initialOpenNotes={viewLotNotes} initialTableFormat="cell" embedded/></Suspense></section>}
             <div className="lot-management__grid-frame">
               <table className="lot-management__grid">
                 <thead>

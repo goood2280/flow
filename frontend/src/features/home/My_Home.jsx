@@ -1,9 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import BrandLogo from "../../components/BrandLogo";
 import { canAccessTab, isAdmin as isAdminUser, visibleTabsFor } from "../../lib/permissions";
 import HomeAlertsSection from "./HomeAlertsSection";
 import HomeDataChat from "./HomeDataChat";
 import { preloadPage } from "../../app/pageManifest";
+
+const StructureModelWorkspace = lazy(() => import("../structure/StructureModelWorkspace"));
 
 const CARD_DESC = {
   filebrowser: "DB와 Files 데이터 조회",
@@ -222,8 +224,8 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
   };
 
   return (
-    <main className={`home-page${canUseFlowi ? " has-admin-chat" : ""}`}>
-      <div className="home-top-section">
+    <main className={`home-page${canUseFlowi ? " has-admin-chat" : ""}${flowiOpen ? " is-flowi-open" : ""}`}>
+      {!flowiOpen && <div className="home-top-section">
         <BrandLogo size="home" />
         <section className="home-welcome">
           <div className="home-welcome__title">
@@ -247,15 +249,16 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
             </button>
           )}
         </section>
-      </div>
+      </div>}
 
       {canUseFlowi && flowiOpen && (
         <div id="home-flowi-chat" className="home-flowi-panel">
-          <HomeDataChat user={user} onNavigate={open} enabled probeKey={flowiProbeKey} />
+          <HomeDataChat user={user} onNavigate={open} enabled probeKey={flowiProbeKey} onClose={() => setFlowiOpen(false)} />
         </div>
       )}
 
-      <div className="home-bottom-section">
+      {!flowiOpen && <div className="home-bottom-section">
+        <Suspense fallback={null}><StructureModelWorkspace onNavigate={open}/></Suspense>
         {orderedCards.length ? (
           <div className="home-feature-grid">
             {orderedCards.map((tab) => (
@@ -273,7 +276,7 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
             사용 가능한 기능이 없습니다. 관리자에게 권한을 요청해주세요.
           </div>
         )}
-      </div>
+      </div>}
     </main>
   );
 }

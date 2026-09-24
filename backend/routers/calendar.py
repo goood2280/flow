@@ -38,7 +38,7 @@ from pydantic import BaseModel
 
 from core.paths import PATHS
 from core.utils import load_json, save_json
-from core.auth import current_user, require_page_manager
+from core.auth import current_user, is_page_manager, require_page_manager
 from core.audit import record as _audit
 
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
@@ -85,7 +85,7 @@ def _upgrade_event(e: dict) -> dict:
 
 def _event_visible(event: dict, username: str, role: str, my_group_ids: set) -> bool:
     """v8.8.2: group_ids 필터. admin 은 항상 가시. 본인 작성 이벤트는 항상 가시."""
-    if role == "admin":
+    if role == "admin" or is_page_manager(username, "calendar"):
         return True
     gids = event.get("group_ids") or []
     if not gids:
@@ -99,7 +99,7 @@ def _event_visible(event: dict, username: str, role: str, my_group_ids: set) -> 
 
 
 def _my_group_ids(username: str, role: str) -> set:
-    if role == "admin":
+    if role == "admin" or is_page_manager(username, "calendar"):
         try:
             from routers.groups import _load as _load_groups
             return {g.get("id") for g in _load_groups() if g.get("id")}
@@ -558,7 +558,7 @@ def update_event(req: EventUpdate, request: Request):
     if idx < 0:
         raise HTTPException(404)
     cur = items[idx]
-    if me.get("role") != "admin" and cur.get("author") != me["username"]:
+    if not is_page_manager(me, "calendar") and cur.get("author") != me["username"]:
         raise HTTPException(403, "Only author or admin can edit")
     server_v = int(cur.get("version", 1))
     if int(req.version or 0) != server_v:
@@ -661,7 +661,7 @@ def delete_event(request: Request, id: str = Query(...)):
     target = next((x for x in items if x.get("id") == id), None)
     if not target:
         raise HTTPException(404)
-    if me.get("role") != "admin" and target.get("author") != me["username"]:
+    if not is_page_manager(me, "calendar") and target.get("author") != me["username"]:
         raise HTTPException(403, "Only author or admin can delete")
     items = [x for x in items if x.get("id") != id]
     _save_events(items)

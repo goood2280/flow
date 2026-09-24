@@ -6,6 +6,7 @@ import { toast } from "../../components/Toast";
 import { Button, Card, EmptyState, Filter, Pill, TabStrip, TableWrap, Tbl } from "../../components/UXKit";
 import { authSrc, sf as apiSf } from "../../lib/api";
 import { sanitizeHtml } from "../../lib/sanitizeHtml";
+import { canManagePage } from "../../lib/permissions";
 const API = "/api/tracker";
 const TRACKER_PRIORITY_TONE = { critical: "danger", high: "brand", normal: "info", low: "neutral" };
 const TRACKER_PRIORITY_LABEL = { low: "낮음", normal: "보통", high: "높음", critical: "긴급" };
@@ -1528,7 +1529,7 @@ export default function My_Tracker({ user }) {
   const selectedRef = useRef(null);
   const editModeRef = useRef(false);
   const postprocessTimerRef = useRef(null);
-  const isAdmin = user?.role === "admin";
+  const isAdmin = canManagePage(user, "tracker");
   const prioColor = { critical: "var(--danger)", high: "var(--brand)", normal: "var(--info)", low: "var(--muted)" };
   // v8.1.5: look up category color from stored list; fall back to hash for orphans
   const [cats, setCats] = useState([]);

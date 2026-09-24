@@ -604,7 +604,8 @@ export default function My_TemplateReport({user}){
     setLoadError("");
     const[data,chartData,settingsData]=await Promise.all([sf(`${API}/templates`),sf(`${API}/charts`),sf(`${API}/settings`)]);
     setTemplates(data.templates||[]);setCharts(chartData.charts||[]);setReportSettings(settingsData.settings||{background:{configured:false,data_url:""},backgrounds:[]});
-    setSelectedId(current=>current||(data.templates?.[0]?.id||""));
+    const linkedId=new URLSearchParams(window.location.search).get("template_id");
+    setSelectedId(current=>current||(data.templates||[]).find(item=>item.id===linkedId)?.id||(data.templates?.[0]?.id||""));
   },[]);
   useEffect(()=>{load().catch(error=>{const message=templateApiError(error);setLoadError(message);toast.error(message);}).finally(()=>setLoading(false));},[load]);
   const selected=useMemo(()=>templates.find(template=>template.id===selectedId)||null,[templates,selectedId]);
@@ -613,7 +614,7 @@ export default function My_TemplateReport({user}){
 
   const options=draft?.options||{};
   const canManageSettings=canManagePage(user,"templatereport");
-  const canUseLlm=user?.role==="admin";
+  const canUseLlm=canManageSettings;
   const previewBackgroundId=text(editing?options.background_id:(deck?.background_id??options.background_id));
   const backgroundImage=previewBackgroundId==="none"?"":previewBackgroundId?(reportSettings?.backgrounds||[]).find(item=>item.id===previewBackgroundId)?.data_url||"":reportSettings?.background?.data_url||"";
   const defaultSubtitle=defaultPageSubtitle(user);
@@ -752,15 +753,22 @@ export default function My_TemplateReport({user}){
       }));
       setRuns(nextRuns);setTables(nextTables);
       setRunProgress("차트를 화면에 배치하는 중…");
-      await new Promise(resolve=>window.setTimeout(resolve,1300));
+      const {default:Plotly}=await import("../../lib/plotlyCustom");
       const captured=[];
       for(const [index,chart] of (nextDeck.charts||[]).entries()){
         setRunProgress(`고해상도 PNG 캡처 ${index+1} / ${(nextDeck.charts||[]).length} · ${PPTX_CHART_CAPTURE_SCALE}×`);
         if(nextRuns[chart.key]?.error)continue;
-        const host=document.querySelector(`[data-report-chart-key="${chart.key}"]`),plot=host?.querySelector(".js-plotly-plot");
-        if(!plot)continue;
+        // The first visit lazy-loads Plotly. A fixed delay silently omitted
+        // slow charts from the exported deck; wait for the actual plot instead.
+        const deadline=Date.now()+30000;
+        let plot;
+        while(Date.now()<deadline){
+          plot=document.querySelector(`[data-report-chart-key="${chart.key}"] .js-plotly-plot`);
+          if(plot?._fullLayout && plot?.data?.length)break;
+          await new Promise(resolve=>window.setTimeout(resolve,100));
+        }
+        if(!plot?._fullLayout || !plot?.data?.length)throw new Error(`${chart.chart_label||chart.chart_id}: 차트 렌더링을 완료하지 못했습니다. 다시 실행해 주세요.`);
         const captureWidth=clamp(Number(chart.chart_width)||DEFAULT_CHART_WIDTH,320,2400),captureHeight=clamp(Number(chart.chart_height)||DEFAULT_CHART_HEIGHT,240,1600);
-        const {default:Plotly}=await import("../../lib/plotlyCustom");
         const dataUrl=await Plotly.toImage(plot,{format:"png",width:captureWidth,height:captureHeight,scale:PPTX_CHART_CAPTURE_SCALE});
         captured.push({key:chart.key,page_index:chart.page_index,position:chart.position,chart_id:chart.chart_id,data_url:dataUrl});
       }
@@ -769,10 +777,11 @@ export default function My_TemplateReport({user}){
       const failed=Object.values(nextRuns).filter(item=>item.error).length;
       if(failed)toast.error(`${failed}개 차트 실행에 실패했습니다. 나머지는 생성했습니다.`);
       else toast.ok(`${(nextDeck.pages||[]).length}장 Report를 생성했습니다. PPTX로 내려받을 수 있습니다.`);
-    }catch(error){toast.error(error.message||String(error));}finally{setBusy(false);}
+    }catch(error){setRunProgress(`실행 실패 · ${error.message||String(error)}`);toast.error(error.message||String(error));}finally{setBusy(false);}
   };
 
   const download=async kind=>{
+    if(busy)return;
     if(!images.length&&!Object.keys(tables).length){toast.error("먼저 Report를 실행해 주세요.");return;}
     const template=selected||draft;
     const repeatValues=text(repeatText).split(/[,\n]+/).map(item=>item.trim()).filter(Boolean);
@@ -909,8 +918,8 @@ export default function My_TemplateReport({user}){
             </details>
             <div style={{display:"flex",gap:9,alignItems:"center",flexWrap:"wrap"}}>
               <button type="button" onClick={runReport} disabled={busy} style={primary}>{busy?"실행·캡처 중…":"실행"}</button>
-              <button type="button" onClick={()=>download("pptx")} disabled={!deck||!!downloading} style={btn}>{downloading==="pptx"?"PPTX 생성 중…":"PPTX 다운로드"}</button>
-              <button type="button" onClick={()=>download("images")} disabled={!images.length||!!downloading} style={btn}>{downloading==="images"?"ZIP 생성 중…":"차트별 PNG ZIP"}</button>
+              <button type="button" onClick={()=>download("pptx")} disabled={busy||!deck||(!images.length&&!Object.keys(tables).length)||!!downloading} style={btn}>{downloading==="pptx"?"PPTX 생성 중…":"PPTX 다운로드"}</button>
+              <button type="button" onClick={()=>download("images")} disabled={busy||!images.length||!!downloading} style={btn}>{downloading==="images"?"ZIP 생성 중…":"차트별 PNG ZIP"}</button>
               <span style={{fontSize:11,color:"var(--text-secondary)"}}>{runProgress||`공통 컨텍스트로 모든 차트를 함께 바꾸고 PPTX로 내려받습니다.${deck?` · ${deck.pages.length}장 생성됨`:""}`}</span>
             </div>
           </div>}

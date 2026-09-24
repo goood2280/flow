@@ -46,7 +46,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
     single_file_folders = _single_file_folder_names(
         settings,
-        allow_credential=str((me or {}).get("role") or "").strip().casefold() == "admin",
+        allow_credential=_can_manage_filebrowser(me),
     )
     if rel.parts and str(rel.parts[0]).casefold() in single_file_folders:
         fp = _resolve_single_file_folder_data_path(file, (base_root, db_root), single_file_folders)
@@ -414,6 +414,11 @@ def list_products(root: str = Query(...), fast: bool = Query(False)):
       parquet count across all tables hosting that product.
     """
     _require_filebrowser_visible_root(root)
+    if str(root or "").strip().upper() == "ML_TABLE":
+        from core.ml_table_lookup import discover_ml_table_files
+        names = sorted({re.sub(r"^ML_TABLE_", "", fp.stem, flags=re.I) for fp in discover_ml_table_files()})
+        return {"products": [{"name": name, "structure": "ml-table", "parquet_count": 1,
+                              "date_count": 0, "latest_date": ""} for name in names], "metadata_deferred": False}
     if str(root or "").strip().upper() == YIELD_SHOT_ROOT:
         from core import yield_map as _yield_map
         products = []

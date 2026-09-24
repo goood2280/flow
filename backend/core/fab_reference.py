@@ -46,8 +46,18 @@ def _norm(value: Any) -> str:
 
 
 def _read_rows(filename: str) -> list[dict[str, str]]:
-    """매칭 CSV 를 [{col: str}] 로 읽는다. matching_cache 우선, 실패 시 plain CSV."""
-    path = PATHS.db_root / filename
+    """매칭 CSV 를 [{col: str}] 로 읽는다. matching_cache 우선, 실패 시 plain CSV.
+
+    관리 대상 매칭 테이블은 flow-data 정본(matching_store)을 먼저 본다."""
+    try:
+        from core import matching_store
+        if filename in matching_store.managed_names():
+            path = matching_store.resolve(filename, db_root=PATHS.db_root,
+                                          data_root=getattr(PATHS, "data_root", None))
+        else:
+            path = PATHS.db_root / filename
+    except Exception:
+        path = PATHS.db_root / filename
     try:
         from core import matching_cache
 

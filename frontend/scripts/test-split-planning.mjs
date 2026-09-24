@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 const server = await createServer({
   server: { middlewareMode: true },
+  optimizeDeps: { noDiscovery: true, entries: [], include: [] },
   appType: "custom",
   logLevel: "error",
 });
@@ -108,6 +109,33 @@ try {
   assert.equal(splitView.rows[1]._cells["0"].actual, "");
   assert.equal(splitView.rows[0]._cells["1"].actual, "");
   assert.equal(splitView.rows[1]._cells["1"].actual, "S1");
+
+  // Progress can lag the observed recipes. A wafer assigned to S1 must not
+  // appear unprogressed in the empty S0 cell, or gray the whole S1 row.
+  const staleProgress = snapshot.buildSplitCheckStView({
+    headers: ["W1", "W2", "W3"],
+    rows: [{ _param: param, _cells: { 0: cell("RCP_A"), 1: cell("RCP_B"), 2: cell("") } }],
+    step_progress: {
+      by_wafer: Object.fromEntries(["W1", "W2", "W3"].map(wafer => [wafer, { not_reached: [param] }])),
+    },
+  });
+  const staleMarkup = renderToStaticMarkup(React.createElement(snapshot.default, {
+    stView: staleProgress, showTitle: false, showMeta: false,
+  }));
+  const splitBodyRows = [...staleMarkup.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)]
+    .map(match => [...match[1].matchAll(/<td\b[^>]*>/g)].map(cellMatch => cellMatch[0]))
+    .filter(cells => cells.length && cells.some(tag => tag.includes("rowspan")));
+  assert.equal(splitBodyRows.length, 1, "the first S row contains the shared parameter cell");
+  const s0Cells = splitBodyRows[0];
+  const gray = "background:rgba(107,114,128,0.45)";
+  assert.ok(s0Cells.slice(0, 5).every(tag => !tag.includes(gray)), "assigned W1/W2 and the KNOB label retain their colors");
+  assert.ok(s0Cells[5].includes(gray), "W3 with no split stays gray");
+  const s1Cells = [...staleMarkup.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)]
+    .map(match => [...match[1].matchAll(/<td\b[^>]*>/g)].map(cellMatch => cellMatch[0]))
+    .find(cells => cells.length === 5);
+  assert.ok(s1Cells, "S1 has two prefix cells and three wafer cells");
+  assert.ok(s1Cells.slice(0, 4).every(tag => !tag.includes(gray)), "S1 prefix and assigned W1/W2 are not gray");
+  assert.ok(s1Cells[4].includes(gray), "unassigned W3 remains gray on S1");
 
   // Mixed split snapshots expand only KNOB rows. Other parameter families
   // retain their source actual/plan cells for ordinary rendering.

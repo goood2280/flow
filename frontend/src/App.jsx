@@ -8,6 +8,7 @@ import { ToastHost, toast } from "./components/Toast";
 import { PAGE_BY_KEY, PAGE_MAP, buildNavGroups, preloadPage } from "./app/pageManifest";
 import { useFlowShell } from "./app/useFlowShell";
 import { sf, postJson } from "./lib/api";
+import { pageAdmins } from "./lib/permissions";
 
 class ErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -192,6 +193,7 @@ function ContactButton({ user }) {
   const [msg, setMsg] = useState("");
   const [notices, setNotices] = useState([]);
   const [unread, setUnread] = useState(0);
+  const [inboxUnread, setInboxUnread] = useState(0);
   const [adminThreads, setAdminThreads] = useState([]);
   const [selThreadUser, setSelThreadUser] = useState("");
   const [adminThread, setAdminThread] = useState([]);
@@ -199,12 +201,17 @@ function ContactButton({ user }) {
   const [noticeTitle, setNoticeTitle] = useState("");
   const [noticeBody, setNoticeBody] = useState("");
   const isAdmin = user?.role === "admin";
+  const canAnswer = isAdmin || pageAdmins(user).length > 0;
   const listRef = useRef();
 
   const loadUnread = () => {
     if (!user?.username) return;
     sf(`/api/messages/unread?username=${encodeURIComponent(user.username)}`)
       .then(d => setUnread(d.total || d.unread || 0)).catch(() => {});
+    if (canAnswer) {
+      sf(`/api/messages/admin/unread?admin=${encodeURIComponent(user.username)}`)
+        .then(d => setInboxUnread(d.total || 0)).catch(() => {});
+    } else setInboxUnread(0);
   };
   const loadThread = () => {
     if (!user?.username) return;
@@ -214,7 +221,7 @@ function ContactButton({ user }) {
   };
   const loadNotices = () => sf("/api/messages/notices").then(d => setNotices(d.notices || [])).catch(() => {});
   const loadAdminThreads = () => {
-    if (!isAdmin) return;
+    if (!canAnswer) return;
     sf(`/api/messages/admin/threads?admin=${encodeURIComponent(user.username)}`)
       .then(d => setAdminThreads(d.threads || [])).catch(() => {});
   };
@@ -228,7 +235,7 @@ function ContactButton({ user }) {
     loadUnread();
     const t = setInterval(loadUnread, 45000);
     return () => clearInterval(t);
-  }, [user?.username]);
+  }, [user?.username, canAnswer]);
 
   useEffect(() => {
     if (!open) return;
@@ -237,6 +244,12 @@ function ContactButton({ user }) {
     if (tab === "inbox") loadAdminThreads();
     if (tab === "compose") loadNotices();
   }, [open, tab]);
+
+  useEffect(() => {
+    if (!open || tab !== "inbox" || !canAnswer) return;
+    const intervalId = setInterval(loadAdminThreads, 30000);
+    return () => clearInterval(intervalId);
+  }, [open, tab, canAnswer, user?.username]);
 
   const send = () => {
     const t = msg.trim(); if (!t) return;
@@ -247,7 +260,7 @@ function ContactButton({ user }) {
   const reply = () => {
     const t = replyMsg.trim(); if (!t || !selThreadUser) return;
     postJson("/api/messages/admin/reply", { admin: user.username, to_user: selThreadUser, text: t })
-      .then(() => { setReplyMsg(""); loadAdminThread(selThreadUser); loadAdminThreads(); })
+      .then(() => { setReplyMsg(""); loadAdminThread(selThreadUser); loadAdminThreads(); loadUnread(); })
       .catch(e => toast.error(e?.message || "답장 실패"));
   };
   const postNotice = () => {
@@ -271,11 +284,11 @@ function ContactButton({ user }) {
   return (<>
     <div onClick={() => setOpen(true)} style={{ cursor: "pointer", position: "relative" }} title="문의">
       <span style={{ fontSize: 14 }}>✉️</span>
-      {unread > 0 && <span style={{
+      {unread + inboxUnread > 0 && <span style={{
         position: "absolute", top: -4, right: -6, fontSize: 9, fontWeight: 700, lineHeight: 1,
         background: "var(--info)", color: "#fff", borderRadius: 999, minWidth: 14, height: 14,
         display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px"
-      }}>{unread > 99 ? "99+" : unread}</span>}
+      }}>{unread + inboxUnread > 99 ? "99+" : unread + inboxUnread}</span>}
     </div>
     {open && <div style={{
       position: "fixed", inset: 0, zIndex: 9998, background: "rgba(0,0,0,0.55)",
@@ -293,7 +306,7 @@ function ContactButton({ user }) {
         <div style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--border)", padding: "0 18px" }}>
           {tabBtn("inquiry", "📨 내 문의")}
           {tabBtn("notices", "📢 공지")}
-          {isAdmin && tabBtn("inbox", "📥 받은 문의")}
+          {canAnswer && tabBtn("inbox", `📥 받은 문의${inboxUnread ? ` (${inboxUnread})` : ""}`)}
           {isAdmin && tabBtn("compose", "✍ 공지 작성")}
         </div>
         <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
@@ -321,21 +334,21 @@ function ContactButton({ user }) {
               {isAdmin && <div style={{ marginTop: 8 }}><span onClick={() => deleteNotice(n.id)} style={{ fontSize: 14, color: "var(--danger)", cursor: "pointer" }}>삭제</span></div>}
             </div>))}
           </div>}
-          {tab === "inbox" && isAdmin && <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 12, minHeight: 360 }}>
+          {tab === "inbox" && canAnswer && <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 12, minHeight: 360 }}>
             <div style={{ borderRight: "1px solid var(--border)", paddingRight: 10, maxHeight: 400, overflow: "auto" }}>
               {adminThreads.length === 0 && <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: 12 }}>받은 문의 없음</div>}
-              {adminThreads.map(t => (<div key={t.user} onClick={() => loadAdminThread(t.user)} style={{ padding: "8px 10px", borderRadius: 6, cursor: "pointer", background: selThreadUser === t.user ? "var(--accent-glow)" : "transparent", marginBottom: 2 }}>
+              {adminThreads.map(t => (<div key={t.user} onClick={() => { loadAdminThread(t.user); postJson("/api/messages/admin/mark_read", { admin: user.username, to_user: t.user }).then(() => { loadAdminThreads(); loadUnread(); }).catch(e => toast.error(e?.message || "읽음 처리 실패")); }} style={{ padding: "8px 10px", borderRadius: 6, cursor: "pointer", background: selThreadUser === t.user ? "var(--accent-glow)" : "transparent", marginBottom: 2 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 14, fontFamily: "monospace", fontWeight: t.unread_for_admin > 0 ? 700 : 400 }}>{t.user}</span>
                   {t.unread_for_admin > 0 && <span style={{ fontSize: 14, background: "var(--danger)", color: "#fff", borderRadius: 8, padding: "1px 6px" }}>{t.unread_for_admin}</span>}
                 </div>
-                <div style={{ fontSize: 14, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.last_body || ""}</div>
+                <div style={{ fontSize: 14, color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.last_preview || ""}</div>
               </div>))}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               <div style={{ maxHeight: 300, overflow: "auto", border: "1px solid var(--border)", borderRadius: 8, padding: 10, background: "var(--bg-card)", display: "flex", flexDirection: "column", gap: 8 }}>
                 {!selThreadUser && <div style={{ textAlign: "center", color: "var(--text-secondary)", fontSize: 14, padding: 40 }}>좌측에서 유저 선택</div>}
-                {adminThread.map((m, i) => (<div key={i} style={{ alignSelf: m.from === "admin" ? "flex-end" : "flex-start", maxWidth: "85%", padding: "6px 12px", borderRadius: 8, background: m.from === "admin" ? "var(--accent-glow)" : "var(--bg-hover)", border: "1px solid " + (m.from === "admin" ? "var(--accent)" : "var(--border)") }}>
+                {adminThread.map((m, i) => (<div key={i} style={{ alignSelf: m.from !== selThreadUser ? "flex-end" : "flex-start", maxWidth: "85%", padding: "6px 12px", borderRadius: 8, background: m.from !== selThreadUser ? "var(--accent-glow)" : "var(--bg-hover)", border: "1px solid " + (m.from !== selThreadUser ? "var(--accent)" : "var(--border)") }}>
                   <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 2, fontFamily: "monospace" }}>{m.from} · {(m.created_at || m.ts || "").slice(5, 16).replace("T", " ")}</div>
                   <div style={{ fontSize: 14, whiteSpace: "pre-wrap" }}>{m.text || m.body}</div>
                 </div>))}

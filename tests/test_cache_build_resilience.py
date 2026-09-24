@@ -262,6 +262,89 @@ def test_pivot_retries_only_unfinished_roots(cache_env, monkeypatch):
     assert written == ["B.tmp.parquet"]
 
 
+def test_pivot_without_fingerprints_resumes_only_verified_source_roots(cache_env, monkeypatch):
+    _, pivot, source, _ = cache_env
+    write_source(source)
+    monkeypatch.setattr(pivot, "_compute_root_fingerprints", lambda *_a, **_kw: None)
+    monkeypatch.setenv("FLOW_PIVOT_CACHE_CHUNK_SIZE", "1")
+    original = pl.LazyFrame.sink_parquet
+    written = []
+    fail = [True]
+
+    def sink(lf, path, **kwargs):
+        if Path(path).parent.name == source.stem:
+            written.append(Path(path).name)
+            if Path(path).name == "B.tmp.parquet" and fail[0]:
+                raise OSError("transient write error")
+        return original(lf, path, **kwargs)
+
+    monkeypatch.setattr(pl.LazyFrame, "sink_parquet", sink)
+    out = pivot.CACHE_DIR / source.stem
+    assert not pivot.build_pivoted_cache_for_product(source.stem, product_path=source)
+    assert not pivot.completed_cache_matches(out, source)
+    fail[0] = False
+    written.clear()
+    assert pivot.build_pivoted_cache_for_product(source.stem, product_path=source)
+    assert written == ["B.tmp.parquet"]
+    assert pivot.completed_cache_matches(out, source)
+    # Deleted or externally rewritten output must not be trusted by a resume.
+    (out / "A.parquet").unlink()
+    written.clear()
+    assert pivot.build_pivoted_cache_for_product(source.stem, product_path=source)
+    assert written == ["A.tmp.parquet"]
+    write_source(source, 7)
+    written.clear()
+    assert pivot.build_pivoted_cache_for_product(source.stem, product_path=source)
+    assert written == ["A.tmp.parquet", "B.tmp.parquet"]
+    assert pl.read_parquet(out / "A.parquet")["KNOB_X"].to_list() == [7, None]
+
+
+@pytest.mark.parametrize("fingerprints", [True, False])
+def test_pivot_empty_root_does_not_prevent_valid_roots_completing(cache_env, monkeypatch, fingerprints):
+    _, pivot, source, _ = cache_env
+    pl.DataFrame({"ROOT_LOT_ID": ["A", "", "  ", None],
+                  "WAFER_ID": [1, 2, 3, 4], "KNOB_X": [1, 2, 3, 4]}).write_parquet(source)
+    if not fingerprints:
+        monkeypatch.setattr(pivot, "_compute_root_fingerprints", lambda *_a, **_kw: None)
+    assert pivot.build_pivoted_cache_for_product(source.stem, product_path=source)
+    out = pivot.CACHE_DIR / source.stem
+    assert pivot.completed_cache_matches(out, source)
+    assert json.loads((out / pivot._BUILD_COMPLETE_FILE).read_text())["roots"] == ["A"]
+
+
+def test_pivot_status_uses_manifest_not_large_lookup_index(cache_env, monkeypatch):
+    from routers import splittable
+    _, pivot, source, _ = cache_env
+    write_source(source)
+    assert pivot.build_pivoted_cache_for_product(source.stem, product_path=source)
+    out = pivot.CACHE_DIR / source.stem
+    monkeypatch.setattr(splittable, "_pivot_cache_path", lambda _p, root: out / f"{root}.parquet")
+    monkeypatch.setattr(splittable._ml_table_lookup, "read_candidate_index",
+                        lambda *_a: pytest.fail("status must not parse the wide lookup index"))
+    assert not splittable._pivot_cache_needs_build(source.stem, source)
+    # Legacy complete fingerprints remain supported without that index too.
+    (out / pivot._BUILD_COMPLETE_FILE).unlink()
+    assert not splittable._pivot_cache_needs_build(source.stem, source)
+    (out / "A.parquet").rename(out / "stale.parquet")
+    (out / "A.tmp.parquet").write_bytes(b"unfinished")
+    assert splittable._pivot_cache_needs_build(source.stem, source)
+    assert splittable._pivot_cache_artifact_status(source.stem, source)["done"] == 2
+
+
+def test_invalid_completion_cannot_fall_back_to_old_fingerprint(cache_env, monkeypatch):
+    from routers import splittable
+    _, pivot, source, _ = cache_env
+    write_source(source)
+    assert pivot.build_pivoted_cache_for_product(source.stem, product_path=source)
+    out = pivot.CACHE_DIR / source.stem
+    monkeypatch.setattr(splittable, "_pivot_cache_path", lambda _p, root: out / f"{root}.parquet")
+    marker = out / pivot._BUILD_COMPLETE_FILE
+    meta = json.loads(marker.read_text())
+    meta["source"]["size"] += 1
+    marker.write_text(json.dumps(meta))
+    assert splittable._pivot_cache_needs_build(source.stem, source)
+
+
 @pytest.mark.parametrize("recovers", [True, False])
 @pytest.mark.parametrize("role", ["api", "worker"])
 def test_pipeline_retries_pivot_only_then_continues(cache_env, monkeypatch, recovers, role):

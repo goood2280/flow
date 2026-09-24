@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from core import auto_report
 from core.audit import record
-from core.auth import current_user
+from core.auth import current_user, is_page_manager
 
 router = APIRouter(prefix="/api/auto-report", tags=["auto-report"])
 match_router = APIRouter(prefix="/api/autoreport", tags=["auto-report-compat"])
@@ -42,7 +42,7 @@ def jobs(limit: int = 100, user=Depends(current_user)):
     return {
         "jobs": auto_report.list_jobs(
             str(user.get("username") or ""),
-            is_admin=user.get("role") == "admin",
+            is_admin=is_page_manager(user, "autoreport"),
             limit=limit,
         )
     }
@@ -53,7 +53,7 @@ def job_status(job_id: str, user=Depends(current_user)):
     row = auto_report.refresh_job(auto_report.read_job(job_id))
     if not row:
         raise HTTPException(404, "작업을 찾을 수 없습니다")
-    if user.get("role") != "admin" and row.get("username") != user.get("username"):
+    if not is_page_manager(user, "autoreport") and row.get("username") != user.get("username"):
         raise HTTPException(403, "다른 사용자의 작업입니다")
     return {"job": auto_report.public_job(row)}
 
@@ -78,7 +78,7 @@ def download(job_id: str, request: Request, user=Depends(current_user)):
         row, path = auto_report.output_for(
             job_id,
             str(user.get("username") or ""),
-            is_admin=user.get("role") == "admin",
+            is_admin=is_page_manager(user, "autoreport"),
         )
     except PermissionError as exc:
         raise HTTPException(403, str(exc)) from exc

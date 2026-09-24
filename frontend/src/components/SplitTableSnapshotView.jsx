@@ -359,11 +359,12 @@ export function buildSplitCheckStView(matrix, { valueForCell, displayForValue, l
     const resolveDisplay = (val) => (displayForValue ? displayForValue(val, row) : val);
     const order = orderedSplitValues(perHeader, preferred, extras, ensureEmptyRows, resolveDisplay, forceFirstDraftAsS0);
     if (!order.length && ensureEmptyRows) order.push({ raw: "", display: "", is_s0: false, is_draft: true, draft_index: 0, no_split_yet: true });
+    const matchedIndexByHeader = perHeader.map(value => splitValueIndex(order, value));
     return order.map((item, idx) => {
       const label = item.no_split_yet ? "" : `S${idx}`;
       const checkCells = {};
       perHeader.forEach((value, ci) => {
-        const isMatch = splitValueIndex(order, value) === idx;
+        const isMatch = matchedIndexByHeader[ci] === idx;
         checkCells[String(ci)] = { actual: isMatch ? label : "", plan: "", split_check: true, not_reached: !!value.not_reached };
       });
       const process = processInfoForParam ? (processInfoForParam(row?._param, row?._display) || {}) : null;
@@ -614,6 +615,24 @@ export default function SplitTableSnapshotView({
   // 화면과 같은 표시 규약 — 소수 자리수와 미진행 회색은 스냅샷에 실려 온다.
   const precision = st?.precision || embed?.precision || {};
   const notReached = useMemo(() => buildNotReachedLookup(st || {}), [st]);
+  // A KNOB's S0/S1 rows share one wafer assignment. An empty check in one
+  // row is not an unprogressed wafer when another row holds its split.
+  const splitCoverage = useMemo(() => {
+    if (!splitCheckMode || pemsMode) return new Map();
+    const coverage = new Map();
+    tableRows.forEach(row => {
+      if (!isKnobRow(row)) return;
+      const param = String(row._param || "");
+      if (!coverage.has(param)) coverage.set(param, { any: false, wafers: new Set() });
+      const group = coverage.get(param);
+      Object.entries(row._cells || {}).forEach(([index, cell]) => {
+        if (!hasStValue(cell?.actual) && !hasStValue(cell?.plan)) return;
+        group.any = true;
+        group.wafers.add(Number(index));
+      });
+    });
+    return coverage;
+  }, [splitCheckMode, pemsMode, tableRows]);
   const rowLabels = st?.row_labels || {};
   const rootRowLabel = rowLabels.root_lot_id || "root_lot_id";
   const lotRowLabel = rowLabels.lot_id || "lot_id";
@@ -816,12 +835,13 @@ export default function SplitTableSnapshotView({
                 return splitParamDisplayName(r._display || r._param || "", r._param);
               });
               const span = rowSpans[ri] || 0;
-              const rowHasValue = (mergedMode && isKnobRow(r) && Array.isArray(r._merged_runs))
+              const splitGroupCoverage = splitRowMode && !pemsMode ? splitCoverage.get(String(r._param || "")) : null;
+              const rowHasValue = splitGroupCoverage?.any || ((mergedMode && isKnobRow(r) && Array.isArray(r._merged_runs))
                 ? r._merged_runs.some(run => hasStValue(run?.value))
                 : headers.some((_, ci) => {
                     const cell = (r._cells && (r._cells[ci] || r._cells[String(ci)])) || {};
                     return hasStValue(cell.actual) || hasStValue(cell.plan);
-                  });
+                  }));
               const rowNotReached = (r._not_reached_all === true || notReached.row(r._param)) && !rowHasValue;
               return (
                 <tr key={r.key || `${r._param || "row"}-${ri}`}>
@@ -910,7 +930,8 @@ export default function SplitTableSnapshotView({
                     // Split 체크/스냅샷은 실제 값이 있는 셀을 회색 처리하지 않는다.
                     const cellNotReached = pemsMode
                       ? (cell.not_reached === true || pemsMissingWaferIndices.has(ci))
-                      : (cell.not_reached === true || notReached.cell(r._param, ci)) && !hasActual && !hasPlan;
+                      : (cell.not_reached === true || notReached.cell(r._param, ci))
+                        && !hasActual && !hasPlan && !splitGroupCoverage?.wafers.has(ci);
                     return (
                       <td key={ci}
                         onMouseDown={editable && splitRowMode ? (event) => {

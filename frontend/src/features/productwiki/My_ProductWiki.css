@@ -963,3 +963,6 @@
   border: 1px solid var(--accent, #3b82f6);
   color: var(--accent, #93c5fd);
 }
+.pw-structure-model{margin:14px 0;border:1px solid var(--border);border-radius:10px;background:var(--bg-secondary)}
+.pw-structure-model>summary{padding:14px 16px;font-weight:800;cursor:pointer}
+.pw-structure-model .gaa-workspace{margin:0 12px 12px}

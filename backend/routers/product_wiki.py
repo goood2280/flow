@@ -11,13 +11,13 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from core import product_wiki as wiki
-from core.auth import current_user, is_page_manager, parse_tab_tokens
+from core.auth import current_user, is_page_manager, user_tab_tokens
 from core.paths import PATHS
 
 
 def require_access(request: Request):
     user = current_user(request)
-    tabs, _ = parse_tab_tokens(user.get("tabs", ""))
+    tabs, _ = user_tab_tokens(user)
     if user.get("role") == "admin" or is_page_manager(user, "productwiki") or set(tabs) & {"productwiki", "splittable", "lotmanage"}:
         return user
     raise HTTPException(403, "제품 위키 접근 권한이 필요합니다.")

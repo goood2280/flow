@@ -49,7 +49,7 @@ export default function TegValueWaferMap({
   vehicle, points = [], panels = null, title = "WF MAP", valueLabel = "value", panelLimit = 25,
   palette: requestedPalette = "", low: requestedLow = null, center: requestedCenter = null, high: requestedHigh = null,
   mode = "value", specLow = null, specHigh = null,
-  interactive = true, onScaleChange = null, dieLayout = null,
+  interactive = true, onScaleChange = null, dieLayout = null, mapData = null, scaleValues = null,
 }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -59,7 +59,9 @@ export default function TegValueWaferMap({
     if (Array.isArray(panels) && panels.length) return panels.slice(0, panelLimit);
     return [{ key: "single", label: title, points }];
   }, [panels, points, title, panelLimit]);
-  const allValues = useMemo(() => panelRows.flatMap((panel) => (panel.points || []).map((point) => Number(point.value ?? point.y))).filter(Number.isFinite), [panelRows]);
+  const allValues = useMemo(() => (Array.isArray(scaleValues) ? scaleValues :
+    (Array.isArray(panels) && panels.length ? panels : [{points}]).flatMap((panel) => (panel.points || []).map((point) => point.value ?? point.y)))
+    .filter(value => value != null && String(value).trim() !== "").map(Number).filter(Number.isFinite), [panels, points, scaleValues]);
   const rawMin = allValues.length ? Math.min(...allValues) : 0;
   const rawMax = allValues.length ? Math.max(...allValues) : 1;
   const defaultLow = percentile(allValues, 0.1);
@@ -88,6 +90,10 @@ export default function TegValueWaferMap({
     onScaleChange?.(next);
   };
   useEffect(() => {
+    if (mapData?.geometry && Array.isArray(mapData.shots)) {
+      setData(mapData); setError(""); setLoading(false);
+      return undefined;
+    }
     if (!vehicle) {
       setData(null);
       setError("제품 정보가 없어 TEG 위치조회 WF MAP을 선택할 수 없습니다.");
@@ -130,7 +136,7 @@ export default function TegValueWaferMap({
       if (alive) setLoading(false);
     });
     return () => { alive = false; };
-  }, [vehicle]);
+  }, [vehicle, mapData]);
   const color = (value) => {
     if(specOut){
       const numeric=Number(value),out=Number.isFinite(numeric)&&((Number.isFinite(configuredSpecLow)&&numeric<configuredSpecLow)||(Number.isFinite(configuredSpecHigh)&&numeric>configuredSpecHigh));
@@ -150,9 +156,7 @@ export default function TegValueWaferMap({
     const rgb = mix(stops[index], stops[index + 1], position - index);
     return `rgb(${rgb.join(",")})`;
   };
-  if (loading) return <div style={{ padding: 18, color: "#475569" }}>TEG 위치조회 WF MAP을 불러오는 중입니다.</div>;
-  if (error || !data) return <div style={{ padding: 14, border: "1px solid #fecaca", borderRadius: 8, background: "#fff7f7", color: "#b91c1c" }}><b>제품 WF MAP을 표시할 수 없습니다.</b><div style={{ marginTop: 5, fontSize: 13 }}>{error || "TEG map payload가 없습니다."}</div></div>;
-  const mapKeys = new Set((data.shots || []).map((shot) => `${Number(shot.x)},${Number(shot.y)}`));
+  const mapKeys = new Set((data?.shots || []).map((shot) => `${Number(shot.x)},${Number(shot.y)}`));
   const range = Math.max(1e-12, rawMax - rawMin);
   const step = range / 200;
   const outCount=specOut?allValues.filter(value=>(Number.isFinite(configuredSpecLow)&&value<configuredSpecLow)||(Number.isFinite(configuredSpecHigh)&&value>configuredSpecHigh)).length:0;
@@ -203,6 +207,8 @@ export default function TegValueWaferMap({
     });
     return dies;
   };
+  if (loading) return <div style={{ padding: 18, color: "#475569" }}>TEG 위치조회 WF MAP을 불러오는 중입니다.</div>;
+  if (error || !data) return <div style={{ padding: 14, border: "1px solid #fecaca", borderRadius: 8, background: "#fff7f7", color: "#b91c1c" }}><b>제품 WF MAP을 표시할 수 없습니다.</b><div style={{ marginTop: 5, fontSize: 13 }}>{error || "TEG map payload가 없습니다."}</div></div>;
   return <div style={{ border: "1px solid #d1d5db", borderRadius: 8, background: "#fff", color: "#111827", padding: "10px 12px" }}>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}><strong>{title || "WF MAP"} · {data.vehicle}</strong><span style={{ fontSize: 12, color: "#475569", fontFamily: "monospace" }}>{panelCount > 1 ? `${panelRows.length}/${panelCount} panels · common scale` : "single map"}</span></div>
     {interactive&&!specOut&&<div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 10, alignItems: "end", margin: "10px 0" }}>

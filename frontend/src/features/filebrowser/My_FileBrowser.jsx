@@ -4,7 +4,7 @@ import Modal from "../../components/Modal";
 import { PageGearButton } from "../../components/PageGear";
 import { toast } from "../../components/Toast";
 import { dl, qs, sf } from "../../lib/api";
-import { allowedSubTabs } from "../../lib/permissions";
+import { allowedSubTabs, canManagePage } from "../../lib/permissions";
 import { statusPalette, chartPalette } from "../../components/UXKit";
 import { copyHistoryShareLink, historyIdFromLocation } from "../../lib/historyShare";
 const API="/api/filebrowser";
@@ -29,6 +29,7 @@ const EXT_COLOR={parquet:"var(--ok)",csv:FB_INFO.fg,json:FB_AMBER,md:FB_DISABLED
 const EXT_ICON={parquet:"📊",csv:"📋",json:"🔧",md:"📄",yaml:"⚙️",yml:"⚙️",dir:"📂"};
 const BASE_EDIT_FILE_EXTS = new Set(["csv","parquet"]);
 const BASE_EDIT_FILE_SOURCES = new Set(["base_root","db_root"]);
+const fileAliasKey=(file)=>String(file?.path||file?.name||file||"").replace(/\\/g,"/").replace(/^\.\//,"");
 const S3_STATUS_FAST_URL="/api/s3ingest/status-by-target?include_local=0";
 const S3_STATUS_FULL_URL="/api/s3ingest/status-by-target?include_local=1";
 const S3_STATUS_SESSION_KEY="flow.filebrowser.s3Status.fast";
@@ -1085,7 +1086,7 @@ export default function My_FileBrowser({
   };
 
   // S3 ingest admin modal state
-  const isAdmin=user?.role==="admin";
+  const isAdmin=canManagePage(user,"filebrowser");
   const pageAdmins=(user?.page_admins)||[];
   const isFileBrowserAdmin=embeddedCanEdit||isAdmin
     || (Array.isArray(pageAdmins)&&pageAdmins.includes("filebrowser"))
@@ -1198,7 +1199,7 @@ export default function My_FileBrowser({
     if(nextOpen&&!s3AllowedTabs.includes(s3Tab))setS3Tab(s3AllowedTabs[0]||"folder");
     setS3Open(nextOpen);
   };
-  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_download_max_rows:500000,csv_download_max_bytes:100000000,sql_query_max_source_bytes:5368709120,preview_max_columns:100,preview_max_rows:100,schema_column_page_size:200,csv_rules:{},file_descriptions:{},hidden_db_dirs:["reformatter"],db_name_aliases:{},versioned_single_file_dirs:["reformatter"],auto_s3_upload_on_save:false,can_manage:false});
+  const[fbSettings,setFbSettings]=useState({csv_full_read_max_bytes:10485760,csv_download_max_rows:500000,csv_download_max_bytes:100000000,sql_query_max_source_bytes:5368709120,preview_max_columns:100,preview_max_rows:100,schema_column_page_size:200,csv_rules:{},file_descriptions:{},file_name_aliases:{},hidden_db_dirs:["reformatter"],db_name_aliases:{},versioned_single_file_dirs:["reformatter"],auto_s3_upload_on_save:false,can_manage:false});
   const[fbAutoS3Upload,setFbAutoS3Upload]=useState(false);
   const[fbThresholdMb,setFbThresholdMb]=useState("10");
   const[fbDownloadMb,setFbDownloadMb]=useState("100");
@@ -1211,6 +1212,7 @@ export default function My_FileBrowser({
   const[fbSelectedFile,setFbSelectedFile]=useState("");
   const[fbDescriptionFile,setFbDescriptionFile]=useState("");
   const[fbDescriptionText,setFbDescriptionText]=useState("");
+  const[fbFileNameText,setFbFileNameText]=useState("");
   const[fbRuleForm,setFbRuleForm]=useState(emptyRuleForm());
   const[fbValidation,setFbValidation]=useState(null);
   const[fbSettingsLlmPrompt,setFbSettingsLlmPrompt]=useState("현재 CSV 컬럼 기준으로 필수 컬럼, 빈 값 금지, unique key 검증로직과 저장 시 정렬로직 초안 만들어줘");
@@ -1239,9 +1241,10 @@ export default function My_FileBrowser({
   const settingsBaseFiles=(baseFiles||[]).filter(f=>(f?.kind||"file").toLowerCase()!=="dir");
   const csvBaseFiles=settingsBaseFiles.filter(f=>(f?.ext||"").toLowerCase()==="csv");
   const selectDescriptionFile=(file,settings=fbSettings)=>{
-    const key=String(file||"");
+    const key=fileAliasKey(file);
     setFbDescriptionFile(key);
     setFbDescriptionText(String((settings?.file_descriptions||{})[key]||""));
+    setFbFileNameText(String((settings?.file_name_aliases||{})[key]||""));
   };
   const selectFileRule=(file,settings=fbSettings)=>{
     const key=String(file||"");
@@ -1264,7 +1267,7 @@ export default function My_FileBrowser({
         localCsvFiles=files.filter(f=>(f?.kind||"file").toLowerCase()!=="dir"&&(f?.ext||"").toLowerCase()==="csv");
       }
       const d=await sf(API+"/settings");
-      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_download_max_rows:d.csv_download_max_rows??500000,csv_download_max_bytes:d.csv_download_max_bytes??100000000,sql_query_max_source_bytes:d.sql_query_max_source_bytes??5368709120,preview_max_columns:d.preview_max_columns??100,preview_max_rows:d.preview_max_rows??100,schema_column_page_size:d.schema_column_page_size??200,csv_rules:d.csv_rules||{},file_descriptions:d.file_descriptions||{},hidden_db_dirs:d.hidden_db_dirs||["reformatter"],db_name_aliases:d.db_name_aliases||{},versioned_single_file_dirs:d.versioned_single_file_dirs||["reformatter"],auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??10485760,csv_download_max_rows:d.csv_download_max_rows??500000,csv_download_max_bytes:d.csv_download_max_bytes??100000000,sql_query_max_source_bytes:d.sql_query_max_source_bytes??5368709120,preview_max_columns:d.preview_max_columns??100,preview_max_rows:d.preview_max_rows??100,schema_column_page_size:d.schema_column_page_size??200,csv_rules:d.csv_rules||{},file_descriptions:d.file_descriptions||{},file_name_aliases:d.file_name_aliases||{},hidden_db_dirs:d.hidden_db_dirs||["reformatter"],db_name_aliases:d.db_name_aliases||{},versioned_single_file_dirs:d.versioned_single_file_dirs||["reformatter"],auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
       setFbSettings(settings);
       setFbAutoS3Upload(!!settings.auto_s3_upload_on_save);
       setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
@@ -1301,6 +1304,12 @@ export default function My_FileBrowser({
       if(description)nextDescriptions[fbDescriptionFile]=description;
       else delete nextDescriptions[fbDescriptionFile];
     }
+    const nextFileNameAliases={...(fbSettings.file_name_aliases||{})};
+    if(isDescriptionSection&&fbDescriptionFile){
+      const displayName=String(fbFileNameText||"").trim();
+      if(displayName)nextFileNameAliases[fileAliasKey(fbDescriptionFile)]=displayName;
+      else delete nextFileNameAliases[fileAliasKey(fbDescriptionFile)];
+    }
     const thresholdBytes=isFileSection
       ? Math.max(0,Math.round(Number(fbThresholdMb||0)*1048576))
       : Number(fbSettings.csv_full_read_max_bytes||10485760);
@@ -1312,8 +1321,8 @@ export default function My_FileBrowser({
       const downloadRows=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_rows||500000),Number.isFinite(parsedRows)?Math.round(parsedRows):500000));
       const parsedBytes=Math.round(Number(fbDownloadMb||100)*1048576);
       const downloadBytes=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_bytes||100000000),Number.isFinite(parsedBytes)?parsedBytes:100000000));
-      const d=await sf(API+"/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({csv_full_read_max_bytes:thresholdBytes,csv_download_max_rows:downloadRows,csv_download_max_bytes:downloadBytes,sql_query_max_source_bytes:fbSettings.sql_query_max_source_bytes,preview_max_columns:fbSettings.preview_max_columns,preview_max_rows:fbSettings.preview_max_rows,schema_column_page_size:fbSettings.schema_column_page_size,csv_rules:nextRules,file_descriptions:nextDescriptions,hidden_db_dirs:hiddenDbDirs,db_name_aliases:fbDbNameAliases,versioned_single_file_dirs:versionedSingleFileDirs,auto_s3_upload_on_save:!!fbAutoS3Upload})});
-      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??thresholdBytes,csv_download_max_rows:d.csv_download_max_rows??downloadRows,csv_download_max_bytes:d.csv_download_max_bytes??downloadBytes,sql_query_max_source_bytes:d.sql_query_max_source_bytes??fbSettings.sql_query_max_source_bytes,preview_max_columns:d.preview_max_columns??fbSettings.preview_max_columns,preview_max_rows:d.preview_max_rows??fbSettings.preview_max_rows,schema_column_page_size:d.schema_column_page_size??fbSettings.schema_column_page_size,csv_rules:d.csv_rules||{},file_descriptions:d.file_descriptions||nextDescriptions,hidden_db_dirs:d.hidden_db_dirs||hiddenDbDirs,db_name_aliases:d.db_name_aliases||fbDbNameAliases,versioned_single_file_dirs:d.versioned_single_file_dirs||versionedSingleFileDirs,auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
+      const d=await sf(API+"/settings",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({csv_full_read_max_bytes:thresholdBytes,csv_download_max_rows:downloadRows,csv_download_max_bytes:downloadBytes,sql_query_max_source_bytes:fbSettings.sql_query_max_source_bytes,preview_max_columns:fbSettings.preview_max_columns,preview_max_rows:fbSettings.preview_max_rows,schema_column_page_size:fbSettings.schema_column_page_size,csv_rules:nextRules,file_descriptions:nextDescriptions,file_name_aliases:nextFileNameAliases,hidden_db_dirs:hiddenDbDirs,db_name_aliases:fbDbNameAliases,versioned_single_file_dirs:versionedSingleFileDirs,auto_s3_upload_on_save:!!fbAutoS3Upload})});
+      const settings={csv_full_read_max_bytes:d.csv_full_read_max_bytes??thresholdBytes,csv_download_max_rows:d.csv_download_max_rows??downloadRows,csv_download_max_bytes:d.csv_download_max_bytes??downloadBytes,sql_query_max_source_bytes:d.sql_query_max_source_bytes??fbSettings.sql_query_max_source_bytes,preview_max_columns:d.preview_max_columns??fbSettings.preview_max_columns,preview_max_rows:d.preview_max_rows??fbSettings.preview_max_rows,schema_column_page_size:d.schema_column_page_size??fbSettings.schema_column_page_size,csv_rules:d.csv_rules||{},file_descriptions:d.file_descriptions||nextDescriptions,file_name_aliases:d.file_name_aliases||nextFileNameAliases,hidden_db_dirs:d.hidden_db_dirs||hiddenDbDirs,db_name_aliases:d.db_name_aliases||fbDbNameAliases,versioned_single_file_dirs:d.versioned_single_file_dirs||versionedSingleFileDirs,auto_s3_upload_on_save:!!d.auto_s3_upload_on_save,can_manage:!!d.can_manage,max_csv_full_read_max_bytes:d.max_csv_full_read_max_bytes,max_csv_download_max_rows:d.max_csv_download_max_rows,max_csv_download_max_bytes:d.max_csv_download_max_bytes,max_sql_query_max_source_bytes:d.max_sql_query_max_source_bytes,max_preview_max_columns:d.max_preview_max_columns,max_schema_column_page_size:d.max_schema_column_page_size};
       setFbSettings(settings);
       setFbAutoS3Upload(!!settings.auto_s3_upload_on_save);
       setFbThresholdMb(String(((Number(settings.csv_full_read_max_bytes)||0)/1048576).toFixed(2)).replace(/\.00$/,""));
@@ -1324,9 +1333,27 @@ export default function My_FileBrowser({
       setFbVersionedDirsText((settings.versioned_single_file_dirs||[]).join("\n"));
       selectFileRule(fbSelectedFile,settings);
       if(fbDescriptionFile)selectDescriptionFile(fbDescriptionFile,settings);
-      setFbSettingsMsg(isDescriptionSection?"파일 설명 저장 완료":(isFileSection?"파일 설정 저장 완료":"폴더 설정 저장 완료"));
+      setFbSettingsMsg(isDescriptionSection?"파일 표시 이름 / 설명 저장 완료":(isFileSection?"파일 설정 저장 완료":"폴더 설정 저장 완료"));
       sf(API+"/roots?fast=1&_ts="+Date.now()).then(r=>setRoots(fileBrowserRoots(r.roots))).catch(()=>{});
-      sf(API+"/base-files?fast=1&_ts="+Date.now()).then(r=>setBaseFiles(r.files||[])).catch(()=>{});
+      sf(API+"/base-files?fast=1&_ts="+Date.now()).then(r=>{
+        const refreshed=(r.files||[]).map(f=>{
+          const key=fileAliasKey(f);
+          const alias=(settings.file_name_aliases||{})[key];
+          return alias?{...f,display_name:alias}:f;
+        });
+        setBaseFiles(prev=>{
+          const refreshedKeys=new Set(refreshed.map(fileAliasKey));
+          // /base-dir may have added a nested folder's children to local state;
+          // keep those entries when the top-level refresh completes.
+          const nested=(prev||[]).filter(f=>fileAliasKey(f).includes("/")&&!refreshedKeys.has(fileAliasKey(f))).map(f=>{
+            if((f?.kind||"file").toLowerCase()==="dir")return f;
+            const key=fileAliasKey(f);
+            const alias=(settings.file_name_aliases||{})[key];
+            return {...f,display_name:alias||key.split("/").pop()};
+          });
+          return nested.length?[...refreshed,...nested]:refreshed;
+        });
+      }).catch(()=>{});
     }catch(e){
       setFbSettingsMsg(e.message||(isDescriptionSection?"파일 설명 저장 실패":(isFileSection?"파일 설정 저장 실패":"폴더 설정 저장 실패")));
     }finally{
@@ -3029,7 +3056,7 @@ export default function My_FileBrowser({
                 {!embedded&&!isDir&&!isDirUp&&lightDot(fileKey)}
                 <span style={{flexShrink:0,lineHeight:1.5}}>{icon}</span>
                 <span style={sidebarStack}>
-                  <span style={sidebarText} title={displayName}>{displayName}</span>
+                  <span style={sidebarText} title={f.display_name||displayName}>{f.display_name||displayName}</span>
                   <span style={sidebarMetaLine}>
                     {!embedded&&!isDir&&!isDirUp&&lightFreshText(fileKey)}
                     {/* v8.7.7: `db` 소스 태그 제거 — Base 단일 파일은 소스 구분 없이 한 번만 표시. */}
@@ -3746,13 +3773,18 @@ export default function My_FileBrowser({
               {s3Tab==="file"&&<div style={{display:"grid",gridTemplateColumns:"minmax(180px,240px) 1fr",gap:14,fontSize:14}}>
                 <div style={{display:"flex",flexDirection:"column",gap:10}}>
                   <div style={{display:"grid",gap:7,padding:"9px 10px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
-                    <div style={{fontSize:13,fontWeight:900,color:"var(--text-primary)"}}>Files 설명</div>
+                    <div style={{fontSize:13,fontWeight:900,color:"var(--text-primary)"}}>Files 표시 이름 / 설명</div>
                     <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
                       파일
                       <select value={fbDescriptionFile} onChange={e=>selectDescriptionFile(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}>
                         <option value="">파일 선택</option>
-                        {settingsBaseFiles.map(f=><option key={f.path||f.name} value={f.path||f.name}>{f.path||f.name}</option>)}
+                        {settingsBaseFiles.map(f=>{const key=fileAliasKey(f);return <option key={key} value={key}>{f.display_name&&f.display_name!==key?`${f.display_name} (${key})`:key}</option>;})}
                       </select>
+                    </label>
+                    <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
+                      표시 이름
+                      <input value={fbFileNameText} onChange={e=>setFbFileNameText(e.target.value.slice(0,80))} maxLength={80} disabled={!fbDescriptionFile} placeholder="사람에게 보여줄 파일 이름" style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}/>
+                      <span style={{fontSize:11,fontWeight:400,color:"var(--text-secondary)"}}>비워 두고 저장하면 원래 파일명이 표시됩니다.</span>
                     </label>
                     <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
                       설명
@@ -3762,7 +3794,7 @@ export default function My_FileBrowser({
                       <span>Files 목록에서 파일에 커서를 올리면 표시됩니다.</span>
                       <span>{fbDescriptionText.length}/500</span>
                     </div>
-                    <button onClick={()=>saveFilebrowserSettings("description")} disabled={!fbDescriptionFile||fbSettingsLoading} style={{padding:"7px 10px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:13,fontWeight:800,cursor:!fbDescriptionFile||fbSettingsLoading?"default":"pointer",opacity:!fbDescriptionFile||fbSettingsLoading?0.5:1}}>설명 저장</button>
+                    <button onClick={()=>saveFilebrowserSettings("description")} disabled={!fbDescriptionFile||fbSettingsLoading} style={{padding:"7px 10px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:13,fontWeight:800,cursor:!fbDescriptionFile||fbSettingsLoading?"default":"pointer",opacity:!fbDescriptionFile||fbSettingsLoading?0.5:1}}>저장</button>
                   </div>
                   <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
                     CSV 전체 표시 기준 (MB)

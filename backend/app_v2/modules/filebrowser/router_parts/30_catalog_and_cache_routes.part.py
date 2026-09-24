@@ -158,6 +158,7 @@ class ChartBuilderSourceReq(BaseModel):
     apply_reformatter: bool = False
     reformatter_items: str = ""
     reformatter_agg: str = ""
+    reformatter_agg_scope: str = "package"
     runtime_recent_days: int = 0
     runtime_date_column: str = "tkout_time"
     runtime_root_lot_ids: list[str] = []
@@ -862,7 +863,7 @@ def base_dir_children(path: str = Query(""), request: Request = None):
     깊이 제한 없이 parquet 까지 내려갈 수 있다.
     """
     me = _require_filebrowser_user(request)
-    allow_credential = str((me or {}).get("role") or "").strip().casefold() == "admin"
+    allow_credential = _can_manage_filebrowser(me)
     rel = str(path or "").strip()
     if not rel:
         return {"ok": True, "path": "", "entries": [], "truncated": False}
@@ -889,6 +890,7 @@ def base_dir_children(path: str = Query(""), request: Request = None):
             item = dict(item)
             if item.get("kind") != "dir":
                 item["description"] = _file_description_for(item.get("path") or item.get("name") or "", item.get("description") or "", settings)
+                item["display_name"] = _file_display_name(item.get("path") or item.get("name") or "", item.get("name") or "", settings)
             key = str(item.get("path") or "").lower()
             if key and key not in seen:
                 seen.add(key)
@@ -976,6 +978,7 @@ def _base_files_fast_payload(base_root: Path, db_root: Path, folder_names: set[s
     files.sort(key=lambda item: (item.get("order", 999), item["name"].casefold()))
     for item in files:
         item["description"] = _file_description_for(item.get("path") or item.get("name") or "", item.get("description") or "", settings)
+        item["display_name"] = _file_display_name(item.get("path") or item.get("name") or "", item.get("name") or "", settings)
     dirs.sort(key=lambda item: item["name"].casefold())
     return {
         "files": dirs + files,
@@ -995,19 +998,21 @@ def base_files(request: Request = None, fast: bool = Query(False)):
     Directories and legacy helper files remain on disk but are not surfaced here.
     """
     me = _require_filebrowser_user(request)
-    allow_credential = str((me or {}).get("role") or "").strip().casefold() == "admin"
+    allow_credential = _can_manage_filebrowser(me)
     base_root = _base_root()
     db_root = _db_root()
     settings = _load_filebrowser_settings()
     single_file_folders = _single_file_folder_names(settings, allow_credential=allow_credential)
     versioned_dirs = _versioned_single_file_dir_names(settings)
     description_sig = tuple(sorted((settings.get("file_descriptions") or {}).items()))
+    name_sig = tuple(sorted((settings.get("file_name_aliases") or {}).items()))
     if fast:
         cache_key = (
             "base_files_fast",
             allow_credential,
             tuple(sorted(single_file_folders)),
             description_sig,
+            name_sig,
             _path_sig(base_root),
             _path_sig(db_root),
         )
@@ -1041,6 +1046,7 @@ def base_files(request: Request = None, fast: bool = Query(False)):
         tuple(sorted(single_file_folders)),
         tuple(sorted(versioned_dirs)),
         description_sig,
+        name_sig,
         _path_sig(base_root),
         _path_sig(_db_root()),
         _single_file_folder_sigs(base_root, single_file_folders),
@@ -1198,6 +1204,7 @@ def base_files(request: Request = None, fast: bool = Query(False)):
             seen_names.add(f.name.lower())
     for item in files:
         item["description"] = _file_description_for(item.get("path") or item.get("name") or "", item.get("description") or "", settings)
+        item["display_name"] = _file_display_name(item.get("path") or item.get("name") or "", item.get("name") or "", settings)
     files.sort(key=lambda x: (x.get("order", 999), x["name"].lower()))
     deduped_dirs = {}
     for d in dirs:

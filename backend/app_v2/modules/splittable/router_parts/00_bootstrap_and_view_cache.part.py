@@ -42,7 +42,7 @@ from core.latest_lot_cache_format import (
 )
 from app_v2.shared.source_adapter import resolve_existing_root, resolve_column
 from core.audit import record_user as _audit_user
-from core.auth import current_user, is_page_manager, require_page_manager, require_admin
+from core.auth import current_user, is_page_manager, require_page_manager, require_page_manager_any, require_admin
 from core.domain import classify_process_area
 from core import latest_lot_partitions as _latest_lot_partitions
 from core import lot_list_cache as _lot_list_cache
@@ -242,8 +242,6 @@ _VIEW_CACHE: OrderedDict[tuple, tuple[tuple, tuple, dict, int]] = OrderedDict()
 _VIEW_CACHE_LOCK = threading.Lock()
 _VIEW_CACHE_MAX_ENTRIES_DEFAULT = 512
 _VIEW_CACHE_BYTES = 0  # 현재 보유 추정치 (lock 하에서만 갱신)
-_VIEW_CACHE_CELL_COST = 450  # 레거시 _cells 셀당 파이썬 객체 비용 (실측 441B)
-_VIEW_CACHE_COMPACT_CELL_COST = 40  # v2 슬림 행(a/p/m) 셀당 비용 — 캐시는 이쪽만 담는다
 _VIEW_CACHE_AUTO_MB_LOCK = threading.Lock()
 _VIEW_CACHE_AUTO_MB_CACHE: tuple[float, float] | None = None
 _VIEW_CACHE_AUTO_MB_TTL = 60.0
@@ -452,20 +450,25 @@ def _view_cache_max_bytes() -> int:
 
 
 def _estimate_view_payload_bytes(payload: dict) -> int:
-    compact = payload.get("rows_compact")
-    if compact is not None:
-        cells = 0
-        for r in compact:
-            a = r.get("a")
-            if isinstance(a, list):
-                cells += len(a)
-        return 8192 + cells * _VIEW_CACHE_COMPACT_CELL_COST
-    cells = 0
-    for r in (payload.get("rows") or []):
-        c = r.get("_cells")
-        if isinstance(c, dict):
-            cells += len(c)
-    return 8192 + cells * _VIEW_CACHE_CELL_COST
+    # A fixed per-cell estimate misses long recipes, sparse plans and metadata.
+    # Measure the retained object graph once on insertion, never on cache hits.
+    # Shared keys/values count once per entry (conservative across entries).
+    seen = set()
+    pending = [payload]
+    size = 0
+    while pending:
+        value = pending.pop()
+        identity = id(value)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        size += sys.getsizeof(value)
+        if isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            pending.extend(value)
+    return size
 
 
 def _view_signature_digest(value: tuple) -> str:

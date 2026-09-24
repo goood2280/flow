@@ -64,6 +64,25 @@ def test_confirmed_product_is_rechecked_against_current_db(grounded):
     assert grounded == []
 
 
+def test_confirmed_product_structure_uses_scoped_model_value(grounded, monkeypatch):
+    from core import structure_model, product_semantics
+    monkeypatch.setattr(product_semantics, "resolve_terms", lambda *args: [])
+    calls = []
+    def scoped(product, text, **kwargs):
+        calls.append(product)
+        return {"source": "관리자 GAA 구조 모델 + 선택 제품 오버라이드",
+                "type": "logic", "variant": "6T", "sheet_dimensions_nm": {
+                    "count_per_stack": 3, "center_pitch": 15, "active_stack_height": 35,
+                    "sheets": [{"index": 1, "width": 30, "thickness": 5},
+                               {"index": 2, "width": 34, "thickness": 5},
+                               {"index": 3, "width": 38, "thickness": 5}]}}
+    monkeypatch.setattr(structure_model, "prompt_context", scoped)
+    out = data_chat.execute("REAL_ALPHA NS 2층 폭 얼마야", {}, None)
+    assert calls == ["REAL_ALPHA"]
+    assert "2층 폭 34 nm" in out["reply"]
+    assert "실측 결과는 아닙니다" in out["reply"]
+
+
 def test_cancel_pending_product_request(grounded):
     first = data_chat.execute("랏관리 보여줘", {}, None)
     out = data_chat.execute("취소", first["context"], None)

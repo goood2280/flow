@@ -434,7 +434,7 @@ def _user_module_scope(username: str, role: str):
 
 
 def _has_inform_page_access(username: str, role: str) -> bool:
-    if role == "admin":
+    if role == "admin" or is_page_manager(username, "inform"):
         return True
     try:
         from routers.auth import read_users
@@ -1076,7 +1076,7 @@ def _group_visible(entry: dict, username: str, role: str) -> bool:
     gids = entry.get("group_ids") or []
     if not gids:
         return True
-    if role == "admin":
+    if role == "admin" or is_page_manager(username, "inform"):
         return True
     try:
         from routers.groups import user_group_ids as _ugids
@@ -1102,7 +1102,7 @@ def _load_upgraded() -> list:
 def _visible_to(entry: dict, username: str, role: str, my_mods: set) -> bool:
     """admin/all-rounder 전부 통과. 그 외에는 본인이 작성했거나 모듈 담당인 경우.
     v8.7.6: group_ids 가 설정된 인폼은 해당 그룹에 속해야만 추가로 통과."""
-    if role == "admin" or "__all__" in my_mods:
+    if role == "admin" or is_page_manager(username, "inform") or "__all__" in my_mods:
         return True
     if not _group_visible(entry, username, role):
         return False
@@ -1116,7 +1116,7 @@ def _visible_to(entry: dict, username: str, role: str, my_mods: set) -> bool:
 
 def _can_moderate(entry: dict, username: str, role: str, my_mods: set) -> bool:
     """체크·상태변경 권한: admin 또는 해당 module 담당자 또는 작성자."""
-    if role == "admin":
+    if role == "admin" or is_page_manager(username, "inform"):
         return True
     if entry.get("author") == username:
         return True
@@ -3290,7 +3290,7 @@ class UserModulesSaveReq(BaseModel):
 def list_user_modules(request: Request):
     """Admin legacy endpoint for the module-recipient map, not visibility."""
     me = current_user(request)
-    if me.get("role") != "admin":
+    if not is_page_manager(me, "inform"):
         raise HTTPException(403, "admin only")
     from routers.auth import read_users
     um = _get_inform_user_mods(strict=True)
@@ -3317,7 +3317,7 @@ def list_user_modules(request: Request):
 def save_user_modules(req: UserModulesSaveReq, request: Request):
     """Admin legacy endpoint for auto module mail recipients."""
     me = current_user(request)
-    if me.get("role") != "admin":
+    if not is_page_manager(me, "inform"):
         raise HTTPException(403, "admin only")
     uname = (req.username or "").strip()
     if not uname:
@@ -3337,7 +3337,7 @@ def save_user_modules(req: UserModulesSaveReq, request: Request):
 def clear_user_modules(req: UserModulesSaveReq, request: Request):
     """Admin legacy endpoint for clearing auto module mail recipient mapping."""
     me = current_user(request)
-    if me.get("role") != "admin":
+    if not is_page_manager(me, "inform"):
         raise HTTPException(403, "admin only")
     uname = (req.username or "").strip()
     if not uname:
@@ -3407,7 +3407,7 @@ def add_product_get_compat(request: Request, product: str = Query("")):
 def dedup_products_all_sources(request: Request):
     """Admin one-shot cleanup for contacts and saved Inform product text."""
     me = current_user(request)
-    if me.get("role") != "admin":
+    if not is_page_manager(me, "inform"):
         raise HTTPException(403, "admin only")
     report = {}
     report["catalog"] = {"source": "lot_progress_cache", "values": _merged_catalog_products()}
@@ -3857,7 +3857,7 @@ def my_informs(request: Request, limit: int = Query(200, ge=1, le=2000)):
     my_mods = _effective_modules(me["username"], role)
     items = _without_deleted(_load_upgraded())
     roots = [x for x in items if not x.get("parent_id")]
-    if role == "admin" or "__all__" in my_mods:
+    if role == "admin" or is_page_manager(me, "inform") or "__all__" in my_mods:
         vis = roots
     else:
         vis = [
@@ -3866,7 +3866,7 @@ def my_informs(request: Request, limit: int = Query(200, ge=1, le=2000)):
         ]
     vis = _attach_thread_stats(vis, items)
     vis.sort(key=lambda x: x.get("thread_updated_at") or x.get("created_at", ""), reverse=True)
-    return {"informs": _attach_root_lot_module_counts(vis[:limit], vis), "all_rounder": role == "admin" or "__all__" in my_mods,
+    return {"informs": _attach_root_lot_module_counts(vis[:limit], vis), "all_rounder": is_page_manager(me, "inform") or "__all__" in my_mods,
             "my_modules": [] if "__all__" in my_mods else sorted(my_mods)}
 
 
@@ -4387,7 +4387,7 @@ def _delete_inform_by_id(id: str, request: Request):
     if _is_deleted(target):
         return {"ok": True, "noop": True, "inform": target}
     role = me.get("role", "user")
-    allowed = target.get("author") == me["username"] or role == "admin"
+    allowed = target.get("author") == me["username"] or is_page_manager(me, "inform")
     if not allowed:
         raise HTTPException(403, "삭제 권한이 없습니다 (작성자/admin).")
     now = _now()
@@ -4430,7 +4430,7 @@ def _edit_inform_by_id(id: str, req: InformEditReq, request: Request):
         raise HTTPException(404)
     if _is_deleted(target):
         raise HTTPException(404)
-    if me.get("role") != "admin" and target.get("author") != me["username"]:
+    if not is_page_manager(me, "inform") and target.get("author") != me["username"]:
         raise HTTPException(403, "작성자 또는 admin만 수정할 수 있습니다. 내용 보완은 답글로 추가하세요.")
     now = _now()
     hist = target.get("edit_history") or []
@@ -6556,7 +6556,7 @@ def _send_inform_mail_core(inform_id: str, req: SendMailReq, me: dict, request: 
         raise HTTPException(404, "인폼을 찾을 수 없습니다.")
     if _is_deleted(target):
         raise HTTPException(404, "인폼을 찾을 수 없습니다.")
-    if me.get("role") != "admin" and target.get("author") != me.get("username"):
+    if not is_page_manager(me, "inform") and target.get("author") != me.get("username"):
         raise HTTPException(403, "작성자 또는 admin 만 인폼 메일을 발송할 수 있습니다.")
 
     # v8.8.27: 발송 rate limit 검사 (dry-run 도 동일 적용 — preview 스팸도 방지).

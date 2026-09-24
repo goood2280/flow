@@ -52,6 +52,54 @@ def draft(scenario, text="이 차트로 보고서 템플릿 만들어줘"):
     return result
 
 
+def test_selected_charts_paginate_rename_save_and_replay(scenario):
+    from core.chart_builder_definition import parse_chart_builder_definition
+    context, request = scenario
+    context["selected_report_charts"] = [
+        {"id": f"chart_{index}", "name": f"Chart {index}",
+         "definition_code": DEFINITION.replace("ET trend", f"Trend {index}")}
+        for index in range(7)
+    ]
+    preview = draft(scenario, "선택한 차트로 보고서 템플릿 만들어줘")
+    pages = preview["tool"]["report_template"]["pages"]
+    assert [len(page["slots"]) for page in pages] == [6, 1]
+    assert "차트 7개" in preview["reply"]
+    assert len({(slot["x"], slot["y"]) for slot in pages[0]["slots"]}) == 6
+    renamed = report.handle('보고서 제목을 "Multi QA"로 바꿔줘', preview["context"], request)
+    assert renamed["ok"], renamed
+    accepted = report.handle("승인", renamed["context"], request)
+    assert accepted["ok"], accepted
+    saved = accepted["tool"]["report_template"]
+    assert saved["name"] == "Multi QA"
+    prepared = template_report.prepare_run(template_report.TemplateRunReq(template_id=saved["id"]), request.state.user)
+    assert len(prepared["charts"]) == 7
+    for index, slot in enumerate(slot for page in saved["pages"] for slot in page["slots"]):
+        assert parse_chart_builder_definition(slot["definition_code"])["chart"]["title"] == f"Trend {index}"
+
+
+def test_selected_chart_change_requires_new_approval(scenario):
+    context, request = scenario
+    context["selected_report_charts"] = [{"id": "a", "name": "A", "definition_code": DEFINITION}]
+    preview = draft(scenario)
+    changed = deepcopy(preview["context"])
+    changed["selected_report_charts"][0]["definition_code"] = DEFINITION.replace("scatter", "bar")
+    rejected = report.handle("승인", changed, request)
+    assert not rejected["ok"]
+    assert not template_report.STORE_FILE.exists()
+    renamed = report.handle('보고서 제목을 "Renamed"로 바꿔줘', preview["context"], request)
+    changed["pending_report_id"] = renamed["context"]["pending_report_id"]
+    assert not report.handle("승인", changed, request)["ok"]
+
+
+@pytest.mark.parametrize("selection", [[{}], "invalid", [{"definition_code": DEFINITION}] * 25])
+def test_invalid_chart_selection_does_not_create_proposal(scenario, selection):
+    context, request = scenario
+    context["selected_report_charts"] = selection
+    result = report.handle("선택한 차트로 보고서 템플릿 만들어줘", context, request)
+    assert not result["ok"]
+    assert not template_report.STORE_FILE.exists()
+
+
 def test_validated_draft_does_not_save_and_keeps_chart(scenario):
     context, _ = scenario
     result = draft(scenario)

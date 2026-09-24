@@ -38,6 +38,7 @@ export default function ProductAdminPanel({ user }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [moduleFilter, setModuleFilter] = useState("all");
   const [aliasOnlyFilter, setAliasOnlyFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("INLINE"); // INLINE | ET
 
   // Inline Item Alias Editing Modal/Row state
   const [editingItem, setEditingItem] = useState(null); // { step_id, item_id, step_desc, item_desc, module, aliases: [] }
@@ -47,9 +48,14 @@ export default function ProductAdminPanel({ user }) {
   const [newProductAliasInput, setNewProductAliasInput] = useState("");
   const [productAliasList, setProductAliasList] = useState([]);
 
+  // item_desc 별칭 (Inline 값 조회/Radius plot 해석용) state — flow-data 영속
+  const [descAliases, setDescAliases] = useState([]);
+  const [descForm, setDescForm] = useState({ desc: "", step_id: "", item_id: "" });
+
   // Direct Add New Item Modal state
   const [showAddItemModal, setShowAddItemModal] = useState(false);
   const [newItemForm, setNewItemForm] = useState({
+    source_type: "INLINE",
     module: "",
     step_id: "",
     step_desc: "",
@@ -104,6 +110,59 @@ export default function ProductAdminPanel({ user }) {
     reloadSemantic(product);
   }, [product]);
 
+  async function reloadDescAliases(targetProduct = product) {
+    if (!targetProduct) return;
+    try {
+      const data = await sf(`/api/product-semantics/desc-aliases?product=${encodeURIComponent(targetProduct)}`);
+      setDescAliases(Array.isArray(data.aliases) ? data.aliases : []);
+    } catch {
+      setDescAliases([]);
+    }
+  }
+
+  useEffect(() => {
+    reloadDescAliases(product);
+  }, [product]);
+
+  async function handleSaveDescAlias(event) {
+    event?.preventDefault();
+    if (!product || writeBusy) return;
+    const { desc, step_id, item_id } = descForm;
+    if (!desc.trim() || !step_id.trim() || !item_id.trim()) {
+      setError("별칭·Step ID·Item ID를 모두 입력하세요.");
+      return;
+    }
+    setWriteBusy(true);
+    try {
+      await post("/desc-alias", { product, desc: desc.trim(), step_id: step_id.trim(), item_id: item_id.trim() });
+      setDescForm({ desc: "", step_id: "", item_id: "" });
+      setNotice(`[${product}] item_desc 별칭을 저장했습니다. (flow-data 영속)`);
+      await reloadDescAliases(product);
+    } catch (err) {
+      setError(err.message || "별칭 저장 실패");
+    } finally {
+      setWriteBusy(false);
+    }
+  }
+
+  async function handleDeleteDescAlias(row) {
+    if (!product || writeBusy) return;
+    setWriteBusy(true);
+    try {
+      await sf("/api/product-semantics/desc-alias", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product, desc: row.desc, step_id: row.step_id, item_id: row.item_id }),
+      });
+      setNotice(`[${product}] item_desc 별칭을 삭제했습니다.`);
+      await reloadDescAliases(product);
+    } catch (err) {
+      setError(err.message || "별칭 삭제 실패");
+    } finally {
+      setWriteBusy(false);
+    }
+  }
+
   // Handle Product Alias Save
   async function handleSaveProductAliases(updatedAliases) {
     if (!product || writeBusy) return false;
@@ -147,7 +206,8 @@ export default function ProductAdminPanel({ user }) {
     try {
       await post("/item-alias", {
         product,
-        step_id: itemData.step_id,
+        source_type: itemData.source_type || "INLINE",
+        step_id: itemData.step_id || "",
         item_id: itemData.item_id,
         module: itemData.module || "",
         step_desc: itemData.step_desc || "",
@@ -155,7 +215,7 @@ export default function ProductAdminPanel({ user }) {
         aliases: itemData.aliases || [],
         expected_updated_at: itemData.updated_at || "",
       });
-      setNotice(`[${itemData.step_id} / ${itemData.item_id}] 별칭 매핑을 저장했습니다.`);
+      setNotice(`[${itemData.source_type === "ET" ? "ET" : itemData.step_id} / ${itemData.item_id}] 별칭 매핑을 저장했습니다.`);
       setEditingItem(null);
       await reloadSemantic(product);
       return true;
@@ -170,8 +230,13 @@ export default function ProductAdminPanel({ user }) {
   // Handle Direct Add Item
   async function handleDirectAddItem(e) {
     e.preventDefault();
-    if (!newItemForm.step_id.trim() || !newItemForm.item_id.trim()) {
-      setError("Step ID와 Item ID는 필수입니다.");
+    const sourceType = newItemForm.source_type || "INLINE";
+    if (!newItemForm.item_id.trim()) {
+      setError("Item ID는 필수입니다.");
+      return;
+    }
+    if (sourceType !== "ET" && !newItemForm.step_id.trim()) {
+      setError("Inline 항목은 Step ID가 필수입니다. (ET는 Step 없이 등록 가능)");
       return;
     }
     const aliases = newItemForm.aliases_text
@@ -180,6 +245,7 @@ export default function ProductAdminPanel({ user }) {
       .filter(Boolean);
 
     const saved = await handleSaveItemAlias({
+      source_type: sourceType,
       step_id: newItemForm.step_id.trim(),
       item_id: newItemForm.item_id.trim(),
       module: newItemForm.module.trim(),
@@ -189,11 +255,14 @@ export default function ProductAdminPanel({ user }) {
     });
     if (!saved) return;
     setShowAddItemModal(false);
-    setNewItemForm({ module: "", step_id: "", step_desc: "", item_id: "", item_desc: "", aliases_text: "" });
+    setNewItemForm({ source_type: sourceType, module: "", step_id: "", step_desc: "", item_id: "", item_desc: "", aliases_text: "" });
   }
 
-  // Filtered Measurements Rows
-  const measurements = (semanticData?.measurements || []).filter((row) => String(row.source_type || "").toUpperCase() === "INLINE");
+  // Semantic rows split by source: Inline_matching.csv vs ET reformatter ALIAS
+  const allMeasurements = semanticData?.measurements || [];
+  const inlineMeasurements = allMeasurements.filter((row) => String(row.source_type || "").toUpperCase() !== "ET");
+  const etMeasurements = allMeasurements.filter((row) => String(row.source_type || "").toUpperCase() === "ET");
+  const measurements = sourceFilter === "ET" ? etMeasurements : inlineMeasurements;
   const modulesList = useMemo(() => {
     return [...new Set(measurements.map((r) => r.module).filter(Boolean))].sort();
   }, [measurements]);
@@ -300,7 +369,7 @@ export default function ProductAdminPanel({ user }) {
         {notice && <Banner tone="info"><span role="status">{notice}</span></Banner>}
         {semanticData?.warning && <Banner tone="warning">{semanticData.warning}</Banner>}
         {(semanticData?.diagnostics || []).map((message, i) => <Banner key={i} tone="warning">{message}</Banner>)}
-        {product && <small>연결 검토 대기 {(semanticData?.records || []).filter((r) => r.status === "pending" && r.is_current !== false).length}건 · Inline {measurements.length}개 조합</small>}
+        {product && <small>연결 검토 대기 {(semanticData?.records || []).filter((r) => r.status === "pending" && r.is_current !== false).length}건 · Inline {inlineMeasurements.length}개 · ET {etMeasurements.length}개 조합</small>}
 
         <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
           <TabStrip active={section} onChange={setSection} items={ADMIN_SECTIONS} />
@@ -514,14 +583,38 @@ export default function ProductAdminPanel({ user }) {
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
                 <div>
                   <h4 style={{ margin: "0 0 4px 0", fontSize: 16, fontWeight: 700 }}>
-                    Inline 계측 항목별 Step ID · Item ID & 별칭 매핑 테이블
+                    {sourceFilter === "ET" ? "ET reformatter ALIAS별 항목 & 별칭 매핑 테이블" : "Inline 계측 항목별 Step ID · Item ID & 별칭 매핑 테이블"}
                   </h4>
                   <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)" }}>
-                    기본 Step ID · Item ID는 <code>Inline_matching.csv</code>에서 자동 연동되며, 등록된 별칭(Aliases)은 공백·대소문자·기호 무관하게 질의 및 검색에 유연하게 연결됩니다.
+                    {sourceFilter === "ET" ? (
+                      <>정규 항목은 <code>reformatter</code> ALIAS 기준이며 Step 없이 Item(ALIAS) 단위로 별칭을 연결합니다. 원천(raw item·수식)은 아이템 설명에 표시됩니다.</>
+                    ) : (
+                      <>기본 Step ID · Item ID는 <code>Inline_matching.csv</code>에서 자동 연동되며, 등록된 별칭(Aliases)은 공백·대소문자·기호 무관하게 질의 및 검색에 유연하게 연결됩니다.</>
+                    )}
                   </p>
                 </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <Button variant="primary" onClick={() => setShowAddItemModal(true)}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden" }}>
+                    {[["INLINE", `Inline (${inlineMeasurements.length})`], ["ET", `ET (${etMeasurements.length})`]].map(([key, label]) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => { setSourceFilter(key); setEditingItem(null); setModuleFilter("all"); setAliasOnlyFilter("all"); }}
+                        style={{
+                          border: "none",
+                          padding: "8px 14px",
+                          fontSize: 13,
+                          fontWeight: 700,
+                          cursor: "pointer",
+                          background: sourceFilter === key ? "var(--accent)" : "transparent",
+                          color: sourceFilter === key ? "#fff" : "var(--text-secondary)",
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <Button variant="primary" onClick={() => { setNewItemForm((f) => ({ ...f, source_type: sourceFilter })); setShowAddItemModal(true); }}>
                     + 새 항목·별칭 직접 추가
                   </Button>
                 </div>
@@ -593,11 +686,13 @@ export default function ProductAdminPanel({ user }) {
                       </tr>
                     ) : (
                       filteredItems.map((row, idx) => {
+                        const rowSource = String(row.source_type || sourceFilter || "INLINE").toUpperCase();
                         const isEditing =
-                          editingItem?.step_id === row.step_id && editingItem?.item_id === row.item_id;
+                          editingItem?.source_type === rowSource &&
+                          (editingItem?.step_id || "") === (row.step_id || "") && editingItem?.item_id === row.item_id;
                         return (
                           <tr
-                            key={`${row.step_id}-${row.item_id}-${idx}`}
+                            key={`${rowSource}-${row.step_id}-${row.item_id}-${idx}`}
                             style={{
                               borderBottom: "1px solid var(--border)",
                               background: isEditing
@@ -611,9 +706,13 @@ export default function ProductAdminPanel({ user }) {
                               {row.module || <span style={{ color: "var(--text-secondary)" }}>—</span>}
                             </td>
                             <td style={{ padding: "10px 12px" }}>
-                              <code style={{ fontSize: 12, background: "var(--surface-subtle)", padding: "2px 4px", borderRadius: 3 }}>
-                                {row.step_id}
-                              </code>
+                              {row.step_id ? (
+                                <code style={{ fontSize: 12, background: "var(--surface-subtle)", padding: "2px 4px", borderRadius: 3 }}>
+                                  {row.step_id}
+                                </code>
+                              ) : (
+                                <span style={{ color: "var(--text-secondary)" }}>—</span>
+                              )}
                               <small style={{ display: "block", color: "var(--text-secondary)" }}>{row.source === "manual" ? "관리자 직접 등록" : row.source || "DB 관측"}</small>
                               {row.updated_at && <small style={{ display: "block", color: "var(--text-secondary)" }}>{new Date(row.updated_at).toLocaleString()}</small>}
                             </td>
@@ -743,7 +842,8 @@ export default function ProductAdminPanel({ user }) {
                                 <Button
                                   onClick={() => {
                                     setEditingItem({
-                                      step_id: row.step_id,
+                                      source_type: rowSource,
+                                      step_id: row.step_id || "",
                                       item_id: row.item_id,
                                       module: row.module || "",
                                       step_desc: row.step_desc || "",
@@ -770,7 +870,88 @@ export default function ProductAdminPanel({ user }) {
                 <span>
                   표시 중: {filteredItems.length}건 / 전체 {measurements.length}건
                 </span>
-                <span>제품별 INLINE 연결 · DB 관측 및 관리자 등록</span>
+                <span>제품별 {sourceFilter} 연결 · DB 관측 및 관리자 등록{sourceFilter === "ET" ? " (reformatter ALIAS 기준)" : ""}</span>
+              </div>
+
+              {/* item_desc 별칭: "{제품} PC BCD" 같은 질의를 step_id/item_id로 연결 */}
+              <div style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 14, display: "grid", gap: 10 }}>
+                <div>
+                  <h4 style={{ margin: "0 0 4px 0", fontSize: 15, fontWeight: 700 }}>
+                    item_desc 별칭 연결 ({descAliases.length}건)
+                  </h4>
+                  <p style={{ margin: 0, fontSize: 12, color: "var(--text-secondary)" }}>
+                    예: 별칭 <code>PC BCD</code> → Step <code>AA100070</code> · Item <code>5.0 PC</code>.
+                    홈 질문의 별칭은 여기서 푼 뒤 해당 lot 실측 행이 있는 1개로 확정합니다.
+                    flow-data에 저장되어 재설치에도 유지됩니다.
+                  </p>
+                </div>
+                {descAliases.length > 0 && (
+                  <div style={{ maxHeight: 220, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, textAlign: "left" }}>
+                      <thead style={{ position: "sticky", top: 0, background: "var(--bg-secondary)", zIndex: 1 }}>
+                        <tr style={{ borderBottom: "2px solid var(--border)" }}>
+                          <th style={{ padding: "8px 10px" }}>별칭</th>
+                          <th style={{ padding: "8px 10px" }}>Step ID</th>
+                          <th style={{ padding: "8px 10px" }}>Item ID</th>
+                          <th style={{ padding: "8px 10px" }}>등록</th>
+                          <th style={{ padding: "8px 10px", width: 70, textAlign: "center" }}>관리</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {descAliases.map((row, idx) => (
+                          <tr key={`${row.desc}-${row.step_id}-${row.item_id}-${idx}`} style={{ borderBottom: "1px solid var(--border)" }}>
+                            <td style={{ padding: "8px 10px", fontWeight: 600 }}>{row.desc}</td>
+                            <td style={{ padding: "8px 10px" }}><code style={{ fontSize: 12 }}>{row.step_id}</code></td>
+                            <td style={{ padding: "8px 10px" }}><code style={{ fontSize: 12 }}>{row.item_id}</code></td>
+                            <td style={{ padding: "8px 10px", color: "var(--text-secondary)", fontSize: 12 }}>
+                              {row.by || ""} {row.at ? new Date(row.at).toLocaleDateString() : ""}
+                            </td>
+                            <td style={{ padding: "8px 10px", textAlign: "center" }}>
+                              <Button type="button" onClick={() => handleDeleteDescAlias(row)} title="삭제">
+                                삭제
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <form onSubmit={handleSaveDescAlias} style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end" }}>
+                  <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 600 }}>
+                    별칭 *
+                    <Input
+                      required
+                      placeholder="예: PC BCD"
+                      value={descForm.desc}
+                      onChange={(e) => setDescForm((f) => ({ ...f, desc: e.target.value }))}
+                      style={{ minWidth: 140 }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 600 }}>
+                    Step ID *
+                    <Input
+                      required
+                      placeholder="예: AA100070"
+                      value={descForm.step_id}
+                      onChange={(e) => setDescForm((f) => ({ ...f, step_id: e.target.value }))}
+                      style={{ minWidth: 120 }}
+                    />
+                  </label>
+                  <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 600 }}>
+                    Item ID *
+                    <Input
+                      required
+                      placeholder="예: 5.0 PC"
+                      value={descForm.item_id}
+                      onChange={(e) => setDescForm((f) => ({ ...f, item_id: e.target.value }))}
+                      style={{ minWidth: 120 }}
+                    />
+                  </label>
+                  <Button type="submit" variant="primary" disabled={writeBusy}>
+                    별칭 연결 저장
+                  </Button>
+                </form>
               </div>
               <ProductSemanticPanel key={product} product={product} admin={user?.role === "admin"} reviewOnly user={user} refreshKey={semanticRefreshKey} />
             </div>
@@ -830,12 +1011,22 @@ export default function ProductAdminPanel({ user }) {
               gap: 14,
             }}
           >
-            <h3 style={{ margin: 0, fontSize: 17 }}>새 Inline 항목 및 별칭 등록</h3>
+            <h3 style={{ margin: 0, fontSize: 17 }}>새 {newItemForm.source_type === "ET" ? "ET" : "Inline"} 항목 및 별칭 등록</h3>
             <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)" }}>
-              제품 [{product}]에 새로운 Step/Item 및 현업 별칭을 직접 등록합니다.
+              제품 [{product}]에 새로운 {newItemForm.source_type === "ET" ? "ET reformatter ALIAS(Step 없이 Item 단위)" : "Step/Item"} 및 현업 별칭을 직접 등록합니다.
             </p>
 
             <form onSubmit={handleDirectAddItem} style={{ display: "grid", gap: 10 }}>
+              <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 600 }}>
+                구분 (Source)
+                <Select
+                  value={newItemForm.source_type || "INLINE"}
+                  onChange={(e) => setNewItemForm((f) => ({ ...f, source_type: e.target.value }))}
+                >
+                  <option value="INLINE">Inline (Step + Item)</option>
+                  <option value="ET">ET (reformatter ALIAS, Step 불필요)</option>
+                </Select>
+              </label>
               <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 600 }}>
                 모듈 (Module)
                 <Input
@@ -847,11 +1038,12 @@ export default function ProductAdminPanel({ user }) {
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 600 }}>
-                  Step ID *
+                  Step ID {newItemForm.source_type === "ET" ? "(ET는 비워도 됨)" : "*"}
                   <Input
-                    required
-                    placeholder="예: CC942300"
+                    required={newItemForm.source_type !== "ET"}
+                    placeholder={newItemForm.source_type === "ET" ? "ET는 Step 없음" : "예: CC942300"}
                     value={newItemForm.step_id}
+                    disabled={newItemForm.source_type === "ET"}
                     onChange={(e) => setNewItemForm((f) => ({ ...f, step_id: e.target.value }))}
                   />
                 </label>
@@ -867,18 +1059,18 @@ export default function ProductAdminPanel({ user }) {
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                 <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 600 }}>
-                  Item ID *
+                  {newItemForm.source_type === "ET" ? "ALIAS *" : "Item ID *"}
                   <Input
                     required
-                    placeholder="예: CD_GATE"
+                    placeholder={newItemForm.source_type === "ET" ? "예: VTH_SAT" : "예: CD_GATE"}
                     value={newItemForm.item_id}
                     onChange={(e) => setNewItemForm((f) => ({ ...f, item_id: e.target.value }))}
                   />
                 </label>
                 <label style={{ display: "grid", gap: 4, fontSize: 12, fontWeight: 600 }}>
-                  아이템 설명 (Item Desc)
+                  {newItemForm.source_type === "ET" ? "원천 (raw item·수식)" : "아이템 설명 (Item Desc)"}
                   <Input
-                    placeholder="예: Gate Poly CD"
+                    placeholder={newItemForm.source_type === "ET" ? "예: VTH 또는 수식" : "예: Gate Poly CD"}
                     value={newItemForm.item_desc}
                     onChange={(e) => setNewItemForm((f) => ({ ...f, item_desc: e.target.value }))}
                   />

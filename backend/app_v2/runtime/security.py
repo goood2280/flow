@@ -10,6 +10,7 @@ from core.auth import is_auth_exempt, validate_token
 # Browsers cannot attach custom headers to these resource/stream URLs, so the
 # API accepts ?t=<token> for this narrow set only.
 QUERY_TOKEN_PREFIXES = (
+    "/api/admin/domain-knowledge/assets/",
     "/api/informs/files/",
     "/api/lot-requests/files/",
     "/api/tracker/image",

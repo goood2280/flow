@@ -3,7 +3,7 @@ import { toast } from "../../components/Toast";
 import usePolling from "../../hooks/usePolling";
 import { postJson, qs, sf } from "../../lib/api";
 import { createLatestRequests } from "../../lib/latestRequests";
-import { isAdmin } from "../../lib/permissions";
+import { canManagePage } from "../../lib/permissions";
 import { Filter, TabStrip } from "../../components/UXKit";
 import { PageGearButton } from "../../components/PageGear";
 
@@ -433,7 +433,7 @@ function CacheJobPanel({ jobs, queues, canManage, onStopProduct, milestones }) {
         {matchCache.cancel_product ? "중단 요청됨…" : "이 제품 중단"}
       </button>}
       <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>
-        중단하면 이 제품은 건너뛰고 다음 제품으로 넘어갑니다. 이어받기가 없으므로 <b>다음 스캔에서 처음부터</b> 다시 빌드됩니다.
+        중단하면 이 제품은 건너뛰고 다음 제품으로 넘어갑니다. 재개 가능 여부는 캐시 단계에 따라 다르며, 이미 완료된 캐시는 유지됩니다.
       </span>
       {Number(matchCache.cancelled_count || 0) > 0 && <span style={{ fontSize: 11, color: "var(--warn)", fontFamily: "monospace" }}>
         이번 작업에서 중단 {matchCache.cancelled_count}건</span>}
@@ -619,8 +619,10 @@ export default function My_RamCache({ user }) {
   // 이 페이지의 관리 기능(수동 스캔·예산·이벤트 로그)은 백엔드가 전부
   // splittable page manager 권한으로 막고 있다. 프런트도 같은 판정을 써야
   // "보이는데 403" 이 안 난다 — 판정값은 overview 응답의 can_manage 가 정본이고,
-  // 응답 전까지는 역할만으로 낙관 판단(admin) 한다.
-  const [canManage, setCanManage] = useState(() => isAdmin(user));
+  // 응답 전까지는 현재 사용자 정보로 낙관 판단한다.
+  // Start manager-only panels for delegated page managers immediately. The
+  // overview response remains authoritative and can still revoke access.
+  const [canManage, setCanManage] = useState(() => canManagePage(user, "splittable"));
   const [overview, setOverview] = useState(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [memOverview, setMemOverview] = useState(null);
@@ -782,11 +784,11 @@ export default function My_RamCache({ user }) {
     });
   }, []);
 
-  // 관리자 중단 — 지금 캐싱 중인 제품만 끊고 다음 제품으로 넘긴다. 부분 산출은
-  // 버려지므로 이 제품은 다음 스캔에서 처음부터 다시 빌드된다.
+  // 관리자 중단 — 지금 캐싱 중인 제품만 끊고 다음 제품으로 넘긴다. 재개 가능
+  // 여부는 캐시 단계에 따라 다르며, 이미 완료된 캐시는 유지된다.
   const stopMatchCacheProduct = useCallback((product) => {
     if (!product) return;
-    if (!confirm(`'${product}' 캐싱을 중단할까요?\n\n지금까지 만든 부분 결과는 버려지고 다음 제품으로 넘어갑니다.\n이 제품은 다음 스캔에서 처음부터 다시 빌드됩니다.`)) return;
+    if (!confirm(`'${product}' 캐싱을 중단할까요?\n\n현재 제품은 중단되고 다음 제품으로 넘어갑니다. 재개 가능 여부는 캐시 단계에 따라 다르며, 이미 완료된 캐시는 유지됩니다.`)) return;
     sf(API + "/match-cache/stop", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -803,7 +805,7 @@ export default function My_RamCache({ user }) {
     if (!id) return;
     const label = task.label || id;
     const msg = running
-      ? `'${label}' 를 중단할까요?\n\n즉시 멈추지 않고 현재 제품/배치가 끝나는 대로 접고 다음 대기 작업으로 넘어갑니다.\n이어받기가 없어 다음 스캔에서 처음부터 다시 빌드합니다.\n(이미 완성된 제품 캐시는 그대로 남습니다)`
+      ? `'${label}' 를 중단할까요?\n\n즉시 멈추지 않고 현재 제품/배치가 끝나는 대로 접고 다음 대기 작업으로 넘어갑니다.\n재개 가능 여부는 캐시 단계에 따라 다르며, 이미 완료된 제품 캐시는 그대로 남습니다.`
       : `대기 중인 '${label}' 를 큐에서 뺄까요?`;
     if (!confirm(msg)) return;
     postJson(API + "/scan-queue/cancel", { task_id: id })
@@ -874,8 +876,13 @@ export default function My_RamCache({ user }) {
   // 어긋나면 화면이 그대로 굳어 아무것도 갱신되지 않았다.
   useEffect(() => {
     if (!canManage || unifiedScanBusy) return;
-    const busyJob = productStatus?.artifact_status_pending || (cacheJobs || []).some(job => job.status === "running");
-    const timer = setTimeout(() => loadCacheEventLog(cacheEventLogFilter), busyJob ? 2500 : 15000);
+    const artifactPending = !!productStatus?.artifact_status_pending;
+    const activeJob = (cacheJobs || []).some(job => job.status === "running");
+    // A cold artifact build can be advertised as pending before a job row
+    // exists. Recheck that transition promptly; established jobs keep the
+    // normal cadence and idle pages stay quiet.
+    const intervalMs = activeJob ? 2500 : artifactPending ? 750 : 15000;
+    const timer = setTimeout(() => loadCacheEventLog(cacheEventLogFilter), intervalMs);
     return () => clearTimeout(timer);
   }, [canManage, unifiedScanBusy, cacheJobs, productStatus?.artifact_status_pending, cacheEventLogFilter, loadCacheEventLog, pollTick]);
   useEffect(() => {

@@ -36,7 +36,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
-from core.auth import current_user, require_page_manager
+from core.auth import current_user, is_page_manager, require_page_manager
 from core.chart_builder_definition import ChartBuilderDefinitionError, linked_chart_color_pairs, parse_chart_builder_definition
 from core.paths import PATHS
 from core.file_transaction import file_transaction
@@ -740,8 +740,8 @@ def _save_slot(slot: TemplateSlotReq, page_index: int, history: dict, history_by
         except ChartBuilderDefinitionError as exc:
             raise HTTPException(400, f"{page_index + 1}페이지 {position}번 차트 생성식 오류: {exc}") from exc
         chart_name = _clean_text(
-            (history_row or {}).get("name")
-            or slot.chart_name
+            slot.chart_name
+            or (history_row or {}).get("name")
             or old_slot.get("chart_name")
             or f"Chart {position}",
             120,
@@ -818,7 +818,7 @@ def _save_template(req: TemplateSaveReq, user: dict, *, operation_id: str = ""):
                     raise HTTPException(403, "본인이 승인한 Template만 확인할 수 있습니다.")
                 return {"ok": True, "template": _public_template(applied)}
         existing = next((row for row in rows if str(row.get("id")) == str(req.id)), None)
-        if existing and user.get("role") != "admin" and existing.get("created_by") != user.get("username"):
+        if existing and not is_page_manager(user, "templatereport") and existing.get("created_by") != user.get("username"):
             raise HTTPException(403, "작성자 또는 관리자만 이 Template을 수정할 수 있습니다.")
         old_slots = {
             str(slot.get("chart_id")): slot
@@ -903,7 +903,7 @@ def delete_template(template_id: str, user=Depends(current_user)):
         target = next((row for row in rows if str(row.get("id")) == str(template_id)), None)
         if not target:
             raise HTTPException(404, "Template Report를 찾지 못했습니다.")
-        if user.get("role") != "admin" and target.get("created_by") != user.get("username"):
+        if not is_page_manager(user, "templatereport") and target.get("created_by") != user.get("username"):
             raise HTTPException(403, "작성자 또는 관리자만 삭제할 수 있습니다.")
         _save_templates([row for row in rows if str(row.get("id")) != str(template_id)])
     return {"ok": True, "id": template_id}
@@ -999,7 +999,7 @@ def parse_template_code(req: TemplateCodeReq, user=Depends(current_user)):
 @router.post("/assistant")
 def template_assistant(req: TemplateAssistantReq, user=Depends(current_user)):
     """Let the configured company LLM create/edit full Template code, then validate it."""
-    if str((user or {}).get("role") or "") != "admin":
+    if not is_page_manager(user, "templatereport"):
         raise HTTPException(403, "LLM execution is admin-only during POC")
     instruction = _clean_multiline(req.instruction, 3000)
     if not instruction:

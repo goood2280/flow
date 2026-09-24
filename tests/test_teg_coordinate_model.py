@@ -11,6 +11,7 @@ import pytest
 from core import teg_check
 from core import teg_map
 from core import auth
+from core.paths import PATHS
 from fastapi import HTTPException
 from routers import filebrowser
 from routers import teg_map as teg_router
@@ -1667,6 +1668,8 @@ def test_product_shots_include_a_shot_touching_the_147mm_boundary():
 
 def test_inline_map_accepts_full_shot_coordinate_and_protects_referenced_map(tmp_path, monkeypatch):
     monkeypatch.setattr(teg_map.roots, "get_db_root", lambda: tmp_path)
+    # flow-data 오버레이까지 fake 환경으로 격리한다.
+    monkeypatch.setattr(PATHS, "data_root", tmp_path)
     payload = {
         "shots": [{"x": 1, "y": 1, "mm_x": 20, "mm_y": 20, "radius": math.hypot(20, 20)}],
         "geometry": {
@@ -2005,6 +2008,8 @@ def test_update_legacy_product_replaces_radius_rows_and_uses_exact_geometry(tmp_
 
 def test_product_identity_rename_propagates_to_all_teg_references_and_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(teg_map.roots, "get_db_root", lambda: tmp_path)
+    # flow-data 오버레이까지 fake 환경으로 격리한다.
+    monkeypatch.setattr(PATHS, "data_root", tmp_path)
     monkeypatch.setattr(
         teg_map, "_snapshot_edm_file",
         lambda path, *args, **kwargs: {"display_version": "v1.0", "file": path.name},
@@ -2498,7 +2503,9 @@ def test_product_catalog_cache_avoids_repeated_source_scans(monkeypatch):
 
 
 def test_save_inline_map_table_creates_confidential_directory(tmp_path, monkeypatch):
+    # 저장소는 flow-data 정본이다 (재설치 유지). db_root fake + data_root 격리.
     monkeypatch.setattr(teg_map.roots, "get_db_root", lambda: tmp_path)
+    monkeypatch.setattr(PATHS, "data_root", tmp_path)
     monkeypatch.setattr(teg_map, "map_payload", lambda veh: {"vehicle": veh, "shots": [{"x": 1, "y": 1}]})
 
     res = teg_map.save_inline_map_table(
@@ -2508,8 +2515,9 @@ def test_save_inline_map_table_creates_confidential_directory(tmp_path, monkeypa
         "tester",
         "confidential test comment",
     )
-    confidential_file = tmp_path / "confidential" / "inline_map_settings.json"
-    assert confidential_file.is_file()
+    flow_file = tmp_path / "matching" / "inline_map_settings.json"
+    assert flow_file.is_file()
+    assert (tmp_path / "confidential" / "inline_map_settings.json").exists() is False
     assert (tmp_path / "credential" / "inline_map_settings.json").exists() is False
     assert res["tables"][0]["table_name"] == "INLINE_CONF_TEST"
 

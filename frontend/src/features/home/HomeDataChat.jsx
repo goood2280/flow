@@ -1,60 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FlowPlotlyChart, WipStackedBar } from "../../components/PlotlyChart";
+import TegValueWaferMap from "../../components/TegValueWaferMap";
 import SplitTableSnapshotView from "../../components/SplitTableSnapshotView";
 import { sf } from "../../lib/api";
 import "./HomeDataChat.css";
 import TegChatMaps from "./TegChatMaps";
+import InterpretationPanel from "./InterpretationPanel";
+import HomeDownloadJob from "./HomeDownloadJob";
+import { reportChartChoices, toggleReportChart } from "./reportCharts";
 
 const PAGE_SIZE = 50;
 const API_HISTORY_MESSAGES = 20;
 const API_HISTORY_CHARS = 4000;
-
-const FEATURE_PAGE_MAP = {
-  eta: "lottracker",
-  splittable: "splittable",
-  "splittable.plan": "splittable",
-  "splittable.history": "splittable",
-  location: "lotlocation",
-  lot_progress: "lotlocation",
-  yield_map: "yieldmap",
-  "yield_map.map": "yieldmap",
-  tracker: "tracker",
-  "tracker.issues": "tracker",
-  "tracker.issue": "tracker",
-  watchlist: "lotmanage",
-  "watchlist.lots": "lotmanage",
-  informs: "inform",
-  "informs.recent": "inform",
-  "informs.by_lot": "inform",
-  lot_management: "lotmanage",
-  "lot_management.table": "lotmanage",
-  "lot_management.my_lots": "lotmanage",
-  dashboard: "dashboard",
-  "dashboard.summary": "dashboard",
-  "dashboard.stuck_lots": "dashboard",
-  "dashboard.charts": "dashboard",
-  chart: "chartbuilder",
-  "report.template": "templatereport",
-  teg: "tegmap",
-  "teg.locations": "tegmap",
-  "teg.coordinates": "tegmap",
-  "teg.mapfiles": "tegmap",
-};
-
-const FEATURE_PAGE_NAMES = {
-  splittable: "SplitTable",
-  location: "Lot 현위치",
-  lot_progress: "Lot 현위치",
-  yield_map: "Yield Map",
-  tracker: "ET 트래커",
-  watchlist: "Lot 관리",
-  informs: "모듈 인폼",
-  lot_management: "Lot 관리",
-  dashboard: "대시보드",
-  chart: "차트 빌더",
-  "report.template": "Template Report",
-  teg: "TEG Map",
-};
 
 function asText(value) {
   if (value == null) return "";
@@ -298,122 +255,6 @@ function normalizeMessages(messages) {
     }));
 }
 
-function ExecutionTraceCard({ trace, rawGuideText = "" }) {
-  if (!trace && !rawGuideText) return null;
-
-  const intent = trace?.intent;
-  const sources = Array.isArray(trace?.sources) ? trace.sources : [];
-  const steps = Array.isArray(trace?.steps) ? trace.steps : [];
-  const query = trace?.query;
-  const illustrativeQuery = trace?.illustrative_query;
-
-  return (
-    <div className="home-data-chat__trace-card" aria-label="의도 해석 및 실행 경로">
-      <div className="home-data-chat__trace-header">
-        <span className="home-data-chat__trace-badge">의도 해석 및 실행 경로 (Execution Trace)</span>
-      </div>
-
-      {intent && (
-        <div className="home-data-chat__trace-section">
-          <span className="home-data-chat__trace-label">🎯 발화 의도:</span>
-          <span className="home-data-chat__trace-intent">{intent}</span>
-        </div>
-      )}
-
-      {sources.length > 0 && (
-        <div className="home-data-chat__trace-section">
-          <span className="home-data-chat__trace-label">🗄️ 데이터 원천:</span>
-          <div className="home-data-chat__trace-sources">
-            {sources.map((src, idx) => (
-              <span key={idx} className="home-data-chat__source-pill">{src}</span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {steps.length > 0 && (
-        <div className="home-data-chat__trace-section">
-            <span className="home-data-chat__trace-label">🧭 실행 설명:</span>
-          <div className="home-data-chat__trace-breadcrumbs">
-            {steps.map((step, idx) => (
-              <span key={idx} className="home-data-chat__breadcrumb-item">
-                {idx > 0 && <span className="home-data-chat__breadcrumb-arrow">➔</span>}
-                <span className="home-data-chat__step-pill">{step}</span>
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {query && (
-        <div className="home-data-chat__trace-section">
-          <span className="home-data-chat__trace-label">💻 실행 쿼리/파라미터:</span>
-          <pre className="home-data-chat__trace-query"><code>{query}</code></pre>
-        </div>
-      )}
-
-      {illustrativeQuery && !query && (
-        <details className="home-data-chat__trace-section">
-          <summary>설명용 예시 (실제 SQL 아님)</summary>
-          <pre className="home-data-chat__trace-query"><code>{illustrativeQuery}</code></pre>
-        </details>
-      )}
-      {!trace && rawGuideText && (
-        <div className="home-data-chat__guide-body">{rawGuideText}</div>
-      )}
-    </div>
-  );
-}
-
-function RoutingTraceCard({ trace }) {
-  if (!trace || typeof trace !== "object") return null;
-  const bindings = trace.bindings && typeof trace.bindings === "object" ? trace.bindings : {};
-  const sources = Array.isArray(trace.sources) ? trace.sources : [];
-  const missing = Array.isArray(trace.missing) ? trace.missing : [];
-  return (
-    <details className="home-data-chat__routing-trace" open>
-      <summary>라우팅 해석 <span>{trace.rule_title || trace.rule_id || trace.route || "확인"}</span></summary>
-      <div className="home-data-chat__routing-trace-body">
-        {trace.normalized_question && <div><b>정규화된 질문</b><span>{trace.normalized_question}</span></div>}
-        {(trace.route || trace.action) && <div><b>경로</b><span>{[trace.route, trace.action].filter(Boolean).join(" · ")}</span></div>}
-        {Object.keys(bindings).length > 0 && <div><b>바인딩</b><span>{Object.entries(bindings).map(([key, value]) => `${key}=${asText(value)}`).join(" · ")}</span></div>}
-        {sources.length > 0 && <div><b>원천</b><span>{sources.join(" · ")}</span></div>}
-        {missing.length > 0 && <div className="is-missing"><b>추가 입력</b><span>{missing.join(" · ")}</span></div>}
-        {trace.status && <div><b>상태</b><span>{trace.status}</span></div>}
-      </div>
-    </details>
-  );
-}
-
-function productOptions(tool) {
-  const clarification = tool?.clarification;
-  if (clarification?.kind && Array.isArray(clarification.options)) {
-    return clarification.options
-      .map((option) => ({
-        label: asText(option?.label ?? option?.value).trim(),
-        value: asText(option?.value ?? option?.label).trim(),
-      }))
-      .filter((option) => option.label && option.value)
-      .slice(0, clarification.kind?.startsWith("inline_") ? 100 : 5);
-  }
-
-  const missingProduct = Array.isArray(tool?.missing) && tool.missing.some((item) => asText(item).toLowerCase() === "product");
-  if (!missingProduct) return [];
-  const rows = resultRows(tool?.table || tool?.split_view);
-  const values = Array.isArray(tool?.products) ? tool.products : rows;
-  return values.map((row) => {
-    if (typeof row === "string" || typeof row === "number") return asText(row).trim();
-    if (Array.isArray(row)) return asText(row[0]).trim();
-    if (row && typeof row === "object") {
-      const key = Object.keys(row).find((name) => /^(product|product_name|product_id|name|value)$/i.test(name));
-      return key ? asText(row[key]).trim() : "";
-    }
-    return "";
-  }).filter(Boolean).filter((value, index, valuesList) => valuesList.indexOf(value) === index)
-    .slice(0, 5)
-    .map((value) => ({ label: value, value }));
-}
-
 function isProductRequest(tool) {
   return ["product", "custom_set", "split_column", "split_value", "eta_reference", "inline_measure", "inline_time", "inline_lot_scope"].includes(tool?.clarification?.kind)
     || (Array.isArray(tool?.missing) && tool.missing.some((item) => asText(item).toLowerCase() === "product"));
@@ -421,6 +262,8 @@ function isProductRequest(tool) {
 
 function isHumanInLoopTool(tool) {
   if (!tool || typeof tool !== "object") return false;
+  // A report proposal already has a reviewable layout, even before approval.
+  if (tool.feature === "report.template" && tool.report_template) return false;
   const hasCandidates = (groups) => Array.isArray(groups)
     && groups.some((group) => Array.isArray(group?.candidates) && group.candidates.length > 0);
   return isProductRequest(tool)
@@ -432,158 +275,28 @@ function isHumanInLoopTool(tool) {
     || (Array.isArray(tool.missing) && tool.missing.length > 0);
 }
 
-function ProductClarification({ tool, onSubmit, disabled = false }) {
-  const clarification = tool?.clarification;
-  const options = productOptions(tool);
-  const canAskOther = clarification?.kind ? clarification.allow_other !== false : true;
-  const title = clarification?.title || "제품 선택";
-  const placeholder = clarification?.placeholder || "제품명을 입력하세요";
-  const [showOther, setShowOther] = useState(false);
-  const [value, setValue] = useState("");
-  const inputRef = useRef(null);
-
-  useEffect(() => {
-    if (showOther) inputRef.current?.focus();
-  }, [showOther]);
-
-  if (!isProductRequest(tool) || (!options.length && !canAskOther)) return null;
-  const submitOther = (event) => {
-    event.preventDefault();
-    const next = value.trim();
-    if (!next || disabled) return;
-    onSubmit(next);
-    setValue("");
-  };
-
-  return (
-    <div className="home-data-chat__product-clarification" aria-label={title}>
-      {options.length > 0 && (
-        <div className="home-data-chat__product-options">
-          <span className="home-data-chat__product-prompt">{title}</span>
-          <div className="home-data-chat__actions is-choice-list">
-            {options.map((option) => (
-              <button type="button" key={option.value} disabled={disabled} onClick={() => onSubmit(option.value)}>
-                {option.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-      {canAskOther && (
-        <div className="home-data-chat__product-other">
-          {!showOther ? (
-            <button type="button" className="home-data-chat__product-other-toggle" disabled={disabled} onClick={() => setShowOther(true)}>
-              기타 직접 입력
-            </button>
-          ) : (
-            <form className="home-data-chat__product-other-form" onSubmit={submitOther}>
-              <input
-                ref={inputRef}
-                value={value}
-                onChange={(event) => setValue(event.target.value)}
-                placeholder={placeholder}
-                disabled={disabled}
-                aria-label={placeholder}
-              />
-              <button type="submit" disabled={disabled || !value.trim()}>확인</button>
-            </form>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function BubbleContent({ message, onExplore }) {
+function BubbleContent({ message }) {
+  // 왼쪽 대화 기록은 답변 텍스트만 남긴다. 해석·원천·쿼리·선택지는
+  // InterpretationPanel(왼쪽 상단)이, 데이터는 오른쪽 결과창이 담당한다.
   const content = message.content || "";
-  const tool = message.response?.tool;
-  const trace = tool?.execution_trace;
-  const routingTrace = message.response?.routing_trace;
-
   let displayBody = content;
-  let rawGuideText = "";
-
   if (typeof content === "string") {
     if (content.includes("────────────────────────────────────────")) {
       const parts = content.split("────────────────────────────────────────");
-      rawGuideText = parts[0].replace("[도메인 해석 및 실행 경로 (Trace)]", "").replace("[도메인 해석 가이드]", "").trim();
       displayBody = parts.slice(1).join("────────────────────────────────────────").trim();
     } else if (content.startsWith("[도메인 해석 및 실행 경로 (Trace)]") || content.startsWith("[도메인 해석 가이드]")) {
-      rawGuideText = content;
       displayBody = "";
     }
   }
-
-  const nativeSplitView = nativeSplitViewFromTool(tool);
-  const table = nativeSplitView ? null : (tool?.table || tool?.split_view);
-  const relatedTegs = Array.isArray(tool?.related_tegs) ? tool.related_tegs : [];
-  const currentProduct = tool?.context?.product || "";
-
+  if (!displayBody) return null;
   return (
     <div className="home-data-chat__bubble-inner">
-      {(trace || rawGuideText) && (
-        <ExecutionTraceCard trace={trace} rawGuideText={rawGuideText} />
-      )}
-
-      <RoutingTraceCard trace={routingTrace} />
-
-      {displayBody && (
-        <div className="home-data-chat__guided-body">{displayBody}</div>
-      )}
-
-      {nativeSplitView && !isProductRequest(tool) && (
-        <div className="home-data-chat__inline-data-preview">
-          <div className="home-data-chat__data-preview-bar">
-            <span className="home-data-chat__preview-title">📊 SplitTable 미리보기</span>
-          </div>
-          <SplitTableSnapshotView
-            stView={nativeSplitView}
-            product={tool?.context?.product || ""}
-            source={splitViewSource(tool)}
-            showTitle={false}
-            maxHeight={380}
-          />
-        </div>
-      )}
-
-      {table && !isProductRequest(tool) && (
-        <div className="home-data-chat__inline-data-preview">
-          <div className="home-data-chat__data-preview-bar">
-            <span className="home-data-chat__preview-title">📊 추출 데이터셋 미리보기</span>
-          </div>
-          <DataTable
-            table={table}
-            downloadName={tool?.feature || "extracted_data"}
-            maxPreviewRows={12}
-          />
-        </div>
-      )}
-
-      {relatedTegs.length > 0 && onExplore && (
-        <div className="home-data-chat__related-tegs-box">
-          <span className="home-data-chat__related-tegs-label">📍 {currentProduct || "제품"}의 다른 TEG 위치 확인하기 (클릭하여 탐색):</span>
-          <div className="home-data-chat__related-tegs-list">
-            {relatedTegs.map((tegName) => (
-              <button
-                key={tegName}
-                type="button"
-                className="home-data-chat__related-teg-chip"
-                onClick={() => onExplore(`${currentProduct} ${tegName} TEG 위치 보여줘`)}
-                title={`${currentProduct}의 ${tegName} TEG 위치를 즉시 조회합니다`}
-              >
-                {tegName}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <TegChatMaps maps={tool?.teg_maps} view={tool?.teg_view} />
+      <div className="home-data-chat__guided-body">{displayBody}</div>
     </div>
   );
 }
 
-function BatchContent({ response, onExplore, onOpenWorkspace, canRespond }) {
+function BatchContent({ response }) {
   const questions = Array.isArray(response?.questions) ? response.questions : [];
   if (!questions.length) return null;
   return (
@@ -596,13 +309,7 @@ function BatchContent({ response, onExplore, onOpenWorkspace, canRespond }) {
           <section className={`home-data-chat__batch-item is-${status}`} key={`${index}-${item?.question || "question"}`}>
             <div className="home-data-chat__batch-question"><span>{index + 1}</span>{item?.question || "질문"}<b>{status === "completed" ? "완료" : status === "needs_input" ? "입력 필요" : status === "failed" ? "실패" : "대기"}</b></div>
             {item?.reason && <div className="home-data-chat__batch-reason">{item.reason}</div>}
-            {(child.reply || child.answer || child.tool) && <BubbleContent message={{ content: answerText(child), response: child }} onExplore={onExplore} />}
-            {child.tool && isProductRequest(child.tool) && (
-              <ProductClarification tool={child.tool} onSubmit={onExplore} disabled={!canRespond} />
-            )}
-            {child.tool && onOpenWorkspace && !isHumanInLoopTool(child.tool) && (child.tool.feature || child.tool.chart_result || child.tool.table) && (
-              <button type="button" className="home-data-chat__batch-workspace-btn" onClick={() => onOpenWorkspace(child.tool)}>🖥️ 작업창 열기</button>
-            )}
+            {(child.reply || child.answer || child.tool) && <BubbleContent message={{ content: answerText(child), response: child }} />}
           </section>
         );
       })}
@@ -633,6 +340,12 @@ function featureInfo(feature, tool) {
     "dashboard.summary": "📈",
     "dashboard.stuck_lots": "📈",
     "dashboard.charts": "📈",
+    inline: "🧪",
+    "inline.values": "🧪",
+    "inline.radius_plot": "🧪",
+    eta: "⏰",
+    reformatize: "📥",
+    ettime: "⏱️",
     chart: "📉",
     "report.template": "📝",
     teg: "📍",
@@ -660,10 +373,16 @@ function featureInfo(feature, tool) {
     lot_management: "랏 관리 (Lot Management)",
     "lot_management.table": "Lot 관리 현황",
     "lot_management.my_lots": "내 관심 랏 현황",
-    dashboard: "대시보드 지표 요약",
+    dashboard: "대시보드 물량",
+    "dashboard.wip": "대시보드 물량",
     "dashboard.summary": "대시보드 요약 지표",
     "dashboard.stuck_lots": "대시보드 정체 랏",
     "dashboard.charts": "대시보드 차트 목록",
+    inline: "Inline 측정",
+    "inline.values": "Inline 측정값",
+    "inline.radius_plot": "Inline Radius Plot",
+    reformatize: "ET DATA 추출",
+    ettime: "ET 측정시간",
     chart: "데이터 차트",
     "report.template": "리포트 템플릿 초안",
     teg: "TEG 위치 및 좌표 조회",
@@ -682,7 +401,7 @@ function featureInfo(feature, tool) {
   ].filter(Boolean);
   return {
     icon: icons[feature] || "📊",
-    title: titles[feature] || titles[tool?.action] || feature || "데이터 뷰",
+    title: tool?.query_scope?.family === "VM" && feature === "inline" ? "VM 가상계측" : titles[feature] || titles[tool?.action] || feature || "데이터 뷰",
     subtitle: subtitleParts.join(" · "),
   };
 }
@@ -743,16 +462,8 @@ function WorkspaceTeg({ tool }) {
   );
 }
 
-function WorkspaceSplitTable({ tool, filterText = "", onDecision, onNavigate }) {
+function WorkspaceSplitTable({ tool }) {
   const nativeSplitView = nativeSplitViewFromTool(tool);
-  const filteredSplitView = useMemo(() => {
-    const query = filterText.trim().toLowerCase();
-    if (!nativeSplitView || !query) return nativeSplitView;
-    return {
-      ...nativeSplitView,
-      rows: nativeSplitView.rows.filter((row) => asText(row).toLowerCase().includes(query)),
-    };
-  }, [nativeSplitView, filterText]);
   const table = nativeSplitView ? null : (tool.table || tool.split_view);
   const ctx = tool.context || {};
   return (
@@ -761,38 +472,11 @@ function WorkspaceSplitTable({ tool, filterText = "", onDecision, onNavigate }) 
         <span className="home-workspace__meta-item">제품: <strong>{ctx.product || "-"}</strong></span>
         <span className="home-workspace__meta-item">Lot: <strong>{ctx.root_lot_id || ctx.lot_id || "-"}</strong></span>
         {ctx.custom_name && <span className="home-workspace__meta-item">공정: <strong>{ctx.custom_name}</strong></span>}
-        {tool.approval?.status === "pending" && (
-          <span className="home-workspace__badge is-pending">승인 대기 중</span>
-        )}
-        {onNavigate && (
-          <button
-            type="button"
-            className="home-workspace__mini-link-btn"
-            onClick={() => onNavigate("splittable")}
-            title="SplitTable 전체 편집기에서 직접 수정하기"
-          >
-            ✏️ SplitTable 전체 편집기로 수정 →
-          </button>
-        )}
       </div>
 
-      {tool.approval?.status === "pending" && onDecision && (
-        <div className="home-workspace__quick-decision-banner">
-          <span>⚠️ 스플릿 계획 배정이 대기 중입니다. 지금 바로 승인하시겠습니까?</span>
-          <div className="home-workspace__actions-inline">
-            <button type="button" className="home-workspace__btn is-approve" onClick={() => onDecision("승인하겠다 진행하겠다")}>
-              승인하고 반영
-            </button>
-            <button type="button" className="home-workspace__btn is-cancel" onClick={() => onDecision("취소")}>
-              취소
-            </button>
-          </div>
-        </div>
-      )}
-
-      {filteredSplitView && (
+      {nativeSplitView && (
         <SplitTableSnapshotView
-          stView={filteredSplitView}
+          stView={nativeSplitView}
           product={ctx.product || ""}
           source={splitViewSource(tool)}
           showTitle={false}
@@ -804,14 +488,13 @@ function WorkspaceSplitTable({ tool, filterText = "", onDecision, onNavigate }) 
         <DataTable
           table={table}
           downloadName={`splittable_${ctx.product || "plan"}`}
-          filterText={filterText}
         />
       )}
     </div>
   );
 }
 
-function WorkspaceLocation({ tool, filterText = "", onExplore }) {
+function WorkspaceLocation({ tool }) {
   const ctx = tool.context || {};
   const table = tool.table;
   const rows = resultRows(table);
@@ -840,60 +523,31 @@ function WorkspaceLocation({ tool, filterText = "", onExplore }) {
         </div>
       </div>
 
-      {onExplore && prod && (
-        <div className="home-workspace__quick-explore-bar">
-          <span className="home-workspace__explore-label">연계 찾아가기:</span>
-          {rootLot && (
-            <button
-              type="button"
-              className="home-workspace__explore-chip"
-              onClick={() => onExplore(`${prod} ${rootLot} 수율 맵 보여줘`)}
-            >
-              🗺️ 수율 맵 보기
-            </button>
-          )}
-          {rootLot && (
-            <button
-              type="button"
-              className="home-workspace__explore-chip"
-              onClick={() => onExplore(`${prod} ${rootLot} 스플릿테이블 보여줘`)}
-            >
-              📋 스플릿 레시피 보기
-            </button>
-          )}
-          <button
-            type="button"
-            className="home-workspace__explore-chip"
-            onClick={() => onExplore(`${prod} TEG 위치 보여줘`)}
-          >
-            📍 TEG 위치 조회
-          </button>
-        </div>
-      )}
-
       {table && (
         <DataTable
           table={table}
           downloadName={`location_${prod}_${rootLot || "lots"}`}
-          filterText={filterText}
         />
       )}
     </div>
   );
 }
 
-function WorkspaceDashboard({ tool, filterText = "" }) {
+function WorkspaceDashboard({ tool }) {
   const initialChart = tool.chart_result?.kind === "dashboard_wip_split" ? tool.chart_result : null;
   const [dashboard, setDashboard] = useState(initialChart);
+  const [splitValue, setSplitValue] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => {
     setDashboard(initialChart);
+    setSplitValue("");
     setError("");
   }, [initialChart]);
 
   const changeSplit = async (splitCol) => {
     if (!dashboard || loading) return;
+    setSplitValue("");
     setLoading(true);
     setError("");
     try {
@@ -902,7 +556,7 @@ function WorkspaceDashboard({ tool, filterText = "" }) {
         bin_size: String(dashboard.bin_size || 30000),
         split_col: splitCol,
         axis: dashboard.axis || "step_desc",
-        exclude_root_prefix: "Z",
+        exclude_root_prefix: dashboard.exclude_root_prefix || "",
       });
       const next = await sf(`/api/dashboard/wip-split?${query.toString()}`);
       setDashboard({
@@ -924,6 +578,16 @@ function WorkspaceDashboard({ tool, filterText = "" }) {
     const columns = options.length
       ? options.map((option) => option?.col).filter(Boolean)
       : (Array.isArray(dashboard.split_cols) ? dashboard.split_cols : []);
+    const values = Array.isArray(dashboard.split_values) ? dashboard.split_values : [];
+    const selectedValue = values.includes(splitValue) ? splitValue : "";
+    const bins = dashboard.bins || [];
+    const shownBins = selectedValue ? bins.map((bin) => ({
+      ...bin,
+      splits: { [selectedValue]: Number(bin.splits?.[selectedValue] || 0) },
+    })) : bins;
+    const selectedTotal = selectedValue
+      ? bins.reduce((sum, bin) => sum + Number(bin.splits?.[selectedValue] || 0), 0)
+      : Number(dashboard.total_wafers || 0);
     return (
       <div className="home-workspace__dashboard-container">
         <div className="home-workspace__dashboard-toolbar">
@@ -937,6 +601,13 @@ function WorkspaceDashboard({ tool, filterText = "" }) {
               {columns.map((column) => <option key={column} value={column}>{column}</option>)}
             </select>
           </label>
+          <label>
+            <span>Split 값별 물량</span>
+            <select aria-label="Split 값별 물량" value={selectedValue} disabled={loading || !values.length} onChange={(event) => setSplitValue(event.target.value)}>
+              <option value="">전체 Split</option>
+              {values.map((value) => <option key={value} value={value}>{value}</option>)}
+            </select>
+          </label>
           <div className="home-workspace__dashboard-stat">
             <span>총 WAFER</span>
             <strong>{Number(dashboard.total_wafers || 0).toLocaleString()}</strong>
@@ -945,14 +616,18 @@ function WorkspaceDashboard({ tool, filterText = "" }) {
             <span>SPLIT 매칭</span>
             <strong>{dashboard.total_wafers ? `${Math.round((Number(dashboard.matched_wafers || 0) / Number(dashboard.total_wafers)) * 100)}%` : "0%"}</strong>
           </div>
+          {selectedValue && <div className="home-workspace__dashboard-stat">
+            <span>선택 Split WAFER</span>
+            <strong>{selectedTotal.toLocaleString()}</strong>
+          </div>}
           {loading && <span className="home-workspace__dashboard-loading">조회 중…</span>}
         </div>
         {error && <div className="home-workspace__dashboard-error">{error}</div>}
         <div className="home-workspace__dashboard-chart" aria-label="STEP 구간별 WAFER 물량 막대 차트">
-          <div className="home-workspace__dashboard-chart-title">STEP 구간별 WAFER 물량 · {dashboard.split_col || "split 없음"}</div>
+          <div className="home-workspace__dashboard-chart-title">STEP 구간별 WAFER 물량 · {dashboard.split_col || "split 없음"}{selectedValue ? ` = ${selectedValue}` : ""}</div>
           <WipStackedBar
-            bins={dashboard.bins || []}
-            splitValues={dashboard.split_values || []}
+            bins={shownBins}
+            splitValues={selectedValue ? [selectedValue] : values}
             unassignedLabel={dashboard.unassigned_label || "(미지정)"}
             axis={dashboard.axis || "step_desc"}
             height={420}
@@ -996,14 +671,13 @@ function WorkspaceDashboard({ tool, filterText = "" }) {
         <DataTable
           table={table}
           downloadName="dashboard_data"
-          filterText={filterText}
         />
       )}
     </div>
   );
 }
 
-function WorkspaceTracker({ tool, filterText = "" }) {
+function WorkspaceTracker({ tool }) {
   const table = tool.table;
   return (
     <div className="home-workspace__tracker-container">
@@ -1024,14 +698,13 @@ function WorkspaceTracker({ tool, filterText = "" }) {
         <DataTable
           table={table}
           downloadName="tracker_issues"
-          filterText={filterText}
         />
       )}
     </div>
   );
 }
 
-function WorkspaceYieldMap({ tool, filterText = "" }) {
+function WorkspaceYieldMap({ tool }) {
   const ctx = tool.context || {};
   const table = tool.table;
   return (
@@ -1045,21 +718,17 @@ function WorkspaceYieldMap({ tool, filterText = "" }) {
         <DataTable
           table={table}
           downloadName={`yieldmap_${ctx.product || "data"}`}
-          filterText={filterText}
         />
       )}
     </div>
   );
 }
 
-function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onDecision, loading, onNavigate, onExplore }) {
-  const [filterText, setFilterText] = useState("");
+function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized }) {
+  // 오른쪽 결과창: 제목 + 데이터만. 해석·선택지·이동·필터는 왼쪽 패널이 담당한다.
   if (!workspace || !workspace.tool) return null;
-  const { feature, tool, lastUpdated, isMutated } = workspace;
+  const { feature, tool } = workspace;
   const info = featureInfo(feature, tool);
-  const approvalId = asText(tool.approval?.id).trim();
-  const targetPage = FEATURE_PAGE_MAP[feature] || FEATURE_PAGE_MAP[tool.action];
-  const pageName = FEATURE_PAGE_NAMES[feature] || FEATURE_PAGE_NAMES[tool.action] || "전체 화면";
 
   const isTegView = Boolean(
     feature === "teg" ||
@@ -1069,144 +738,87 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized, onD
     (tool.action === "location" && tool.context?.target_teg)
   );
 
-  const notices = [
-    tool.sources?.length ? `출처: ${tool.sources.map(asText).join(" · ")}` : "",
-    tool.missing?.length ? `누락: ${tool.missing.map(asText).join(" · ")}` : "",
-    tool.warnings?.length ? `주의: ${tool.warnings.map(asText).join(" · ")}` : "",
-    tool.blocked ? `차단됨: ${asText(tool.blocked)}` : "",
-  ].filter(Boolean);
-
   return (
-    <aside className={`home-data-chat__workspace-pane${isMutated ? " is-mutated" : ""}${isMaximized ? " is-maximized" : ""}`} aria-label="라이브 기능 작업창">
+    <aside className={`home-data-chat__workspace-pane${isMaximized ? " is-maximized" : ""}`} aria-label="결과">
       <div className="home-workspace__header">
         <div className="home-workspace__header-left">
           <span className="home-workspace__icon">{info.icon}</span>
           <div className="home-workspace__titles">
-            <div className="home-workspace__title">
-              {info.title}
-              {isMutated ? (
-                <span className="home-workspace__badge is-updated">⚡ 실시간 갱신됨</span>
-              ) : (
-                <span className="home-workspace__badge is-live">● 실시간 연동 ({lastUpdated})</span>
-              )}
-            </div>
+            <div className="home-workspace__title">{info.title}</div>
             {!isTegView && info.subtitle && <div className="home-workspace__subtitle">{info.subtitle}</div>}
           </div>
         </div>
 
         <div className="home-workspace__header-right">
-          {tool.approval?.status === "pending" && approvalId && (
-            <div className="home-workspace__actions-inline">
-              <button type="button" className="home-workspace__btn is-approve" disabled={loading} onClick={() => onDecision(`승인 ${tool.approval.id}`)}>
-                승인하고 반영
-              </button>
-              <button type="button" className="home-workspace__btn is-cancel" disabled={loading} onClick={() => onDecision(`취소 ${tool.approval.id}`)}>
-                취소
-              </button>
-            </div>
-          )}
-          {targetPage && onNavigate && (
-            <button
-              type="button"
-              className="home-workspace__tool-btn"
-              onClick={() => {
-                if (targetPage === "dashboard" && tool?.context?.split_col) {
-                  try {
-                    sessionStorage.setItem("flow:dashboard:initial_split", JSON.stringify({
-                      product: tool.context.product || "",
-                      split_col: tool.context.split_col || "",
-                    }));
-                  } catch {}
-                }
-                onNavigate(targetPage);
-              }}
-              title={`${pageName} 페이지로 이동`}
-            >
-              ↗ {pageName}
-            </button>
-          )}
-          {feature === "chart" && onExplore && (
-            <button type="button" className="home-workspace__tool-btn" disabled={loading} onClick={() => onExplore("이 차트로 리포트 템플릿 만들어줘")}>
-              📝 리포트 템플릿 초안
-            </button>
-          )}
           <button type="button" className="home-workspace__tool-btn" onClick={onMaximize} title={isMaximized ? "분할 보기" : "전체 창으로 확대"}>
             {isMaximized ? "⤡ 축소" : "⤢ 전체"}
           </button>
-          <button type="button" className="home-workspace__tool-btn" onClick={onClose} title="작업창 접기" aria-label="작업창 접기">
+          <button type="button" className="home-workspace__tool-btn" onClick={onClose} title="결과창 접기" aria-label="결과창 접기">
             ✕
           </button>
         </div>
       </div>
 
-      {!isTegView && <div className="home-workspace__filter-bar">
-        <span className="home-workspace__filter-icon">🔍</span>
-        <input
-          type="text"
-          className="home-workspace__filter-input"
-          placeholder="작업창 내부 실시간 필터/검색 (Step ID, 공정명, Knob, 값 등)..."
-          value={filterText}
-          onChange={(e) => setFilterText(e.target.value)}
-        />
-        {filterText && (
-          <button
-            type="button"
-            className="home-workspace__filter-clear"
-            onClick={() => setFilterText("")}
-            title="필터 지우기"
-          >
-            ✕
-          </button>
-        )}
-      </div>}
-
       <div className="home-workspace__body">
-        {!isTegView && notices.length > 0 && (
-          <div className="home-workspace__notices">
-            {notices.map((notice) => <div key={notice}>{notice}</div>)}
-          </div>
-        )}
-
-        {tool.report_template && (
-          <details className="home-workspace__report-template" style={{ width: "100%", boxSizing: "border-box" }}>
-            <summary>리포트 템플릿 초안</summary>
-            <div><strong>{tool.report_template.name || "Template Report"}</strong> · {(tool.report_template.pages || []).length || 1}페이지</div>
-            {(tool.report_template.pages || []).map((page, index) => (
-              <div key={page.id || index}>
-                {index + 1}. {page.title || `Page ${index + 1}`} · {(page.slots || []).filter((slot) => slot.kind === "chart" || !slot.kind).map((slot) => slot.chart_name || slot.chart_label || slot.chart_id || "차트").join(", ") || "차트 없음"}
-              </div>
-            ))}
-            {tool.template_code && <pre style={{ maxHeight: 260, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{tool.template_code}</pre>}
-          </details>
-        )}
-
-        {tool.chart_result && tool.chart_result.kind !== "dashboard_wip_split" && (
+        {tool.report_template && <section className="home-workspace__report-preview" aria-label="리포트 구성">
+          <h3>{tool.report_template.name}</h3>
+          {(tool.report_template.pages || []).map((page, index) => <div key={page.id || index}>
+            <strong>{index + 1}페이지 · {page.title}</strong>
+            <ol>{(page.slots || []).map(slot => <li key={slot.position}>{slot.chart_name || slot.chart_label || slot.title || `차트 ${slot.position}`}</li>)}</ol>
+          </div>)}
+          {tool.approval?.status === "applied" && tool.report_template.id && <a href={`/templatereport?template_id=${encodeURIComponent(tool.report_template.id)}`} target="_blank" rel="noreferrer">Template Report에서 실행·다운로드 ↗</a>}
+        </section>}
+        {!tool.report_template && tool.chart_result && tool.chart_result.kind !== "dashboard_wip_split" && (
           <div className="home-workspace__chart">
-            <FlowPlotlyChart chart={tool.chart_result} cfg={tool.chart_result} dark={false} />
+            {tool.chart_result.chart_type === "wafer_map" ? <TegValueWaferMap
+              key={tool.saved_chart?.id || tool.chart_result.title}
+              vehicle={tool.chart_result.product} panels={tool.chart_result.panels} points={tool.chart_result.points}
+              title={tool.chart_result.title} valueLabel={tool.chart_result.y_label}
+              mapData={tool.chart_result.wafer_geometry} scaleValues={tool.chart_result.scale_values}
+              palette={tool.chart_result.wafer_palette} low={tool.chart_result.wafer_low}
+              center={tool.chart_result.wafer_center} high={tool.chart_result.wafer_high}
+            /> : <FlowPlotlyChart chart={tool.chart_result} cfg={tool.chart_result} dark={false} />}
           </div>
+        )}
+
+        {(tool.chart_panels || []).map((panel, index) => (
+          panel?.chart && (
+            <div className="home-workspace__chart" key={panel.title || index}>
+              {panel.title && <div className="home-workspace__dashboard-chart-title">{panel.title}</div>}
+              <FlowPlotlyChart chart={panel.chart} cfg={panel.chart} dark={false} />
+            </div>
+          )
+        ))}
+
+        {tool.saved_chart?.id && <div className="home-workspace__saved-chart" role="status">
+          <span>차트생성 이력에 저장됨 · Template report에서 재사용할 수 있습니다.</span>
+          <a href={`/chartbuilder?history_id=${encodeURIComponent(tool.saved_chart.id)}`} target="_blank" rel="noreferrer">저장된 차트 열기 ↗</a>
+        </div>}
+        {tool.download_job?.job_id && (
+          <HomeDownloadJob key={tool.download_job.job_id} job={tool.download_job} />
         )}
 
         {isTegView ? (
           <WorkspaceTeg tool={tool} />
         ) : feature === "splittable" || tool.action?.startsWith("splittable") ? (
-          <WorkspaceSplitTable tool={tool} filterText={filterText} onDecision={onDecision} onNavigate={onNavigate} />
+          <WorkspaceSplitTable tool={tool} />
         ) : feature === "location" || tool.action?.startsWith("lot_progress") ? (
-          <WorkspaceLocation tool={tool} filterText={filterText} onExplore={onExplore} />
+          <WorkspaceLocation tool={tool} />
         ) : feature === "dashboard" || tool.action?.startsWith("dashboard") ? (
-          <WorkspaceDashboard tool={tool} filterText={filterText} />
+          <WorkspaceDashboard tool={tool} />
         ) : feature === "tracker" || tool.action?.startsWith("tracker") ? (
-          <WorkspaceTracker tool={tool} filterText={filterText} />
+          <WorkspaceTracker tool={tool} />
         ) : feature === "yield_map" || tool.action?.startsWith("yield_map") ? (
-          <WorkspaceYieldMap tool={tool} filterText={filterText} />
-        ) : tool.table ? (
-          <DataTable table={tool.table} filterText={filterText} />
+          <WorkspaceYieldMap tool={tool} />
+        ) : tool.table && !tool.download_job?.job_id ? (
+          <DataTable table={tool.table} />
         ) : null}
       </div>
     </aside>
   );
 }
 
-export default function HomeDataChat({ user, onNavigate, enabled = false, probeKey = 0 }) {
+export default function HomeDataChat({ user, onNavigate, enabled = false, probeKey = 0, onClose }) {
   const username = user?.username || "guest";
   const [prompt, setPrompt] = useState("");
   const [chatState, setChatState] = useState(() => loadChatState(username));
@@ -1256,8 +868,9 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
     setConversationLoading(false);
     submitLockRef.current = false;
     setPrompt("");
-    setChatState(loadChatState(username));
-    setActiveWorkspace(null);
+    const restored = loadChatState(username);
+    setChatState(restored);
+    restoreWorkspace(restored.messages);
   }, [username]);
 
   useEffect(() => {
@@ -1296,6 +909,14 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
     }
   };
 
+  const restoreWorkspace = (messages) => {
+    const lastToolMsg = [...messages].reverse().find((m) => m.response?.tool);
+    const tool = lastToolMsg?.response?.tool;
+    const feature = !tool || isHumanInLoopTool(tool) ? null : (tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null)));
+    setActiveWorkspace(feature ? { feature, tool, lastUpdated: new Date().toLocaleTimeString(), isMutated: false } : null);
+    setWorkspaceOpen(Boolean(feature));
+  };
+
   const selectConversation = async (conversationId) => {
     if (!conversationId || conversationId === chatState.conversationId || conversationLoading || loading) return;
     const generation = conversationGenerationRef.current + 1;
@@ -1312,27 +933,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
       const loadedMessages = normalizeMessages(Array.isArray(payload?.messages) ? payload.messages : []);
       setChatState({ username, conversationId: payload?.id || conversationId, messages: loadedMessages, context: payload?.context && typeof payload.context === "object" ? payload.context : {}, updatedAt: Date.now() });
 
-      // Restore workspace from last message with tool
-      const lastToolMsg = [...loadedMessages].reverse().find((m) => m.response?.tool);
-      if (lastToolMsg?.response?.tool) {
-        const tool = lastToolMsg.response.tool;
-        const feature = isHumanInLoopTool(tool) ? null : (tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null)));
-        if (feature) {
-          setActiveWorkspace({
-            feature,
-            tool,
-            lastUpdated: new Date().toLocaleTimeString(),
-            isMutated: false,
-          });
-          setWorkspaceOpen(true);
-        } else {
-          setActiveWorkspace(null);
-          setWorkspaceOpen(false);
-        }
-      } else {
-        setActiveWorkspace(null);
-        setWorkspaceOpen(false);
-      }
+      restoreWorkspace(loadedMessages);
     } catch (error) {
       if (generation === conversationGenerationRef.current && error?.name !== "AbortError") setConversationError("대화를 불러오지 못했습니다.");
     } finally {
@@ -1356,6 +957,13 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
   }, [chatState.messages, loading]);
 
   const historyForRequest = useMemo(() => apiHistory(chatState.messages), [chatState.messages]);
+  const selectedReportCharts = Array.isArray(chatState.context.selected_report_charts) ? chatState.context.selected_report_charts : [];
+  const reportChoices = reportChartChoices(chatState.messages, selectedReportCharts);
+  const toggleChart = (chart) => setChatState(current => ({
+    ...current,
+    context: { ...current.context, selected_report_charts: toggleReportChart(current.context.selected_report_charts || [], chart) },
+    updatedAt: Date.now(),
+  }));
 
   const newConversation = () => {
     requestVersionRef.current += 1;
@@ -1372,19 +980,6 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
     setChatState(emptyChatState(username));
   };
 
-  const focusWorkspace = (tool) => {
-    if (!tool) return;
-    const feature = isHumanInLoopTool(tool) ? null : (tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null)));
-    if (!feature) return;
-    setActiveWorkspace({
-      feature,
-      tool,
-      lastUpdated: new Date().toLocaleTimeString(),
-      isMutated: false,
-    });
-    setWorkspaceOpen(true);
-  };
-
   const submit = async (event, decision = "") => {
     event?.preventDefault();
     const value = (decision || prompt).trim();
@@ -1394,7 +989,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
     const requestVersion = requestVersionRef.current + 1;
     requestVersionRef.current = requestVersion;
     const userMessage = { id: `${Date.now()}-user`, role: "user", content: value };
-    const requestContext = chatState.context;
+    const requestContext = { ...chatState.context, selected_report_charts: selectedReportCharts };
     const requestHistory = historyForRequest;
     setPrompt("");
     setLoading(true);
@@ -1475,29 +1070,59 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
   if (!enabled) return null;
 
   const hasActiveWorkspace = workspaceOpen && activeWorkspace && activeWorkspace.tool;
+  const assistantResponses = chatState.messages.filter(
+    (message) => message.role === "assistant" && message.response && !message.error
+  );
+  const latestResponse = assistantResponses.length
+    ? assistantResponses[assistantResponses.length - 1].response
+    : null;
 
   return (
     <section className={`home-data-chat${hasActiveWorkspace ? " has-workspace" : ""}`} aria-label="데이터 채팅">
-      <ModelStatus key={username} refreshKey={modelRefreshKey} probeKey={probeKey} turnUsage={turnUsage} />
       <div className="home-data-chat__conversation-bar">
-        <select value={chatState.conversationId} onChange={(event) => selectConversation(event.target.value)} disabled={conversationLoading || loading} aria-label="저장된 대화 선택">
-          <option value={chatState.conversationId}>{conversations.find((item) => item.id === chatState.conversationId)?.title || "새 대화"}</option>
-          {conversations.filter((conversation) => conversation.id !== chatState.conversationId).map((conversation) => (
-            <option key={conversation.id} value={conversation.id}>{conversation.title || "제목 없는 대화"}</option>
-          ))}
-        </select>
-        <button type="button" onClick={newConversation} disabled={loading}>새 대화</button>
-        {activeWorkspace && !workspaceOpen && (
-          <button type="button" className="home-data-chat__reopen-btn" onClick={() => setWorkspaceOpen(true)}>
-            🖥️ 라이브 작업창 열기 ({featureInfo(activeWorkspace.feature, activeWorkspace.tool).title})
-          </button>
-        )}
-        {conversationLoading && <span className="home-data-chat__conversation-status">불러오는 중…</span>}
-        {conversationError && <span className="home-data-chat__conversation-error" role="status">{conversationError}</span>}
+        <div className="home-data-chat__conversation-controls">
+          <select value={chatState.conversationId} onChange={(event) => selectConversation(event.target.value)} disabled={conversationLoading || loading} aria-label="저장된 대화 선택">
+            <option value={chatState.conversationId}>{conversations.find((item) => item.id === chatState.conversationId)?.title || "새 대화"}</option>
+            {conversations.filter((conversation) => conversation.id !== chatState.conversationId).map((conversation) => (
+              <option key={conversation.id} value={conversation.id}>{conversation.title || "제목 없는 대화"}</option>
+            ))}
+          </select>
+          <button type="button" onClick={newConversation} disabled={loading}>새 대화</button>
+          <ModelStatus key={username} refreshKey={modelRefreshKey} probeKey={probeKey} turnUsage={turnUsage} />
+          {activeWorkspace && !workspaceOpen && (
+            <button type="button" className="home-data-chat__reopen-btn" onClick={() => setWorkspaceOpen(true)}>
+              🖥️ 결과창 열기 ({featureInfo(activeWorkspace.feature, activeWorkspace.tool).title})
+            </button>
+          )}
+          {conversationLoading && <span className="home-data-chat__conversation-status">불러오는 중…</span>}
+          {conversationError && <span className="home-data-chat__conversation-error" role="status">{conversationError}</span>}
+        </div>
+        {onClose && <button type="button" className="home-data-chat__close-btn" onClick={onClose} aria-label="Flow-i 종료하고 홈으로 돌아가기">종료</button>}
       </div>
 
       <div className="home-data-chat__body">
         <div className={`home-data-chat__chat-pane${workspaceMaximized ? " is-hidden" : ""}`}>
+          <InterpretationPanel
+            response={latestResponse}
+            disabled={loading || conversationLoading}
+            onSubmit={(value) => submit(null, value)}
+          />
+          {reportChoices.length > 0 && <section className="home-data-chat__report-charts" aria-label="리포트 차트 선택">
+            <details>
+              <summary>리포트에 담을 차트 · {selectedReportCharts.length}개 선택</summary>
+              <p>수정한 버전을 선택하세요. 선택 순서대로 배치하며 최대 24개까지 담을 수 있습니다.</p>
+              <div className="home-data-chat__report-chart-list">
+                {reportChoices.map(chart => <label key={chart.id}>
+                  <input type="checkbox" checked={selectedReportCharts.some(item => item.id === chart.id)}
+                    disabled={loading || conversationLoading || (selectedReportCharts.length >= 24 && !selectedReportCharts.some(item => item.id === chart.id))}
+                    onChange={() => toggleChart(chart)} />
+                  <span>{chart.name}</span>
+                </label>)}
+              </div>
+            </details>
+            <button type="button" disabled={loading || conversationLoading || !selectedReportCharts.length}
+              onClick={() => submit(null, "선택한 차트로 보고서 템플릿 만들어줘")}>선택한 {selectedReportCharts.length}개로 Template Report 만들기</button>
+          </section>}
           <div className="home-data-chat__conversation" ref={scrollRef} aria-live="polite">
             {chatState.messages.length === 0 && (
               <div className="home-data-chat__empty-wrap">
@@ -1527,101 +1152,19 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
               </div>
             )}
             {(() => {
-              const latestMessageId = chatState.messages[chatState.messages.length - 1]?.id;
               return chatState.messages.map((message) => {
-              const msgTool = message.response?.tool;
-              const tegCandidateGroups = Array.isArray(msgTool?.teg_candidates)
-                ? msgTool.teg_candidates.filter((group) => group && Array.isArray(group.candidates) && group.candidates.length)
-                : [];
-              const splitCandidateGroups = Array.isArray(msgTool?.split_candidates)
-                ? msgTool.split_candidates.filter((group) => group && Array.isArray(group.candidates) && group.candidates.length)
-                : [];
-              const msgFeature = msgTool?.feature || (msgTool?.chart_result ? "chart" : (msgTool?.table ? "table" : null));
-              const info = msgFeature && !isHumanInLoopTool(msgTool) ? featureInfo(msgFeature, msgTool) : null;
-              const isCurrent = activeWorkspace && activeWorkspace.tool === msgTool;
-              const canRespond = message.role === "assistant" && message.id === latestMessageId && !loading;
               const isBatchMessage = Array.isArray(message.response?.questions) && message.response.questions.length > 0;
 
               return (
                 <article key={message.id} className={`home-data-chat__message is-${message.role}${message.error ? " is-error" : ""}`}>
+                  <div className="home-data-chat__speaker">{message.role === "user" ? "나" : "Flow"}</div>
                   <div className="home-data-chat__bubble">
                      {isBatchMessage
-                       ? <BatchContent response={message.response} onExplore={(query) => submit(null, query)} onOpenWorkspace={focusWorkspace} canRespond={canRespond} />
-                       : <BubbleContent message={message} onExplore={(query) => submit(null, query)} />}
+                       ? <BatchContent response={message.response} />
+                       : <BubbleContent message={message} />}
                   </div>
 
                   {message.response?.usage && <div className="home-data-chat__usage">이번 요청 LLM {message.response.usage.llm_calls_used}회 차감 / 최대 {message.response.usage.llm_call_limit}회 · 당시 분당 잔여 {message.response.usage.minute_calls_remaining}회</div>}
-                  {message.role === "assistant" && msgTool && (
-                    <div className="home-data-chat__message-footer">
-                      {info && (
-                        <div
-                          className={`home-data-chat__workspace-chip${isCurrent ? " is-active" : ""}`}
-                          onClick={() => focusWorkspace(msgTool)}
-                          role="button"
-                          tabIndex={0}
-                          aria-label={`${info.title} 작업창에서 보기`}
-                        >
-                          <span className="home-data-chat__workspace-chip-icon">{info.icon}</span>
-                          <div className="home-data-chat__workspace-chip-content">
-                            <span className="home-data-chat__workspace-chip-title">{info.title}</span>
-                            {info.subtitle && <span className="home-data-chat__workspace-chip-sub">{info.subtitle}</span>}
-                          </div>
-                          <span className="home-data-chat__workspace-chip-btn">
-                            {isCurrent && workspaceOpen ? "작업창 표시 중" : "작업창 열기 →"}
-                          </span>
-                        </div>
-                      )}
-
-                      {splitCandidateGroups.map((group, groupIndex) => (
-                        <div className="home-data-chat__candidate-group" key={`split-cand-${groupIndex}`}>
-                          <span>{group.title || "Split 조건을 선택하세요"}</span>
-                          <div className="home-data-chat__actions is-choice-list" aria-label="Split 후보 선택">
-                            {group.candidates.map((cand, candIdx) => {
-                              const label = cand.label || cand.value || cand;
-                              const promptText = cand.prompt || cand.value || cand;
-                              return (
-                                <button
-                                  type="button"
-                                  key={`cand-${candIdx}`}
-                                  disabled={loading}
-                                  onClick={() => submit(null, promptText)}
-                                >
-                                  {label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      ))}
-
-                      {!isBatchMessage && isProductRequest(msgTool) && (
-                        <ProductClarification tool={msgTool} onSubmit={(value) => submit(null, value)} disabled={!canRespond} />
-                      )}
-
-                      {tegCandidateGroups.map((group, groupIndex) => (
-                        <div className="home-data-chat__candidate-group" key={`${asText(group.requested)}-${groupIndex}`}>
-                          <span>{group.requested ? `“${asText(group.requested)}” 후보를 선택하세요` : "TEG 후보를 선택하세요"}</span>
-                          <div className="home-data-chat__actions is-choice-list" aria-label="TEG 후보 선택">
-                            {group.candidates.map((candidate) => {
-                              const name = asText(candidate).trim();
-                              return name ? <button type="button" key={name} disabled={loading} onClick={() => submit(null, name)}>{name}</button> : null;
-                            })}
-                          </div>
-                        </div>
-                      ))}
-
-                      {msgTool.approval?.status === "pending" && asText(msgTool.approval?.id).trim() && (
-                        <div className="home-data-chat__actions is-choice-list" aria-label="스플릿 변경 승인">
-                          <button type="button" disabled={loading} onClick={() => submit(null, `승인 ${msgTool.approval.id}`)}>
-                            승인하고 반영
-                          </button>
-                          <button type="button" disabled={loading} onClick={() => submit(null, `취소 ${msgTool.approval.id}`)}>
-                            취소
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
                 </article>
               );
               });
@@ -1654,17 +1197,21 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
           <div className="home-data-chat__composer-help">여러 질문은 줄바꿈 또는 물음표(?)로 나누세요 · 한 번에 최대 4개</div>
         </div>
 
-        {hasActiveWorkspace && (
+        {hasActiveWorkspace ? (
           <LiveFeatureWorkspace
             workspace={activeWorkspace}
             onClose={() => { setWorkspaceOpen(false); setWorkspaceMaximized(false); }}
             onMaximize={() => setWorkspaceMaximized((v) => !v)}
             isMaximized={workspaceMaximized}
-            onDecision={(value) => submit(null, value)}
-            loading={loading}
-            onNavigate={onNavigate}
-            onExplore={(query) => submit(null, query)}
           />
+        ) : (
+          latestResponse && isHumanInLoopTool(latestResponse.tool) && (
+            <aside className="home-data-chat__workspace-pane is-idle" aria-label="결과 대기">
+              <div className="home-workspace__body">
+                <div className="home-workspace__idle">왼쪽에서 선택을 마치면 여기에 결과가 표시됩니다.</div>
+              </div>
+            </aside>
+          )
         )}
       </div>
     </section>

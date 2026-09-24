@@ -93,6 +93,41 @@ def chart_builder_radius_layout(request: Request, product: str = Query(...), teg
     return _chart_builder_radius_layout(product, teg=teg if isinstance(teg, str) else "", source_product=source_product if isinstance(source_product, str) else "")
 
 
+def _chart_builder_ml_join_where(source_id, joins, frames, columns):
+    """Restrict a wafer dimension to current left keys before applying row limits.
+
+    Derived on each execution, so saved charts and reports can fetch new wafers.
+    """
+    for join in joins:
+        left_keys = [k.strip() for k in join.left_on.split(",")]
+        right_keys = [k.strip() for k in join.right_on.split(",")]
+        if join.right != source_id or join.left not in frames or join.how != "left":
+            continue
+        if [key.casefold() for key in right_keys] != ["root_lot_id", "wafer_id"] or not all(k in columns for k in right_keys):
+            continue
+        left = frames[join.left]
+        if len(left_keys) != 2 or not all(k in left.columns for k in left_keys):
+            continue
+        pairs = set()
+        for root, wafer in left.select(left_keys).iter_rows():
+            if root is None or wafer is None:
+                continue
+            root = str(root).strip().upper()
+            wafer = re.sub(r"^(?:WAFER|WF|W|#)\s*", "", str(wafer).strip().upper())
+            wafer = re.sub(r"^0*([1-9][0-9]*|0)(?:\.0+)?$", r"\1", wafer)
+            pairs.add((root, wafer))
+        if not pairs:
+            return "FALSE"
+        literal = lambda value: "'" + value.replace("'", "''") + "'"
+        values = ",".join(f"({literal(root)},{literal(wafer)})" for root, wafer in sorted(pairs))
+        root_sql = f'UPPER(TRIM(CAST("{right_keys[0].replace(chr(34), chr(34) * 2)}" AS VARCHAR)))'
+        wafer_sql = f'UPPER(TRIM(CAST("{right_keys[1].replace(chr(34), chr(34) * 2)}" AS VARCHAR)))'
+        wafer_sql = f"regexp_replace({wafer_sql}, '^(WAFER|WF|W|#)\\s*', '')"
+        wafer_sql = f"regexp_replace({wafer_sql}, '^0*([1-9][0-9]*|0)(\\.0+)?$', '\\1')"
+        return f"({root_sql},{wafer_sql}) IN ({values})"
+    return ""
+
+
 def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict):
     """Run the bounded data phase. The public route adds cache, admission and history."""
     sources = list(req.sources or [])
@@ -187,6 +222,8 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
                     _combine_where(_normalize_view_sql_filter(normalized, all_columns, schema), runtime_where),
                     _duckdb_valid_wafer_where(all_columns),
                 )
+                if source_root.upper() == "ML_TABLE":
+                    where = _combine_where(where, _chart_builder_ml_join_where(source_id, req.joins, frames, all_columns))
                 df, _, _ = duckdb_engine.query_files(
                     files,
                     where=where,
@@ -221,6 +258,8 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
             df = df.drop(removable)
         truncated = df.height > max_rows
         if truncated:
+            if source_root.upper() == "ML_TABLE" and any(j.right == source_id for j in req.joins):
+                raise HTTPException(400, "ML_TABLE 결합 대상이 조회 한도를 넘습니다. Root Lot 범위를 좁혀 주세요. 일부 Split 값만 결합하지 않았습니다.")
             df = df.head(max_rows)
             warnings.append(f"{source_id}: JOIN 안전 한도 {max_rows:,}행에서 잘렸습니다.")
         frames[source_id] = df
@@ -275,6 +314,28 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
         # wafer key이므로 JOIN 직전에 양쪽 key를 문자열로 정규화한다.
         joined = joined.with_columns([pl.col(key).cast(pl.String, strict=False).alias(key) for key in left_keys])
         right = right.with_columns([pl.col(key).cast(pl.String, strict=False).alias(key) for key in right_keys])
+        right_source = next((s for s in sources if s.id == right_id), None)
+        if right_source and right_source.root.upper() == "ML_TABLE":
+            # Wafer dimension: repeated measurements must not multiply left points.
+            def normalized_key(key):
+                value = pl.col(key).str.strip_chars().str.to_uppercase()
+                if key.casefold() == "wafer_id":
+                    value = value.str.replace(r"^(?:WAFER|WF|W|#)\s*", "").str.replace(r"^0*([1-9][0-9]*|0)(?:\.0+)?$", "${1}")
+                return value.alias(key)
+            joined = joined.with_columns([normalized_key(k) for k in left_keys])
+            right = right.with_columns([normalized_key(k) for k in right_keys]).unique()
+            if right.select(right_keys).is_duplicated().any():
+                metric = str((req.chart or {}).get("x") or "")
+                metric_only = set(right.columns) == set([*right_keys, metric])
+                if (metric_only and metric in right.columns
+                        and str((req.chart or {}).get("fit") or "").lower() == "linear"):
+                    numeric = right.with_columns(pl.col(metric).cast(pl.Float64, strict=False).alias(metric))
+                    if numeric.get_column(metric).null_count() == numeric.height:
+                        raise HTTPException(400, "ML_TABLE 평균 열에 수치 데이터가 없습니다.")
+                    right = numeric.group_by(right_keys).agg(pl.col(metric).mean().alias(metric))
+                    warnings.append(f"{right_id}: 동일 Root Lot·Wafer의 ML_TABLE {metric} 수치 행을 평균해 결합했습니다.")
+                else:
+                    raise HTTPException(400, "ML_TABLE의 동일 Root Lot·Wafer에 서로 다른 Split 값이 있습니다. 결합을 중단했으니 원본 값을 확인해 주세요.")
         rename = {
             col: f"{right_id}__{col}"
             for col in right.columns
@@ -503,7 +564,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             single_file_fp = None
             single_file_folders = _single_file_folder_names(
                 settings,
-                allow_credential=str((me or {}).get("role") or "").strip().casefold() == "admin",
+                allow_credential=_can_manage_filebrowser(me),
             )
             if folder_key in single_file_folders:
                 single_file_fp = _resolve_single_file_folder_data_path(
@@ -764,6 +825,7 @@ class FileBrowserSettingsReq(BaseModel):
     schema_column_page_size: int = DEFAULT_SCHEMA_COLUMN_PAGE_SIZE
     csv_rules: dict = {}
     file_descriptions: dict[str, str] = {}
+    file_name_aliases: dict[str, str] = {}
     hidden_db_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["hidden_db_dirs"]
     db_name_aliases: dict[str, str] = {}
     versioned_single_file_dirs: list[str] = DEFAULT_FILEBROWSER_SETTINGS["versioned_single_file_dirs"]

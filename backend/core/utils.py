@@ -525,7 +525,14 @@ def source_data_files(source_type: str = "", root: str = "", product: str = "",
     """Resolve physical data files for a Flow DB source without reading them."""
     DB_BASE = PATHS.db_root
     files: list[Path] = []
-    if str(root or "").strip().upper() == "SPLITTABLE" and product:
+    if str(root or "").strip().upper() == "ML_TABLE" and product:
+        # Logical ChartBuilder source; resolve only a catalog product, never a path.
+        if Path(str(product)).name != str(product) or str(product) in {".", ".."}:
+            return []
+        from core.ml_table_lookup import resolve_ml_table_file
+        fp = resolve_ml_table_file(product)
+        files = [fp] if fp and fp.is_file() else []
+    elif str(root or "").strip().upper() == "SPLITTABLE" and product:
         safe_product = Path(str(product)).name
         if safe_product != str(product) or safe_product in {"", ".", ".."}:
             files = []

@@ -66,8 +66,9 @@ def _now() -> str:
     return datetime.datetime.now().isoformat(timespec="seconds")
 
 
-def _is_admin(role: str) -> bool:
-    return (role or "").lower() == "admin"
+def _is_admin(user: dict) -> bool:
+    from core.auth import is_page_manager
+    return is_page_manager(user, "inform")
 
 
 # ─────────────── schemas ───────────────
@@ -145,7 +146,7 @@ def edit_comment(inform_id: str, cid: str, body: CommentEdit, request: Request):
     comments = target.get("comments") or []
     for c in comments:
         if c.get("id") == cid:
-            if c.get("author") != me["username"] and not _is_admin(me.get("role", "")):
+            if c.get("author") != me["username"] and not _is_admin(me):
                 raise HTTPException(403, "Only author or admin can edit")
             before = c.get("text", "")
             c["text"] = text
@@ -174,7 +175,7 @@ def delete_comment(inform_id: str, cid: str, request: Request):
     comments = target.get("comments") or []
     for i, c in enumerate(comments):
         if c.get("id") == cid:
-            if c.get("author") != me["username"] and not _is_admin(me.get("role", "")):
+            if c.get("author") != me["username"] and not _is_admin(me):
                 raise HTTPException(403, "Only author or admin can delete")
             removed = comments.pop(i)
             target["comments"] = comments

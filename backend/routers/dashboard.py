@@ -101,9 +101,9 @@ def _dashboard_fab_progress_config() -> dict:
 
 
 def _require_dashboard_section(request: Request, section: str) -> dict:
-    from core.auth import current_user
+    from core.auth import current_user, is_page_manager
     me = current_user(request)
-    if me.get("role") == "admin":
+    if is_page_manager(me, "dashboard"):
         return me
     if not _dashboard_sections_config().get(section, False):
         raise HTTPException(403, f"dashboard {section} is admin only")
@@ -112,7 +112,10 @@ def _require_dashboard_section(request: Request, section: str) -> dict:
 
 def _visible_charts_for_user(me: dict) -> list[dict]:
     from routers.groups import filter_by_visibility
+    from core.auth import is_page_manager
     role = me.get("role", "user")
+    if is_page_manager(me, "dashboard"):
+        role = "admin"
     charts = _charts()
     if role != "admin":
         charts = [c for c in charts if (c.get("visible_to") or "all") != "admin"]
@@ -2982,6 +2985,13 @@ def _wip_split_prepare(product: str, bin_size: int, split_col: str, axis: str,
     else:
         cur = cur.filter(canonical_product == str(product).upper())
 
+    # Match physical key spellings before deduplication and both count views.
+    if {"root_lot_id", "wafer_id"}.issubset(cur.columns):
+        cur = cur.with_columns(
+            pl.col("root_lot_id").cast(_STR).fill_null("").str.strip_chars().str.to_uppercase(),
+            pl.col("wafer_id").cast(_STR).fill_null("").str.strip_chars().str.to_uppercase()
+              .str.replace(r"^(?:WF|W)", "").str.replace(r"^0+(\d+)$", "${1}"),
+        ).filter((pl.col("root_lot_id") != "") & (pl.col("wafer_id") != ""))
     # A transition cache can contain both spellings for the same wafer. Fold
     # them without double-counting, preferring the newest timestamp and then
     # the canonical (non-prefixed) spelling on an exact tie.
@@ -3167,25 +3177,24 @@ def _wip_split_prepare(product: str, bin_size: int, split_col: str, axis: str,
         except Exception:
             logger.warning("wip-split match cache join failed", exc_info=True)
     elif ml_fp is not None and split_col:
-        try:
-            ml = (pl.scan_parquet(ml_fp)
-                    .select(["ROOT_LOT_ID", "WAFER_ID", split_col])
-                    .with_columns([
-                        pl.col("ROOT_LOT_ID").cast(_STR, strict=False).str.to_uppercase().alias("_root"),
-                        pl.col("WAFER_ID").cast(_STR, strict=False).str.strip_chars().alias("_wf"),
-                        pl.col(split_col).cast(_STR, strict=False).alias("_split"),
-                    ])
-                    .select(["_root", "_wf", "_split"])
-                    .unique(subset=["_root", "_wf"], keep="first")
-                    .collect())
-            cur = (cur.with_columns([
-                        pl.col("root_lot_id").cast(_STR, strict=False).str.to_uppercase().alias("_root"),
-                        pl.col("wafer_id").cast(_STR, strict=False).str.strip_chars().alias("_wf"),
-                    ])
-                    .join(ml, on=["_root", "_wf"], how="left"))
-            split_join_ok = True
-        except Exception:
-            logger.warning("wip-split ML_TABLE join failed", exc_info=True)
+        names = pl.scan_parquet(ml_fp).collect_schema().names()
+        key_names = {str(c).casefold(): c for c in names}
+        root_col, wafer_col = key_names.get("root_lot_id"), key_names.get("wafer_id")
+        if not root_col or not wafer_col:
+            raise HTTPException(400, "ML_TABLE에 Root Lot·Wafer 결합 키가 없습니다.")
+        def root_key(name):
+            return pl.col(name).cast(_STR, strict=False).str.strip_chars().str.to_uppercase().alias("_root")
+        def wafer_key(name):
+            return (pl.col(name).cast(_STR, strict=False).str.strip_chars().str.to_uppercase()
+                    .str.replace(r"^(?:WF|W)", "").str.replace(r"^0+(\d+)$", "${1}").alias("_wf"))
+        ml = pl.scan_parquet(ml_fp).select(root_key(root_col), wafer_key(wafer_col),
+            pl.col(split_col).cast(_STR, strict=False).alias("_split")).unique().collect()
+        cur = cur.with_columns(root_key("root_lot_id"), wafer_key("wafer_id"))
+        ml = ml.join(cur.select("_root", "_wf").unique(), on=["_root", "_wf"], how="semi")
+        if ml.group_by("_root", "_wf").len().filter(pl.col("len") > 1).height:
+            raise HTTPException(409, "같은 Root Lot·Wafer에 서로 다른 Split 값이 있어 물량을 중복 집계할 수 없습니다. ML_TABLE을 확인해 주세요.")
+        cur = cur.join(ml, on=["_root", "_wf"], how="left")
+        split_join_ok = True
     if "_split" not in cur.columns:
         cur = cur.with_columns(pl.lit(None, dtype=pl.Utf8).alias("_split"))
     # Normalize once before both summary and drilldown use the value.  Previously
@@ -3335,6 +3344,53 @@ def wip_split_summary(
         "lot_types": ctx["lot_types"],
         "lot_type": lot_type,
     }
+
+
+@router.get("/volume-distribution")
+def volume_distribution(request: Request, product: str = Query("ALL"),
+                        group_by: str = Query("product"), exclude_root_prefix: str = Query("")):
+    """Current canonical WIP wafer share; missing types stay in the denominator."""
+    _require_dashboard_section(request, "charts")
+    if group_by not in {"product", "lot_type"}:
+        raise HTTPException(400, "group_by는 product 또는 lot_type이어야 합니다.")
+    if group_by == "lot_type" and (not product or _wip_split_is_all(product)):
+        raise HTTPException(400, "Lot type 분포를 볼 제품을 선택해 주세요.")
+    frame, selected, products, fp = _wip_split_latest_cache(product or "ALL")
+    required = {"product", "root_lot_id", "wafer_id"}
+    if not required.issubset(frame.columns):
+        raise HTTPException(409, "현재 물량 캐시에 제품·Root Lot·Wafer 키가 필요합니다.")
+    root = pl.col("root_lot_id").cast(_STR).fill_null("").str.strip_chars().str.to_uppercase()
+    wafer = (pl.col("wafer_id").cast(_STR).fill_null("").str.strip_chars().str.to_uppercase()
+             .str.replace(r"^(?:WF|W)", "").str.replace(r"^0+(\d+)$", "${1}"))
+    frame = frame.with_columns(_wip_split_product_expr(frame.columns).str.replace(r"(?i)^ML_TABLE_", "").str.to_uppercase().alias("_product"),
+                               root.alias("_root"), wafer.alias("_wafer"))
+    frame = frame.filter((pl.col("_root") != "") & (pl.col("_wafer") != "") & (pl.col("_product") != ""))
+    order = [c for c in ("tkout_time", "update_time") if c in frame.columns]
+    if order:
+        frame = frame.sort(order)
+    frame = frame.unique(subset=["_product", "_root", "_wafer"], keep="last", maintain_order=True)
+    for prefix in _wip_split_exclude_prefixes(exclude_root_prefix):
+        frame = frame.filter(~pl.col("_root").str.starts_with(prefix))
+    if group_by == "lot_type":
+        col = next((c for c in frame.columns if c.casefold() == "lot_type"), "")
+        if not col:
+            raise HTTPException(409, "현재 물량 캐시에 lot_type 열이 없습니다.")
+        label = pl.col(col).cast(_STR).fill_null("").str.strip_chars().str.to_uppercase()
+        frame = frame.with_columns(pl.when(label == "").then(pl.lit("(미지정)")).otherwise(label).alias("_label"))
+    else:
+        frame = frame.with_columns(pl.col("_product").alias("_label"))
+    total = frame.height
+    grouped = frame.group_by("_label").agg(pl.len().alias("wafer_count"), pl.struct("_product", "_root").n_unique().alias("lot_count"))
+    rows = [{"label": r["_label"], "wafer_count": r["wafer_count"], "lot_count": r["lot_count"],
+             "share_pct": 100 * r["wafer_count"] / total if total else 0} for r in grouped.to_dicts()]
+    rows.sort(key=lambda r: (-r["wafer_count"], r["label"]))
+    from core.audit import record as _audit_record
+    _audit_record(request, "dashboard:volume_distribution",
+                  detail=f"product={selected} group_by={group_by} wafers={total}", tab="dashboard")
+    return {"ok": True, "product": selected, "products": products, "group_by": group_by,
+            "unit": "wafer", "total_wafers": total,
+            "total_lots": frame.select(pl.struct("_product", "_root").n_unique()).item() if total else 0,
+            "rows": rows, "source": "canonical latest WIP cache", "exclude_root_prefix": exclude_root_prefix}
 
 
 @router.get("/wip-split/lots")

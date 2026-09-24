@@ -122,3 +122,80 @@ def test_lot_tracker_endpoint_enforces_tab_access(monkeypatch):
         assert getattr(exc, "status_code", None) == 403
     else:
         raise AssertionError("missing LOT Tracker permission must be rejected")
+
+
+def _patch_preset_paths(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        lot_tracker_router, "PATHS", SimpleNamespace(db_root=tmp_path, data_root=tmp_path)
+    )
+
+
+def test_preset_steps_save_and_load_roundtrip(monkeypatch, tmp_path):
+    _patch_preset_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        lot_tracker_router, "current_user", lambda request: {"username": "a", "role": "admin", "tabs": ""}
+    )
+    saved = lot_tracker_router.save_preset_steps(
+        {"product": "PRODA", "steps": [
+            {"step_id": "aa100600", "step_desc": "Metal Etch"},
+            {"step_id": "AA100600", "step_desc": "dup"},
+            {"step_id": "  ", "step_desc": "blank"},
+            {"step_id": "AA100610", "step_desc": "x" * 500},
+            "not-a-dict",
+        ]},
+        object(),
+    )
+    assert saved["ok"] is True
+    assert saved["product"] == "PRODA"
+    assert saved["steps"] == [
+        {"step_id": "AA100600", "step_desc": "Metal Etch"},
+        {"step_id": "AA100610", "step_desc": "x" * 200},
+    ]
+
+    monkeypatch.setattr(
+        lot_tracker_router, "current_user",
+        lambda request: {"username": "u", "role": "user", "tabs": "lottracker"},
+    )
+    got = lot_tracker_router.get_preset_steps(object(), "PRODA")
+    assert got == {"product": "PRODA", "steps": saved["steps"]}
+    assert lot_tracker_router.get_preset_steps(object(), "UNKNOWN") == {"product": "UNKNOWN", "steps": []}
+
+
+def test_preset_steps_permissions_and_validation(monkeypatch, tmp_path):
+    _patch_preset_paths(monkeypatch, tmp_path)
+    viewer = {"username": "u", "role": "user", "tabs": "lottracker"}
+    monkeypatch.setattr(lot_tracker_router, "current_user", lambda request: viewer)
+    monkeypatch.setattr(lot_tracker_router, "is_page_manager", lambda user, page: False)
+
+    try:
+        lot_tracker_router.save_preset_steps({"product": "P", "steps": []}, object())
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 403
+    else:
+        raise AssertionError("viewer must not save presets")
+
+    stranger = {"username": "s", "role": "user", "tabs": "dashboard"}
+    monkeypatch.setattr(lot_tracker_router, "current_user", lambda request: stranger)
+    try:
+        lot_tracker_router.get_preset_steps(object(), "P")
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 403
+    else:
+        raise AssertionError("missing tab must not read presets")
+
+    monkeypatch.setattr(
+        lot_tracker_router, "current_user", lambda request: {"username": "a", "role": "admin", "tabs": ""}
+    )
+    for bad in ({"steps": []}, {"product": "P", "steps": {}}):
+        try:
+            lot_tracker_router.save_preset_steps(bad, object())
+        except Exception as exc:
+            assert getattr(exc, "status_code", None) == 400
+        else:
+            raise AssertionError(f"bad payload must be rejected: {bad}")
+    try:
+        lot_tracker_router.get_preset_steps(object(), "  ")
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 400
+    else:
+        raise AssertionError("empty product must be rejected")

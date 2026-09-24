@@ -1,11 +1,12 @@
 """Shared product semantics with explicit administrator vocabulary management."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
-from core import product_semantics as semantic, product_wiki as wiki
-from core.auth import require_admin, is_page_manager
+from core import inline_alias, product_semantics as semantic, product_wiki as wiki
+from core.auth import require_page_manager, is_page_manager
 from routers.product_wiki import require_access
 
 router = APIRouter(prefix="/api/product-semantics", tags=["product-semantics"])
+require_productwiki_manager = require_page_manager("productwiki")
 
 
 class Input(BaseModel):
@@ -26,14 +27,29 @@ class Aliases(BaseModel):
 
 
 class ItemAliasRequest(BaseModel):
-    product: str = Field(min_length=1, max_length=200)
-    step_id: str = Field(..., max_length=100)
+    product: str = Field(..., min_length=1, max_length=200)
+    step_id: str = Field("", max_length=100)
     item_id: str = Field(..., max_length=100)
     aliases: list[str] = Field(default_factory=list, max_length=50)
     module: str = Field("", max_length=100)
     step_desc: str = Field("", max_length=300)
     item_desc: str = Field("", max_length=300)
+    source_type: str = Field("INLINE", max_length=20)
     expected_updated_at: str | None = Field(None, max_length=100)
+
+
+class DescAliasRequest(BaseModel):
+    product: str = Field(..., min_length=1, max_length=200)
+    desc: str = Field(..., min_length=1, max_length=200)
+    step_id: str = Field(..., min_length=1, max_length=100)
+    item_id: str = Field(..., min_length=1, max_length=100)
+
+
+class DescAliasDelete(BaseModel):
+    product: str = Field(..., min_length=1, max_length=200)
+    desc: str = Field(..., min_length=1, max_length=200)
+    step_id: str = Field("", max_length=100)
+    item_id: str = Field("", max_length=100)
 
 
 def _call(function, *args, **kwargs):
@@ -48,17 +64,17 @@ def _call(function, *args, **kwargs):
 
 
 @router.get("/catalog")
-def catalog(user=Depends(require_admin)):
+def catalog(user=Depends(require_productwiki_manager)):
     return {**semantic.snapshot(), "product_aliases": semantic.product_aliases()}
 
 
 @router.post("/bootstrap")
-def bootstrap(user=Depends(require_admin)):
+def bootstrap(user=Depends(require_productwiki_manager)):
     return _call(semantic.bootstrap, user["username"])
 
 
 @router.post("/product-aliases")
-def product_aliases(body: Aliases, user=Depends(require_admin)):
+def product_aliases(body: Aliases, user=Depends(require_productwiki_manager)):
     return _call(semantic.save_product_aliases, body.product, body.aliases, user["username"], body.expected_updated_at)
 
 
@@ -68,7 +84,7 @@ def product(product: str, user=Depends(require_access)):
 
 
 @router.post("/propose")
-def propose(body: Input, user=Depends(require_admin)):
+def propose(body: Input, user=Depends(require_productwiki_manager)):
     return _call(semantic.propose, body.product, body.text, user["username"])
 
 
@@ -79,6 +95,32 @@ def confirm(body: Confirmation, user=Depends(require_access)):
 
 
 @router.post("/item-alias")
-def save_item_alias(body: ItemAliasRequest, user=Depends(require_admin)):
+def save_item_alias(body: ItemAliasRequest, user=Depends(require_productwiki_manager)):
     return _call(semantic.save_item_alias, body.product, body.step_id, body.item_id,
-                 body.aliases, user["username"], body.module, body.step_desc, body.item_desc, body.expected_updated_at)
+                 body.aliases, user["username"], body.module, body.step_desc, body.item_desc, body.expected_updated_at,
+                 body.source_type)
+
+
+@router.get("/desc-aliases")
+def desc_aliases(product: str = Query(""), user=Depends(require_access)):
+    return {"aliases": inline_alias.list_desc_aliases(product)}
+
+
+@router.post("/desc-alias")
+def save_desc_alias(body: DescAliasRequest, user=Depends(require_productwiki_manager)):
+    return _call(inline_alias.save_desc_alias, body.product, body.desc,
+                 body.step_id, body.item_id, user["username"])
+
+
+@router.delete("/desc-alias")
+def delete_desc_alias(body: DescAliasDelete, user=Depends(require_productwiki_manager)):
+    try:
+        removed = inline_alias.delete_desc_alias(body.product, body.desc, body.step_id, body.item_id)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "removed": removed}
+
+
+@router.post("/aliases-backup-import")
+def aliases_backup_import(user=Depends(require_productwiki_manager)):
+    return _call(semantic.import_aliases_backup, user["username"])

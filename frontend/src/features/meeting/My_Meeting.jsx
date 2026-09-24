@@ -8,6 +8,7 @@
 */
 import { useEffect, useMemo, useState, useRef } from "react";
 import PageGear from "../../components/PageGear";
+import { canManagePage } from "../../lib/permissions";
 import Modal from "../../components/Modal";
 import { toast } from "../../components/Toast";
 import { Btn, EmptyState, Input, Panel, Pill, Select, TabStrip, TableWrap, Tbl, Textarea, chartPalette } from "../../components/UXKit";
@@ -418,7 +419,7 @@ export default function My_Meeting({ user }) {
   const editingMinutesRef = useRef(false);
   useEffect(() => { editingMinutesRef.current = editingMinutes; }, [editingMinutes]);
 
-  const isAdmin = user?.role === "admin";
+  const isAdmin = canManagePage(user, "meeting");
   const me = user?.username || "";
 
   // v8.8.3: 공용 메일그룹(/api/mail-groups) + 일반 그룹(/api/groups) 병합.

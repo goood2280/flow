@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from core.paths import PATHS
 from core import aws_credentials as _aws_credentials
 from core.utils import load_json, save_json, jsonl_append, jsonl_read, jsonl_trim
-from core.auth import require_admin, require_page_manager
+from core.auth import require_page_manager
 
 router = APIRouter(prefix="/api/s3ingest", tags=["s3ingest"])
 
@@ -938,7 +938,7 @@ def _find_existing_item_id(items: list[dict], *, kind: str, target: str, directi
 
 
 @router.post("/save")
-def save_item(req: SaveReq, _perm=Depends(require_admin)):
+def save_item(req: SaveReq, _perm=Depends(require_page_manager("filebrowser"))):
     try:
         return _save_item_checked(req)
     except HTTPException as exc:
@@ -1012,7 +1012,7 @@ class IdReq(BaseModel):
 
 
 @router.post("/delete")
-def delete_item(req: IdReq, _perm=Depends(require_admin)):
+def delete_item(req: IdReq, _perm=Depends(require_page_manager("filebrowser"))):
     cfg = _load_cfg()
     before = len(cfg.get("items", []))
     cfg["items"] = [x for x in cfg.get("items", []) if x.get("id") != req.id]
@@ -1088,7 +1088,7 @@ class SetEnabledReq(BaseModel):
 
 
 @router.post("/set-enabled")
-def set_item_enabled(req: SetEnabledReq, _perm=Depends(require_admin)):
+def set_item_enabled(req: SetEnabledReq, _perm=Depends(require_page_manager("filebrowser"))):
     """삭제/재등록 없이 항목 주기 동기화를 일시정지(enabled=false)/재개한다."""
     cfg = _load_cfg()
     item = next((x for x in cfg.get("items", []) if x.get("id") == req.id), None)
@@ -1243,7 +1243,7 @@ class AutoSyncReq(BaseModel):
 
 
 @router.post("/auto-sync/save")
-def save_auto_sync(req: AutoSyncReq, _perm=Depends(require_admin)):
+def save_auto_sync(req: AutoSyncReq, _perm=Depends(require_page_manager("filebrowser"))):
     cfg = _load_cfg()
     cfg["auto_download_enabled"] = bool(req.auto_download_enabled)
     cfg["auto_upload_enabled"] = bool(req.auto_upload_enabled)
@@ -1257,7 +1257,7 @@ class ScheduleReq(BaseModel):
     username: str = ""
 
 @router.post("/schedule/save")
-def save_schedule(req: ScheduleReq, _perm=Depends(require_admin)):
+def save_schedule(req: ScheduleReq, _perm=Depends(require_page_manager("filebrowser"))):
     save_json(SCHEDULE_FILE, {"enabled": req.enabled, "interval_minutes": max(5, min(1440, req.interval_minutes))})
     return {"ok": True}
 
@@ -1425,7 +1425,7 @@ def _read_config() -> Dict[str, Dict[str, str]]:
 
 
 @router.get("/aws-config")
-def aws_config_get(username: str = Query(""), _perm=Depends(require_admin)):
+def aws_config_get(username: str = Query(""), _perm=Depends(require_page_manager("filebrowser"))):
     """Return profiles with masked secrets."""
     creds = _read_credentials()
     conf = _read_config()
@@ -1468,7 +1468,7 @@ class AwsConfigReq(BaseModel):
 
 
 @router.post("/aws-config/save")
-def aws_config_save(req: AwsConfigReq, _perm=Depends(require_admin)):
+def aws_config_save(req: AwsConfigReq, _perm=Depends(require_page_manager("filebrowser"))):
     """Save one profile. Secret: empty string means 'keep current', mask-string also means keep."""
     profile = (req.profile or "default").strip() or "default"
     if not AWS_PROFILE_RE.match(profile):
@@ -1583,7 +1583,7 @@ class AwsProfileReq(BaseModel):
 
 
 @router.post("/aws-config/delete")
-def aws_config_delete(req: AwsProfileReq, _perm=Depends(require_admin)):
+def aws_config_delete(req: AwsProfileReq, _perm=Depends(require_page_manager("filebrowser"))):
     profile = (req.profile or "").strip()
     if not AWS_PROFILE_RE.match(profile):
         raise HTTPException(400, f"invalid profile name: {profile!r}")

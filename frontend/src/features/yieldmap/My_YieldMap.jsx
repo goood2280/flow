@@ -244,14 +244,6 @@ function WfGeometryMap({ kind, rows, geometry, colors, renderMode = "shot", anch
     const gaussianSigma = Math.max(radius / 2.5, Math.max(shotW, shotH) * 3);
     const interpolate = (x, y) => {
       if (!samples.length) return null;
-      if (interpolationMethod === "nearest") {
-        let nearest = samples[0], nearestDistance = Infinity;
-        for (const sample of samples) {
-          const distance2 = (sample.mmX - x) ** 2 + (sample.mmY - y) ** 2;
-          if (distance2 < nearestDistance) { nearest = sample; nearestDistance = distance2; }
-        }
-        return Number(nearest.value);
-      }
       let weighted = 0, weights = 0;
       for (const sample of samples) {
         const distance2 = (sample.mmX - x) ** 2 + (sample.mmY - y) ** 2;
@@ -261,13 +253,7 @@ function WfGeometryMap({ kind, rows, geometry, colors, renderMode = "shot", anch
           : 1 / distance2;
         weighted += Number(sample.value) * weight; weights += weight;
       }
-      if (weights) return weighted / weights;
-      let nearest = samples[0], nearestDistance = Infinity;
-      for (const sample of samples) {
-        const distance2 = (sample.mmX - x) ** 2 + (sample.mmY - y) ** 2;
-        if (distance2 < nearestDistance) { nearest = sample; nearestDistance = distance2; }
-      }
-      return Number(nearest.value);
+      return weights ? weighted / weights : null;
     };
     return { geo, radius, scale, shotW, shotH, byShot, anchorX, anchorY, samples, min, max, cols, chipRows, interpolate };
   }, [rows, geometry, anchorTeg, interpolationMethod]);
@@ -338,11 +324,6 @@ function WfGeometryMap({ kind, rows, geometry, colors, renderMode = "shot", anch
           </rect>;
         })}
       </g>}
-      {kind !== "yield" && renderMode !== "shot" && samples.map((sample, index) => <circle
-        key={`sample:${sample.wafer}:${sample.shot_x}:${sample.shot_y}:${index}`} cx={sx(sample.mmX)} cy={sy(sample.mmY)} r="2.1"
-        fill="#0F172A" stroke="#FFFFFF" strokeWidth=".75">
-        <title>{`${anchorTeg || "Shot center"} 측정점\nshot (${sample.shot_x}, ${sample.shot_y}) · ${Number(sample.value).toPrecision(6)}`}</title>
-      </circle>)}
       <line x1={SIZE / 2 - 5} y1={SIZE / 2} x2={SIZE / 2 + 5} y2={SIZE / 2} stroke="var(--muted)" />
       <line x1={SIZE / 2} y1={SIZE / 2 - 5} x2={SIZE / 2} y2={SIZE / 2 + 5} stroke="var(--muted)" />
     </svg>
@@ -535,7 +516,7 @@ function RelationMapComparison({ data, pair }) {
         </label>
         {mapMode === "surface" && <label style={{ ...inputLabel, minWidth: 130 }}>보간 방식
           <Select value={mapInterpolation} onChange={event => setMapInterpolation(event.target.value)}>
-            <option value="idw">IDW</option><option value="nearest">Nearest</option>
+            <option value="idw">IDW</option><option value="gaussian">Gaussian</option>
           </Select>
         </label>}
       </div>
@@ -903,7 +884,7 @@ export default function My_YieldMap({ user }) {
   };
 
   const canEdit = !!boot?.can_edit || user?.role === "admin";
-  const isAdmin = user?.role === "admin";
+  const isAdmin = canEdit;
   const activeProduct = dataKind === "yield" ? product : shotProduct;
   const matchedGeometry = geometryForProduct(boot?.geometry_products, activeProduct);
   const hasBinSettings = !!scanPreview || binRows.some(row => String(row.bin || "").trim());
@@ -1304,7 +1285,6 @@ export default function My_YieldMap({ user }) {
           {dataKind !== "yield" && renderMode !== "shot" && <label style={{ ...inputLabel, minWidth: 165 }}>보간 방법
             <Select value={interpolationMethod} onChange={event => setInterpolationMethod(event.target.value)}>
               <option value="idw">IDW · 거리 역가중</option>
-              <option value="nearest">Nearest · 최근접</option>
               <option value="gaussian">Gaussian · 부드러운 RBF</option>
             </Select>
           </label>}
@@ -1400,7 +1380,6 @@ export default function My_YieldMap({ user }) {
           {renderMode !== "shot" && <label style={{ ...inputLabel, minWidth: 170 }}>공통 보간 방법
             <Select value={interpolationMethod} onChange={event => setInterpolationMethod(event.target.value)}>
               <option value="idw">IDW · 거리 역가중</option>
-              <option value="nearest">Nearest · 최근접</option>
               <option value="gaussian">Gaussian · 부드러운 RBF</option>
             </Select>
           </label>}

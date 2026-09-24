@@ -21,11 +21,11 @@ from typing import List, Optional, Dict, Any
 from core.paths import PATHS
 from core.utils import jsonl_read, jsonl_iter, jsonl_page, load_json, save_json
 from core.notify import (
-    send_notify, get_notifications, mark_all_read, send_to_admins,
+    send_notify, get_notifications, mark_all_read,
     dismiss_notification, dismiss_by_ids, mark_read_by_ids,
 )
 from routers.auth import read_users, write_users
-from core.auth import canonical_page_id, canonical_tab_token, effective_permissions, effective_permissions_bulk, get_page_admins, require_admin, current_user, verify_owner
+from core.auth import DELEGABLE_PAGE_IDS, GRANTABLE_TAB_IDS, canonical_page_id, canonical_tab_token, effective_permissions, effective_permissions_bulk, get_page_admins, require_admin, current_user, verify_owner
 from core.audit import ACTIVITY_LOG_MAX_BYTES, append_activity, record as _audit
 from core import s3_sync as _s3
 from core import root_profile, activity_index
@@ -392,6 +392,9 @@ class MarkReadReq(BaseModel):
 class PageAdminsReq(BaseModel):
     page_id: str
     usernames: List[str] = []
+class UserPageAdminsReq(BaseModel):
+    username: str
+    pages: List[str] = []
 class BackupScheduleReq(BaseModel):
     at: str = ""            # ISO datetime — 비우면 취소
     reason: str = "pre-maintenance"
@@ -638,6 +641,8 @@ def set_tabs(req: PermReq, request: Request, _admin=Depends(require_admin)):
     tokens: list = []
     for part in req.tabs:
         token = canonical_tab_token(part)
+        if not token or token.split(":", 1)[0] not in GRANTABLE_TAB_IDS:
+            raise HTTPException(400, f"Unknown permission: {part}")
         if token and token not in tokens:
             tokens.append(token)
     users = read_users()
@@ -745,10 +750,7 @@ def set_role(req: SetRoleReq, request: Request, _admin=Depends(require_admin)):
 
 @router.get("/user-tabs")
 def get_user_tabs(request: Request, username: str = Query(...)):
-    """v8.4.6: 본인 또는 admin 만.
-    v9.0.x: archived tabs are filtered out of existing saved preferences."""
-    # v9.5.x: ettime 은 "ET 측정시간" 탭으로 부활 — archived 목록에서 제외.
-    _ARCHIVED_TABS = {"waferlayout"}
+    """본인 또는 admin에게 현재 지원되는 탭 권한만 반환한다."""
     verify_owner(request, username)
     for u in read_users():
         if u["username"] == username:
@@ -759,8 +761,9 @@ def get_user_tabs(request: Request, username: str = Query(...)):
                 tabs_list = []
             else:
                 # v9.1.x: "tab:subtab" 토큰 유지 — archived 판정은 main tab 기준.
-                tabs_list = [t.strip() for t in raw.split(",")
-                             if t.strip() and t.strip().split(":")[0] not in _ARCHIVED_TABS]
+                tabs_list = [token for t in raw.split(",")
+                             if (token := canonical_tab_token(t))
+                             and token.split(":", 1)[0] in GRANTABLE_TAB_IDS]
             return {"tabs": ",".join(tabs_list)}
     raise HTTPException(404)
 
@@ -962,6 +965,8 @@ def perm_groups_save(req: PermGroupReq, request: Request, _admin=Depends(require
     tokens: list = []
     for part in req.tabs:
         token = canonical_tab_token(part)
+        if not token or token.split(":", 1)[0] not in GRANTABLE_TAB_IDS:
+            raise HTTPException(400, f"Unknown permission: {part}")
         if token and token not in tokens:
             tokens.append(token)
     users = read_users()
@@ -1055,16 +1060,10 @@ class InquiryReq(BaseModel):
 
 @router.post("/send-inquiry")
 def send_inquiry(req: InquiryReq, request: Request):
-    """User sends inquiry to all admins. 본인 이름으로만 보낼 수 있음."""
+    """Store the inquiry in the shared thread so every manager can reply."""
     verify_owner(request, req.username)
-    send_to_admins(
-        f"Inquiry from {req.username}",
-        req.message,
-        "message",
-    )
-    # Also notify the user that their inquiry was sent
-    send_notify(req.username, "Inquiry Sent", "Your message has been sent to admin.", "info")
-    return {"ok": True}
+    from routers.messages import SendReq, user_send
+    return user_send(SendReq(username=req.username, text=req.message), request)
 
 
 @router.post("/broadcast")
@@ -1702,10 +1701,11 @@ def page_admins_get(_admin=Depends(require_admin)):
 def page_admins_set(req: PageAdminsReq, request: Request, _admin=Depends(require_admin)):
     """page_id → usernames 목록을 설정 (빈 리스트면 해당 페이지 위임 제거)."""
     page_id = canonical_page_id(req.page_id)
-    if not page_id:
-        raise HTTPException(400, "page_id required")
+    if page_id not in DELEGABLE_PAGE_IDS:
+        raise HTTPException(400, "Unknown or non-delegable page")
     before = get_page_admins()
-    valid_users = {u["username"] for u in read_users() if u.get("status") == "approved"}
+    valid_users = {u["username"] for u in read_users()
+                   if u.get("status") == "approved" and u.get("role") != "admin"}
     users = [u for u in (req.usernames or []) if u in valid_users]
     data = load_json(ADMIN_SETTINGS_FILE, {})
     pa = dict(before)
@@ -1717,6 +1717,34 @@ def page_admins_set(req: PageAdminsReq, request: Request, _admin=Depends(require
     save_json(ADMIN_SETTINGS_FILE, data)
     _audit(request, "admin:page-admins-set",
            detail=f"actor={current_user(request).get('username') or ''};page={page_id};before={before.get(page_id) or []};after={pa.get(page_id) or []}", tab="admin")
+    return {"ok": True, "page_admins": pa}
+
+
+@router.post("/page-admins/user")
+def page_admins_set_user(req: UserPageAdminsReq, request: Request, _admin=Depends(require_admin)):
+    """한 사용자의 전체 페이지 위임을 원자적으로 교체한다."""
+    approved = {u["username"] for u in read_users() if u.get("status") == "approved" and u.get("role") != "admin"}
+    if req.username not in approved:
+        raise HTTPException(404, "Approved non-admin user required")
+    pages = {canonical_page_id(page) for page in req.pages}
+    if not pages.issubset(DELEGABLE_PAGE_IDS):
+        raise HTTPException(400, "Unknown or non-delegable page")
+    before = get_page_admins()
+    pa = {page: list(users) for page, users in before.items()}
+    for page in DELEGABLE_PAGE_IDS:
+        users = set(pa.get(page, []))
+        users.discard(req.username)
+        if page in pages:
+            users.add(req.username)
+        if users:
+            pa[page] = sorted(users)
+        else:
+            pa.pop(page, None)
+    data = load_json(ADMIN_SETTINGS_FILE, {})
+    data["page_admins"] = pa
+    save_json(ADMIN_SETTINGS_FILE, data)
+    _audit(request, "admin:page-admins-set-user",
+           detail=f"actor={current_user(request).get('username') or ''};user={req.username};pages={','.join(sorted(pages))}", tab="admin")
     return {"ok": True, "page_admins": pa}
 
 

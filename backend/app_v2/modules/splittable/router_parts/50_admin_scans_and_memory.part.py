@@ -1114,7 +1114,7 @@ def _submit_product_cache_scan(product: str, *, force: bool, source: str,
 
 
 @router.post("/ram-cache/unified-scan")
-def unified_scan(req: UnifiedScanReq, request: Request = None, _perm=Depends(require_page_manager("splittable"))):
+def unified_scan(req: UnifiedScanReq, request: Request = None, _perm=Depends(require_page_manager_any("ramcache", "splittable"))):
     """관리자: 선택 제품의 필수 공유 캐시 작업을 1회 일반 큐에 등록.
 
     스캔은 서버당 하나만 돈다. 다른 스캔(수동/전체 셋업/예약)이 진행 중이면
@@ -1373,7 +1373,7 @@ def _run_full_setup_scan(job_id: str = "") -> dict:
 
 
 @router.post("/ram-cache/full-setup")
-def full_setup_scan(_admin=Depends(require_admin)):
+def full_setup_scan(_admin=Depends(require_page_manager_any("ramcache", "splittable"))):
     """호환용 버튼: 전 제품 필수 공유 캐시를 일반 큐에 한 번 등록한다."""
     _reap_dead_unified_scan()
     cfg = _full_setup_config()
@@ -1546,7 +1546,9 @@ def _product_cache_status_snapshot(*, nonblocking: bool = False) -> dict:
                 daemon=True,
             ).start()
         if cached is not None:
-            return cached
+            # Tell the page to collect this refresh promptly too. Returning an
+            # unmarked stale snapshot made it wait the idle 15-second interval.
+            return {**cached, "artifact_status_pending": True}
         # Cold page load must not wait for every product's lookup/pivot/FAB
         # directory walk.  Return the cheap lifecycle projection immediately;
         # the background refresh publishes artifact-accurate readiness for the
@@ -1601,7 +1603,9 @@ def _product_cache_status_snapshot(*, nonblocking: bool = False) -> dict:
             elif not item["ready"] and item.get("state") == "ok":
                 # 반대 방향의 어긋남: 빌드 로그는 성공인데 산출물이 없다.
                 item["state"] = "stale"
-                item["message"] = "빌드 기록은 성공이지만 산출물이 준비되지 않았습니다"
+                item["message"] = (
+                    artifact.get("message") if item.get("kind") == "pivot" else ""
+                ) or "빌드 기록은 성공이지만 산출물이 준비되지 않았습니다"
             elif (
                 not item["ready"]
                 and item.get("state") == "running"
@@ -1768,7 +1772,7 @@ def _cache_budget_settings_payload() -> dict:
 
 @router.get("/cache-budget/settings")
 def get_cache_budget_settings(request: Request):
-    if not is_page_manager(current_user(request), "splittable"):
+    if not any(is_page_manager(current_user(request), page) for page in ("ramcache", "splittable")):
         raise HTTPException(403, "관리자 전용")
     return _cache_budget_settings_payload()
 
@@ -1802,7 +1806,7 @@ class CacheBudgetSaveReq(BaseModel):
 
 
 @router.post("/cache-budget/settings/save")
-def save_cache_budget_settings(req: CacheBudgetSaveReq, _perm=Depends(require_page_manager("splittable"))):
+def save_cache_budget_settings(req: CacheBudgetSaveReq, _perm=Depends(require_page_manager_any("ramcache", "splittable"))):
     """캐시 예산 조절값 저장. 빈 값(None)은 미변경, 0/음수 GB 는 '자동'(키 삭제).
     운영/개발 분리: <key> = 운영, <key>_dev = 개발서버 전용(미설정 시 운영값 폴백)."""
     from core import cache_settings
@@ -1934,7 +1938,7 @@ class RamCachePriorityLotsSaveReq(BaseModel):
 def save_ram_cache_priority_lots(
     req: RamCachePriorityLotsSaveReq,
     request: Request,
-    _perm=Depends(require_page_manager("splittable")),
+    _perm=Depends(require_page_manager_any("ramcache", "splittable")),
 ):
     """우선 lot 등록 목록 저장 (product 전체 교체)."""
     product = str(req.product or "").strip()
@@ -2175,7 +2179,7 @@ def get_ram_cache_overview(request: Request):
         # 캐시 관리 화면의 관리자 블록 노출 기준 — 이 페이지의 관리 기능은 모두
         # splittable page manager 권한으로 보호돼 있어 그 판정을 그대로 내려준다.
         # (일반 유저에겐 주요 Lot / 전체 캐시만 보인다)
-        "can_manage": is_page_manager(current_user(request), "splittable"),
+        "can_manage": any(is_page_manager(current_user(request), page) for page in ("ramcache", "splittable")),
     }
 
 
@@ -2354,7 +2358,7 @@ def get_cache_event_log(
 ):
     """관리자 전용 — 캐시 성공/실패 이벤트 로그 + peak RAM."""
     user = current_user(request)
-    if not is_page_manager(user, "splittable"):
+    if not any(is_page_manager(user, page) for page in ("ramcache", "splittable")):
         raise HTTPException(403, "관리자 전용")
     from core.cache_event_log import (get_events, get_jobs, milestones, peak_ram_info,
                                       progress_snapshot)
@@ -2422,21 +2426,16 @@ def _required_split_cache_status(product: str) -> dict:
     lookup_built_ts = _artifact_built_ts(lookup.get("built_at"))
     lookup_build_seconds = float(lookup.get("build_seconds") or 0.0)
 
-    pivot_dir = _pivot_cache_path(canonical, "_probe").parent
-    pivot_files = 0
-    try:
-        pivot_files = sum(1 for path in pivot_dir.glob("*.parquet") if path.is_file())
-    except Exception:
-        pivot_files = 0
     pivot_running = _pivot_cache_build_state(canonical) == "building"
     try:
-        pivot_complete = not _pivot_cache_needs_build(canonical, _product_path(canonical))
+        pivot = _pivot_cache_artifact_status(canonical, _product_path(canonical))
     except Exception:
-        pivot_complete = False
-    # The builder's root fingerprint is the authoritative membership check.
-    # File count alone can pass when one stale root remains while a current root
-    # is missing, so it is only retained as a compact progress number.
-    pivot_ready = bool(pivot_files > 0 and (pivot_complete or pivot_running))
+        pivot = {"ready": False, "done": 0, "built_ts": 0.0,
+                 "message": "Pivot 원본 또는 완료 기록을 확인할 수 없습니다"}
+    pivot_files = pivot["done"]
+    # Starting a build is not proof of completion. A first build with one root
+    # must never turn green and then fall back to missing when it stops.
+    pivot_ready = bool(pivot["ready"])
 
     latest = _latest_lot_step_cache_status(canonical)
     latest_ready = bool(
@@ -2472,9 +2471,8 @@ def _required_split_cache_status(product: str) -> dict:
         {"kind": "pivot", "label": "SplitTable pivot", "ready": pivot_ready,
          "state": "building" if pivot_running else ("ready" if pivot_ready else "missing"),
          "done": pivot_files, "total": lookup_roots,
-         "built_ts": max(_path_mtime(pivot_dir / ".root_fingerprints.json"),
-                         _path_mtime(pivot_dir / ".build_complete.json")), "build_seconds": 0.0,
-         "message": f"Pivot 빌드 완료 — {pivot_files:,} roots"},
+         "built_ts": pivot["built_ts"], "build_seconds": 0.0,
+         "message": pivot["message"]},
         {"kind": "latest_lot", "label": "WIP latest-lot", "ready": latest_ready,
          "state": "ready" if latest_ready else ("building" if _MANUAL_LATEST_REFRESH_RUNNING else "missing"),
          "done": int(latest.get("product_row_count") or 0), "total": 0,
@@ -2835,7 +2833,7 @@ class RamCacheProductBudgetSaveReq(BaseModel):
 @router.post("/ram-cache/product-budgets/save")
 def save_ram_cache_product_budget(
     req: RamCacheProductBudgetSaveReq,
-    _perm=Depends(require_page_manager("splittable")),
+    _perm=Depends(require_page_manager_any("ramcache", "splittable")),
 ):
     """제품별 RAM 캐시 예산(max_roots) + 적재순서 step 임계값 저장 — 운영/개발 구분.
     source_config.json 의 ram_cache_product_budgets 아래에 기록한다."""
@@ -3537,7 +3535,7 @@ class PivotFallbackReq(BaseModel):
 
 
 @router.post("/ram-cache/pivot-fallback")
-def pivot_production_fallback(req: PivotFallbackReq, _perm=Depends(require_page_manager("splittable"))):
+def pivot_production_fallback(req: PivotFallbackReq, _perm=Depends(require_page_manager_any("ramcache", "splittable"))):
     """One production-only local build, with existing per-product shared lease."""
     from core import worker_dispatch
     if worker_dispatch.server_role() == "worker":
@@ -3550,7 +3548,7 @@ def pivot_production_fallback(req: PivotFallbackReq, _perm=Depends(require_page_
 
 
 @router.get("/ram-cache/pivot-fallback")
-def pivot_production_status(product: str, _perm=Depends(require_page_manager("splittable"))):
+def pivot_production_status(product: str, _perm=Depends(require_page_manager_any("ramcache", "splittable"))):
     from core import worker_dispatch
     if worker_dispatch.server_role() == "worker":
         raise HTTPException(409, "운영서버 전용입니다.")

@@ -12,14 +12,16 @@ import SemanticLayerPanel from "../../components/agent/SemanticLayerPanel";
 import ProductSemanticPanel from "../productwiki/ProductSemanticPanel";
 import ProductAdminPanel from "./ProductAdminPanel";
 import FlowiRoutesPanel from "./FlowiRoutesPanel";
+import DomainKnowledgePanel from "./DomainKnowledgePanel";
 import LlmTab from "../../components/agent/LlmTab";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
 // v9.4.x: flowi — Flow-i 채팅 사용 권한 (홈 채팅 + home agent orchestrate 게이트).
 // 이 목록은 _cleanTabs 의 화이트리스트다 — 여기 없는 탭 키는 권한 저장 시 조용히 버려지므로
-// backend core/auth.py 의 CANONICAL_PAGE_IDS 에 있는 사이드바 탭은 전부 실어둔다.
+// 실제 사이드바 탭만 사용한다.
 const ALL_TABS=TABS.filter(tab=>!["home","admin"].includes(tab.key)).map(tab=>tab.key);
-const CANONICAL_PAGE_IDS=[...new Set([...ALL_TABS,"tablemap","groups","messages"])];
+const PERMISSION_KEYS=[...ALL_TABS,"flowi"];
+const CANONICAL_PAGE_IDS=ALL_TABS;
 const PAGE_ID_ALIASES={informs:"inform",meetings:"meeting",dbmap:"tablemap"};
 function _canonicalPageId(v){
   const key=String(v||"").trim().toLowerCase();
@@ -35,12 +37,11 @@ function _tabsToArray(v){
 function _cleanTabs(v){
   const arr=Array.isArray(v)?v:(typeof v==="string"?v.split(","):[]);
   const seen=new Set();
-  return arr.map(s=>String(s||"").trim()).filter((s)=>s&&ALL_TABS.includes(s)&&!seen.has(s)&&seen.add(s));
+  return arr.map(s=>String(s||"").trim()).filter((s)=>s&&PERMISSION_KEYS.includes(s)&&!seen.has(s)&&seen.add(s));
 }
 // ── 탭/소탭 표시 이름 — 사이드바·각 페이지의 실제 탭 이름과 동일하게 노출 ──
 // 권한 화면에서 raw key(filebrowser 등) 대신 실제 화면 이름(파일탐색기 등)을 보여준다.
-// 사이드바 TABS 에 없는 위임 전용 페이지(tablemap/groups/messages)도 같은 이름 규칙으로.
-const TAB_LABELS={tablemap:"테이블 맵",groups:"그룹",messages:"문의함",flowi:"Flow-i",...Object.fromEntries(TABS.map(t=>[t.key,t.label]))};
+const TAB_LABELS={...Object.fromEntries(TABS.map(t=>[t.key,t.label])),flowi:"홈 Flow-i 채팅"};
 const SUB_TAB_LABELS=Object.fromEntries(Object.entries(SUB_TABS).map(([t,subs])=>[t,Object.fromEntries(subs.map(s=>[s.key,s.label]))]));
 function _tabLabel(key){return TAB_LABELS[key]||key;}
 function _tabTokenLabel(token){
@@ -50,7 +51,7 @@ function _tabTokenLabel(token){
 }
 function _tabTokensLabel(v){
   const arr=Array.isArray(v)?v:(typeof v==="string"?v.split(","):[]);
-  return arr.map(x=>String(x||"").trim()).filter(Boolean).map(_tabTokenLabel).join(", ");
+  return arr.map(x=>String(x||"").trim()).filter(x=>PERMISSION_KEYS.includes(x.split(":",1)[0])).map(_tabTokenLabel).join(", ");
 }
 // ── v9.1.x: 소탭 단위 권한 helpers ─────────────────────────────
 // tabs 토큰: "tab"(전체 소탭) | "tab:subtab". bare 토큰이 있으면 그 탭 전체 허용.
@@ -71,7 +72,8 @@ function _toggleSubTab(tokens,t,s,on){
   if(subs.length&&cur.length===subs.length)return[...rest,t]; // 전체 = bare 토큰으로 압축
   return[...rest,...cur.map(x=>t+":"+x)];
 }
-function _tabCellMark(tokens,t){
+function _tabCellMark(tokens,t,delegated=false){
+  if(delegated)return"관리";
   if(tokens.includes(t))return"O";
   const subs=_tabTokensFor(tokens,t);
   if(!subs.length)return"X";
@@ -477,7 +479,7 @@ export default function My_Admin({user}){
   };
   const savePerm=()=>{if(!editPerm)return;sf("/api/admin/set-tabs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm,tabs:permTabs})}).then((d)=>{
     if(_arr(d?.removed_from_groups).length)toast.ok(`개별 권한 지정 — 권한 그룹 [${d.removed_from_groups.join(", ")}] 에서 제외되었습니다`);
-    setEditPerm(null);load();setTab("perms");});};
+    setEditPerm(null);load();setTab("perms");}).catch(e=>toast.error(e.message||"권한 저장 실패"));};
   const useDepartmentDefault=()=>{if(!editPerm)return;sf("/api/admin/use-department-default",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm})}).then((d)=>{
     toast.ok(d.permission_source&&d.permission_source!=="department:"?"부서 기본 권한을 적용했습니다.":"연결된 부서 기본 권한이 없어 권한 없음으로 적용했습니다.");
     setEditPerm(null);load();setTab("perms");
@@ -512,7 +514,7 @@ export default function My_Admin({user}){
   //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
   //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
   //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["qa","QA 점검"],["product_admin","제품 공정·시맨틱"],["flowi_learning","Flow-i 학습"],["llm_cfg","LLM 설정"],["chat_prompts","데이터챗 추천 질문"]];
+  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["qa","QA 점검"],["product_admin","제품 공정·시맨틱"],["domain_knowledge","기본지식"],["flowi_learning","Flow-i 학습"],["llm_cfg","LLM 설정"],["chat_prompts","데이터챗 추천 질문"]];
   // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
   const tabs=isAdmin?adminTabs:userTabs;
@@ -656,7 +658,7 @@ export default function My_Admin({user}){
             </label>
             <div>
               <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:6}}>그룹 권한 — 멤버 전원에게 이 권한이 적용됩니다</div>
-              {ALL_TABS.map(t=>(<div key={t}>
+              {PERMISSION_KEYS.map(t=>(<div key={t}>
                 <label title={t} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 0",fontSize:14,cursor:"pointer"}}>
                   <input type="checkbox" checked={_mainTabChecked(pgEdit.tabs,t)} onChange={e=>setPgEdit(p=>({...p,tabs:_toggleMainTab(p.tabs,t,e.target.checked)}))}/>{_tabLabel(t)}
                 </label>
@@ -690,6 +692,7 @@ export default function My_Admin({user}){
           </div>}
         </div>}
         {/* O/X Permission Table */}
+        {!editPerm&&<div style={{fontSize:12,color:"var(--text-secondary)",marginBottom:6}}>O 전체 · △ 일부 소탭 · X 권한 없음 · 관리 해당 페이지 관리자 위임</div>}
         {!editPerm&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto",marginBottom:16}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
             <thead><tr>
@@ -697,7 +700,7 @@ export default function My_Admin({user}){
               <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}>아이디</th>
               <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>부서 · 권한 출처</th>
               <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",minWidth:340}}>실제 적용 권한</th>
-              {ALL_TABS.map(t=><th key={t} title={t} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{_tabLabel(t)}</th>)}
+              {PERMISSION_KEYS.map(t=><th key={t} title={t} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{_tabLabel(t)}</th>)}
               <th style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)"}}></th>
             </tr></thead>
             <tbody>{_arr(users).filter(u=>u?.role!=="admin"&&u?.status==="approved").map((u,i)=>{
@@ -714,8 +717,8 @@ export default function My_Admin({user}){
                   <span style={{marginLeft:6,color:"var(--text-secondary)"}}>({String(u.permission_source||"").startsWith("department:")?"부서 기본":String(u.permission_source||"").startsWith("group:")?"직접 그룹":u.permission_source==="individual"?"개인 지정":"미지정"})</span>
                 </td>
                 <td title={_effectivePermissionText(u)} style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:13,maxWidth:520,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{_effectivePermissionText(u)}</td>
-                {ALL_TABS.map(t=>{const mark=_tabCellMark(ut,t);return(<td key={t} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
-                  <span title={mark==="△"?_tabTokensLabel(_tabTokensFor(ut,t)):""} style={{fontSize:14,color:mark==="O"?"var(--ok,#22c55e)":(mark==="△"?"var(--warn,#f59e0b)":"var(--bad,#ef4444)"),fontWeight:700}}>{mark}</span>
+                {PERMISSION_KEYS.map(t=>{const mark=_tabCellMark(ut,t,_arr(u.effective_permissions?.page_manager).includes(t));return(<td key={t} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
+                  <span title={mark==="관리"?"해당 페이지 관리자 위임":mark==="△"?_tabTokensLabel(_tabTokensFor(ut,t)):""} style={{fontSize:14,color:mark==="관리"?"var(--accent)":mark==="O"?"var(--ok,#22c55e)":(mark==="△"?"var(--warn,#f59e0b)":"var(--bad,#ef4444)"),fontWeight:700}}>{mark}</span>
                 </td>);})}
                 <td style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
                   <span onClick={()=>{setEditPerm(u.username);setPermTabs(ut);}} style={{color:"var(--info,#3b82f6)",cursor:"pointer",fontSize:14}}>편집</span>
@@ -730,7 +733,7 @@ export default function My_Admin({user}){
           {userPermGroup[editPerm]&&<div style={{fontSize:13,color:"var(--warn,#f59e0b)",marginBottom:10}}>
             ⚠ 권한 그룹 '{userPermGroup[editPerm]}' 소속 — 개별 저장 시 그룹에서 제외되고 이 권한이 적용됩니다
           </div>}
-          {ALL_TABS.map(t=>(<div key={t}>
+          {PERMISSION_KEYS.map(t=>(<div key={t}>
             <label title={t} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",fontSize:14,cursor:"pointer"}}>
               <input type="checkbox" checked={_mainTabChecked(permTabs,t)} onChange={e=>setPermTabs(_toggleMainTab(permTabs,t,e.target.checked))}/>{_tabLabel(t)}
             </label>
@@ -1019,6 +1022,9 @@ export default function My_Admin({user}){
       {/* Product Admin: Structure & Semantics (admin only) */}
       {tab==="product_admin"&&isAdmin&&<ProductAdminPanel user={user}/>}
 
+      {/* Shared domain knowledge (admin only) */}
+      {tab==="domain_knowledge"&&isAdmin&&<DomainKnowledgePanel/>}
+
       {/* Flow-i Learning & Skills (admin only) */}
       {tab==="flowi_learning"&&isAdmin&&<div style={{display:"grid",gap:16}}><FlowiRoutesPanel/><ProductSemanticPanel admin/><DbReferencePanel/></div>}
 
@@ -1061,13 +1067,7 @@ export default function My_Admin({user}){
 // 유저별로 "이 페이지의 관리 권한을 위임한다" 를 체크박스로 토글. admin 유저는 global 이라 배제.
 // 저장 즉시 /api/admin/page-admins 로 POST.
 // v9.0.3: 메시지 기능은 "문의함" 용어로 정리.
-const PAGE_IDS=[
-  ["filebrowser","파일탐색기"],["dashboard","대시보드"],["splittable","스플릿 테이블"],["lotmanage","랏 관리"],["productwiki","제품 위키"],
-  ["lotrequest","랏 배정/요청"],["lotlocation","랏 현위치 확인"],
-  ["tracker","ET 추적"],["inform","인폼 로그"],["meeting","회의관리"],["calendar","변경점 관리"],
-  ["tablemap","테이블 맵"],["valve","매칭알람"],
-  ["groups","그룹"],["messages","문의함"],["diagnosis","에이전트"],
-];
+const PAGE_IDS=TABS.filter(tab=>!["home","admin"].includes(tab.key)).map(tab=>[tab.key,tab.label]);
 const PAGE_PRESETS=[
   {key:"read",label:"조회만",pages:[]},
   {key:"ops",label:"운영관리",pages:["filebrowser","splittable","lotmanage","productwiki","lotrequest","inform","tracker","calendar","meeting"]},
@@ -1087,7 +1087,7 @@ function PageAdminsPanel({users}){
   // v8.8.21: 행=유저 / 열=페이지 매트릭스. admin 유저는 자동 전체 허용 (체크 disabled).
   // v8.8.28: Array.isArray 가드 — users 가 object 로 떨어져도 PageAdminsPanel 크래시 방지.
   const approved=(Array.isArray(users)?users:[]).filter(u=>u&&u.status==="approved");
-  const isFullAdmin=(u)=>u.role==="admin" || ["admin","hol"].includes((u.username||"").toLowerCase());
+  const isFullAdmin=(u)=>u.role==="admin";
   const toggle=(pageId,username)=>{
     pageId=_canonicalPageId(pageId);
     const cur=new Set(pa[pageId]||[]);
@@ -1096,32 +1096,23 @@ function PageAdminsPanel({users}){
     if(next[pageId].length===0)delete next[pageId];
     setBusy(true);setMsg("");
     sf("/api/admin/page-admins",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({page_id:pageId,usernames:next[pageId]||[]})})
-      .then(()=>{setPa(next);setMsg("✔ "+pageId+" 저장");setBusy(false);setTimeout(()=>setMsg(""),2000);})
-      .catch(e=>{setMsg("오류: "+e.message);setBusy(false);});
+      .then(d=>{setPa(d.page_admins||{});setMsg("✔ "+_tabLabel(pageId)+" 저장");setTimeout(()=>setMsg(""),2000);})
+      .catch(e=>{setMsg("오류: "+e.message);reload();})
+      .finally(()=>setBusy(false));
   };
   const applyPreset=(username,preset)=>{
-    const pages=new Set((preset.pages||[]).map(_canonicalPageId));
-    const next={...pa};
-    for(const [pid] of PAGE_IDS){
-      const key=_canonicalPageId(pid);
-      const cur=new Set(next[key]||[]);
-      if(pages.has(key))cur.add(username);else cur.delete(username);
-      if(cur.size)next[key]=Array.from(cur).sort();else delete next[key];
-    }
     setBusy(true);setMsg("");
-    Promise.all(PAGE_IDS.map(([pid])=>{
-      const key=_canonicalPageId(pid);
-      return sf("/api/admin/page-admins",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({page_id:key,usernames:next[key]||[]})});
-    }))
-      .then(()=>{setPa(next);setMsg("✔ "+username+" "+preset.label+" 적용");setBusy(false);setTimeout(()=>setMsg(""),2000);})
-      .catch(e=>{setMsg("오류: "+e.message);setBusy(false);});
+    sf("/api/admin/page-admins/user",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,pages:preset.pages||[]})})
+      .then(d=>{setPa(d.page_admins||{});setMsg("✔ "+username+" "+preset.label+" 적용");setTimeout(()=>setMsg(""),2000);})
+      .catch(e=>{setMsg("오류: "+e.message);reload();})
+      .finally(()=>setBusy(false));
   };
   return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16,overflow:"auto"}}>
     <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
       <div style={{fontSize:14,fontWeight:700}}>페이지별 권한 매트릭스</div>
       <div style={{fontSize:14,color:"var(--text-secondary)"}}>
         행=유저 · 열=페이지. 체크한 유저는 해당 페이지 관리 기능(설정/카탈로그/권한 편집) 수행 가능.
-        admin 역할 / <code>admin</code>·<code>hol</code> 계정은 자동 전체 허용 (수정 불가).
+        관리자 역할은 자동 전체 허용 (수정 불가). 위임을 받으면 해당 탭 전체에 접근할 수 있습니다.
       </div>
       {msg&&<span style={{fontSize:14,color:msg.startsWith("✔")?OK.fg:BAD.fg,marginLeft:"auto"}}>{msg}</span>}
       {busy&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>저장 중…</span>}

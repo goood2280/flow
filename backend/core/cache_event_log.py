@@ -48,8 +48,12 @@ _ORIGIN_CACHE: dict[str, Any] = {"ts": 0.0, "label": "", "host": ""}
 # 알려 주지 않는다. 최근 2일 peak 는 워치독의 주기 RSS 샘플을 별도 보관해 계산한다.
 # 공유 data_root 를 쓰는 운영/개발 서버가 섞이지 않도록 origin + host 로 구분한다.
 _RAM_PEAK_FILE_LOCK = threading.Lock()
+_RAM_PEAK_READ_LOCK = threading.Lock()
 _RAM_PEAK_TRIM_EVERY = 500
 _RAM_PEAK_MAX_LINES = 30000
+_RAM_PEAK_CACHE_TTL_SEC = 5.0
+_RAM_PEAK_CACHE_MAX_ENTRIES = 16
+_RAM_PEAK_READ_CACHE: dict[tuple[Any, ...], dict[str, Any]] = {}
 _ram_peak_append_count = 0
 
 
@@ -159,53 +163,101 @@ def recent_peak_rss(hours: float = 48.0, *, effective_kind: str = "") -> dict[st
              "peak_effective_gb": 0.0, "peak_effective_ts": 0.0,
              "effective_sample_count": 0}
     path = _ram_peak_log_path()
-    if path is None or not path.exists():
+    if path is None:
         return dict(empty)
-    since = time.time() - max(0.1, float(hours or 48.0)) * 3600.0
+    window_hours = max(0.1, float(hours or 48.0))
     origin_label, origin_host = _origin()
-    peak = 0.0
-    peak_ts = 0.0
-    peak_eff = 0.0
-    peak_eff_ts = 0.0
-    count = 0
-    eff_count = 0
+    effective_kind = str(effective_kind or "")
+    cache_key = (str(path), origin_label, origin_host, window_hours, effective_kind)
+
+    def file_signature(stat_result) -> tuple[int, int, int, int]:
+        return (int(getattr(stat_result, "st_dev", 0) or 0),
+                int(getattr(stat_result, "st_ino", 0) or 0),
+                int(stat_result.st_mtime_ns), int(stat_result.st_size))
+
     try:
-        with _RAM_PEAK_FILE_LOCK:
-            with open(path, "r", encoding="utf-8") as f:
-                for raw in f:
-                    try:
-                        row = json.loads(raw)
-                    except Exception:
-                        continue
-                    row_ts = float(row.get("ts") or 0.0)
-                    if row_ts < since:
-                        continue
-                    if str(row.get("origin") or "") != origin_label or str(row.get("host") or "") != origin_host:
-                        continue
-                    count += 1
-                    value = float(row.get("rss_gb") or 0.0)
-                    if value >= peak:
-                        peak = value
-                        peak_ts = row_ts
-                    # 옛 샘플에는 effective 가 없다 — 그 줄은 세지 않는다.
-                    # 0 으로 세면 "Effective peak 0GB" 라는 거짓 안심을 준다.
-                    row_kind = str(row.get("effective_kind") or "legacy")
-                    eff = float(row.get("effective_gb") or 0.0)
-                    if eff > 0 and (not effective_kind or row_kind == effective_kind):
-                        eff_count += 1
-                        if eff >= peak_eff:
-                            peak_eff = eff
-                            peak_eff_ts = row_ts
+        stat_before = path.stat()
     except Exception:
         return dict(empty)
-    return {
-        "peak_rss_gb": round(peak, 3),
-        "peak_ts": peak_ts,
-        "sample_count": count,
-        "peak_effective_gb": round(peak_eff, 3),
-        "peak_effective_ts": peak_eff_ts,
-        "effective_sample_count": eff_count,
-    }
+
+    signature = file_signature(stat_before)
+    now_mono = time.monotonic()
+    with _RAM_PEAK_READ_LOCK:
+        cached = _RAM_PEAK_READ_CACHE.get(cache_key)
+        if cached and now_mono < float(cached.get("expires_mono") or 0.0):
+            old_signature = cached.get("signature") or ()
+            same_identity = signature[:2] == old_signature[:2]
+            unchanged = signature == old_signature
+            append_only = same_identity and signature[3] > old_signature[3]
+            # Dashboard polling records one fresh sample before reading. A pure
+            # append may therefore reuse a summary briefly; replacement,
+            # truncation, and in-place same-size rewrites invalidate at once.
+            if unchanged or append_only:
+                return dict(cached["result"])
+
+        # Keep the writer lock only for the file snapshot. JSON decoding and
+        # aggregation are deliberately outside it so watchdog samples can append.
+        try:
+            with _RAM_PEAK_FILE_LOCK:
+                with open(path, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    read_signature = file_signature(os.fstat(f.fileno()))
+        except Exception:
+            return dict(empty)
+
+        since = time.time() - window_hours * 3600.0
+        peak = 0.0
+        peak_ts = 0.0
+        peak_eff = 0.0
+        peak_eff_ts = 0.0
+        count = 0
+        eff_count = 0
+        for raw in lines:
+            try:
+                row = json.loads(raw)
+                row_ts = float(row.get("ts") or 0.0)
+                value = float(row.get("rss_gb") or 0.0)
+                row_kind = str(row.get("effective_kind") or "legacy")
+                eff = float(row.get("effective_gb") or 0.0)
+            except Exception:
+                continue
+            if row_ts < since:
+                continue
+            if (str(row.get("origin") or "") != origin_label
+                    or str(row.get("host") or "") != origin_host):
+                continue
+            count += 1
+            if value >= peak:
+                peak = value
+                peak_ts = row_ts
+            # 옛 샘플에는 effective 가 없다 — 그 줄은 세지 않는다.
+            # 0 으로 세면 "Effective peak 0GB" 라는 거짓 안심을 준다.
+            if eff > 0 and (not effective_kind or row_kind == effective_kind):
+                eff_count += 1
+                if eff >= peak_eff:
+                    peak_eff = eff
+                    peak_eff_ts = row_ts
+        result = {
+            "peak_rss_gb": round(peak, 3),
+            "peak_ts": peak_ts,
+            "sample_count": count,
+            "peak_effective_gb": round(peak_eff, 3),
+            "peak_effective_ts": peak_eff_ts,
+            "effective_sample_count": eff_count,
+        }
+        # Bound both staleness and process memory if callers introduce many
+        # distinct windows or metric kinds later.
+        for key, entry in list(_RAM_PEAK_READ_CACHE.items()):
+            if now_mono >= float(entry.get("expires_mono") or 0.0):
+                _RAM_PEAK_READ_CACHE.pop(key, None)
+        while len(_RAM_PEAK_READ_CACHE) >= _RAM_PEAK_CACHE_MAX_ENTRIES:
+            _RAM_PEAK_READ_CACHE.pop(next(iter(_RAM_PEAK_READ_CACHE)))
+        _RAM_PEAK_READ_CACHE[cache_key] = {
+            "signature": read_signature,
+            "expires_mono": now_mono + _RAM_PEAK_CACHE_TTL_SEC,
+            "result": result,
+        }
+        return dict(result)
 
 
 def _origin() -> tuple[str, str]:

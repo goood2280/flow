@@ -40,6 +40,30 @@ def test_persist_restore_and_owner_isolation(client, monkeypatch):
     assert calls[-1] == ({}, [])
 
 
+def test_chart_selection_updates_existing_conversation_without_overwriting_server_context(client, monkeypatch):
+    from core.chart_builder_definition import parse_chart_builder_definition
+    code = "Q1\nTABLE = ET\nPRODUCT = PRODA\nSQL = SELECT x, y\n\nCHART\nTYPE = scatter\nX = x\nY = y\n"
+    calls = []
+    def execute(prompt, context, request, history):
+        calls.append(dict(context))
+        return {"reply": "ok", "context": {**context, "confirmed_product": "PRODA", "pending_report_id": "server-id"}}
+    monkeypatch.setattr(data_chat.flowi_turn, "execute", execute)
+    cid = str(uuid4())
+    url = "/api/home-agent/orchestrate"
+    assert client.post(url, json={"prompt": "first", "conversation_id": cid}).status_code == 200
+    selection = [{"id": "chart_a", "name": "A", "definition_code": code}]
+    response = client.post(url, json={"prompt": "report", "conversation_id": cid, "context": {
+        "selected_report_charts": selection, "confirmed_product": "WRONG", "pending_report_id": "wrong"}})
+    assert response.status_code == 200
+    assert calls[-1]["confirmed_product"] == "PRODA"
+    assert calls[-1]["pending_report_id"] == "server-id"
+    assert calls[-1]["selected_report_charts"][0]["definition_code"] == parse_chart_builder_definition(code)["canonical_code"]
+    assert client.post(url, json={"prompt": "clear", "conversation_id": cid, "context": {"selected_report_charts": []}}).status_code == 200
+    assert calls[-1]["selected_report_charts"] == []
+    invalid = client.post(url, json={"prompt": "report", "conversation_id": cid, "context": {"selected_report_charts": [{}]}})
+    assert invalid.status_code == 400
+
+
 def test_orchestrate_drops_response_profile_and_does_not_audit_prompt(client, monkeypatch):
     seen_contexts = []
     audit_calls = []

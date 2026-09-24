@@ -1,10 +1,10 @@
 """Read-only Split column -> saved condition -> current leading lot conversation."""
 import re
 
-from core import split_lead_tracker as source
+from core import split_lead_tracker as source, knob_resolution, auth
 
 LEAD = re.compile(r"선두|선행|가장\s*앞|제일\s*앞|앞선\s*랏", re.I)
-SPLIT = re.compile(r"split|스플릿|knob|노브", re.I)
+SPLIT = re.compile(r"split|스플릿|knob|노브|조건", re.I)
 KINDS = re.compile(r"종류|고유값|조건.*(?:뭐|어떤|목록)|값.*목록", re.I)
 SEARCH = re.compile(r"들어간|포함|검색|항목.*(?:보여|찾)|찾아", re.I)
 
@@ -27,12 +27,12 @@ def matching_columns(product, text, columns):
     return [c for c in columns if words and all(_literal(w, c) or w.casefold() in c.casefold() for w in words)]
 
 
-def _ask(context, operation, kind, options, message, column=""):
+def _ask(context, operation, kind, options, message, column="", alias="", labels=None):
     from core.data_chat import reply
-    context["pending_split_choice"] = {"operation": operation, "kind": kind, "options": options, "column": column}
+    context["pending_split_choice"] = {"operation": operation, "kind": kind, "options": options, "column": column, "alias": alias}
     return reply(message, context=context, ok=False, tool={"feature": "splittable", "missing": [kind],
         "clarification": {"kind": kind, "title": "Split 항목 선택" if kind == "split_column" else "Split 조건 선택",
-                          "options": [{"label": x, "value": x} for x in options[:5]], "allow_other": True,
+                          "options": [{"label": (labels or {}).get(x, x), "value": x} for x in options[:30]], "allow_other": True,
                           "placeholder": "실제 항목명" if kind == "split_column" else "실제 조건값"}})
 
 
@@ -44,11 +44,12 @@ def dispatch(text, context, request=None):
     pending = context.get("pending_split_choice") or {}
     previous = context.get("split_query") or {}
     is_lead = bool(LEAD.search(text))
-    is_kinds = bool(KINDS.search(text) and (SPLIT.search(text) or previous))
+    is_kinds = bool((KINDS.search(text) and (SPLIT.search(text) or previous)) or
+                    (SPLIT.search(text) and re.search(r"보여|조회|알려", text)))
     is_search = bool(SPLIT.search(text) and SEARCH.search(text))
     if not (pending or is_lead or is_kinds or is_search):
         return None
-    if re.search(r"커스텀|custom|변경\s*이력|수정\s*이력", text, re.I):
+    if re.search(r"커스텀|custom|변경\s*이력|수정\s*이력|split\s*table|스플릿\s*테이블", text, re.I):
         return None
     context = dict(context)
     product = context.get("confirmed_product") or context.get("product") or ""
@@ -59,8 +60,10 @@ def dispatch(text, context, request=None):
     if re.fullmatch(r"취소(?:해|해줘)?[.!\s]*", text):
         context.pop("pending_split_choice", None)
         return reply("Split 조건 선택을 취소했습니다.", context=context)
-    operation = "lead" if is_lead else "values" if is_kinds else pending.get("operation") or "columns"
+    operation = "lead" if is_lead else "columns" if is_search else "values" if is_kinds else pending.get("operation") or "columns"
     columns = source.get_product_split_columns(product)
+    username = (auth.current_user(request).get("username") or "") if request is not None else ""
+    resolution = knob_resolution.resolve(product, text, columns, username)
     if not columns:
         return reply("해당 제품의 실제 Split 항목을 확인하지 못했습니다.", context=context, ok=False,
                      tool={"feature": "splittable", "error": "split_columns_unavailable"})
@@ -72,15 +75,18 @@ def dispatch(text, context, request=None):
         candidate = choices[int(ordinal[1])-1] if ordinal and 0 < int(ordinal[1]) <= len(choices) else text.strip()
         matches = [v for v in choices if v.casefold() == candidate.casefold()]
         if len(matches) != 1:
-            return _ask(context, operation, pending["kind"], choices, "표시된 후보를 선택하거나 실제 이름을 입력해 주세요.", pending.get("column", ""))
+            return _ask(context, operation, pending["kind"], choices, "표시된 후보를 선택하거나 실제 이름을 입력해 주세요.", pending.get("column", ""), pending.get("alias", ""))
         if pending["kind"] == "split_column":
             selected_column = matches[0]
+            knob_resolution.remember(username, product, pending.get("alias", ""), selected_column, columns)
         else:
             selected_column, selected_value = pending["column"], matches[0]
         context.pop("pending_split_choice", None)
     elif pending:
         context.pop("pending_split_choice", None)
     matches = [selected_column] if selected_column else matching_columns(product, text, columns)
+    if not selected_column and resolution["options"]:
+        matches = [o["value"] for o in resolution["options"]] + [c for c in matches if not c.upper().startswith("KNOB_")]
     if operation == "columns":
         context["split_query"] = {"product": product, "columns": matches}
         context["last_action"] = "splittable.columns"
@@ -88,16 +94,17 @@ def dispatch(text, context, request=None):
             "feature": "splittable", "action": "splittable.columns", "sources": ["실제 ML_TABLE Split 열"],
             "table": {"rows": [{"Split 항목": c} for c in matches], "columns": ["Split 항목"], "total": len(matches)},
             "split_candidates": [{"title": "조건 종류 보기", "candidates": [{"label": c, "prompt": f"{product} {c} Split 종류 보여줘"} for c in matches[:5]]}]})
-    column = matches[0] if len(matches) == 1 else ""
+    column = selected_column or resolution["exact"] or (matches[0] if len(matches) == 1 and not matches[0].upper().startswith("KNOB_") else "")
     previous_column = previous.get("column")
     # An abbreviated follow-up retains the explicitly selected column. A new
     # full column name always wins, even if the previous column shared a keyword.
-    if not column and previous_column in columns:
+    if not column and previous_column in columns and (not SPLIT.search(text) or (is_lead and previous_column in matches)):
         if not matches or previous_column in matches:
             column = previous_column
     if not column:
         choices = matches or previous.get("columns") or columns
-        return _ask(context, operation, "split_column", choices, "조회할 Split 항목을 선택해 주세요.")
+        return _ask(context, operation, "split_column", choices, "조회할 실제 KNOB/Split 항목을 선택해 주세요. 이전 선택은 후보 순위에 반영됩니다.",
+                    alias=resolution["alias"], labels={o["value"]: o["label"] for o in resolution["options"]})
     if column not in columns:
         return _ask(context, operation, "split_column", columns, "선택한 항목이 변경되었습니다. 실제 항목을 다시 선택해 주세요.")
     values = source.get_split_value_counts(product, column)

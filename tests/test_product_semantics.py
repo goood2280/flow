@@ -18,6 +18,7 @@ def catalog(tmp_path, monkeypatch):
     sem._snapshot_path().parent.mkdir(parents=True)
     sem._snapshot_path().write_text(json.dumps(snap), encoding="utf-8")
     monkeypatch.setattr(data_chat, "available_product_names", lambda: ["AA", "BB"])
+    monkeypatch.setattr(data_chat, "available_split_product_names", lambda: ["AA", "BB"])
     return snap
 
 
@@ -148,12 +149,11 @@ def test_wiki_original_survives_semantic_service_failure(catalog, monkeypatch):
 def test_admin_management_routes_and_author_confirmation(catalog):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
-    from core.auth import require_admin
     from routers import product_semantics as api
     app = FastAPI(); app.include_router(api.router)
     client = TestClient(app)
     assert client.post("/api/product-semantics/bootstrap").status_code in (401, 403)
-    app.dependency_overrides[require_admin] = lambda: {"username": "alice", "role": "admin"}
+    app.dependency_overrides[api.require_productwiki_manager] = lambda: {"username": "alice", "role": "admin"}
     app.dependency_overrides[api.require_access] = lambda: {"username": "bob", "role": "user"}
     saved = client.post("/api/product-semantics/propose", json={"product": "AA", "text": "PC CD1"})
     assert saved.status_code == 200

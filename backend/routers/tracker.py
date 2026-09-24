@@ -1613,7 +1613,7 @@ def add_comment_reply(req: CommentReplyReq, request: Request):
 def delete_comment(req: CommentDeleteReq, request: Request):
     me = current_user(request)
     username = me.get("username") or ""
-    is_admin = me.get("role") == "admin"
+    is_admin = is_page_manager(me, "tracker")
     issues = _load()
     iss = next((i for i in issues if i.get("id") == req.issue_id), None)
     if not iss:
@@ -1945,7 +1945,7 @@ def save_issue_mail(req: IssueMailReq, request: Request):
     iss = next((i for i in issues if i.get("id") == req.issue_id), None)
     if not iss:
         raise HTTPException(404)
-    if me.get("role") != "admin" and iss.get("username") != me.get("username"):
+    if not is_page_manager(me, "tracker") and iss.get("username") != me.get("username"):
         raise HTTPException(403, "Only issue owner or admin can edit mail settings")
     now = datetime.datetime.now().isoformat(timespec="seconds")
     iss["mail_watch"] = {
@@ -2214,7 +2214,7 @@ def delete_issue(request: Request, issue_id: str = Query(...)):
     target = next((i for i in all_issues if i["id"] == issue_id), None)
     if not target:
         raise HTTPException(404)
-    if me.get("role") != "admin" and (target.get("username") or "") != (me.get("username") or ""):
+    if not is_page_manager(me, "tracker") and (target.get("username") or "") != (me.get("username") or ""):
         raise HTTPException(403, "본인 이슈 또는 admin 만 삭제 가능")
     result = TRACKER_SERVICE.delete_legacy_issue(issue_id)
     if not result.ok:

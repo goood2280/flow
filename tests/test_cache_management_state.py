@@ -1,6 +1,40 @@
 import time
 
 
+def test_stale_status_snapshot_marks_refresh_pending_without_mutating_cache(monkeypatch):
+    from routers import splittable
+
+    cached = {"products": [{"product": "P"}], "ok_count": 1}
+    snapshot = {"at": time.monotonic() - 30, "value": cached, "refreshing": True}
+    monkeypatch.setattr(splittable, "_PRODUCT_CACHE_STATUS_SNAPSHOT", snapshot)
+    result = splittable._product_cache_status_snapshot(nonblocking=True)
+    assert result["artifact_status_pending"] is True
+    assert result["products"] == cached["products"]
+    assert "artifact_status_pending" not in cached
+    snapshot["at"] = time.monotonic()
+    assert splittable._product_cache_status_snapshot(nonblocking=True) is cached
+
+
+def test_running_partial_pivot_is_not_reported_ready(monkeypatch, tmp_path):
+    from routers import splittable
+
+    monkeypatch.setattr(splittable, "_canonical_mltable_product_name", lambda *_a, **_kw: "P")
+    monkeypatch.setattr(splittable, "_lookup_cache_public_meta_for", lambda _p: {})
+    monkeypatch.setattr(splittable, "_product_path", lambda _p: tmp_path / "P.parquet")
+    monkeypatch.setattr(splittable, "_pivot_cache_build_state", lambda _p: "building")
+    monkeypatch.setattr(splittable, "_pivot_cache_artifact_status", lambda *_a: {
+        "ready": False, "done": 1, "built_ts": 0.0, "message": "Pivot 미완료",
+    })
+    monkeypatch.setattr(splittable, "_latest_lot_step_cache_status", lambda _p: {})
+    monkeypatch.setattr(splittable, "_fab_lot_index_read_meta", lambda _p: {})
+    monkeypatch.setattr(splittable, "_fab_lot_index_dir", lambda _p: tmp_path / "fab")
+    result = splittable._required_split_cache_status("P")
+    pivot = next(row for row in result["kinds"] if row["kind"] == "pivot")
+    assert pivot["state"] == "building"
+    assert not pivot["ready"]
+    assert result["ready_count"] == 0
+
+
 def test_external_scan_gate_task_reports_elapsed_and_original_wait():
     from core import scan_gate
 

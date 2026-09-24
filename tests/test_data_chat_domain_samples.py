@@ -2,8 +2,28 @@ import copy
 import pytest
 from types import SimpleNamespace
 
-from core import data_chat, data_chat_split, data_chat_teg
+from core import data_chat, data_chat_split, data_chat_teg, llm_adapter, product_semantics, lot_progress_cache
 from routers import splittable
+
+
+@pytest.fixture(autouse=True)
+def sample_catalog(monkeypatch):
+    """Examples declare their source data instead of depending on operator DBs."""
+    monkeypatch.setattr(llm_adapter, "is_available", lambda: False)
+    monkeypatch.setattr(data_chat, "available_product_names", lambda: ["PRODA", "PRODB"])
+    monkeypatch.setattr(data_chat, "split_table_product", lambda product: product)
+    monkeypatch.setattr(splittable, "list_products", lambda: {"products": [{"name": "ML_TABLE_PRODA"}, {"name": "ML_TABLE_PRODB"}]})
+    monkeypatch.setattr(splittable, "list_customs", lambda: {"customs": [{"name": "PC"}]})
+    monkeypatch.setattr(product_semantics, "resolve_terms", lambda *a, **k: [])
+    monkeypatch.setattr(lot_progress_cache, "lookup_lot_progress", lambda **k: [])
+    monkeypatch.setattr(lot_progress_cache, "canonical_lot_progress_summaries", lambda lots, **k: {
+        lot: {"product": "PRODA", "rows": [{"lot_id": lot, "root_lot_id": lot, "step_id": "STEP10"}]} for lot in lots})
+    monkeypatch.setattr(data_chat_teg.teg_map, "product_catalog", lambda: [{"vehicle": "VH_PRODB", "root_node": ""}])
+    monkeypatch.setattr(data_chat_teg.teg_map, "map_payload", lambda product: {
+        "vehicle": "VH_PRODB", "geometry": {"fit": "radius"}, "shots": [],
+        "tegs": [{"teg": "TEG_GATE", "teg_src": "GATE", "ebeam_x": 1.0, "ebeam_y": 2.0,
+                  "teg_w": .2, "teg_h": .3, "flat_zone": "h"}],
+    })
 
 
 def test_resolve_lot_scope_domain_rules():

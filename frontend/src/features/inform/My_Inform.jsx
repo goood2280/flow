@@ -835,7 +835,7 @@ function ThreadNode({
     setReplyImages((prev) => [...prev, ...uploaded]);
     setUploading(false);
   };
-  const canDelete = user && (user.role === "admin" || user.username === node.author);
+  const canDelete = user && (canManagePage(user, "inform") || user.username === node.author);
   const kids = childrenByParent[node.id] || [];
   const indent = Math.min(depth, 5) * 28;
   const displayText = reInformTextForDisplay(node);
@@ -4249,7 +4249,7 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
   const lotText = informLotDisplay(root, { maxFabLots: 8 }) || "-";
   const status = normalizeFlowStatus(root.flow_status, root);
   const completed = status === "apply_confirmed";
-  const canEditDelete = user?.role === "admin" || userMatches(user?.username, root.author);
+  const canEditDelete = canManagePage(user, "inform") || userMatches(user?.username, root.author);
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
       <div style={{ padding: 16, borderBottom: "1px solid var(--border)", background: "var(--bg-secondary)" }}>
