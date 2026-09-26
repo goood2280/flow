@@ -135,10 +135,10 @@ SplitTable pivot, WIP latest-lot, FAB latest 인덱스의 최근 성공·실패�
 
 | 역할 | 권장 자원 | 책임 |
 |---|---:|---|
-| 운영 API | 5코어 / 24GB RAM | 사용자 요청, SplitTable 조회, API-local RAM 캐시, worker 부재 시 필수 캐시 생성 |
-| 개발 worker | 5코어 / 10~15GB RAM | lookup/pivot/FAB index 등 무거운 공유 캐시 생성 |
+| 운영 API | 5코어 / 30GB RAM | 사용자 요청, SplitTable 조회, API-local RAM 캐시, worker 부재 시 모든 작업 로컬 실행 |
+| 개발 worker | 5코어 / 16GB RAM | lookup/pivot/FAB index 캐시, 파일탐색기 SQL, 홈 에이전트 분석 턴, 차트생성·Template Report 조회 |
 
-두 서버를 사용할 경우 동일한 `FLOW_DB_ROOT`와 `FLOW_DATA_ROOT`를 봐야 합니다. 별도 worker는 선택 사항입니다. worker가 없으면 lookup/pivot/FAB/latest-lot 필수 읽기 캐시는 운영 서버에서 메모리 여유를 확인한 뒤 공유 스캔 슬롯으로 하나씩 생성합니다. 계속되는 화면 폴링이 캐시 생성을 막지 않도록 idle 양보는 기본 5초(`FLOW_REQUIRED_CACHE_IDLE_WAIT_SEC`, 0~60초) 뒤 진행합니다. 빌더 내부의 배치별 사용자 양보와 메모리 보호는 유지됩니다.
+두 서버를 사용할 경우 동일한 `FLOW_DB_ROOT`와 `FLOW_DATA_ROOT`를 봐야 합니다. 별도 worker는 선택 사항입니다. worker가 켜져 있으면 무거운 조회·빌드를 먼저 worker에 맡기고, 꺼져 있거나 메모리가 부족하면 같은 작업을 운영 서버가 그대로 실행합니다. worker가 없으면 lookup/pivot/FAB/latest-lot 필수 읽기 캐시는 운영 서버에서 메모리 여유를 확인한 뒤 공유 스캔 슬롯으로 하나씩 생성합니다. 계속되는 화면 폴링이 캐시 생성을 막지 않도록 idle 양보는 기본 5초(`FLOW_REQUIRED_CACHE_IDLE_WAIT_SEC`, 0~60초) 뒤 진행합니다. 빌더 내부의 배치별 사용자 양보와 메모리 보호는 유지됩니다.
 
 SplitTable의 목표는 준비된 데이터 조회부터 실제 표 첫 표시까지 p95 500ms입니다. 원본만 있고 필수 캐시가 전혀 없는 최초 생성까지 500ms를 보장하는 것은 아닙니다. 운영 화면 URL에 `split_perf=1` 쿼리를 추가해 브라우저 표시 시간을 확인하고, 서버/API 별도 측정은 `scripts/check_split_server_latency.py --help`를 사용합니다. 이 도구는 준비 중·빈 결과를 빠른 성공으로 계산하지 않으며 실제 운영 URL·제품·root lot과 `FLOW_BENCH_SESSION_TOKEN` 환경변수를 요구합니다. 운영 설정과 캐시를 지우지 않고 조회만 수행합니다.
 
@@ -231,7 +231,7 @@ $env:FLOW_SERVER_ROLE="worker"
 $env:FLOW_DB_ROOT="\\shared-server\flow\DB"
 $env:FLOW_DATA_ROOT="\\shared-server\flow\flow-data"
 $env:FLOW_WORKER_CONCURRENCY="1"
-$env:FLOW_POLARS_MAX_THREADS="2"
+$env:FLOW_WORKER_POLARS_THREADS="2"
 uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
@@ -267,12 +267,12 @@ export 하고 실행하면 됩니다. 로그는 `$FLOW_DATA_ROOT/worker/control/
 개발 worker 기본 정책:
 
 - 무거운 작업 동시 실행 1개
-- Polars 최대 2 threads
+- Polars 2 threads (5코어 기준, `FLOW_WORKER_POLARS_THREADS`로 조정)
 - API용 product/root/view RAM 캐시 비활성화
 - backup, mail, S3 등 운영 scheduler 비활성화
 - worker available memory와 process memory admission 통과 후 작업 실행
 
-### 차트생성·Template Report (5코어 / 10GB)
+### 차트생성·Template Report
 
 차트 데이터 조회는 기본적으로 동시에 2개까지만 실행하고, 동일한 Query/JOIN/필터 결과는
 3분 동안 최대 128MB까지 재사용합니다. Template Report도 같은 데이터 정의를 쓰는 차트를
@@ -280,7 +280,7 @@ export 하고 실행하면 됩니다. 로그는 `$FLOW_DATA_ROOT/worker/control/
 않습니다. 필요하면 다음 환경 변수로 조정할 수 있습니다.
 
 ```powershell
-$env:FLOW_CHART_BUILDER_CONCURRENCY="2"   # 1~5, 5코어/10GB 권장값 2
+$env:FLOW_CHART_BUILDER_CONCURRENCY="2"   # 1~5, 5코어 권장값 2
 $env:FLOW_DUCKDB_THREADS="2"               # 조회 2개 × 2 threads + API 여유 1코어
 $env:FLOW_CHART_BUILDER_CACHE_MB="128"    # 결과 JSON 캐시 총량
 $env:FLOW_CHART_BUILDER_CACHE_TTL_SEC="180"
@@ -551,6 +551,58 @@ python scripts/seed_valve_alert_examples.py --write
 
 운영 데이터의 실제 속도는 parquet 폭, root당 wafer/row 수, 공유 스토리지와 네트워크 성능에 따라 달라집니다.
 
+## 운영·개발 서버 분담과 전송 최적화
+
+개발 worker가 켜져 있으면 아래 작업은 worker가 먼저 실행하고, 결과만 운영 API가 사용자에게
+돌려줍니다. worker가 꺼져 있거나 메모리가 부족하거나, 다른 Flow 버전으로 떠 있거나, worker에서
+LLM을 쓸 수 없으면 운영 API가 같은 작업을 그대로 실행합니다. 운영 서버만으로도 모든 기능이 동작합니다.
+
+| 작업 | worker 작업 이름 | 운영에서 계속 처리하는 경우 |
+|---|---|---|
+| lookup / pivot / FAB index / WIP latest-lot 캐시 | 기존 캐시 빌드 작업 | worker 부재 |
+| 파일탐색기 SQL 대용량 조회 | `filebrowser_sql_query` | 작은 조회, 캐시 적중 |
+| 차트생성·Template Report·홈 차트의 원본 조회 | `chart_builder_run` | 결과 캐시 적중 |
+| 홈 에이전트(Flow-i) 분석 턴 | `home_agent_turn` | 승인·취소, SplitTable 조회, WIP 현위치 |
+
+- worker는 캐시 빌드용 일반 슬롯(`FLOW_WORKER_CONCURRENCY`, 기본 1)과 별도로 대화형 작업 전용
+  슬롯(`FLOW_WORKER_INTERACTIVE_CONCURRENCY`, 기본 1)을 둡니다. 긴 캐시 빌드가 돌아도 사용자 조회가
+  그 뒤에서 기다리지 않습니다. 끄려면 `FLOW_CHART_BUILDER_OFFLOAD=0`, `FLOW_HOME_AGENT_OFFLOAD=0`.
+- API의 JSON·JS·CSS 응답은 gzip으로 압축합니다(`FLOW_HTTP_GZIP=0`으로 끔, 수준 `FLOW_HTTP_GZIP_LEVEL`
+  기본 5). CSV/XLSX 다운로드와 SSE는 압축하지 않습니다. 빌드 산출물(해시 이름)은 1년 캐시로 두고
+  `index.html`만 매번 새로 받으므로, 재배포 후 새로고침 한 번이면 새 화면이 뜹니다.
+- 숨겨진 브라우저 탭은 알람·모니터·캐시 로그 폴링을 멈추고, 다시 보일 때 한 번 갱신합니다.
+
+### ET 조회·TEG 위치 조회가 SplitTable 검색을 느리게 하지 않게
+
+- **ET 조회(`/api/reformatize/run`)** 의 첫 계산은 운영 API 프로세스가 아니라 상주 계산 프로세스에서
+  합니다(다운로드는 원래 별도 프로세스). SplitTable 검색과 polars 스레드풀·메모리를 나눠 쓰지 않고,
+  CPU를 다툴 때는 OS 우선순위가 낮은 쪽(ET)이 양보합니다. 캐시 적중·페이지 넘김은 그대로 운영에서
+  즉시 처리하고, 같은 조건을 여러 명이 동시에 조회하면 한 번만 계산합니다. 제품을 고르는 순간 계산
+  프로세스를 미리 띄워 첫 조회에 기동 대기가 붙지 않습니다.
+  - 조절: `FLOW_REFORMATIZE_RUN_PROCS`(동시 계산 수, 기본 8코어 미만 1), `FLOW_REFORMATIZE_RUN_THREADS`
+    (기본 2), `FLOW_REFORMATIZE_RUN_TIMEOUT_SEC`(기본 300), `FLOW_REFORMATIZE_RUN_MAX_RSS_MB`(기본 호스트
+    30%, 2~8GB), `FLOW_REFORMATIZE_RUN_IDLE_SEC`(기본 600초 유휴 시 종료), `FLOW_REFORMATIZE_CHILD_NICE`
+    (기본 5, 0=우선순위 유지). 끄기: `FLOW_REFORMATIZE_RUN_ISOLATION=0`.
+  - 계산 프로세스를 띄울 수 없는 환경이면 10분간 예전처럼 운영 프로세스에서 계산합니다(기능은 멈추지 않음).
+- **TEG 위치 조회** 는 Chip_Radius·Teg_location·MAIN·Product Info 를 파일 지문(경로·수정시각·크기)이
+  바뀔 때만 다시 읽고, 지도 응답은 직렬화된 결과를 재사용합니다. SplitTable 공정 메타(`/process-meta`)도
+  같은 방식입니다.
+
+## 사내 LLM(Gemma4) 연동
+
+관리자 → LLM 설정에서 provider `gemma4`를 고르면 다음이 자동 적용됩니다.
+
+- 호출 제한시간 최소 60초(연결 검사 제외). 공유 GPU 대기로 한 번 늦어져도 차단기가 열려 이어지는
+  질문까지 실패하지 않게 합니다.
+- JSON 계획·추출 호출은 temperature 0.1(설정의 `extra_body.temperature`가 있으면 그 값). 같은
+  질문에 같은 도구를 고르고 JSON 형식이 덜 깨집니다. 형식이 깨지면 계획 단계에서 한 번 고쳐 받습니다.
+- 기본지식·제품 Wiki(측정 항목·지식·스텝)·3D 구조 모델은 질문과 관련된 항목부터 글자 예산 안에서만
+  보냅니다. 제품이 정해진 질문의 계획 프롬프트가 약 8만 자에서 2만 자대로 줄었습니다. 예산 배율은
+  `FLOW_LLM_CONTEXT_SCALE`(기본 1, 0.25~4)로 조절합니다.
+
+홈 화면의 **최근 작업 결과**는 Flow-i에서 만든 차트·표·리포트를 최근 순으로 보여 주며, 누르면 그 대화와
+결과창이 그대로 다시 열립니다.
+
 ## 캐시 관리 화면
 
 관리자용 데이터 캐시 화면에서 다음을 확인할 수 있습니다.
@@ -702,7 +754,7 @@ RSS만으로 중단하지 않고 실제 호스트 압력을 함께 확인한다.
 동시 무거운 요청은 기본 5코어에서 2건, 큰 서버에서도 3건으로 보수적으로 유지한다.
 더 늘릴 때는 실제 쿼리의 순간 메모리를 측정한 뒤 `FLOW_HEAVY_REQUEST_CONCURRENCY`(1~8),
 `FLOW_ESSENTIAL_REQUEST_CONCURRENCY`(1~8)를 조정한다. 개별 캐시의 관리자 수동 예산이나
-환경변수도 이전 시 점검한다. 개발 worker의 SplitTable 1코어 및 축소 캐시 정책은 유지된다.
+환경변수도 이전 시 점검한다. 개발 worker는 축소 캐시(풀×0.25)와 Polars 2 threads로 오프로드 작업만 처리한다.
 
 ### 관리자 모니터의 보도블럭 갈기
 
