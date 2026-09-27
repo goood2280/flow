@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { dl, sf } from "../../lib/api";
+import { IconLabel } from "../../components/ui/Icon";
 
 export default function HomeDownloadJob({ job }) {
   const [status, setStatus] = useState(null);
@@ -41,7 +42,7 @@ export default function HomeDownloadJob({ job }) {
     finally { setSaving(false); }
   };
   return <div className="home-workspace__download-card" aria-label="다운로드 작업">
-    <div className="home-workspace__download-title">📥 {job.filename || "ET 다운로드"}</div>
+    <div className="home-workspace__download-title"><IconLabel icon="download">{job.filename || "ET 다운로드"}</IconLabel></div>
     <div role="status">{labels[status?.state] || "작업 상태 확인 중"}{status?.percent != null ? ` · ${status.percent}%` : ""}</div>
     {status?.state === "ready" && status.rows != null && <div className="home-workspace__download-meta">{Number(status.rows).toLocaleString()}행 · {Number(status.cols || 0).toLocaleString()}열</div>}
     {status?.phase && <div className="home-workspace__download-meta">{status.phase}</div>}

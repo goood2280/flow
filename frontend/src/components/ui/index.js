@@ -32,3 +32,5 @@ export {
   OfflineState,
 } from "./Feedback";
 export { FormField } from "./FormField";
+export { SegmentedSwitch } from "./SegmentedSwitch";
+export { Icon, IconLabel, StatusDot, hasIcon, renderIcon, ICON_NAMES } from "./Icon";

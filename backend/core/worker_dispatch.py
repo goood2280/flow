@@ -99,7 +99,9 @@ _STARTED = threading.Event()
 _WORKER_RUNNING: set[str] = set()
 _WORKER_RUNNING_LOCK = threading.Lock()
 _LOCAL_HEAVY_GATE = threading.Semaphore(1)
-_LOCAL_UNGUARDED_TYPES = {"ping", "flowi_chat_turn", "filebrowser_sql_query"}
+# 대화형 요청은 로컬 폴백 때 캐시 빌드용 직렬화 게이트 뒤에 줄 세우지 않는다.
+_LOCAL_UNGUARDED_TYPES = {"ping", "flowi_chat_turn", "filebrowser_sql_query", "home_agent_turn",
+                          "chart_builder_run"}
 _WORKER_NON_MAINT_CLAIMS = 0
 
 # 제품 단위 캐시 산출 작업 — 한 서버에서 **하나만** 돈다. 로컬 폴백이든 워커가
@@ -452,6 +454,17 @@ def default_task_timeout_sec() -> float:
 
 def worker_concurrency() -> int:
     return int(_env_float("FLOW_WORKER_CONCURRENCY", 1.0, 1.0, 16.0))
+
+
+def worker_interactive_concurrency() -> int:
+    """대화형(priority=interactive) 작업 전용 추가 슬롯 수.
+
+    일반 슬롯이 1개뿐이라 수십 분짜리 캐시 빌드가 돌면 파일탐색기 SQL·홈
+    에이전트 분석 같은 대화형 작업이 그 뒤에서 제한시간까지 기다렸다가 운영
+    로컬로 되돌아갔다 — 개발서버가 켜져 있어도 사용자 요청은 오프로드되지
+    않았다. 전용 슬롯은 대화형 작업만 claim 하고, claim 직전 메모리 과부하
+    판정은 그대로 거친다. 0 이면 예전 동작."""
+    return int(_env_float("FLOW_WORKER_INTERACTIVE_CONCURRENCY", 1.0, 0.0, 8.0))
 
 
 def max_queue_depth() -> int:
@@ -1254,7 +1267,7 @@ def _heartbeat_loop() -> None:
         time.sleep(heartbeat_interval_sec())
 
 
-def _claim_next() -> tuple[dict, Path] | None:
+def _claim_next(*, only_interactive: bool = False) -> tuple[dict, Path] | None:
     global _WORKER_NON_MAINT_CLAIMS
     try:
         paths = sorted(
@@ -1279,6 +1292,8 @@ def _claim_next() -> tuple[dict, Path] | None:
         ))
     non_maintenance = interactive + normal
     candidates = (maintenance + non_maintenance) if reserve_maintenance else (non_maintenance + maintenance)
+    if only_interactive:
+        candidates = interactive
     for fp, preloaded in candidates:
         dst = _claimed_dir() / fp.name
         try:
@@ -1294,7 +1309,7 @@ def _claim_next() -> tuple[dict, Path] | None:
             continue
         if str(task.get("priority") or "normal") == "maintenance":
             _WORKER_NON_MAINT_CLAIMS = 0
-        else:
+        elif not only_interactive:
             _WORKER_NON_MAINT_CLAIMS += 1
         return task, dst
     return None
@@ -1357,7 +1372,14 @@ def _execute_task(task: dict, claimed_fp: Path) -> None:
     finally:
         with _WORKER_RUNNING_LOCK:
             _WORKER_RUNNING.discard(label)
-        _write_json_atomic(_results_dir() / f"{task_id}.json", result)
+        result_fp = _results_dir() / f"{task_id}.json"
+        if not _write_json_atomic(result_fp, result):
+            # 직렬화할 수 없는 결과라도 대기 중인 api 가 제한시간까지 멈춰 있지
+            # 않도록 실패 결과를 남긴다 — api 는 즉시 로컬 폴백한다.
+            _write_json_atomic(result_fp, {
+                "id": task_id, "type": task_type, "worker": result.get("worker"),
+                "finished_at": time.time(), "ok": False, "error": "result_not_serializable",
+            })
         try:
             claimed_fp.unlink()
         except Exception:
@@ -1394,8 +1416,11 @@ def _janitor_once() -> None:
 
 
 def _consume_loop() -> None:
-    pool = ThreadPoolExecutor(max_workers=worker_concurrency(), thread_name_prefix="flow-worker")
+    interactive_lanes = worker_interactive_concurrency()
+    pool = ThreadPoolExecutor(max_workers=worker_concurrency() + interactive_lanes,
+                              thread_name_prefix="flow-worker")
     slots = threading.Semaphore(worker_concurrency())
+    interactive_slots = threading.Semaphore(interactive_lanes)
     last_janitor = 0.0
     while True:
         try:
@@ -1412,20 +1437,31 @@ def _consume_loop() -> None:
             if overload:
                 time.sleep(max(_POLL_IDLE_SEC, 1.0))
                 continue
-            if not slots.acquire(timeout=_POLL_IDLE_SEC):
-                continue
-            claimed = _claim_next()
+            claimed = None
+            lane = None
+            if slots.acquire(blocking=False):
+                claimed = _claim_next()
+                if claimed is None:
+                    slots.release()
+                else:
+                    lane = slots
+            if claimed is None and interactive_lanes and interactive_slots.acquire(blocking=False):
+                # 일반 슬롯이 빌드로 차 있어도 대화형 요청은 바로 시작한다.
+                claimed = _claim_next(only_interactive=True)
+                if claimed is None:
+                    interactive_slots.release()
+                else:
+                    lane = interactive_slots
             if claimed is None:
-                slots.release()
                 time.sleep(_POLL_IDLE_SEC)
                 continue
             task, fp = claimed
 
-            def _run(task=task, fp=fp):
+            def _run(task=task, fp=fp, lane=lane):
                 try:
                     _execute_task(task, fp)
                 finally:
-                    slots.release()
+                    lane.release()
 
             pool.submit(_run)
         except Exception:

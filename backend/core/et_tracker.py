@@ -1129,6 +1129,14 @@ def run_scan(*, force: bool = False, actor: str = "scheduler", full: bool = Fals
     try:
         result = _dispatch_scan("", timeout_sec=1800.0, full=full)
         summary = _apply_scan_result(result, cfg, notify=True, actor=actor)
+        # 분석의뢰의 ET 측정·실제 split 도 같은 캐시를 보므로 ET 추적 갱신 때 같이 갱신한다.
+        # 분석의뢰 쪽 실패가 ET 추적 결과를 망치지 않게 따로 감싼다.
+        try:
+            from core.analysis_requests import scan_all as _scan_analysis_requests
+            summary["analysis_requests"] = _scan_analysis_requests(actor=actor)
+        except Exception as e:
+            logger.warning(f"analysis request scan failed: {e}")
+            summary["analysis_requests"] = {"ok": False, "errors": [str(e)]}
     except Exception as e:
         logger.warning(f"et tracker scan failed: {e}")
         summary = {"ok": False, "started_at": _now_iso(), "finished_at": _now_iso(),

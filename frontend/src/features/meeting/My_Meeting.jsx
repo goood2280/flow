@@ -11,6 +11,7 @@ import PageGear from "../../components/PageGear";
 import { canManagePage } from "../../lib/permissions";
 import Modal from "../../components/Modal";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import { Btn, EmptyState, Input, Panel, Pill, Select, TabStrip, TableWrap, Tbl, Textarea, chartPalette } from "../../components/UXKit";
 import { authSrc, sf, postJson, userLabel } from "../../lib/api";
 import { sanitizeHtml, htmlToText } from "../../lib/sanitizeHtml";
@@ -936,7 +937,7 @@ export default function My_Meeting({ user }) {
         </div>
         <div style={{ flex: 1, overflow: "auto", padding: "8px 6px" }}>
           {loading && <div style={{ padding: 20, textAlign: "center", color: "var(--text-secondary)", fontSize: 14 }}>로딩...</div>}
-          {!loading && filtered.length === 0 && <EmptyState icon="○" title="회의 없음" />}
+          {!loading && filtered.length === 0 && <EmptyState icon="calendar" title="회의 없음" />}
           {filtered.map(m => {
             const sel = m.id === selectedId;
             const sessions = m.sessions || [];
@@ -957,9 +958,9 @@ export default function My_Meeting({ user }) {
                   <Pill tone={SESS_STATUS_TONE[latestStatus] || "neutral"}>{SESS_STATUS_LABEL[latestStatus]}</Pill>
                 </div>
                 <div style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", display: "flex", gap: 8, flexWrap: "wrap" }}>
-                  <span>👤 {m.owner || "—"}</span>
-                  <span>🔢 {sessions.length}차</span>
-                  {latest?.scheduled_at && <span>🕒 {dtPretty(latest.scheduled_at)}</span>}
+                  <IconLabel icon="user">{m.owner || "—"}</IconLabel>
+                  <IconLabel icon="hash">{sessions.length}차</IconLabel>
+                  {latest?.scheduled_at && <IconLabel icon="clock">{dtPretty(latest.scheduled_at)}</IconLabel>}
                 </div>
                 <div style={{ marginTop: 4, fontSize: 14, color: "var(--text-secondary)" }}>
                   {recurrenceSummary(m.recurrence)}
@@ -987,7 +988,7 @@ export default function My_Meeting({ user }) {
               title="회의 정보"
               right={canEditMeta(selected) && (
                 <span style={{ display: "inline-flex", gap: 6 }}>
-                  {!editingMeta && <Btn size="sm" onClick={startEditMeta}>✎ 수정</Btn>}
+                  {!editingMeta && <Btn size="sm" onClick={startEditMeta}><IconLabel icon="edit">수정</IconLabel></Btn>}
                   <Btn size="sm" variant="danger" onClick={removeMeeting}>삭제</Btn>
                 </span>
               )}
@@ -1067,7 +1068,7 @@ export default function My_Meeting({ user }) {
                           const next = on ? cur.filter(x => x !== g.id) : [...cur, g.id];
                           setMetaDraft({ ...metaDraft, group_ids: next });
                         }} style={{ padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
-                          {on ? "✓ " : ""}{g.name}
+                          {on ? <Icon name="check" style={{ marginRight: 4 }} /> : null}{g.name}
                         </span>
                       );
                     })}
@@ -1128,7 +1129,7 @@ export default function My_Meeting({ user }) {
               {/* Agendas */}
               <Panel title={`${selectedSession.idx}차 아젠다`} subtitle={`${(selectedSession.agendas || []).length}건`}>
                 {(selectedSession.agendas || []).length === 0 && (
-                  <EmptyState icon="📋" title="이 차수에 아젠다가 아직 없습니다." />
+                  <EmptyState icon="clipboard" title="이 차수에 아젠다가 아직 없습니다." />
                 )}
                 {(selectedSession.agendas || []).map((a, i) => (
                   <div key={a.id} style={i === 0 ? connectedListRowFirst : connectedListRow}>
@@ -1152,15 +1153,15 @@ export default function My_Meeting({ user }) {
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                           <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", minWidth: 26 }}>#{i + 1}</span>
                           <span style={{ fontSize: 14, fontWeight: 600, flex: 1 }}>{a.title}</span>
-                          <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>👤 {a.owner}</span>
+                          <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}><IconLabel icon="user">{a.owner}</IconLabel></span>
                           {canEditAgenda(selected, a) && <span onClick={() => startEditAgenda(a)} style={editLink}>수정</span>}
                           {canEditAgenda(selected, a) && <span onClick={() => removeAgenda(a)} style={delLink}>삭제</span>}
                         </div>
                         {/* v8.7.7: 아젠다 등록/수정 시각 */}
                         {(a.created_at || a.updated_at) && (
                           <div style={{ paddingLeft: 34, fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", marginBottom: 4 }}>
-                            {a.created_at && <>🕐 등록 {dtPretty(a.created_at)}</>}
-                            {a.updated_at && a.updated_at !== a.created_at && <> · ✎ 수정 {dtPretty(a.updated_at)}</>}
+                            {a.created_at && <><Icon name="clock" style={{ marginRight: 4 }} />등록 {dtPretty(a.created_at)}</>}
+                            {a.updated_at && a.updated_at !== a.created_at && <> · <Icon name="edit" style={{ marginRight: 4 }} />수정 {dtPretty(a.updated_at)}</>}
                           </div>
                         )}
                         {a.description && <div style={{ fontSize: 14, color: "var(--text-primary)", marginBottom: 4, whiteSpace: "pre-wrap", paddingLeft: 34 }}>{a.description}</div>}
@@ -1226,9 +1227,9 @@ export default function My_Meeting({ user }) {
                         {a.link && (
                           <div style={{ paddingLeft: 34 }}>
                             {isUrl(a.link) ? (
-                              <a href={a.link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 14, color: "var(--accent)", textDecoration: "underline", wordBreak: "break-all" }}>🔗 {a.link}</a>
+                              <a href={a.link} target="_blank" rel="noopener noreferrer" style={{ fontSize: 14, color: "var(--accent)", textDecoration: "underline", wordBreak: "break-all" }}><Icon name="link" style={{ marginRight: 4 }} />{a.link}</a>
                             ) : (
-                              <span style={{ fontSize: 14, color: "var(--text-secondary)", wordBreak: "break-all" }}>🔗 {a.link}</span>
+                              <span style={{ fontSize: 14, color: "var(--text-secondary)", wordBreak: "break-all" }}><Icon name="link" style={{ marginRight: 4 }} />{a.link}</span>
                             )}
                           </div>
                         )}
@@ -1242,7 +1243,7 @@ export default function My_Meeting({ user }) {
                     {/* v8.8.13: 같은 그룹 이슈 불러와서 자동 채움 */}
                     <Btn size="sm" onClick={openIssuePicker} title="같은 그룹의 이슈에서 가져오기 (제목·설명·담당자·링크·이미지 자동 채움)"
                       style={{ borderColor: "var(--violet)", color: "var(--violet)" }}>
-                      📎 이슈 가져오기
+                      <IconLabel icon="paperclip">이슈 가져오기</IconLabel>
                     </Btn>
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
@@ -1304,13 +1305,13 @@ export default function My_Meeting({ user }) {
                 title={`${selectedSession.idx}차 회의록`}
                 right={canEditMinutes(selected) && !editingMinutes && (
                   <span style={{ display: "inline-flex", gap: 6 }}>
-                    <Btn size="sm" onClick={startEditMinutes}>{selectedSession.minutes ? "✎ 수정" : "+ 작성"}</Btn>
+                    <Btn size="sm" onClick={startEditMinutes}>{selectedSession.minutes ? <IconLabel icon="edit">수정</IconLabel> : <IconLabel icon="plus">작성</IconLabel>}</Btn>
                     {/* v8.7.7: 저장된 차수는 메일만 재발송 가능 */}
                     {selectedSession.minutes && (
                       <Btn size="sm" onClick={() => setSendDialog({
                         mail_group_ids: [], mail_to_users: [], mail_to: "", mail_subject: "", mail_body: "",
                         ...DEFAULT_MAIL_OPTIONS,
-                      })}>📧 메일 발송</Btn>
+                      })}><IconLabel icon="send">메일 발송</IconLabel></Btn>
                     )}
                   </span>
                 )}
@@ -1318,7 +1319,7 @@ export default function My_Meeting({ user }) {
                 {/* v8.8.6/v8.8.15: 외부 저장 알림 배너 — 편집 중 다른 유저가 저장하면 표시. rev 표시 + "유지하며 rebase" 옵션. */}
                 {externalUpdate && editingMinutes && (
                   <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: "var(--warn-50)", border: "1px solid var(--warn-line)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 14, color: "var(--warn)", fontWeight: 700 }}>⚠ 동시편집 감지</span>
+                    <span style={{ fontSize: 14, color: "var(--warn)", fontWeight: 700 }}><IconLabel icon="warning">동시편집 감지</IconLabel></span>
                     <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>
                       {externalUpdate.author} 님이 방금 저장함 ({(externalUpdate.at || "").slice(11, 16)})
                       {externalUpdate.rev !== undefined && <> · <span style={{ fontFamily: "monospace", color: "var(--warn)", fontWeight: 700 }}>rev {externalUpdate.rev}</span></>}
@@ -1359,13 +1360,13 @@ export default function My_Meeting({ user }) {
                     )}
                     {(selectedSession.minutes.decisions || []).length > 0 && (
                       <div>
-                        <div style={lbl}>⚡ 결정사항 ({selectedSession.minutes.decisions.length})</div>
+                        <div style={lbl}><Icon name="bolt" style={{ marginRight: 4 }} />결정사항 ({selectedSession.minutes.decisions.length})</div>
                         <TableWrap style={{ marginTop: 4 }}>
                           <Tbl>
                             <thead>
                               <tr>
                                 <th>내용</th>
-                                <th style={{ width: 260, minWidth: 260 }}>📅 달력 (회의 일자로 등록)</th>
+                                <th style={{ width: 260, minWidth: 260 }}><IconLabel icon="calendar">달력 (회의 일자로 등록)</IconLabel></th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1378,13 +1379,13 @@ export default function My_Meeting({ user }) {
                                       {obj.calendar_pushed ? (
                                         <div style={calendarStatusBox}>
                                           <div style={calendarStatusLine}>
-                                            <span style={{ color: "var(--ok)", fontWeight: 600 }}>✓ 등록됨</span>
+                                            <span style={{ color: "var(--ok)", fontWeight: 600 }}><IconLabel icon="check">등록됨</IconLabel></span>
                                             <span onClick={() => unpushDecision(obj)} style={delLink}>해제</span>
                                           </div>
                                           <div style={calendarStatusMeta}>{obj.calendar_pushed_by} · {dtPretty(obj.calendar_pushed_at)}</div>
                                         </div>
                                       ) : (
-                                        <Btn size="sm" onClick={() => pushDecision(obj)} disabled={!obj.id}>📅 달력 등록</Btn>
+                                        <Btn size="sm" onClick={() => pushDecision(obj)} disabled={!obj.id}><IconLabel icon="calendar">달력 등록</IconLabel></Btn>
                                       )}
                                     </td>
                                   </tr>
@@ -1397,7 +1398,7 @@ export default function My_Meeting({ user }) {
                     )}
                     {(selectedSession.minutes.action_items || []).length > 0 && (
                       <div>
-                        <div style={lbl}>✅ 액션 아이템 ({selectedSession.minutes.action_items.length})</div>
+                        <div style={lbl}><Icon name="check-circle" style={{ marginRight: 4 }} />액션 아이템 ({selectedSession.minutes.action_items.length})</div>
                         <TableWrap style={{ marginTop: 4 }}>
                           <Tbl>
                             <thead>
@@ -1405,7 +1406,7 @@ export default function My_Meeting({ user }) {
                                 <th>내용</th>
                                 <th style={{ width: 100 }}>담당</th>
                                 <th style={{ width: 100 }}>마감</th>
-                                <th style={{ width: 210, minWidth: 210 }}>📅 달력</th>
+                                <th style={{ width: 210, minWidth: 210 }}><IconLabel icon="calendar">달력</IconLabel></th>
                               </tr>
                             </thead>
                             <tbody>
@@ -1418,7 +1419,7 @@ export default function My_Meeting({ user }) {
                                     {a.calendar_pushed ? (
                                       <div style={calendarStatusBox}>
                                         <div style={calendarStatusLine}>
-                                          <span style={{ color: "var(--ok)", fontWeight: 600 }}>✓ 등록됨</span>
+                                          <span style={{ color: "var(--ok)", fontWeight: 600 }}><IconLabel icon="check">등록됨</IconLabel></span>
                                           <span onClick={() => unpushAction(a)} style={delLink}>해제</span>
                                         </div>
                                         <div style={calendarStatusMeta}>
@@ -1426,7 +1427,7 @@ export default function My_Meeting({ user }) {
                                         </div>
                                       </div>
                                     ) : (
-                                      <Btn size="sm" onClick={() => pushAction(a)}>📅 달력 등록</Btn>
+                                      <Btn size="sm" onClick={() => pushAction(a)}><IconLabel icon="calendar">달력 등록</IconLabel></Btn>
                                     )}
                                   </td>
                                 </tr>
@@ -1449,7 +1450,7 @@ export default function My_Meeting({ user }) {
                     </div>
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={lbl}>⚡ 결정사항</span>
+                        <span style={lbl}><IconLabel icon="bolt">결정사항</IconLabel></span>
                         <Btn size="sm" onClick={addDecision}>+ 추가</Btn>
                       </div>
                       {minutesDraft.decisions.map((d, i) => {
@@ -1467,7 +1468,7 @@ export default function My_Meeting({ user }) {
                     </div>
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={lbl}>✅ 액션 아이템 (회의록 저장 시 달력에 자동 반영 — 회의일~마감 구간)</span>
+                        <span style={lbl}><Icon name="check-circle" style={{ marginRight: 4 }} />액션 아이템 (회의록 저장 시 달력에 자동 반영 — 회의일~마감 구간)</span>
                         <Btn size="sm" onClick={addAction}>+ 추가</Btn>
                       </div>
                       {minutesDraft.action_items.map((a, i) => (
@@ -1504,7 +1505,7 @@ export default function My_Meeting({ user }) {
                     <div style={{ marginTop: 6, padding: 10, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-primary)" }}>
                       <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 14, fontWeight: 600 }}>
                         <input type="checkbox" checked={!!minutesDraft.send_mail} onChange={e => setMinutesDraft({ ...minutesDraft, send_mail: e.target.checked })} />
-                        📧 저장과 동시에 회의록 메일 발송
+                        <Icon name="send" />저장과 동시에 회의록 메일 발송
                       </label>
                       {minutesDraft.send_mail && (
                         <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1547,7 +1548,7 @@ export default function My_Meeting({ user }) {
                                     border: "1px solid " + (on ? "var(--accent)" : "var(--border)"),
                                     background: on ? "var(--accent-glow)" : "transparent",
                                     color: on ? "var(--accent)" : "var(--text-secondary)",
-                                  }}>📮 {g.name}</span>
+                                  }}><IconLabel icon="users">{g.name}</IconLabel></span>
                               );
                             })}
                             <Btn size="sm" variant="ghost" onClick={() => setMgEditor(true)} type="button">관리</Btn>
@@ -1558,7 +1559,7 @@ export default function My_Meeting({ user }) {
                           </div>
                           {/* v8.8.16: 메일 전용 본문. 비우면 저장된 회의록 본문을 메일 본문으로 사용한다. */}
                           <div style={{ marginTop: 6, padding: "6px 8px", borderRadius: 5, border: "1px dashed var(--border)", background: "var(--bg-primary)" }}>
-                            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: "var(--text-secondary)" }}>📝 메일 본문 (선택)</div>
+                            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, color: "var(--text-secondary)" }}><IconLabel icon="note">메일 본문 (선택)</IconLabel></div>
                             <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>
                               비워두면 저장된 회의록 본문을 사용하고, 입력하면 이 내용이 본문 섹션에 들어갑니다.
                             </div>
@@ -1604,15 +1605,15 @@ export default function My_Meeting({ user }) {
       {issuePickerOpen && (
         <Modal open={issuePickerOpen} onClose={() => setIssuePickerOpen(false)} width={640}>
             <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--violet)", fontFamily: "monospace", flex: 1 }}>📎 이슈에서 가져오기</div>
-              <span onClick={() => setIssuePickerOpen(false)} style={{ cursor: "pointer", fontSize: 18, color: "var(--text-secondary)" }}>✕</span>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "var(--violet)", fontFamily: "monospace", flex: 1 }}><IconLabel icon="paperclip">이슈에서 가져오기</IconLabel></div>
+              <button type="button" className="flow-icon-button" onClick={() => setIssuePickerOpen(false)} title="닫기" style={{ fontSize: 18, color: "var(--text-secondary)" }}><Icon name="close" /></button>
             </div>
             <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
               선택하면 제목·설명·담당자·첫 번째 링크가 채워지고, 이슈 본문·이미지는 연결 이슈로 함께 보관됩니다.
               {!isAdmin && (selected?.group_ids || []).length > 0 && <> (회의 그룹과 겹치는 이슈만)</>}
             </div>
             <Input value={issuePickerSearch} onChange={e => setIssuePickerSearch(e.target.value)}
-              placeholder="🔎 제목/카테고리/작성자 검색"
+              placeholder="제목/카테고리/작성자 검색"
               style={{ width: "100%", marginBottom: 8 }} />
             <div style={{ maxHeight: 360, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
               {issuePickerBusy && <div style={{ padding: 24, textAlign: "center", fontSize: 14, color: "var(--text-secondary)" }}>로딩…</div>}
@@ -1642,7 +1643,7 @@ export default function My_Meeting({ user }) {
                     onMouseEnter={e => e.currentTarget.style.background = "var(--violet-50)"}
                     onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
                     {/* v8.8.28: 왼쪽은 고유번호 대신 최신 수정 시각. */}
-                    <span style={{ fontFamily: "monospace", fontSize: 14, color: "var(--text-secondary)", width: 88, flexShrink: 0, whiteSpace: "nowrap" }}>🕘 {fmtUpdated(iss.updated_at)}</span>
+                    <span style={{ fontFamily: "monospace", fontSize: 14, color: "var(--text-secondary)", width: 88, flexShrink: 0, whiteSpace: "nowrap" }}><Icon name="clock" style={{ marginRight: 4 }} />{fmtUpdated(iss.updated_at)}</span>
                     {iss.category && <span style={{ fontSize: 14, padding: "1px 6px", borderRadius: 10, background: "var(--bg-card)", color: "var(--text-secondary)", flexShrink: 0 }}>{iss.category}</span>}
                     {iss.status && <Pill tone={iss.status === "closed" ? "ok" : "warn"}>{iss.status}</Pill>}
                     {/* v8.8.28: 제목 + 한 줄 요약 (회색, nowrap ellipsis). title/summary 합쳐서 flex:1. */}
@@ -1713,7 +1714,7 @@ export default function My_Meeting({ user }) {
                       const next = on ? cur.filter(x => x !== g.id) : [...cur, g.id];
                       setDraft({ ...draft, group_ids: next });
                     }} style={{ padding: "3px 10px", borderRadius: 999, fontSize: 14, cursor: "pointer", border: "1px solid var(--border)", background: on ? "var(--accent-glow)" : "transparent", color: on ? "var(--accent)" : "var(--text-secondary)" }}>
-                      {on ? "✓ " : ""}{g.name}
+                      {on ? <Icon name="check" style={{ marginRight: 4 }} /> : null}{g.name}
                     </span>
                   );
                 })}
@@ -1775,7 +1776,7 @@ function MinutesAppendix({ session, meeting, user, appendText, setAppendText, ap
   return (
     <div style={{ marginTop: list.length ? 8 : 0, padding: 10, borderRadius: 5, background: "var(--bg-card)", border: "1px dashed var(--border)" }}>
       <div style={{ ...lbl, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
-        <span>✍ 공동 작성</span>
+        <IconLabel icon="edit">공동 작성</IconLabel>
         <span style={{ fontSize: 14, color: "var(--text-secondary)", fontWeight: 400 }}>(그룹 멤버는 추가만 가능 · 본인 글만 삭제 · 주관자는 전체 정리)</span>
       </div>
       {list.length === 0 && <div style={{ fontSize: 14, color: "var(--text-secondary)", padding: "4px 2px" }}>추가된 내용 없음</div>}
@@ -1833,7 +1834,7 @@ function MeetingCategoryEditor({ categories, setCategories, isAdmin }) {
       <div style={{ fontSize: 14, color: "var(--text-secondary)", lineHeight: 1.6 }}>
         회의 카테고리는 달력 카테고리 팔레트와 공유됩니다.<br />
         <Btn onClick={start} disabled={!isAdmin} style={{ marginTop: 8, opacity: isAdmin ? 1 : 0.5 }}>
-          🎨 카테고리 편집 ({(categories || []).length})
+          <Icon name="palette" style={{ marginRight: 4 }} />카테고리 편집 ({(categories || []).length})
         </Btn>
       </div>
     );
@@ -1929,7 +1930,7 @@ function ActionItemsGantt({ meetings, onPickMeeting }) {
   return (
     <div style={{ padding: 16, overflow: "auto" }}>
       <div style={{ marginBottom: 8, fontSize: 14, color: "var(--text-secondary)" }}>
-        📊 액션아이템 간트 차트 · {rows.length} items · {new Date(minT).toISOString().slice(0, 10)} ~ {new Date(maxT).toISOString().slice(0, 10)}
+        <Icon name="chart-bar" style={{ marginRight: 4 }} />액션아이템 간트 차트 · {rows.length} items · {new Date(minT).toISOString().slice(0, 10)} ~ {new Date(maxT).toISOString().slice(0, 10)}
       </div>
       <svg width={W} height={H} style={{ background: "var(--bg-secondary)", border: "1px solid var(--border)", borderRadius: 6 }}>
         {/* month grid */}
@@ -2118,7 +2119,7 @@ function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, o
   };
   return (
     <Modal open onClose={onClose} width={620}>
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>📧 {session.idx}차 회의록 메일 발송</div>
+        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}><IconLabel icon="send">{session.idx}차 회의록 메일 발송</IconLabel></div>
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
           "{meeting.title}" · {session.idx}차 회의록을 HTML 메일로 전송합니다.
         </div>
@@ -2126,7 +2127,7 @@ function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, o
         <div style={{ marginTop: 8 }}>
           <MailContentOptions draft={draft} onChange={onChange} />
         </div>
-        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 10, marginBottom: 4 }}>📮 메일 그룹</div>
+        <div style={{ fontSize: 14, color: "var(--text-secondary)", marginTop: 10, marginBottom: 4 }}><IconLabel icon="users">메일 그룹</IconLabel></div>
         <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
           {(mailGroups || []).length === 0 && <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>(없음)</span>}
           {(mailGroups || []).map(g => {
@@ -2169,7 +2170,7 @@ function SendMailDialog({ meeting, session, mailGroups, mailRecipients, draft, o
         {err && <div style={{ marginTop: 8, fontSize: 14, color: "var(--danger)" }}>{err}</div>}
         <div style={{ marginTop: 14, display: "flex", gap: 6, justifyContent: "flex-end" }}>
           <Btn variant="ghost" onClick={onClose} disabled={busy}>취소</Btn>
-          <Btn variant="primary" onClick={submit} disabled={busy}>{busy ? "발송 중…" : "📧 발송"}</Btn>
+          <Btn variant="primary" onClick={submit} disabled={busy}>{busy ? "발송 중…" : <IconLabel icon="send">발송</IconLabel>}</Btn>
         </div>
     </Modal>
   );

@@ -1,4 +1,5 @@
 // UXKit.jsx — v1.0.0 (v8.8.33)
+import { renderIcon } from "./ui/Icon";
 // flow 공용 UX 프리미티브. FileBrowser / SplitTable 패턴을 기준으로 추출.
 // 목적: 페이지별로 중복 작성되는 pill / tab / header / badge / table styling 을
 //       단일 소스로 통일. 각 페이지는 이 컴포넌트만 import 하면 FileBrowser 와
@@ -145,9 +146,9 @@ export function Pill({ children, tone = "neutral", size = "sm", title, onClick, 
   );
 }
 
-export function Card({ title, right, children, padding = 16, className = "", style = {}, bodyStyle = {} }) {
+export function Card({ id, title, right, children, padding = 16, className = "", style = {}, bodyStyle = {} }) {
   return (
-    <section className={`card ds-card${className ? ` ${className}` : ""}`} style={style}>
+    <section id={id} className={`card ds-card${className ? ` ${className}` : ""}`} style={style}>
       {(title || right) && (
         <div className="card__head ds-card__header">
           {title && <div className="card__title ds-card__title">{uiLabel(title)}</div>}
@@ -405,11 +406,11 @@ export function LinkBtn({ tone = "accent", children, style = {}, ...props }) {
 
 
 // ── EmptyState ────────────────────────────────────────
-export function EmptyState({ icon = "○", title, hint, actions }) {
+export function EmptyState({ icon = "tray", title, hint, actions }) {
   return (
     <div className="empty-state ds-feedback" role="status">
       <div className="ds-feedback__inner">
-        <div className="ds-feedback__icon" aria-hidden="true">{icon}</div>
+        <div className="ds-feedback__icon" aria-hidden="true">{renderIcon(icon)}</div>
         <div className="empty-state__title ds-feedback__title">{title}</div>
         {hint && <div className="ds-feedback__message">{hint}</div>}
         {actions && <div className="ds-feedback__actions">{actions}</div>}

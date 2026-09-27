@@ -122,7 +122,7 @@ export default function ProductSemanticPanel({ product: fixedProduct = "", admin
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <Button disabled={busy} onClick={() => setEditing((old) => ({ ...old, draft: { ...old.draft, measurements: [...old.draft.measurements, { term: "", aliases: [], module: "", source_type: "INLINE", step_id: "", item_id: "" }] } }))}>측정 용어 추가</Button>
           <Button disabled={busy} onClick={() => setEditing((old) => ({ ...old, draft: { ...old.draft, structures: [...old.draft.structures, { module: "", path: "", aliases: [], step_start: "", step_end: "" }] } }))}>하위 구조 추가</Button>
-           {canConfirm(editing) && <Button variant="primary" disabled={busy} onClick={() => act(async () => { await post("/confirm", { product, id: editing.id, draft: confirmedDraft() }); setEditing(null); await reload(); setMessage("연결을 확인했습니다. 제품 Wiki와 홈 Flow-i에서 같은 지식을 참고합니다."); })}>확인한 연결 저장</Button>}
+           {canConfirm(editing) && <Button variant="primary" disabled={busy} onClick={() => act(async () => { await post("/confirm", { product, id: editing.id, draft: confirmedDraft() }); setEditing(null); await reload(); setMessage("연결을 확인했습니다. 제품 위키와 홈 Flow-i에서 같은 지식을 참고합니다."); })}>확인한 연결 저장</Button>}
           <Button disabled={busy} onClick={() => setEditing(null)}>닫기</Button>
         </div>
       </div>}

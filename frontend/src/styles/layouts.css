@@ -263,6 +263,120 @@
 .home-flowi-connect__copy small { color: var(--text-muted); }
 .home-flowi-connect__arrow { margin-left: auto; color: var(--accent); font-size: 22px; }
 
+/* 최근 작업 결과 — Carbon clickable tile: 직각, 1px 경계, 호버는 배경만. */
+.home-results {
+  margin-top: var(--space-5);
+}
+
+.home-results__head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.home-results__head h2 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: var(--font-size-title);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-title);
+}
+
+.home-results__head span {
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.home-results__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: var(--space-2);
+}
+
+.flow-app button.home-result-card {
+  min-width: 0;
+  min-height: 112px;
+  display: grid;
+  align-content: start;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-1);
+  background: var(--surface-panel);
+  color: var(--text-strong);
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+  transition: background-color 70ms ease, border-color 70ms ease;
+}
+
+.flow-app button.home-result-card:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.flow-app button.home-result-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.home-result-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.home-result-card__kind {
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-body);
+}
+
+.home-result-card[data-kind="chart"] .home-result-card__kind {
+  border-color: var(--status-info-border);
+  background: var(--status-info-bg);
+  color: var(--status-info);
+}
+
+.home-result-card[data-kind="report"] .home-result-card__kind {
+  border-color: var(--brand-line);
+  background: var(--brand-50);
+  color: var(--accent);
+}
+
+.home-result-card__time,
+.home-result-card__scope {
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.home-result-card__title {
+  overflow: hidden;
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+  line-height: var(--line-height-body);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.home-result-card__question {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .home-flowi-panel {
   transform-origin: top center;
   animation: home-flowi-reveal 260ms cubic-bezier(.2, .8, .2, 1) both;
@@ -373,129 +487,99 @@
   justify-content: center;
 }
 
+/* Tile families from the manifest group: data (steel body, orange accent),
+   work (orange body, steel accent) and system (graphite body, orange accent). */
 .home-feature-card__icon {
-  width: 64px;
-  height: 64px;
+  --home-icon-primary: var(--brand);
+  --home-icon-accent: var(--iso-steel);
+  --home-icon-wash: var(--brand-50);
+  --home-icon-border: var(--brand-line);
+  width: 72px;
+  height: 72px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--status-info-border);
-  border-radius: 18px;
-  background: var(--status-info-bg);
-  color: var(--text-strong);
-  font-size: 30px;
-  line-height: 1;
-  box-shadow: var(--shadow-app-icon);
-  transition: transform 140ms ease, box-shadow 140ms ease;
+  border: 1px solid var(--home-icon-border);
+  border-radius: var(--radius-app-icon);
+  /* Raised tile: lit from the top-left like the pictogram it holds. */
+  background:
+    linear-gradient(160deg, color-mix(in srgb, var(--iso-light) 70%, transparent), transparent 55%),
+    var(--home-icon-wash);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--iso-light) 80%, transparent),
+    inset 0 -2px 0 color-mix(in srgb, var(--home-icon-primary) 18%, transparent);
+  color: var(--home-icon-primary);
+  transition: border-color 120ms ease;
 }
 
-.home-feature-card__glyph {
-  width: 100%;
-  height: 100%;
-  display: grid;
-  place-items: center;
-  font-family: "Segoe UI Emoji", "Apple Color Emoji", var(--font-sans);
-  line-height: 1;
-  transform: translateY(-1px);
+.home-feature-item[data-app-group="data"] .home-feature-card__icon {
+  --home-icon-primary: var(--iso-steel);
+  --home-icon-accent: var(--brand);
+  --home-icon-wash: var(--iso-steel-wash);
+  --home-icon-border: var(--iso-steel-line);
 }
 
-.home-wafer-glyph {
-  width: 38px;
-  height: 38px;
-  display: block;
-  overflow: visible;
-}
-
-.home-wafer-glyph__surface {
-  fill: var(--surface-panel);
-}
-
-.home-wafer-glyph__shot {
-  fill: var(--status-info-border);
-  stroke: var(--status-info);
-  stroke-width: 0.65;
-}
-
-.home-wafer-glyph__outline {
-  fill: none;
-  stroke: var(--text-strong);
-  stroke-width: 1.35;
-  stroke-linejoin: round;
-}
-
-.home-wafer-glyph__notch {
-  fill: var(--surface-panel);
-  stroke: var(--text-strong);
-  stroke-width: 1;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.home-template-report-glyph {
-  width: 39px;
-  height: 39px;
-  display: block;
-  overflow: visible;
-}
-
-.home-template-report-glyph__template {
-  fill: var(--status-violet-bg);
-  stroke: var(--status-violet);
-  stroke-width: 1.15;
-  stroke-dasharray: 2 1.3;
-}
-
-.home-template-report-glyph__report {
-  fill: var(--surface-panel);
-  stroke: var(--text-strong);
-  stroke-width: 1.15;
-}
-
-.home-template-report-glyph__heading,
-.home-template-report-glyph__body {
-  fill: none;
-  stroke: var(--text-muted);
-  stroke-width: 1.05;
-  stroke-linecap: round;
-}
-
-.home-template-report-glyph__step {
-  fill: var(--status-violet-border);
-  stroke: var(--status-violet);
-  stroke-width: 0.75;
-}
-
-.home-template-report-glyph__number {
-  fill: var(--status-violet);
-  font-family: var(--font-sans);
-  font-size: 6px;
-  font-weight: var(--font-weight-bold);
-}
-
-.home-feature-item[data-tone="violet"] .home-feature-card__icon {
-  border-color: var(--status-violet-border);
-  background: var(--status-violet-bg);
-}
-
-.home-feature-item[data-tone="green"] .home-feature-card__icon {
-  border-color: var(--status-success-border);
-  background: var(--status-success-bg);
-}
-
-.home-feature-item[data-tone="amber"] .home-feature-card__icon {
-  border-color: var(--status-warning-border);
-  background: var(--status-warning-bg);
-}
-
-.home-feature-item[data-tone="pink"] .home-feature-card__icon {
-  border-color: var(--status-pink-border);
-  background: var(--status-pink-bg);
+/* System (관리자) stays neutral so it never reads as a work tile. */
+.home-feature-item[data-app-group="system"] .home-feature-card__icon {
+  --home-icon-primary: var(--iso-graphite);
+  --home-icon-accent: var(--brand);
+  --home-icon-wash: var(--iso-graphite-wash);
+  --home-icon-border: var(--iso-graphite-line);
 }
 
 .home-feature-card:hover .home-feature-card__icon,
 .home-feature-card:focus-visible .home-feature-card__icon {
-  transform: translateY(-3px);
-  box-shadow: var(--shadow-app-icon-hover);
+  border-color: var(--home-icon-primary);
+}
+
+/* Isometric pictograms lit from the top-left. Main hue (c), accent (b), paper (p)
+   and ink (k) each carry top / left / right tones. Solids stroke in their own
+   fill with round joins, which is what gives them the soft emoji corners. */
+.home-app-icon {
+  width: 58px;
+  height: 58px;
+  display: block;
+  overflow: visible;
+  fill: none;
+  stroke: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.home-app-icon .hi-ct { --hi-f: color-mix(in srgb, var(--home-icon-primary) 55%, var(--iso-light)); }
+.home-app-icon .hi-cl { --hi-f: var(--home-icon-primary); }
+.home-app-icon .hi-cr { --hi-f: color-mix(in srgb, var(--home-icon-primary) 70%, var(--iso-dark)); }
+.home-app-icon .hi-bt { --hi-f: color-mix(in srgb, var(--home-icon-accent) 50%, var(--iso-light)); }
+.home-app-icon .hi-bl { --hi-f: var(--home-icon-accent); }
+.home-app-icon .hi-br { --hi-f: color-mix(in srgb, var(--home-icon-accent) 70%, var(--iso-dark)); }
+.home-app-icon .hi-pt { --hi-f: var(--iso-paper-top); }
+.home-app-icon .hi-pl { --hi-f: var(--iso-paper-left); }
+.home-app-icon .hi-pr { --hi-f: var(--iso-paper-right); }
+.home-app-icon .hi-kt { --hi-f: var(--iso-ink-top); }
+.home-app-icon .hi-kl { --hi-f: var(--iso-ink-left); }
+.home-app-icon .hi-kr { --hi-f: var(--iso-ink-right); }
+.home-app-icon :is(.hi-ct, .hi-cl, .hi-cr, .hi-bt, .hi-bl, .hi-br, .hi-pt, .hi-pl, .hi-pr, .hi-kt, .hi-kl, .hi-kr) { fill: var(--hi-f); }
+.home-app-icon .hi-solid { stroke: var(--hi-f); }
+.home-app-icon .hi-line { stroke: color-mix(in srgb, var(--home-icon-primary) 70%, var(--iso-dark)); }
+.home-app-icon .hi-ink { stroke: var(--iso-ink-right); }
+.home-app-icon .hi-fold { stroke: var(--iso-paper-right); }
+.home-app-icon .hi-brand-line { stroke: var(--home-icon-accent); }
+.home-app-icon .hi-g-light { stop-color: var(--iso-light); }
+.home-app-icon .hi-g-dark { stop-color: var(--iso-dark); }
+.home-app-icon .hi-glaze { pointer-events: none; }
+.home-app-icon {
+  transition: transform 160ms ease;
+}
+.home-app-icon--3d {
+  object-fit: contain;
+  user-select: none;
+}
+.home-feature-card:hover .home-app-icon,
+.home-feature-card:focus-visible .home-app-icon {
+  transform: translateY(-2px);
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-app-icon { transition: none; }
 }
 
 .home-feature-card__content {
@@ -511,6 +595,87 @@
   font-weight: var(--font-weight-medium);
   line-height: var(--line-height-body);
   word-break: keep-all;
+}
+
+/* Admin console: section switcher (운영 / 시스템 / 에이전트) and the smaller
+   view switcher inside a tab. Carbon content-switcher shape, accent = selection. */
+.admin-switcher {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  margin-bottom: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-2);
+  background: var(--surface-panel);
+  overflow: hidden;
+}
+
+.admin-switcher--sm {
+  display: inline-grid;
+  grid-auto-columns: max-content;
+}
+
+.flow-app button.admin-switcher__item {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: var(--space-2) var(--space-4);
+  border: 0;
+  border-top: 3px solid transparent;
+  border-right: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin-switcher--sm button.admin-switcher__item {
+  padding: var(--space-1) var(--space-3);
+  border-top-width: 2px;
+}
+
+.flow-app button.admin-switcher__item:last-child {
+  border-right: 0;
+}
+
+.flow-app button.admin-switcher__item:hover {
+  background: var(--surface-subtle);
+  color: var(--text-strong);
+}
+
+.flow-app button.admin-switcher__item[aria-selected="true"] {
+  border-top-color: var(--accent);
+  background: var(--surface-selected);
+  color: var(--text-strong);
+}
+
+.flow-app button.admin-switcher__item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.admin-switcher__label {
+  font-size: var(--font-size-body);
+  font-weight: var(--font-weight-medium);
+}
+
+.admin-switcher__hint {
+  font-size: var(--font-size-caption);
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+@media (max-width: 560px) {
+  .admin-switcher__hint {
+    display: none;
+  }
 }
 
 /* Lot management uses the Explorer template and a theme-independent editable grid. */
@@ -745,10 +910,13 @@
   }
 
   .home-feature-card__icon {
-    width: 54px;
-    height: 54px;
-    border-radius: 15px;
-    font-size: 26px;
+    width: 62px;
+    height: 62px;
+  }
+
+  .home-app-icon {
+    width: 50px;
+    height: 50px;
   }
 
   .home-feature-card__title {
@@ -1223,4 +1391,25 @@
   background: var(--accent);
   color: var(--text-on-accent);
   border-color: var(--accent);
+}
+
+/* Matching alarm (valve): header → toolbar → summary strip → section stack. */
+.valve-alerts-body {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.valve-alerts-label {
+  color: var(--text-strong);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-bold);
+}
+
+.valve-alerts-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
 }

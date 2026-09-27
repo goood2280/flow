@@ -234,7 +234,7 @@ export function useFlowShell() {
     const request = notifRequestRef.current;
     request.mounted = true;
     refreshNotifications();
-    const intervalId = setInterval(refreshNotifications, 30000);
+    const intervalId = setInterval(() => { if (!document.hidden) refreshNotifications(); }, 30000);
     const onRefresh = () => refreshNotifications(true);
     window.addEventListener("hol:notif-refresh", onRefresh);
     window.addEventListener("focus", onRefresh);

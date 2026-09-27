@@ -150,6 +150,58 @@ function ErrorNotice({ error, onClose }) {
   return <Banner tone="bad" onClose={onClose}>{error}</Banner>;
 }
 
+const FILE_STATUS = {
+  ready: { tone: "ok", label: "차트 사용 가능" },
+  no_measure: { tone: "warn", label: "측정 열 없음" },
+  mentioned: { tone: "neutral", label: "언급만 (차트 대상 아님)" },
+  missing_file: { tone: "danger", label: "파일 없음" },
+  unreadable: { tone: "danger", label: "읽기 실패" },
+};
+
+function roleText(entry, role) {
+  const item = entry.roles?.[role];
+  return item ? `${item.column}${item.basis === "열 이름" ? "" : ` (${item.meaning})`}` : "—";
+}
+
+function FileCatalogPanel({ catalog, stale, loading, disabled, onCheck, onTemplate }) {
+  const entries = catalog?.entries || [];
+  return (
+    <details className="dkp-history dkp-evidence">
+      <summary>홈 챗 파일 설명 인식</summary>
+      <div className="dkp-evidence-head">
+        <p className="dkp-muted">
+          본문에 "AA_yld.csv 는 AA product 의 yld 파일, tkouttimeA 가 tkout_time, yld01 이 수율값"처럼 적으면
+          홈 챗이 그 파일로 Trend·Inline Corr 차트를 그립니다. 실제 파일 헤더에 있는 열 이름만 인정합니다.
+        </p>
+        <div className="dkp-actions">
+          <Button variant="subtle" disabled={disabled} onClick={onTemplate}>예시 틀 추가</Button>
+          <Button disabled={loading || disabled} onClick={onCheck}>{loading ? "확인 중…" : "인식 확인"}</Button>
+        </div>
+      </div>
+      {stale && <Banner tone="warn">확인 뒤 본문이 바뀌었습니다. 다시 확인하세요. 홈 챗에는 저장한 본문만 반영됩니다.</Banner>}
+      {catalog && !entries.length && <div className="dkp-muted dkp-file-empty">본문에서 .csv/.parquet 파일 이름을 찾지 못했습니다.</div>}
+      {entries.length > 0 && <div className="dkp-table-scroll">
+        <table className="dkp-file-table">
+          <thead><tr><th>파일</th><th>상태</th><th>제품</th><th>측정 열 (의미)</th><th>시간 열</th><th>Lot</th><th>Wafer</th><th>확인할 점</th></tr></thead>
+          <tbody>{entries.map((entry) => {
+            const status = FILE_STATUS[entry.status] || { tone: "neutral", label: entry.status };
+            return <tr key={entry.mention}>
+              <td><b>{entry.file}</b>{entry.path && entry.path !== entry.file && <div className="dkp-muted">{entry.path}</div>}</td>
+              <td><Pill tone={status.tone}>{status.label}</Pill></td>
+              <td>{entry.product || "—"}</td>
+              <td>{entry.measures?.length ? entry.measures.map((m) => <div key={m.column}>{m.column} ({m.label})</div>) : "—"}</td>
+              <td>{roleText(entry, "time")}</td>
+              <td>{entry.roles?.root_lot_id ? roleText(entry, "root_lot_id") : roleText(entry, "lot_id")}</td>
+              <td>{roleText(entry, "wafer_id")}</td>
+              <td>{entry.warnings?.length ? entry.warnings.map((w, i) => <div key={i}>{w}</div>) : "—"}</td>
+            </tr>;
+          })}</tbody>
+        </table>
+      </div>}
+    </details>
+  );
+}
+
 export default function DomainKnowledgePanel() {
   const [document, setDocument] = useState(null);
   const [form, setForm] = useState({ title: "", body: "", editing_guidelines: "" });
@@ -170,12 +222,31 @@ export default function DomainKnowledgePanel() {
   const [references, setReferences] = useState(null);
   const [referencesLoading, setReferencesLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [fileCatalog, setFileCatalog] = useState(null);
+  const [fileCatalogLoading, setFileCatalogLoading] = useState(false);
 
   const loadReferences = async () => {
     setReferencesLoading(true);
     try { setReferences(await sf(`${API}/references`)); }
     catch (err) { setError(err.message); }
     finally { setReferencesLoading(false); }
+  };
+  const checkFileCatalog = async () => {
+    setFileCatalogLoading(true);
+    try {
+      const data = await sf(`${API}/file-catalog`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: form.body }),
+      });
+      setFileCatalog({ ...data, checkedBody: form.body });
+    } catch (err) { setError(err.message); }
+    finally { setFileCatalogLoading(false); }
+  };
+  const insertFileTemplate = () => {
+    setEditing(true);
+    setForm((value) => ({ ...value, body: value.body + "\n\n## 단일 파일 설명\n\n### AA_yld.csv\n- AA product 의 yld 가 있는 파일이다.\n- tkouttimeA 가 tkout_time 이고 yld01 이 수율값이다.\n- LOTID 는 fab lot, WF 는 wafer 번호이다.\n" }));
+    setNotice("단일 파일 설명 예시를 본문 끝에 추가했습니다. 실제 파일명과 열 이름으로 고친 뒤 '인식 확인'을 누르세요.");
   };
   const uploadImage = async (event) => {
     const file = event.target.files?.[0];
@@ -398,15 +469,6 @@ export default function DomainKnowledgePanel() {
       <StructureModelWorkspace admin/>
 
       <div className={`dkp-workspace ${editing ? "is-editing" : "is-reading"}`}>
-        <aside className="dkp-toc" aria-label="문서 목차">
-          <div className="dkp-section-title">목차</div>
-          {headings.length ? headings.map((heading) => (
-            <button key={heading.id} className="dkp-toc-link" style={{ paddingLeft: 10 + (heading.level - 1) * 14 }} onClick={() => window.document.getElementById(heading.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}>
-              {heading.text}
-            </button>
-          )) : <div className="dkp-muted">본문에 # 제목을 추가하면 목차가 만들어집니다.</div>}
-        </aside>
-
         {editing && <div className="dkp-editor">
           <div className="dkp-section-title">문서 편집</div>
           <label className="dkp-field"><span>제목</span><input value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} disabled={saving}/></label>
@@ -415,13 +477,40 @@ export default function DomainKnowledgePanel() {
         </div>}
 
         <div className="dkp-preview-column">
-          <div className="dkp-section-title">{dirty ? "수정 중인 문서" : "기본지식 Wiki"}</div>
           <article className="dkp-preview-card">
-            <h1 className="dkp-document-title">{form.title || "제목 없음"}</h1>
+            <div className="dkp-wiki-meta-header">
+              <div className="dkp-wiki-title-row">
+                <h1 className="dkp-document-title">{form.title || "제목 없음"}</h1>
+                <span className="dkp-wiki-badge">기본지식</span>
+              </div>
+              <div className="dkp-wiki-byline">
+                <span>최근 갱신: {formatDateTime(document.updated_at)}</span>
+                <span> · 편집자: <b>{document.updated_by || "—"}</b></span>
+                <span> · Version {document.version}</span>
+                {dirty && <span> · 수정 중</span>}
+              </div>
+            </div>
+            <nav className="dkp-toc" aria-label="문서 목차">
+              <div className="dkp-toc-title">목차</div>
+              {headings.length ? <ol>{headings.map((heading, index) => (
+                <li key={heading.id} className={`dkp-toc-level-${heading.level}`}>
+                  <a href={`#${heading.id}`}>{index + 1}. {heading.text}</a>
+                </li>
+              ))}</ol> : <div className="dkp-muted">본문에 # 제목을 추가하면 목차가 만들어집니다.</div>}
+            </nav>
             <MarkdownPreview markdown={form.body}/>
           </article>
         </div>
       </div>
+
+      <FileCatalogPanel
+        catalog={fileCatalog}
+        stale={Boolean(fileCatalog) && fileCatalog.checkedBody !== form.body}
+        loading={fileCatalogLoading}
+        disabled={saving}
+        onCheck={checkFileCatalog}
+        onTemplate={insertFileTemplate}
+      />
 
       <section className="dkp-ai" id="domain-knowledge-add">
         <div className="dkp-section-title">내부 지식·구조 자료 추가</div>
@@ -432,12 +521,24 @@ export default function DomainKnowledgePanel() {
         </div>
         <p className="dkp-muted">이미지(PNG/JPG/WEBP/GIF, 8MB)와 설명을 함께 저장합니다. 현재 AI는 텍스트 설명과 DB 참고자료를 사용하며 이미지 자체를 판독하지 않습니다.</p>
       </section>
-      <details className="dkp-history">
+      <details className="dkp-history dkp-evidence">
         <summary>Flow DB·파일 참고자료</summary>
-        <p className="dkp-muted">AI 편집 시 현재 DB의 컬럼과 일부 기준정보 샘플을 자동으로 참고합니다. 원본 DB는 수정하지 않습니다.</p>
-        <Button disabled={referencesLoading} onClick={loadReferences}>{referencesLoading ? "확인 중…" : "DB·파일 참고 갱신"}</Button>
-        {references?.warnings?.map((warning, i) => <p className="dkp-muted" key={i}>{warning}</p>)}
-        {references?.sources?.map((source, i) => <details key={i}><summary>{source.name} · {source.kind}</summary><p className="dkp-muted">{source.description}</p><p>{source.columns.join(", ")}</p>{source.examples?.length > 0 && <pre className="dkp-reference-sample">{JSON.stringify(source.examples, null, 2)}</pre>}</details>)}
+        <div className="dkp-evidence-head">
+          <p className="dkp-muted">AI 편집 시 현재 DB의 컬럼과 일부 기준정보 샘플을 자동으로 참고합니다. 원본 DB는 수정하지 않습니다.</p>
+          <Button disabled={referencesLoading} onClick={loadReferences}>{referencesLoading ? "확인 중…" : "DB·파일 참고 갱신"}</Button>
+        </div>
+        {references?.warnings?.map((warning, i) => <Banner tone="warn" key={i}>{warning}</Banner>)}
+        <div className="dkp-evidence-list">
+          {references?.sources?.map((source, i) => <details className="dkp-evidence-card" key={i}>
+            <summary><span>{source.name}</span><small>{source.kind}</small></summary>
+            <div className="dkp-evidence-body">
+              <p>{source.description}</p>
+              <div className="dkp-evidence-label">참고 컬럼</div>
+              <p className="dkp-evidence-columns">{(source.columns || []).join(", ") || "확인 가능한 컬럼이 없습니다."}</p>
+              {source.examples?.length > 0 && <><div className="dkp-evidence-label">표본</div><pre className="dkp-reference-sample">{JSON.stringify(source.examples, null, 2)}</pre></>}
+            </div>
+          </details>)}
+        </div>
       </details>
       <section className="dkp-ai">
         <div className="dkp-ai-heading">

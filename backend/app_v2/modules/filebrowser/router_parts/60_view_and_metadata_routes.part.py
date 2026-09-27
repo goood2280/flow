@@ -111,7 +111,7 @@ def _schema_for_product_source(root: str, product: str) -> tuple[dict[str, str],
         from core import yield_map as _yield_map
         frame = _yield_map.shot_yield_frame(product)
         return {str(name): str(dtype) for name, dtype in frame.schema.items()}, 0
-    if str(root or "").strip().upper() in {"SPLITTABLE", "ML_TABLE"}:
+    if str(root or "").strip().upper() in {"SPLITTABLE", "ML_TABLE", "DB_FILE"}:
         files = source_data_files(root=root, product=product)
         if not files:
             return {}, 0
@@ -340,6 +340,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                       sort_column: str = Query(""),
                       sort_direction: str = Query("asc"),
                       sort_nulls: str = Query("last"),
+                      sort_cast: str = Query(""),
                       agg_func: str = Query(""),
                       agg_column: str = Query(""),
                       agg_group_by: str = Query(""),
@@ -367,7 +368,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
         raise HTTPException(404)
     try:
         settings = _load_filebrowser_settings()
-        sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
+        sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls, sort_cast)
         aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
         cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
         page, page_size, _offset = _preview_page_args(rows, page_size)
@@ -444,6 +445,7 @@ def view_root_parquet(file: str = Query(...), sql: str = Query(""),
                     "sort_column": _cache_safe_text(sort_column, 120).casefold(),
                     "sort_direction": _cache_safe_text(sort_direction, 20).casefold(),
                     "sort_nulls": _cache_safe_text(sort_nulls, 20).casefold(),
+                    "sort_cast": _cache_safe_text(sort_cast if isinstance(sort_cast, str) else "", 20).casefold(),
                     "agg_func": _cache_safe_text(agg_func, 40).casefold(),
                     "agg_column": _cache_safe_text(agg_column, 120).casefold(),
                     "agg_group_by": ",".join(sorted(c.casefold() for c in _clean_string_list(agg_group_by))),
@@ -978,7 +980,7 @@ def _chart_builder_filter_specs(values) -> list[dict]:
     return out
 
 
-def _chart_builder_runtime_required_columns(source: ChartBuilderSourceReq) -> list[str]:
+def _chart_builder_runtime_required_columns(source: ChartBuilderSourceReq, chart: dict | None = None) -> list[str]:
     required: list[str] = []
     derived = _chart_builder_derived_specs(source.derived_columns)
     derived_names = {item["name"].casefold() for item in derived}
@@ -990,6 +992,12 @@ def _chart_builder_runtime_required_columns(source: ChartBuilderSourceReq) -> li
         column = item["column"]
         if column.casefold() not in derived_names and column.casefold() not in {value.casefold() for value in required}:
             required.append(column)
+    if source.runtime_recent_days or source.runtime_date_from or source.runtime_date_to:
+        required.append(str(source.runtime_date_column or "tkout_time").strip())
+    if source.wafer_filter_mode or source.wafer_filter_threshold is not None or source.wafer_filter_low is not None or source.wafer_filter_high is not None:
+        for column in ("root_lot_id", "wafer_id", str(source.wafer_filter_column or (chart or {}).get("y") or "").strip()):
+            if column and column.casefold() not in {value.casefold() for value in required}:
+                required.append(column)
     return required
 
 
@@ -1103,16 +1111,28 @@ def _chart_builder_runtime_where(
     generic = _chart_builder_generic_filter_where(columns, source, source_id, warnings)
     if generic:
         clauses.append(generic)
+    if source.runtime_date_from or source.runtime_date_to:
+        requested = str(source.runtime_date_column or "tkout_time").strip()
+        date_column = _chart_builder_runtime_column(columns, requested)
+        if date_column:
+            parsed = f"TRY_CAST({duckdb_engine.quote_ident(date_column)} AS TIMESTAMP)"
+            if source.runtime_date_from:
+                clauses.append(f"{parsed} >= {duckdb_engine.sql_literal(str(source.runtime_date_from))}")
+            if source.runtime_date_to:
+                exclusive_end = (datetime.date.fromisoformat(str(source.runtime_date_to)) + datetime.timedelta(days=1)).isoformat()
+                clauses.append(f"{parsed} < {duckdb_engine.sql_literal(exclusive_end)}")
+        else:
+            raise HTTPException(400, f"{source_id}: 고정 기간 필터 열({requested})이 없습니다.")
     return " AND ".join(f"({clause})" for clause in clauses)
 
 
 def _chart_builder_filter_frame(
-    frame: pl.DataFrame, source: ChartBuilderSourceReq, source_id: str, warnings: list[str],
+    frame: pl.DataFrame, source: ChartBuilderSourceReq, source_id: str, warnings: list[str], *, apply_time: bool = True,
 ) -> pl.DataFrame:
     out = frame
     columns = list(frame.columns)
     runtime_days = max(0, min(3650, int(source.runtime_recent_days or 0)))
-    if runtime_days:
+    if apply_time and runtime_days:
         requested_date_column = str(source.runtime_date_column or "tkout_time").strip()
         date_column = _chart_builder_runtime_column(columns, requested_date_column)
         if date_column:
@@ -1122,6 +1142,17 @@ def _chart_builder_filter_frame(
             out = out.filter(parsed_time >= cutoff)
         else:
             warnings.append(f"{source_id}: 최근 {runtime_days}일 필터 열({requested_date_column})이 없어 원래 조건으로 조회했습니다.")
+    if apply_time and (source.runtime_date_from or source.runtime_date_to):
+        requested_date_column = str(source.runtime_date_column or "tkout_time").strip()
+        date_column = _chart_builder_runtime_column(columns, requested_date_column)
+        if date_column:
+            parsed_time = pl.col(date_column).cast(pl.String, strict=False).str.to_datetime(strict=False)
+            if source.runtime_date_from:
+                out = out.filter(parsed_time >= datetime.datetime.fromisoformat(str(source.runtime_date_from)))
+            if source.runtime_date_to:
+                out = out.filter(parsed_time < datetime.datetime.fromisoformat(str(source.runtime_date_to)) + datetime.timedelta(days=1))
+        else:
+            raise HTTPException(400, f"{source_id}: 고정 기간 필터 열({requested_date_column})이 없습니다.")
     pairs = _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs)
     pairs_applied = False
     if pairs:
@@ -1217,6 +1248,108 @@ def _chart_builder_apply_derived_filters(
             condition = expression != ""
         out = out.filter(condition)
     return out
+
+
+def _chart_builder_apply_wafer_filter(
+    frame: pl.DataFrame,
+    source: ChartBuilderSourceReq,
+    chart: dict,
+    source_id: str,
+) -> tuple[pl.DataFrame, dict]:
+    """Select wafer pairs by point spec or a wafer aggregate, retaining their raw rows."""
+    mode = str(source.wafer_filter_mode or "").strip().casefold()
+    if not mode and source.wafer_filter_threshold is not None:
+        mode = "aggregate"
+    if not mode and (source.wafer_filter_low is not None or source.wafer_filter_high is not None):
+        mode = "spec_out"
+    if not mode:
+        return frame, {}
+
+    columns = list(frame.columns)
+    root_column = _chart_builder_runtime_column(columns, "root_lot_id")
+    wafer_column = _chart_builder_runtime_column(columns, "wafer_id")
+    requested_value = str(source.wafer_filter_column or (chart or {}).get("y") or "").strip()
+    value_column = _chart_builder_runtime_column(columns, requested_value)
+    missing = [name for name, value in (
+        ("root_lot_id", root_column), ("wafer_id", wafer_column), (requested_value or "value", value_column),
+    ) if not value]
+    if missing:
+        raise HTTPException(400, f"{source_id}: wafer 필터 열이 없습니다: {', '.join(missing)}")
+
+    keyed = frame.with_columns(
+        pl.col(root_column).cast(pl.String, strict=False).str.strip_chars().str.to_uppercase().alias("__flow_filter_root"),
+        pl.col(wafer_column).cast(pl.String, strict=False).str.strip_chars().str.to_uppercase()
+          .str.replace(r"^(?:#|WAFER|WF|W)\s*", "").str.replace(r"^0*([1-9][0-9]*|0)(?:\.0+)?$", "${1}")
+          .alias("__flow_filter_wafer"),
+        pl.col(value_column).cast(pl.Float64, strict=False).alias("__flow_filter_value"),
+    )
+    keys = ["__flow_filter_root", "__flow_filter_wafer"]
+    total_wafers = keyed.select(keys).unique().height
+    numeric = pl.col("__flow_filter_value")
+    if mode == "spec_out":
+        condition = None
+        low = source.wafer_filter_low if source.wafer_filter_low is not None else (chart or {}).get("wafer_spec_low")
+        high = source.wafer_filter_high if source.wafer_filter_high is not None else (chart or {}).get("wafer_spec_high")
+        if low is not None:
+            condition = numeric < float(low)
+        if high is not None:
+            high_condition = numeric > float(high)
+            condition = high_condition if condition is None else condition | high_condition
+        if condition is None:
+            raise HTTPException(400, f"{source_id}: spec_out wafer 필터에는 Low 또는 High가 필요합니다.")
+        selected = keyed.filter(condition & numeric.is_not_null()).select(keys).unique(maintain_order=True)
+        details = {
+            "low": low,
+            "high": high,
+            "definition": "any point < low OR > high",
+        }
+    elif mode == "aggregate":
+        agg = str(source.wafer_filter_agg or "").strip().casefold()
+        expressions = {
+            "avg": numeric.mean(), "median": numeric.median(),
+            "p10": numeric.quantile(0.10, interpolation="linear"),
+            "p90": numeric.quantile(0.90, interpolation="linear"),
+            "min": numeric.min(), "max": numeric.max(), "count": numeric.count(), "sum": numeric.sum(),
+        }
+        if agg not in expressions:
+            raise HTTPException(400, f"{source_id}: 지원하지 않는 wafer 집계입니다: {agg}")
+        aggregate_column = "__flow_filter_aggregate"
+        aggregated = keyed.group_by(keys, maintain_order=True).agg(expressions[agg].alias(aggregate_column))
+        op = str(source.wafer_filter_op or "").strip().casefold()
+        op = {"<": "lt", "<=": "lte", ">": "gt", ">=": "gte", "=": "eq", "==": "eq"}.get(op, op)
+        threshold = source.wafer_filter_threshold
+        if threshold is None:
+            raise HTTPException(400, f"{source_id}: wafer 집계 필터 THRESHOLD가 필요합니다.")
+        comparisons = {
+            "lt": pl.col(aggregate_column) < threshold, "lte": pl.col(aggregate_column) <= threshold,
+            "gt": pl.col(aggregate_column) > threshold, "gte": pl.col(aggregate_column) >= threshold,
+            "eq": pl.col(aggregate_column) == threshold,
+        }
+        if op not in comparisons:
+            raise HTTPException(400, f"{source_id}: wafer 집계 필터 OP와 THRESHOLD가 필요합니다.")
+        selected = aggregated.filter(comparisons[op] & pl.col(aggregate_column).is_not_null()).select(keys)
+        details = {"aggregation": agg, "operator": op, "threshold": threshold}
+    else:
+        raise HTTPException(400, f"{source_id}: 지원하지 않는 wafer 필터 모드입니다: {mode}")
+
+    selected_rows = selected.to_dicts()
+    filtered = keyed.join(selected, on=keys, how="semi").drop([*keys, "__flow_filter_value"])
+    meta = {
+        "wafer_filter": {
+            "mode": mode,
+            "column": value_column,
+            "total_wafer_count": total_wafers,
+            "selected_wafer_count": selected.height,
+            "selected_row_count": filtered.height,
+            "selected_pairs": [
+                {"root_lot_id": row[keys[0]], "wafer_id": row[keys[1]]}
+                for row in selected_rows[:500]
+            ],
+            "selected_pairs_truncated": len(selected_rows) > 500,
+            **details,
+        }
+    }
+    return filtered, meta
 
 
 def _chart_builder_inline_required_columns(columns: list[str]) -> list[str]:
@@ -1526,14 +1659,14 @@ def _chart_builder_reformatter_frame(
         elif col in ("shot_count", "point_cnt", "point_cnt_filter"):
             point_cnt_filters.extend(str_vals)
 
-    date_from = ""
-    date_to = ""
+    date_from = str(source.runtime_date_from or "").strip()
+    date_to = str(source.runtime_date_to or "").strip()
     if source.sql:
         m_from = re.search(r"tkout_time\s*>=\s*['\"]?([0-9]{4}-[0-9]{2}-[0-9]{2})['\"]?", str(source.sql), re.I)
-        if m_from:
+        if m_from and not date_from:
             date_from = m_from.group(1)
         m_to = re.search(r"tkout_time\s*<=\s*['\"]?([0-9]{4}-[0-9]{2}-[0-9]{2})['\"]?", str(source.sql), re.I)
-        if m_to:
+        if m_to and not date_to:
             date_to = m_to.group(1)
 
     reformatter_agg = str(source.reformatter_agg or "").strip().casefold()
@@ -1562,7 +1695,8 @@ def _chart_builder_reformatter_frame(
     projection_items = requested_items or [str(column) for column in (reformatted.get("index_columns") or [])]
     df = pl.DataFrame(rows) if rows else pl.DataFrame(schema={column: pl.String for column in columns})
     runtime_warnings: list[str] = []
-    df = _chart_builder_filter_frame(df, source, str(source.id or "query"), runtime_warnings)
+    # ET 다운로드 already applied relative and fixed dates before aggregation.
+    df = _chart_builder_filter_frame(df, source, str(source.id or "query"), runtime_warnings, apply_time=False)
     display_sql = str(source.sql or "")
     select_body = _split_ai_sql_select_body(display_sql) if re.match(r"^\s*SELECT\b", display_sql, re.I) else None
     if select_body:
@@ -1624,6 +1758,8 @@ def _chart_builder_reformatter_frame(
         "runtime_root_lot_ids": _chart_builder_runtime_values(source.runtime_root_lot_ids),
         "runtime_wafer_ids": _chart_builder_runtime_values(source.runtime_wafer_ids),
         "runtime_lot_wafer_pairs": _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs),
+        "runtime_date_from": date_from,
+        "runtime_date_to": date_to,
     }
     return shown, display_sql, warnings, meta
 

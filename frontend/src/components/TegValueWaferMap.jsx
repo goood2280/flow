@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { sf } from "../lib/api";
 import { waferPanelGrid } from "../lib/chartLayout";
 import { WaferMap } from "../pages/My_TegMap";
+import { interpolateWaferShots } from "../lib/waferInterpolation";
 
 const palettes = {
   blue_gray_red: {
@@ -50,6 +51,7 @@ export default function TegValueWaferMap({
   palette: requestedPalette = "", low: requestedLow = null, center: requestedCenter = null, high: requestedHigh = null,
   mode = "value", specLow = null, specHigh = null,
   interactive = true, onScaleChange = null, dieLayout = null, mapData = null, scaleValues = null,
+  interpolation = "none",
 }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
@@ -161,6 +163,16 @@ export default function TegValueWaferMap({
   const step = range / 200;
   const outCount=specOut?allValues.filter(value=>(Number.isFinite(configuredSpecLow)&&value<configuredSpecLow)||(Number.isFinite(configuredSpecHigh)&&value>configuredSpecHigh)).length:0;
   const panelCount = Array.isArray(panels) ? panels.length : 1;
+  const interpolate = interpolation === "idw" && !specOut && !dieLayout?.enabled;
+  const panelMaps = useMemo(() => panelRows.map(panel => {
+    const measured = new Map((panel.points || []).map(point => [
+      `${Number(point.x)},${Number(point.y)}`,
+      { value: Number(point.value ?? point.y), n: point.n, label: point.label, interpolated: false },
+    ]));
+    return interpolate && data?.shots?.length
+      ? interpolateWaferShots(data.shots, panel.points || [])
+      : { values: measured, interpolatedCount: 0 };
+  }), [panelRows, data?.shots, interpolate]);
   // wafer map 은 정사각이라 칸 폭이 곧 지도 크기다. auto-fit 격자에 맡기면 넓은
   // 화면에서 여덟 칸으로 쪼개져 한 장이 점 무더기가 된다 — 패널 수에 맞춰 열
   // 수를 정하고 격자 전체 폭을 묶어, 여러 장이 같은 크기로 비교되게 한다.
@@ -225,14 +237,15 @@ export default function TegValueWaferMap({
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", fontSize: 11, color: "#475569", marginTop: 2 }}><span>{compactNumber(low)} · P10</span><span style={{ textAlign: "center" }}>{compactNumber(center)} · median · {valueLabel}</span><span style={{ textAlign: "right" }}>{compactNumber(high)} · P90</span></div>
     </>}
     {panelCount > panelLimit && <div style={{ fontSize: 12, color: "#b45309", marginTop: 8 }}>패널이 많아 정렬된 앞 {panelLimit}개만 표시합니다.</div>}
+    {interpolate && <div style={{fontSize:11,color:"#475569",marginTop:7}}>점선 테두리: 측정 shot 내부 영역에 IDW로 보간한 값. 측정 범위 밖은 비워 둡니다.</div>}
     <div style={{ display: "grid", gridTemplateColumns: `repeat(${grid.columns},minmax(0,1fr))`, gap: 10, marginTop: 10, maxWidth: grid.maxWidth, marginLeft: "auto", marginRight: "auto" }}>
-      {panelRows.map((panel) => {
+      {panelRows.map((panel, panelIndex) => {
         const panelPoints = panel.points || [];
-        const shotValues = new Map(panelPoints.map((point) => [`${Number(point.x)},${Number(point.y)}`, { value: Number(point.value ?? point.y), n: point.n, label: point.label }]));
+        const shotValues = panelMaps[panelIndex]?.values || new Map();
         const matched = panelPoints.filter((point) => mapKeys.has(`${Number(point.x)},${Number(point.y)}`)).length;
         const fullChipDies = fullChipDiesFor(panelPoints);
         return <div key={panel.key || panel.label} style={{ border: panelRows.length > 1 ? "1px solid #cbd5e1" : "none", borderRadius: 8, overflow: "hidden" }}>
-          {panelRows.length > 1 && <div style={{ padding: "8px 10px", fontSize: 13, fontWeight: 900, textAlign: "center", background: "#e2e8f0", borderBottom: "2px solid #64748b" }}>{panel.label} · mapped {matched}/{panelPoints.length}</div>}
+          {panelRows.length > 1 && <div style={{ padding: "8px 10px", fontSize: 13, fontWeight: 900, textAlign: "center", background: "#e2e8f0", borderBottom: "2px solid #64748b" }}>{panel.label} · mapped {matched}/{panelPoints.length}{interpolate?` · estimated ${panelMaps[panelIndex]?.interpolatedCount || 0}`:""}</div>}
           {panelRows.length === 1 && <div style={{ textAlign: "right", fontSize: 12, color: "#475569", fontFamily: "monospace" }}>mapped {matched}/{panelPoints.length} shots</div>}
           <div style={{ display: "flex", justifyContent: "center", paddingTop: 6, margin: "0 auto" }}><WaferMap data={data} selectedTegs={new Set()} tegColor={() => "#000"} selectedShot={null} onShotClick={() => {}} nearestShot={null} shotValues={shotValues} valueColor={color} valueLabel={valueLabel} light hideUnmeasured fullChipDies={fullChipDies}/></div>
         </div>;

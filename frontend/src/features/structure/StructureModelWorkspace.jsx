@@ -19,11 +19,25 @@ const DETAIL_PARAMS = [
   ["gate_to_sd_gap_nm", "게이트–S/D 간격 (nm)", 0, 30, 0.5, 14.2],
   ["sd_width_nm", "S/D 가로 폭 (nm)", 8, 80, 1, 26],
   ["sd_protrusion_nm", "NS 최상층 위 S/D 돌출 (nm)", 0, 80, 1, 22.4],
+  ["epi_facet_angle_deg", "Epi 성장면 각도 (°) · 기본 {111}/{001}", 25, 80, 0.1, 54.7356],
   ["sdb_width_nm", "SDB 폭 (nm)", 2, 40, 0.5, 5.2],
   ["sd_doping_log10_cm3", "S/D 대표 도핑 log10(cm⁻³) · 색상만 변화", 17, 21, 0.1, 19],
 ];
 const SHAPABLE = new Set(["source", "drain", "gate", "spacer", "contact", "mol", "beol", "sdb"]);
 const CD_FIELDS = [["tcd_nm", "TCD"], ["mcd_nm", "MCD"], ["bcd_nm", "BCD"]];
+const PARAM_LABELS = Object.fromEntries([...PARAMS, ...DETAIL_PARAMS].map(([key, label]) => [key, label]));
+const PARAM_FALLBACKS = Object.fromEntries(DETAIL_PARAMS.map(([key, , , , , fallback]) => [key, fallback]));
+// Structures an LLM edit touches, highlighted in the 3D preview before it is applied.
+function rolesForEdit(edit) {
+  if (edit.kind === "shape") return [edit.role];
+  const name = String(edit.name || "");
+  if (/^(sheet_|ns\d)/.test(name)) return ["channel", "inner_gate", "highk"];
+  if (/^gate_/.test(name)) return ["gate", "inner_gate", "spacer"];
+  if (/^mol_/.test(name)) return ["mol", "contact"];
+  if (/^(sd_|epi_)/.test(name)) return ["source", "drain"];
+  if (/^sdb_/.test(name)) return ["sdb"];
+  return [];
+}
 const copy = (value) => JSON.parse(JSON.stringify(value));
 const keyOf = (row) => JSON.stringify([row.module || "", row.step_id, row.item_id]);
 
@@ -35,6 +49,16 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
   const [type, setType] = useState("logic");
   const [variant, setVariant] = useState("6T");
   const [view, setView] = useState("gaa");
+  const [cameraPreset, setCameraPreset] = useState("isometric");
+  const [cutAxis, setCutAxis] = useState("z");
+  const [cutPosition, setCutPosition] = useState(50);
+  const [showLabels, setShowLabels] = useState(true);
+  const [showEdges, setShowEdges] = useState(true);
+  const [resetToken, setResetToken] = useState(0);
+  const [powerOn, setPowerOn] = useState(false);
+  const [injection, setInjection] = useState(false);
+  const [tapNear, setTapNear] = useState(true);
+  const [guardRing, setGuardRing] = useState(false);
   const [scene, setScene] = useState(null);
   const [selectedRole, setSelectedRole] = useState("inner_gate");
   const [hiddenRoles, setHiddenRoles] = useState([]);
@@ -50,6 +74,8 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
   const [editing, setEditing] = useState(false);
   const viewerRef = useRef(null);
   const [viewerVisible, setViewerVisible] = useState(false);
+  // 앵커 후보가 수천 개인 관리자 장면을 매 렌더 문자열로 만들지 않는다.
+  const [sceneJsonOpen, setSceneJsonOpen] = useState(false);
 
   useEffect(() => {
     const node = viewerRef.current;
@@ -82,6 +108,9 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
     return { ...preset, ...(override?.parameters || {}) };
   }, [draft, product, type, variant]);
   const activeShapes = { ...(draft?.shape_profiles?.[profileKey] || {}), ...(override?.shape_profiles || {}) };
+  const proposalOpen = editProposal?.target === `${product}/${type}/${variant}`;
+  const previewRoles = useMemo(() => (proposalOpen ? [...new Set(editProposal.edits.flatMap(rolesForEdit))] : []),
+    [proposalOpen, editProposal]);
   const dirty = Boolean(saved && draft) && JSON.stringify({ variants: draft.variants, products: draft.products,
     dimensions: draft.dimensions, shape_profiles: draft.shape_profiles })
     !== JSON.stringify({ variants: saved.variants, products: saved.products,
@@ -186,8 +215,12 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
     const profiles = product ? (next.products[product]?.profiles || {}) : (next.shape_profiles || {});
     const old = product ? (profiles[profileKey] || { parameters: {}, anchors: {}, dimension_anchors: {}, shape_profiles: {} }) : null;
     const shapes = product ? { ...(old.shape_profiles || {}) } : { ...(profiles[profileKey] || {}) };
-    const base = shapes[role] || activeShapes[role] || { tcd_nm: 24, mcd_nm: 24, bcd_nm: 24 };
-    shapes[role] = { ...base, [field]: value };
+    const base = shapes[role] || activeShapes[role] || selectedShape;
+    shapes[role] = field === "primitive" && value === "cylinder"
+      ? { ...base, primitive: value, tcd_nm: base.mcd_nm, bcd_nm: base.mcd_nm }
+      : base.primitive === "cylinder" && CD_FIELDS.some(([name]) => name === field)
+        ? { ...base, tcd_nm: value, mcd_nm: value, bcd_nm: value }
+        : { ...base, [field]: value };
     if (product) next.products[product] = { profiles: { ...profiles, [profileKey]: { ...old, shape_profiles: shapes } } };
     else next.shape_profiles = { ...next.shape_profiles, [profileKey]: shapes };
     return next;
@@ -207,10 +240,10 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
         const profiles = next.products[product]?.profiles || {};
         const old = profiles[profileKey] || { parameters: {}, anchors: {}, dimension_anchors: {}, shape_profiles: {} };
         next.products[product] = { profiles: { ...profiles, [profileKey]: {
-          ...old, shape_profiles: { ...(old.shape_profiles || {}), [role]: values },
+          ...old, shape_profiles: { ...(old.shape_profiles || {}), [role]: { ...activeShapes[role], ...values } },
         } } };
       } else next.shape_profiles = { ...next.shape_profiles,
-        [profileKey]: { ...(next.shape_profiles?.[profileKey] || {}), [role]: values } };
+        [profileKey]: { ...(next.shape_profiles?.[profileKey] || {}), [role]: { ...activeShapes[role], ...values } } };
       return next;
     });
     setShapeSuggestion(null);
@@ -292,13 +325,15 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
   const roles = Object.entries(scene?.roles || {}).filter(([role]) => scene?.parts?.some((part) => part.role === role));
   const selectedParts = scene?.parts?.filter((part) => part.role === selectedRole) || [];
   const shapeFallback = Math.round((selectedParts[0]?.size?.[0] || 0.6) * 40 * 10) / 10;
-  const selectedShape = activeShapes[selectedRole] || { tcd_nm: shapeFallback, mcd_nm: shapeFallback, bcd_nm: shapeFallback };
+  const defaultCds = (selectedParts[0]?.profile_widths || [1, 1, 1]).map((ratio) => Math.round(shapeFallback * ratio * 10) / 10);
+  const selectedShape = activeShapes[selectedRole] || { tcd_nm: defaultCds[2], mcd_nm: defaultCds[1],
+    bcd_nm: defaultCds[0], primitive: selectedParts[0]?.shape || "profile_box" };
   const landmarkEntries = Object.entries(scene?.landmark_labels || {});
   const dimensionRows = Object.entries(scene?.measurements || {});
 
   return <section className={`gaa-workspace${admin ? " is-admin" : ""}`} aria-label="GAA 3D 구조 모델">
     <header className="gaa-heading">
-      <div><div className="gaa-eyebrow">GAA STRUCTURE · CODE-READABLE 3D</div><h2>GAA 구조 3D</h2>
+      <div><div className="gaa-eyebrow">DEVICE STRUCTURE</div><h2>GAA 구조 3D</h2>
         <p>X: 소스→드레인, Y: 높이, Z: 셀 높이 방향 · 나노시트 치수는 공개 연구 사례 기준, 나머지 형상은 개념도</p></div>
       {admin && <div className="gaa-actions"><button type="button" onClick={() => load(true)} disabled={saving}>새로고침</button><button type="button" className="gaa-primary" onClick={save} disabled={!dirty || saving}>{saving ? "저장 중…" : "모델 저장"}</button></div>}
     </header>
@@ -310,20 +345,42 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
         <label>타입<select value={type} onChange={(event) => selectType(event.target.value)}><option value="logic">Logic</option><option value="sram">SRAM</option></select></label>
         <label>{type === "logic" ? "Cell height" : "SRAM 타입"}<select value={variant} onChange={(event) => { setScene(null); setEditProposal(null); setVariant(event.target.value); }}>{VARIANTS[type].map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
         <label>보기<select value={view} onChange={(event) => { const next = event.target.value; setScene(null); setView(next); setSelectedRole(next === "latchup" ? "nwell" : "inner_gate"); }}>
-          <option value="gaa">GAA 1Tr · FEOL/MOL/BEOL</option><option value="latchup">Latch-up · N/P Well</option></select></label>
-        {product && onNavigate && <button type="button" onClick={() => onNavigate("productwiki", `?product=${encodeURIComponent(product)}`)}>제품 Wiki 열기</button>}
+          <option value="gaa">{type === "sram" ? "SRAM 6Tr · 교차 결합 셀" : "GAA 1Tr · FEOL/MOL/BEOL"}</option><option value="latchup">Latch-up · N/P Well</option></select></label>
+        {product && onNavigate && <button type="button" onClick={() => onNavigate("productwiki", `?product=${encodeURIComponent(product)}`)}>제품 위키 열기</button>}
       </div>
+      <div className="gaa-camera-bar" role="group" aria-label="3D 카메라 보기">
+        {[ ["isometric", "3D 회전"], ["top", "탑뷰"], ["front", "정면"], ["side", "측면"], ["cut", "단면"] ].map(([value, label]) =>
+          <button type="button" key={value} className={cameraPreset === value ? "is-active" : ""}
+            aria-pressed={cameraPreset === value} onClick={() => setCameraPreset(value)}>{label}</button>)}
+        <button type="button" onClick={() => setResetToken((value) => value + 1)}>화면 맞춤</button>
+        <button type="button" onClick={() => { const el = viewerRef.current; if (document.fullscreenElement) document.exitFullscreen?.(); else el?.requestFullscreen?.(); }}>전체 화면</button>
+        <label><input type="checkbox" checked={showLabels} onChange={(event) => setShowLabels(event.target.checked)}/>구조 이름</label>
+        <label><input type="checkbox" checked={showEdges} onChange={(event) => setShowEdges(event.target.checked)}/>윤곽선</label>
+        <button type="button" onClick={() => { setHiddenRoles(["beol", "mol", "bitline", "contact"]); setResetToken((value) => value + 1); }}>소자만 보기</button>
+        <button type="button" onClick={() => { setHiddenRoles([]); setResetToken((value) => value + 1); }}>전체 레이어</button>
+      </div>
+      {cameraPreset === "cut" && <div className="gaa-cut-controls">
+        <label>절개 축 <select value={cutAxis} onChange={(event) => setCutAxis(event.target.value)}><option value="x">X</option><option value="y">Y</option><option value="z">Z</option></select></label>
+        <label>단면 위치 <input aria-label="단면 위치" type="range" min="0" max="100" value={cutPosition} onChange={(event) => setCutPosition(Number(event.target.value))}/>{cutPosition}%</label>
+        <span>선택 축의 양의 방향을 절개합니다. 절개면 채움 없이 내부 표면을 표시합니다.</span>
+      </div>}
+      {type === "sram" && view === "gaa" && <p className="gaa-dimensions">6Tr = PU pMOS 2개 + PD nMOS 2개 + PG 접근 nMOS 2개 · 연결 확인용 펼친 배치 · HD/HC는 개념 치수 프리셋</p>}
       {view === "gaa" && scene?.nanosheet_dimensions_nm && <p className="gaa-dimensions">
         NS {scene.nanosheet_dimensions_nm.count_per_stack}층 · 폭/두께 {(scene.nanosheet_dimensions_nm.sheets || []).map((sheet) => `${sheet.index}층 ${sheet.width}/${sheet.thickness}`).join(" · ") || "—"} nm · 층간 빈 공간 {(scene.nanosheet_dimensions_nm.pair_gaps || []).join("/") || "—"} nm · 중심 간격 {scene.nanosheet_dimensions_nm.center_pitch} nm · 채널 적층 높이 {scene.nanosheet_dimensions_nm.active_stack_height} nm
         <a href={scene.dimension_reference?.url} target="_blank" rel="noopener noreferrer">치수 근거</a>
       </p>}
       <div className="gaa-main">
         <div className="gaa-viewer" ref={viewerRef}>
-          {scene && viewerVisible ? <Suspense fallback={<div className="gaa-loading">3D 엔진 준비 중…</div>}><GaaScene sceneData={scene} hiddenRoles={hiddenRoles} selectedRole={selectedRole} onPick={setSelectedRole}/></Suspense> : <div className="gaa-loading">{scene ? "3D 모델 보기" : "장면을 만드는 중…"}</div>}
-          <span className="gaa-viewer-hint">드래그 회전 · 휠 확대 · 구조 클릭</span>
+          {scene && viewerVisible ? <Suspense fallback={<div className="gaa-loading">3D 엔진 준비 중…</div>}><GaaScene sceneData={scene} hiddenRoles={hiddenRoles} selectedRole={selectedRole} previewRoles={previewRoles} onPick={setSelectedRole} cameraPreset={cameraPreset} latchHighlight={powerOn && injection} cutAxis={cutAxis} cutPosition={cutPosition} showLabels={showLabels} showEdges={showEdges} resetToken={resetToken} guardRing={guardRing}/></Suspense> : <div className="gaa-loading">{scene ? "3D 모델 보기" : "장면을 만드는 중…"}</div>}
+          <span className="gaa-viewer-hint">드래그 회전 · 우클릭 이동 · 휠 확대 · 구조 클릭</span>
         </div>
         <div className="gaa-controls">
           <h3>구조 레이어 · FEOL / MOL / BEOL</h3>
+          {view === "gaa" && <div className="gaa-mol-legend" aria-label="MOL 층별 색상">
+            <span><i style={{ background: "#eda951" }}/>MOL M0</span>
+            {(scene?.mol_level_count || 0) >= 2 && <span><i style={{ background: "#50b7d9" }}/>MOL M1 / V1</span>}
+            {(scene?.mol_level_count || 0) >= 3 && <span><i style={{ background: "#ab8ce0" }}/>MOL M2 / V2</span>}
+          </div>}
           <div className="gaa-roles">{roles.map(([role, label]) => <div className={`gaa-role${selectedRole === role ? " is-selected" : ""}`} key={role}>
             <label><input type="checkbox" checked={!hiddenRoles.includes(role)} onChange={(event) => setHiddenRoles((list) => event.target.checked ? list.filter((item) => item !== role) : [...list, role])}/><span>{label}</span></label>
             <button type="button" onClick={() => setSelectedRole(role)}>선택</button>
@@ -336,15 +393,34 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
           </div>
           {admin && view === "gaa" && activeParams && <div className="gaa-parameter-editor"><h3>{product ? `${product} 개별 형상` : `${type.toUpperCase()} ${variant} 공통 형상`}</h3>
             <div className="gaa-llm-editor"><h3>연결된 LLM으로 구조 수정 제안</h3>
-              <p>관리자 기본지식과 선택 제품 Wiki를 참고해 치수 변경안을 만듭니다. 제안 적용 후 3D를 확인하고 모델 저장을 눌러야 확정됩니다.</p>
+              <p>관리자 기본지식과 선택 제품 위키를 참고해 치수 변경안을 만듭니다. 제안 적용 후 3D를 확인하고 모델 저장을 눌러야 확정됩니다.</p>
               <textarea rows={3} maxLength={1200} value={editPrompt} onChange={(event) => setEditPrompt(event.target.value)}
                 placeholder="예: NS 2층 폭 34 nm, 시트 4층, MOL 3단, 소스 TCD 18 nm"/>
               <button type="button" disabled={editing || !editPrompt.trim()} onClick={suggestEdits}>{editing ? "제안 중…" : "구조 변경안 만들기"}</button>
-              {editProposal?.target === `${product}/${type}/${variant}` && <div className="gaa-llm-proposal">
+              {proposalOpen && <div className="gaa-llm-proposal">
                 <b>{editProposal.summary || "치수 변경 제안"}</b>
-                {editProposal.edits.map((edit, index) => <span key={index}>{edit.kind === "shape" ? `${edit.role}.${edit.name}` : edit.name}: {edit.value}</span>)}
-                <span>NS 적층 높이 {editProposal.before.sheet_dimensions_nm.active_stack_height} → {editProposal.after.sheet_dimensions_nm.active_stack_height} nm</span>
-                <button type="button" onClick={applyEdits}>3D 미리보기에 적용</button>
+                <table className="gaa-llm-diff">
+                  <thead><tr><th>항목</th><th>현재</th><th>제안</th></tr></thead>
+                  <tbody>
+                    {editProposal.edits.map((edit, index) => {
+                      const current = edit.kind === "shape"
+                        ? activeShapes[edit.role]?.[edit.name]
+                        : activeParams?.[edit.name] ?? PARAM_FALLBACKS[edit.name];
+                      return <tr key={index}>
+                        <td>{edit.kind === "shape" ? `${scene?.roles?.[edit.role] || edit.role} ${edit.name.replace("_nm", "").toUpperCase()}` : PARAM_LABELS[edit.name] || edit.name}</td>
+                        <td>{current ?? "-"}</td>
+                        <td className="is-proposed">{edit.value}</td>
+                      </tr>;
+                    })}
+                    <tr><td>NS 적층 높이 (nm)</td><td>{editProposal.before.sheet_dimensions_nm.active_stack_height}</td>
+                      <td className="is-proposed">{editProposal.after.sheet_dimensions_nm.active_stack_height}</td></tr>
+                  </tbody>
+                </table>
+                <span className="gaa-llm-hint">3D에서 주황색으로 강조된 구조물이 바뀝니다.</span>
+                <div className="gaa-llm-actions">
+                  <button type="button" className="gaa-primary" onClick={applyEdits}>3D 미리보기에 적용</button>
+                  <button type="button" onClick={() => setEditProposal(null)}>제안 닫기</button>
+                </div>
               </div>}
             </div>
             {PARAMS.map(([key, label, min, max, step]) => <label key={key}><span>{label} <b>{activeParams[key]}</b></span><input type="range" min={min} max={max} step={step} value={activeParams[key]} onChange={(event) => updateParam(key, Number(event.target.value))}/></label>)}
@@ -364,6 +440,14 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
                 onChange={(event) => updateParam(key, Number(event.target.value))}/></label>)}
             {SHAPABLE.has(selectedRole) && <div className="gaa-shape-editor"><h3>{scene?.roles?.[selectedRole]} 단면 CD</h3>
               <p>TCD·MCD·BCD는 선택한 소구조물의 상·중·하단 가로 폭입니다. 단위는 nm입니다.</p>
+              <label>3D 기본 형상<select value={selectedShape.primitive || selectedParts[0]?.shape || "profile_box"}
+                onChange={(event) => updateShape(selectedRole, "primitive", event.target.value)}>
+                <option value="tapered_cylinder">테이퍼 원형 기둥</option>
+                <option value="cylinder">원기둥</option>
+                <option value="profile_box">사각 단면</option>
+                <option value="faceted_epi">결정면 Epi · {'{111}'} 성장면</option>
+                <option value="gate_shell">시트를 감싸는 게이트 / 스페이서</option>
+              </select></label>
               <div>{CD_FIELDS.map(([field, label]) => <label key={field}>{label}
                 <input type="number" min="2" max="120" step="0.5" value={selectedShape[field]}
                   onChange={(event) => updateShape(selectedRole, field, Number(event.target.value))}/></label>)}</div>
@@ -382,7 +466,32 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
           </div>}
         </div>
       </div>
-      {view === "latchup" && <div className="gaa-message">Latch-up 단면: P+ PMOS → N-Well → P-Well/P형 기판 → N+ NMOS의 기생 PNP/NPN 결합 경로를 표시합니다. Well/탭 구조는 개념도이며 trigger 전류는 계산하지 않습니다.</div>}
+      {!!scene?.references?.length && <details className="gaa-references"><summary>TEM · 구조 참고 자료와 모델 범위</summary>
+        <p>공개 단면과 구조 문헌을 참고한 조절 가능한 개념 모델입니다. Epi 성장면과 식각 각도는 공정·결정 방향에 따라 달라지며, 특정 제품의 TEM을 재구성한 모델은 아닙니다.</p>
+        {scene.references.map((reference) => <p key={reference.url}><a href={reference.url} target="_blank" rel="noopener noreferrer">{reference.title}</a>{reference.note && <> · {reference.note}</>}</p>)}
+      </details>}
+      {type === "sram" && view === "gaa" && !!scene?.netlist?.length && <details className="gaa-references"><summary>6Tr 회로 연결 · Q/QB · WL · BL/BLB</summary>
+        <p>Q는 반대 인버터의 게이트를, QB는 첫 번째 인버터의 게이트를 구동합니다. WL은 두 접근 소자를 동시에 제어합니다. 배선 높이는 연결을 구분하기 위한 개념 층입니다.</p>
+        <table className="gaa-netlist"><thead><tr><th>소자</th><th>종류</th><th>Gate</th><th>Source</th><th>Drain</th><th>Body</th></tr></thead>
+          <tbody>{scene.netlist.map((device) => <tr key={device.id}><th>{device.id}</th><td>{device.type}</td>{["G", "S", "D", "B"].map((terminal) => <td key={terminal}>{device.terminals[terminal]}</td>)}</tr>)}</tbody></table>
+      </details>}
+      {view === "latchup" && <section className="gaa-latchup" aria-label="Latch-up turn-on 개념 시나리오">
+        <div><h3>Latch-up turn-on 경로</h3><p>P+ 주입 접합과 N-Well·P-Well의 기생 PNP/NPN 결합을 표시합니다. 실제 발화 여부는 공정별 저항, 전류 이득, 온도와 바이어스 검증이 필요합니다.</p></div>
+        <div className="gaa-latch-controls">
+          <label><input type="checkbox" checked={powerOn} onChange={(event) => setPowerOn(event.target.checked)}/>전원 ON</label>
+          <label><input type="checkbox" checked={injection} onChange={(event) => setInjection(event.target.checked)}/>전류 주입 사건 표시</label>
+          <label><input type="checkbox" checked={tapNear} onChange={(event) => setTapNear(event.target.checked)}/>Well / substrate tap 연결 양호</label>
+          <label><input type="checkbox" checked={guardRing} onChange={(event) => setGuardRing(event.target.checked)}/>Guard ring 적용 가정</label>
+        </div>
+        <strong className={powerOn && injection ? "is-active" : ""}>{powerOn && injection
+          ? "주입 상태: 가능한 기생 PNPN 경로를 붉게 강조" : powerOn ? "전원 ON: 주입 사건이 없어 경로는 비활성 표시" : "전원 OFF: 기생 경로 비활성 표시"}</strong>
+        <div className="gaa-hotspots"><b>검토할 위치</b>
+          {(scene?.latchup_path?.hotspots || []).map((hotspot) => <p key={hotspot.id}><span>{hotspot.label}</span> · {hotspot.reason}</p>)}
+          <p>{!tapNear ? "Tap 연결이 약한 조건: well·기판의 전압 강하 경로를 우선 검토하세요." : "Tap 연결 양호 조건: 실제 접촉 저항과 배치를 확인하세요."}</p>
+          <p>{guardRing ? "Guard ring 적용 가정: 주입 캐리어 수집 경로를 확인하세요." : "Guard ring이 없는 조건: 주입원 주변 보호 구조를 검토하세요."}</p>
+        </div>
+        <small>이 화면은 정성적 경로 시각화입니다. 발화 전류·holding 전류·불량 확률을 계산하지 않습니다. <a href={scene?.latchup_path?.reference} target="_blank" rel="noopener noreferrer">기생 SCR 구조 근거</a></small>
+      </section>}
       {view === "gaa" && <section className="gaa-measurements" aria-label="구조 높이와 Inline 측정 구간">
         <div className="gaa-measurements-heading"><div><h3>구조 높이 · INLINE 측정 구간</h3>
           <p>공통 지식에서 기준면을 정의하고, 제품별 Step ID / Item ID를 따로 연결합니다. 표시 높이는 현재 개념 형상에서 계산합니다.</p></div>
@@ -422,7 +531,7 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
           {!scene?.anchor_candidate_count && <span>매칭 행이 없어 구조는 개념 형상으로 표시됩니다. 제품별 앵커를 연결하려면 INLINE 기준정보를 확인하세요.</span>}
         </div>
       </div>}
-      <details className="gaa-data"><summary>장면 데이터 보기 · LLM/코드용 JSON</summary><p>각 도형의 역할, 좌표, 크기와 제품별 inline 앵커를 문자 데이터로 확인할 수 있습니다.</p><pre>{JSON.stringify(scene, null, 2)}</pre></details>
+      <details className="gaa-data" onToggle={(event) => setSceneJsonOpen(event.currentTarget.open)}><summary>장면 데이터 보기 · LLM/코드용 JSON</summary><p>각 도형의 역할, 좌표, 크기와 제품별 inline 앵커를 문자 데이터로 확인할 수 있습니다.</p>{sceneJsonOpen && <pre>{JSON.stringify(scene, null, 2)}</pre>}</details>
     </>}
   </section>;
 }

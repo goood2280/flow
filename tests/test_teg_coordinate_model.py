@@ -310,7 +310,7 @@ def test_main_info_missing_orange_state_is_rendered_as_yellow():
 
     # `orange` remains in persisted/backend contracts, but its visual treatment
     # is intentionally identical to the normal yellow review state.
-    assert 'orange: "🟡", yellow: "🟡"' in source
+    assert 'orange: "warn", yellow: "warn"' in source
     assert "orange: REVIEW_YELLOW" in source
     assert 'orange: { stroke: "#a16207", text: "#854d0e", fill: "rgba(234,179,8,0.34)" }' in source
     assert "🟠 MAIN 정보없음" not in source

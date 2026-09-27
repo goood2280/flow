@@ -101,18 +101,30 @@ export function canAccessTab(user, userTabs, tabKey) {
     return true;
   }
   const granted = grantedTabKeys(userTabs);
-  // 랏 관리는 SplitTable의 LOT/CUSTOM/plan 흐름을 확장한 데이터 화면이다.
-  // 기존 배포 사용자가 권한 재저장 전에도 기존 splittable 권한으로 접근한다.
-  if (tabKey === "lotmanage" && granted.includes("splittable")) return true;
-  if (tabKey === "productwiki" && (isPageAdmin(user, tabKey) || granted.includes("splittable") || granted.includes("lotmanage"))) return true;
-  // 차트생성은 기존 Dashboard/FileBrowser 권한 사용자가 권한 재저장 전에도 이용한다.
-  if (tabKey === "chartbuilder" && (granted.includes("dashboard") || granted.includes("filebrowser"))) return true;
-  // Template Report는 저장된 ChartBuilder 코드를 재사용한다. 기존 차트생성
-  // 권한 사용자가 관리자 권한 재저장 없이 바로 이용할 수 있게 승계한다.
-  if (tabKey === "templatereport" && (granted.includes("chartbuilder") || granted.includes("dashboard") || granted.includes("filebrowser"))) return true;
-  // 랏 현위치 확인은 WIP 공정 위치 확인 화면으로, 기존 랏관리/스플릿테이블/대시보드/랏요청 권한 사용자가 바로 이용할 수 있게 승계한다.
-  if (tabKey === "lotlocation" && (granted.includes("lotlocation") || granted.includes("lotmanage") || granted.includes("splittable") || granted.includes("dashboard") || granted.includes("lotrequest"))) return true;
+  if (inheritedAccessSources(tabKey, granted).length) return true;
   return granted.includes(tabKey);
+}
+
+// 승계 접근: 새 탭이 기존 탭의 흐름을 확장한 경우, 기존 권한 사용자가 관리자
+// 재저장 없이 바로 쓰도록 한다. nav·홈 카드와 관리자 권한 화면이 같은 표를 본다.
+// (한 단계만 승계한다 — 승계로 얻은 접근이 다시 다른 탭을 열어 주지 않는다.)
+export const INHERITED_TAB_ACCESS = {
+  // 랏 관리는 SplitTable의 LOT/CUSTOM/plan 흐름을 확장한 데이터 화면이다.
+  lotmanage: ["splittable"],
+  productwiki: ["splittable", "lotmanage"],
+  // 차트생성은 기존 Dashboard/FileBrowser 권한 사용자가 이용한다.
+  chartbuilder: ["dashboard", "filebrowser"],
+  // Template Report는 저장된 ChartBuilder 코드를 재사용한다.
+  templatereport: ["chartbuilder", "dashboard", "filebrowser"],
+  // 분석의뢰는 랏 배정/요청 게시판 흐름을 확장한 화면이다(백엔드 routers/analysis_requests.py 같은 규칙).
+  analysisrequest: ["lotrequest"],
+  // 랏 현위치 확인은 WIP 공정 위치 확인 화면이다.
+  lotlocation: ["lotmanage", "splittable", "dashboard", "lotrequest"],
+};
+
+export function inheritedAccessSources(tabKey, userTabs) {
+  const granted = grantedTabKeys(userTabs);
+  return (INHERITED_TAB_ACCESS[tabKey] || []).filter((source) => granted.includes(source));
 }
 
 // 홈 카드/네비게이션에 노출할 탭 목록. TABS 순서를 그대로 유지한다.

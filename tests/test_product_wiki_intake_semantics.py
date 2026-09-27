@@ -107,14 +107,19 @@ def test_compile_ai_failure_does_not_hold_wiki_write_lock(isolated_product_state
         raise RuntimeError("simulated AI failure")
 
     monkeypatch.setattr(llm_adapter, "is_available", lambda: True)
-    monkeypatch.setattr(llm_adapter, "complete", complete_writes_other_product)
+    # A save assembles the document by rule; the model is not called at all.
+    monkeypatch.setattr(llm_adapter, "complete", lambda *a, **k: pytest.fail("save must not call the model"))
     saved = wiki.save_entry(
         "PRODA", 0,
         {"title": "New original", "body": "Committed source", "source_text": "Committed source", "kind": "issue", "status": "open"},
         "alice",
     )
-
     assert any(row["title"] == "New original" for row in saved["entries"])
+
+    # The explicit AI compile must not hold the write lock while the model runs.
+    monkeypatch.setattr(llm_adapter, "complete", complete_writes_other_product)
+    compiled = wiki.compile_product_wiki("PRODA", actor="alice", use_ai=True)
+    assert compiled["compile_mode"] == "basic" and "New original" in compiled["wiki_document"]
     with wiki.database() as db:
         products = [dict(row) for row in db.execute("SELECT name FROM products")]
     assert any(row["name"] == "OTHER" for row in products)

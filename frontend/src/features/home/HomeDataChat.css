@@ -1401,6 +1401,23 @@
   font-size: 11px;
   text-align: right;
 }
+.home-data-chat__composer-help.is-table { color: var(--accent); font-weight: 600; }
+.home-data-chat__composer-help.is-warn { color: var(--status-danger); font-weight: 600; }
+
+/* 사용자가 엑셀에서 붙여 넣은 표 (말풍선 안) */
+.home-data-chat__pasted-table {
+  margin-top: 6px;
+  border: 1px solid var(--border);
+  border-radius: 2px;
+  background: var(--bg-primary);
+}
+.home-data-chat__pasted-table .home-data-chat__table-scroll { max-height: 260px; }
+.home-data-chat__pasted-table .home-data-chat__table td { white-space: nowrap; }
+.home-data-chat__pasted-table-meta {
+  padding: 4px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
 .home-data-chat__routing-trace {
   margin: 8px 0 12px;
   border: 1px solid var(--border-subtle, #dfe4eb);

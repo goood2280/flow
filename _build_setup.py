@@ -125,7 +125,6 @@ FLOWI_EXCLUDE_FILES = {
     'backend/routers/agent.py',
     'backend/routers/flowi_learning.py',
     'backend/routers/home_agent.py',
-    'frontend/src/components/FlowiPromptBox.jsx',
     'frontend/src/pages/My_Diagnosis.jsx',
     'tests/test_flowi_chart_sql_contract.py',
 }
@@ -493,7 +492,7 @@ _ALLOWED_TOP_LEVEL = {{
     # 에이전트 진입점 / 저장소 위생 규칙 / 번들 빌더 자신 / npm 잠금.
     # 이 화이트리스트에 없으면 FILES 에 담겨 있어도 extract 가 조용히 버린다 —
     # GitHub 저장소를 "README.md + setup.py" 로 줄였을 때 영구 소실되는 경로다.
-    'CLAUDE.md', '.gitignore', '.gitattributes', '_build_setup.py',
+    'CLAUDE.md', 'AGENTS.md', '.gitignore', '.gitattributes', '_build_setup.py',
     'package.json', 'package-lock.json',
 }}
 
@@ -1242,7 +1241,7 @@ def _seed_default_agent_wiki_docs() -> None:
 # scripts/ 는 제외하지 않는다 — preflight_internal.py(사내 반입 점검)와
 # worker_watchdog.py(개발서버 상주 프로세스)가 운영 절차에 들어 있다.
 _RUNTIME_SKIP_TOP = {'tests', 'docs'}
-_RUNTIME_SKIP_FILES = {'CLAUDE.md', '_build_setup.py', '.gitignore', '.gitattributes'}
+_RUNTIME_SKIP_FILES = {'CLAUDE.md', 'AGENTS.md', '_build_setup.py', '.gitignore', '.gitattributes'}
 
 
 def _runtime_only_skip(rel: str) -> bool:

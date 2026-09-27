@@ -97,6 +97,19 @@ for (const match of manifestSource.matchAll(/key:\s*"([^"]+)"[^\n]*subtabs:\s*\[
   }
   backendSubtabs.delete(match[1]);
 }
+// 업무별 권한·위임 대상은 사이드바 데이터/업무 탭과 같아야 한다. 백엔드 목록에 없는
+// 탭은 관리자가 위임해도 조용히 버려지고, 폐기된 탭이 남으면 없는 업무가 위임된다.
+const delegableBlock = authSource.match(/DELEGABLE_PAGE_IDS\s*=\s*frozenset\(\{([\s\S]*?)\}\)/)?.[1] || "";
+const backendDelegable = [...delegableBlock.matchAll(/"([^"]+)"/g)].map((item) => item[1]).sort();
+const navWorkKeys = entryLines
+  .filter((line) => /group:\s*"(data|work)"/.test(line) && !/navigation:\s*false/.test(line))
+  .map((line) => line.match(/key:\s*"([^"]+)"/)?.[1])
+  .filter(Boolean)
+  .sort();
+if (backendDelegable.join(",") !== navWorkKeys.join(",")) {
+  errors.push(`delegable page contract mismatch: pageManifest data/work=${navWorkKeys} backend DELEGABLE_PAGE_IDS=${backendDelegable}`);
+}
+
 const parkedSubtabs = new Set(["diagnosis"]);
 for (const key of backendSubtabs.keys()) {
   if (!parkedSubtabs.has(key)) errors.push(`backend subtab '${key}' is missing from pageManifest.jsx`);

@@ -4,9 +4,11 @@ import Loading from "../../components/Loading";
 import Modal from "../../components/Modal";
 import { PageHeader, TabStrip, Button, Banner, Pill, statusPalette, chartPalette } from "../../components/UXKit";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import { PROCESS_AREAS, areaColor } from "../../constants/processAreas";
 import { sf, dl, postJson, userLabel, userMatches } from "../../lib/api";
 import { SUB_TABS, TABS } from "../../config";
+import { INHERITED_TAB_ACCESS, inheritedAccessSources } from "../../lib/permissions";
 // v9.2.x: 에이전트 탭 재편 — Semantic layer 편집기와 LLM 설정을 관리 탭으로 이관.
 import SemanticLayerPanel from "../../components/agent/SemanticLayerPanel";
 import ProductSemanticPanel from "../productwiki/ProductSemanticPanel";
@@ -14,6 +16,7 @@ import ProductAdminPanel from "./ProductAdminPanel";
 import FlowiRoutesPanel from "./FlowiRoutesPanel";
 import DomainKnowledgePanel from "./DomainKnowledgePanel";
 import LlmTab from "../../components/agent/LlmTab";
+import { setVisibleInterval } from "../../lib/visibleInterval";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
 // v8.8.22: dashboard_chart 제거 (페이지 위임 탭이 같은 역할 수행). 실제 nav 메뉴 순서로 재배치.
 // v9.4.x: flowi — Flow-i 채팅 사용 권한 (홈 채팅 + home agent orchestrate 게이트).
@@ -21,12 +24,6 @@ import LlmTab from "../../components/agent/LlmTab";
 // 실제 사이드바 탭만 사용한다.
 const ALL_TABS=TABS.filter(tab=>!["home","admin"].includes(tab.key)).map(tab=>tab.key);
 const PERMISSION_KEYS=[...ALL_TABS,"flowi"];
-const CANONICAL_PAGE_IDS=ALL_TABS;
-const PAGE_ID_ALIASES={informs:"inform",meetings:"meeting",dbmap:"tablemap"};
-function _canonicalPageId(v){
-  const key=String(v||"").trim().toLowerCase();
-  return PAGE_ID_ALIASES[key]||key;
-}
 // v8.7.5: u.tabs 는 string 이지만 legacy json 에서 array 로 저장된 기록이 있을 수 있어
 // "r.split is not a function" 방지를 위해 정규화 헬퍼를 둔다.
 function _tabsToArray(v){
@@ -76,7 +73,7 @@ function _tabCellMark(tokens,t,delegated=false){
   if(delegated)return"관리";
   if(tokens.includes(t))return"O";
   const subs=_tabTokensFor(tokens,t);
-  if(!subs.length)return"X";
+  if(!subs.length)return inheritedAccessSources(t,tokens).length?"승계":"X";
   const all=(SUB_TABS[t]||[]).length;
   return all&&subs.length>=all?"O":"△";
 }
@@ -135,7 +132,7 @@ class TabBoundary extends Component{
   render(){
     if(this.state.err){
       return(<div style={{padding:"20px 24px",background:BAD.bg,border:`1px solid ${BAD.fg}66`,borderRadius:8,color:BAD.fg,fontSize:14}}>
-        <div style={{fontWeight:700,marginBottom:6}}>⚠ 이 탭을 렌더하는 도중 오류가 발생했습니다.</div>
+        <div style={{fontWeight:700,marginBottom:6}}><IconLabel icon="warning">이 탭을 렌더하는 도중 오류가 발생했습니다.</IconLabel></div>
         <div style={{fontFamily:"monospace",fontSize:14,marginBottom:8,opacity:0.9}}>{String(this.state.err?.message||this.state.err)}</div>
         <Button variant="ghost" onClick={()=>this.setState({err:null})}>재시도</Button>
       </div>);
@@ -328,6 +325,9 @@ export default function My_Admin({user}){
   const[paverScheduleBusy,setPaverScheduleBusy]=useState(false);
   const[qaReport,setQaReport]=useState({runs:[]});const[qaBusy,setQaBusy]=useState(false);const[qaMsg,setQaMsg]=useState("");
   const[editPerm,setEditPerm]=useState(null);const[permTabs,setPermTabs]=useState([]);
+  const[permDelegation,setPermDelegation]=useState([]);
+  const[permView,setPermView]=useState("work");
+  const lastTabBySection=useRef({});
   // v9.5.x 권한 그룹 — 그룹탭(소셜)과 별개의 권한 전용 그룹. 그룹에 tabs 를 지정하고
   // 멤버를 넣으면 멤버의 권한이 그룹 권한으로 자동 적용된다 (perm_groups.json).
   const[permGroups,setPermGroups]=useState([]);
@@ -359,7 +359,7 @@ export default function My_Admin({user}){
     loadNotifications();
     if(!isAdmin)return;
     loadUserCounts();
-    if(["users","perms","page_admins"].includes(tab))loadUsers();
+    if(["users","perms"].includes(tab))loadUsers();
     if(tab==="perms")loadPermGroups();
     if(tab==="logs")loadLogUsers();
   };
@@ -382,7 +382,7 @@ export default function My_Admin({user}){
   useEffect(()=>{load();},[]);
   useEffect(()=>{
     if(!isAdmin)return;
-    if(["users","perms","page_admins"].includes(tab))loadUsers();
+    if(["users","perms"].includes(tab))loadUsers();
     if(tab==="perms")loadPermGroups();
     if(tab==="logs")loadLogUsers();
   },[tab,isAdmin]);
@@ -423,8 +423,7 @@ export default function My_Admin({user}){
     sf("/api/monitor/farm-status").then(d=>{setFarmStatus(d||{});if(d?.schedule)setPaverSchedule(d.schedule);}).catch(()=>{});};
   useEffect(()=>{
     if(!isAdmin||tab!=="monitor")return;
-    const timer=setInterval(loadSys,2000);
-    return()=>clearInterval(timer);
+    return setVisibleInterval(loadSys,2000);
   },[isAdmin,tab]);
   const startPaverLoad=()=>{
     if(!isAdmin||loadBusy)return;
@@ -477,6 +476,17 @@ export default function My_Admin({user}){
       })
       .catch(e=>toast.error("역할 변경 실패: "+(e.message||e)));
   };
+  const openPermEditor=(u)=>{
+    setEditPerm(u.username);setPermTabs(_tabsToArray(u.tabs));
+    setPermDelegation(_arr(u.effective_permissions?.page_manager).filter(k=>DELEGABLE_KEYS.includes(k)));
+    setTab("perms");
+  };
+  const saveDelegation=()=>{
+    if(!editPerm)return;
+    sf("/api/admin/page-admins/user",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm,pages:permDelegation})})
+      .then(()=>{toast.ok(`${editPerm} 관리 위임 ${permDelegation.length}개 업무 저장`);loadUsers();})
+      .catch(e=>toast.error(e.message||"위임 저장 실패"));
+  };
   const savePerm=()=>{if(!editPerm)return;sf("/api/admin/set-tabs",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:editPerm,tabs:permTabs})}).then((d)=>{
     if(_arr(d?.removed_from_groups).length)toast.ok(`개별 권한 지정 — 권한 그룹 [${d.removed_from_groups.join(", ")}] 에서 제외되었습니다`);
     setEditPerm(null);load();setTab("perms");}).catch(e=>toast.error(e.message||"권한 저장 실패"));};
@@ -508,23 +518,40 @@ export default function My_Admin({user}){
   // /mark-read 는 서버에서 해당 유저 전체를 읽음 처리한다.
   const markAllRead=()=>{sf("/api/admin/mark-read",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:user?.username||""})}).then(()=>window.dispatchEvent(new CustomEvent("hol:notif-refresh"))).catch((e)=>toast.error(e.message||"읽음 처리 실패"));};
 
-  // Tabs differ by role
-  // v8.4.3 단위기능 페이지 철학: AWS 설정은 FileBrowser 톱니로 이관 예정 (제거).
-  // v8.8.14: page_admins / backup_sched / activity_dash 3개 탭 추가.
-  //   - page_admins: 각 페이지의 "위임 admin" 을 유저에게 부여 (각 페이지에서 관리는 각 페이지가 수행한다는 철학).
-  //   - backup_sched: 자동 백업 주기 + 예약 1회 백업 (서버 점검 전 대비).
-  //   - activity_dash: 최근 활동 요약 + 기능별 사용 현황 (어떤 기능이 활성화되어 있는지 파악).
-  const adminTabs=[["users","사용자"],["notifs","알림"],["perms","권한"],["page_admins","페이지 위임"],["groups","그룹"],["mail_cfg","메일 API"],["logs","관리 로그"],["activity_dash","활동 대시보드"],["backup_sched","백업"],["downloads","다운로드"],["monitor","모니터"],["data_roots","데이터 루트"],["qa","QA 점검"],["product_admin","제품 공정·시맨틱"],["domain_knowledge","기본지식"],["flowi_learning","Flow-i 학습"],["llm_cfg","LLM 설정"],["chat_prompts","데이터챗 추천 질문"]];
-  // v8.8.1: 일반 유저도 그룹 탭 사용 가능.
+  // 관리자 화면은 운영 · 시스템 · 에이전트 세 구역으로 나누고, 구역마다 소탭을 둔다.
+  // 일반 유저는 구역 없이 자기 알림/그룹/로그/다운로드만 본다.
   const userTabs=[["notifs","알림"],["groups","그룹"],["logs","내 로그"],["downloads","내 다운로드"]];
-  const tabs=isAdmin?adminTabs:userTabs;
-  const tabItems=(tabs||[]).map(([k,l])=>({k,l,badge:k==="users"&&isAdmin?String(userCounts.total):undefined}));
+  const section=isAdmin?(ADMIN_SECTIONS.find(sec=>sec.tabs.some(([k])=>k===tab))||ADMIN_SECTIONS[0]):null;
+  const tabs=isAdmin?section.tabs:userTabs;
+  const openTab=(k)=>{
+    setTab(k);
+    try{ if(k==="monitor")loadSys(); }catch(e){console.warn("[admin tab] monitor loader threw",e);}
+    try{ if(k==="qa")loadQa(); }catch(e){console.warn("[admin tab] qa loader threw",e);}
+  };
+  // 홈 알람(가입 승인 요청 등)이 `/admin?tab=users` 로 보내면 그 소탭을 바로 연다.
+  useEffect(()=>{
+    if(!isAdmin)return;
+    const openFromSearch=(search)=>{
+      const k=new URLSearchParams(search||"").get("tab");
+      if(k&&ADMIN_SECTIONS.some(sec=>sec.tabs.some(([t])=>t===k)))openTab(k);
+    };
+    openFromSearch(window.location.search);
+    const onNavigate=(e)=>{if(e?.detail?.tab==="admin")openFromSearch(e.detail.search);};
+    window.addEventListener("flow:navigate",onNavigate);
+    return()=>window.removeEventListener("flow:navigate",onNavigate);
+  },[isAdmin]);
+  if(section)lastTabBySection.current[section.k]=tab;
+  const openSection=(k)=>{
+    const next=ADMIN_SECTIONS.find(sec=>sec.k===k);
+    if(!next||next.k===section?.k)return;
+    const remembered=lastTabBySection.current[k];
+    openTab(next.tabs.some(([t])=>t===remembered)?remembered:next.tabs[0][0]);
+  };
+  const tabItems=(tabs||[]).map(([k,l])=>({k,l,badge:k==="users"&&isAdmin&&userCounts.pending>0?`대기 ${userCounts.pending}`:undefined}));
   // username → 권한 그룹명 (한 사용자는 하나의 권한 그룹에만 속함)
   const userPermGroup={};
   _arr(permGroups).forEach(g=>_arr(g.members).forEach(m=>{userPermGroup[m]=g.name;}));
   const editPermUser=_arr(users).find(u=>u?.username===editPerm)||null;
-  const approvedUsers=userCounts.approved;
-  const pendingUsers=userCounts.pending;
   // v9.1.x: downloads.jsonl 의 source 필드로 구분 표시 (없으면 파일 다운로드).
   const DL_SOURCES={filebrowser:{label:"파일 다운로드",tone:"accent"},reformatize:{label:"ET 다운로드",tone:"info"},reformatize_test:{label:"ET 테스트",tone:"warn"},splittable:{label:"SplitTable 다운로드",tone:"violet"},auto_report:{label:"Auto report",tone:"ok"},template_report:{label:"Template Report",tone:"info"},catalog:{label:"매칭 테이블",tone:"neutral"}};
   const combinedDownloads=_arr(dlHistory).map((d)=>{
@@ -543,9 +570,10 @@ export default function My_Admin({user}){
     });
   const resourceChartHours=resWindow==="7d"?168:24;
   const normalizedUserQuery=userQuery.trim().toLowerCase();
-  const visibleUsers=normalizedUserQuery
+  // 승인 대기자는 첫 페이지 맨 위에 둔다 — 처리할 일이 목록 뒤쪽에 묻히지 않게.
+  const visibleUsers=(normalizedUserQuery
     ?_arr(users).filter(u=>[u?.name,u?.username,u?.sso_id,u?.department].some(v=>String(v||"").toLowerCase().includes(normalizedUserQuery)))
-    :_arr(users);
+    :_arr(users)).slice().sort((a,b)=>(a?.status==="pending"?0:1)-(b?.status==="pending"?0:1));
   const userPageCount=Math.max(1,Math.ceil(visibleUsers.length/USER_PAGE_SIZE));
   const safeUserPage=Math.min(userPage,userPageCount-1);
   const pagedUsers=visibleUsers.slice(safeUserPage*USER_PAGE_SIZE,(safeUserPage+1)*USER_PAGE_SIZE);
@@ -553,22 +581,17 @@ export default function My_Admin({user}){
     <div style={{padding:"24px 32px",background:"var(--bg-primary)",minHeight:"calc(100vh - 52px)",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif"}}>
       <PageHeader
         title={isAdmin?"관리자 콘솔":"내 관리"}
-        subtitle={isAdmin?"사용자·권한·운영 설정을 한 곳에서 관리합니다.":"내 알림과 로그를 확인합니다."}
+        subtitle={isAdmin?undefined:"내 알림과 로그를 확인합니다."}
         right={<div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
-          {isAdmin&&<Pill tone="accent" size="md">승인 {approvedUsers}</Pill>}
-          {isAdmin&&pendingUsers>0&&<Pill tone="warn" size="md">대기 {pendingUsers}</Pill>}
           <Pill tone="neutral" size="md">{user?.username||"guest"}</Pill>
         </div>}
         style={{borderRadius:10,border:"1px solid var(--border)",marginBottom:14}}
       />
+      {isAdmin&&<AdminSwitcher label="관리 구역" items={ADMIN_SECTIONS} active={section.k} onChange={openSection}/>}
       <TabStrip
         items={tabItems}
         active={tab}
-        onChange={(k)=>{
-          setTab(k);
-          try{ if(k==="monitor")loadSys(); }catch(e){console.warn("[admin tab] monitor loader threw",e);}
-          try{ if(k==="qa")loadQa(); }catch(e){console.warn("[admin tab] qa loader threw",e);}
-        }}
+        onChange={openTab}
       />
       <div style={{height:16}} />
       <TabBoundary tabKey={tab}>
@@ -606,7 +629,7 @@ export default function My_Admin({user}){
                   {u.status==="approved"&&u.role!=="admin"&&<>
                     <Button variant="ghost" onClick={()=>resetPassword(u.username)}>비번 초기화</Button>
                     <Button variant="danger" onClick={()=>{if(confirm("삭제하시겠습니까?"))action("/api/admin/delete-user",{username:u.username});}}>삭제</Button>
-                    <Button variant="ghost" onClick={()=>{setEditPerm(u.username);setPermTabs(_tabsToArray(u.tabs));setTab("perms");}} style={{color:"var(--info,#3b82f6)",border:"1px solid var(--info,#3b82f6)"}}>권한</Button>
+                    <Button variant="ghost" onClick={()=>openPermEditor(u)} style={{color:"var(--info,#3b82f6)",border:"1px solid var(--info,#3b82f6)"}}>권한</Button>
                     <Button variant="ghost" onClick={()=>changeRole(u.username,"admin")} style={{color:"var(--warn,#f59e0b)",border:"1px solid var(--warn,#f59e0b)"}}>관리자로 승격</Button>
                   </>}
                   {u.status==="approved"&&u.role==="admin"&&
@@ -622,10 +645,12 @@ export default function My_Admin({user}){
 
       {/* Permissions (admin only) */}
       {tab==="perms"&&isAdmin&&<div>
+        {!editPerm&&<AdminSwitcher size="sm" label="권한 보기" items={PERM_VIEWS} active={permView} onChange={setPermView}/>}
+        {!editPerm&&permView==="work"&&<AccessByWorkPanel users={users} onChanged={loadUsers} onEditUser={openPermEditor}/>}
         {/* 권한 그룹 — 그룹에 권한을 지정하고 멤버를 넣으면 그 권한으로 자동 적용 (그룹탭의 소셜 그룹과 별개 운영) */}
-        {!editPerm&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16,marginBottom:16}}>
+        {!editPerm&&permView==="groups"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16,marginBottom:16}}>
           <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10,flexWrap:"wrap"}}>
-            <span style={{fontSize:14,fontWeight:700}}>👥 권한 그룹</span>
+            <span style={{fontSize:14,fontWeight:700}}><IconLabel icon="users">권한 그룹</IconLabel></span>
             <span style={{fontSize:13,color:"var(--text-secondary)"}}>
               그룹에 권한을 지정하고 사용자를 넣으면 그 권한으로 자동 조정됩니다 (그룹탭의 소셜 그룹과는 별개)
             </span>
@@ -692,8 +717,8 @@ export default function My_Admin({user}){
           </div>}
         </div>}
         {/* O/X Permission Table */}
-        {!editPerm&&<div style={{fontSize:12,color:"var(--text-secondary)",marginBottom:6}}>O 전체 · △ 일부 소탭 · X 권한 없음 · 관리 해당 페이지 관리자 위임</div>}
-        {!editPerm&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto",marginBottom:16}}>
+        {!editPerm&&permView==="users"&&<div style={{fontSize:12,color:"var(--text-secondary)",marginBottom:6}}>O 전체 · △ 일부 소탭 · 승계 다른 업무 권한으로 접근 · X 권한 없음 · 관리 해당 업무 관리 위임</div>}
+        {!editPerm&&permView==="users"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",overflow:"auto",marginBottom:16}}>
           <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
             <thead><tr>
               <th style={{textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",position:"sticky",left:0,zIndex:1}}>이름</th>
@@ -718,10 +743,10 @@ export default function My_Admin({user}){
                 </td>
                 <td title={_effectivePermissionText(u)} style={{padding:"6px 12px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:13,maxWidth:520,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{_effectivePermissionText(u)}</td>
                 {PERMISSION_KEYS.map(t=>{const mark=_tabCellMark(ut,t,_arr(u.effective_permissions?.page_manager).includes(t));return(<td key={t} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
-                  <span title={mark==="관리"?"해당 페이지 관리자 위임":mark==="△"?_tabTokensLabel(_tabTokensFor(ut,t)):""} style={{fontSize:14,color:mark==="관리"?"var(--accent)":mark==="O"?"var(--ok,#22c55e)":(mark==="△"?"var(--warn,#f59e0b)":"var(--bad,#ef4444)"),fontWeight:700}}>{mark}</span>
+                  <span title={mark==="관리"?"해당 업무 관리 위임":mark==="△"?_tabTokensLabel(_tabTokensFor(ut,t)):mark==="승계"?`${inheritedAccessSources(t,ut).map(_tabLabel).join(", ")} 권한으로 접근`:""} style={{fontSize:mark==="승계"?12:14,color:mark==="관리"?"var(--accent)":mark==="O"?"var(--ok,#22c55e)":mark==="△"?"var(--warn,#f59e0b)":mark==="승계"?"var(--text-secondary)":"var(--bad,#ef4444)",fontWeight:700}}>{mark}</span>
                 </td>);})}
                 <td style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
-                  <span onClick={()=>{setEditPerm(u.username);setPermTabs(ut);}} style={{color:"var(--info,#3b82f6)",cursor:"pointer",fontSize:14}}>편집</span>
+                  <span onClick={()=>openPermEditor(u)} style={{color:"var(--info,#3b82f6)",cursor:"pointer",fontSize:14}}>편집</span>
                 </td>
               </tr>);})}</tbody>
           </table>
@@ -731,7 +756,7 @@ export default function My_Admin({user}){
           <div style={{fontSize:14,fontWeight:700,marginBottom:12}}>권한: {editPerm}</div>
           <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:10}}>SSO 부서: {editPermUser?.department||"없음"} · 현재 출처: {editPermUser?.permission_source||"미지정"}</div>
           {userPermGroup[editPerm]&&<div style={{fontSize:13,color:"var(--warn,#f59e0b)",marginBottom:10}}>
-            ⚠ 권한 그룹 '{userPermGroup[editPerm]}' 소속 — 개별 저장 시 그룹에서 제외되고 이 권한이 적용됩니다
+            <Icon name="warning" style={{marginRight:4}} />권한 그룹 '{userPermGroup[editPerm]}' 소속 — 개별 저장 시 그룹에서 제외되고 이 권한이 적용됩니다
           </div>}
           {PERMISSION_KEYS.map(t=>(<div key={t}>
             <label title={t} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 0",fontSize:14,cursor:"pointer"}}>
@@ -748,6 +773,18 @@ export default function My_Admin({user}){
             <Button variant="primary" onClick={savePerm} style={{padding:"8px 20px"}}>저장</Button>
             <Button variant="subtle" onClick={useDepartmentDefault} style={{padding:"8px 16px"}}>부서 기본 권한 사용</Button>
             <Button variant="subtle" onClick={()=>{setEditPerm(null);}} style={{padding:"8px 16px"}}>취소</Button>
+          </div>
+          <div style={{marginTop:18,paddingTop:14,borderTop:"1px solid var(--border)"}}>
+            <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>관리 위임</div>
+            <div style={{fontSize:13,color:"var(--text-secondary)",marginBottom:8}}>체크한 업무의 설정·관리 기능을 맡깁니다. 위임은 접근 권한과 따로 저장되며, 위임받은 업무는 전체 소탭에 접근합니다.</div>
+            {WORK_PERMISSION_GROUPS.filter(g=>g.delegable).map(g=>(<div key={g.id} style={{marginBottom:6}}>
+              <div style={{fontSize:12,color:"var(--text-secondary)",margin:"6px 0 2px"}}>{g.label}</div>
+              {g.keys.map(k=>(<label key={k} style={{display:"flex",alignItems:"center",gap:8,padding:"3px 0",fontSize:14,cursor:"pointer"}}>
+                <input type="checkbox" checked={permDelegation.includes(k)} onChange={e=>setPermDelegation(cur=>e.target.checked?[...cur,k]:cur.filter(x=>x!==k))}/>{_tabLabel(k)}
+                {VIEW_ONLY_PAGES.has(k)&&<span style={{fontSize:12,color:"var(--text-secondary)"}}>조회 전용</span>}
+              </label>))}
+            </div>))}
+            <Button variant="primary" onClick={saveDelegation} style={{padding:"8px 20px",marginTop:6}}>위임 저장</Button>
           </div></div>}
       </div>}
 
@@ -858,7 +895,7 @@ export default function My_Admin({user}){
       {/* Admin Log (v8.7.1) — 유저별/액션별 감사 로그 */}
       {tab==="logs"&&<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
         {isAdmin&&<div style={{display:"flex",gap:10,marginBottom:12,flexWrap:"wrap",alignItems:"center"}}>
-          <span style={{fontSize:14,fontWeight:700,color:"var(--accent)"}}>📋 Admin Activity Log</span>
+          <span style={{fontSize:14,fontWeight:700,color:"var(--accent)"}}><IconLabel icon="clipboard">Admin Activity Log</IconLabel></span>
           <input value={logFilter.username} onChange={e=>{setLogOffset(0);setLogFilter({...logFilter,username:e.target.value});}}
             list="admin-log-user-suggestions" placeholder="사용자 검색 (전체는 비움)"
             style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,minWidth:200}}/>
@@ -936,7 +973,7 @@ export default function My_Admin({user}){
         {/* v9.4.x: 워커 분산 — 개발서버 신호등/역할/원격 기동 */}
         <WorkerPanel/>
         {farmStatus.farming&&<div style={{background:WARN.bg,border:`1px solid ${WARN.fg}`,borderRadius:10,padding:16,marginBottom:16,display:"flex",alignItems:"center",gap:16}}>
-          <div style={{animation:"fabFarm 1s ease-in-out infinite",fontSize:32}}>🧑‍🌾</div>
+          <div style={{animation:"fabFarm 1s ease-in-out infinite",fontSize:32,color:"var(--accent)"}}><Icon name="factory" /></div>
           <div><div style={{fontSize:14,fontWeight:700,color:WARN.fg}}>{farmStatus.paver_active?"CPU·RAM 보도블럭 가는 중...":"FAB-i 가 farming 중..."}</div>
             <div style={{fontSize:14,color:"var(--text-secondary)"}}>{farmStatus.paver_active?`두 리소스를 ${farmStatus.paver_target_pct||85}% 부근으로 유지 · RAM hold ${farmStatus.load_memory_allocated_mb||0}MB`:`리소스를 활성 상태로 유지합니다 · ${farmStatus.load_mode||"auto"}`}</div></div>
         </div>}
@@ -969,7 +1006,7 @@ export default function My_Admin({user}){
         {!farmStatus.paver_active&&farmStatus.load_release_reason&&<div style={{fontSize:14,color:"var(--text-secondary)",marginTop:-6,marginBottom:12}}>최근 해제: {farmStatus.load_release_reason}</div>}
         {farmStatus.load_error&&<div style={{marginBottom:12,padding:"8px 12px",border:`1px solid ${BAD.fg}`,background:BAD.bg,borderRadius:6,color:BAD.fg,fontSize:14}}>메모리 부하 오류: {farmStatus.load_error}</div>}
         {sys && sys.psutil === false && <div style={{marginBottom:12,padding:"8px 12px",border:`1px solid ${WARN.fg}`,background:WARN.bg,borderRadius:6,color:WARN.fg,fontSize:14}}>
-          ⚠ psutil 미설치 (폴백 모드: Linux /proc/statvfs). 정확한 측정을 원하면 서버에 <code>pip install psutil</code>.
+          <Icon name="warning" style={{marginRight:4}} />psutil 미설치 (폴백 모드: Linux /proc/statvfs). 정확한 측정을 원하면 서버에 <code>pip install psutil</code>.
         </div>}
         <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:12,marginBottom:20}}>
           <Gauge label="CPU" pct={Math.round(sys.cpu_percent||0)} used={`${(sys.cpu_percent||0).toFixed(1)}%`} total="100%" unit=""/>
@@ -1049,7 +1086,6 @@ export default function My_Admin({user}){
       {tab==="mail_cfg"&&isAdmin&&<MailCfgPanel/>}
 
       {/* v8.8.14: Per-page admin delegation (admin only) */}
-      {tab==="page_admins"&&isAdmin&&<PageAdminsPanel users={users}/>}
 
       {/* v8.8.14: Backup schedule + one-off (admin only) */}
       {tab==="backup_sched"&&isAdmin&&<BackupSchedulePanel/>}
@@ -1067,84 +1103,137 @@ export default function My_Admin({user}){
 // 유저별로 "이 페이지의 관리 권한을 위임한다" 를 체크박스로 토글. admin 유저는 global 이라 배제.
 // 저장 즉시 /api/admin/page-admins 로 POST.
 // v9.0.3: 메시지 기능은 "문의함" 용어로 정리.
-const PAGE_IDS=TABS.filter(tab=>!["home","admin"].includes(tab.key)).map(tab=>[tab.key,tab.label]);
-const PAGE_PRESETS=[
-  {key:"read",label:"조회만",pages:[]},
-  {key:"ops",label:"운영관리",pages:["filebrowser","splittable","lotmanage","productwiki","lotrequest","inform","tracker","calendar","meeting"]},
-  {key:"all",label:"전체관리",pages:CANONICAL_PAGE_IDS},
+// ── 관리자 구역 ─────────────────────────────────────────────────────
+// 운영: 사람과 업무 권한·활동 / 시스템: 서버·데이터·백업 / 에이전트: LLM·지식·학습.
+const ADMIN_SECTIONS=[
+  {k:"ops",l:"운영",hint:"사용자 · 업무 권한 · 활동",tabs:[["users","사용자"],["perms","업무 권한·위임"],["groups","그룹"],["notifs","알림"],["activity_dash","활동 현황"],["logs","관리 로그"],["downloads","다운로드"]]},
+  {k:"system",l:"시스템",hint:"서버 · 데이터 · 백업",tabs:[["monitor","모니터"],["data_roots","데이터 루트"],["backup_sched","백업"],["mail_cfg","메일 API"],["qa","QA 점검"]]},
+  {k:"agent",l:"에이전트",hint:"LLM · 지식 · 학습",tabs:[["llm_cfg","LLM 설정"],["domain_knowledge","기본지식"],["flowi_learning","Flow-i 학습"],["product_admin","제품 공정·시맨틱"],["chat_prompts","추천 질문"]]},
 ];
+const PERM_VIEWS=[
+  {k:"work",l:"업무별"},
+  {k:"users",l:"사용자별"},
+  {k:"groups",l:"권한 그룹"},
+];
+// 권한·위임 대상은 사이드바 업무(pageManifest)에서 바로 만든다 — 탭이 늘거나 줄면 같이 따라간다.
+const WORK_PERMISSION_GROUPS=[
+  {id:"data",label:"데이터",delegable:true,keys:TABS.filter(t=>t.group==="data").map(t=>t.key)},
+  {id:"work",label:"업무",delegable:true,keys:TABS.filter(t=>t.group==="work").map(t=>t.key)},
+  {id:"agent",label:"에이전트",delegable:false,keys:["flowi"]},
+];
+const DELEGABLE_KEYS=WORK_PERMISSION_GROUPS.filter(g=>g.delegable).flatMap(g=>g.keys);
+// 서버에 위임 전용 관리 기능이 없는 조회 화면. 위임하면 접근만 생긴다.
+const VIEW_ONLY_PAGES=new Set(["lotlocation","ettime"]);
 
-function PageAdminsPanel({users}){
-  const [pa,setPa]=useState({});
-  const [msg,setMsg]=useState("");
-  const [busy,setBusy]=useState(false);
-  const reload=()=>{
-    sf("/api/admin/page-admins")
-      .then((paResp)=>{setPa(paResp.page_admins||{});})
-      .catch(e=>setMsg("로드 오류: "+e.message));
-  };
+function AdminSwitcher({items,active,onChange,label,size="md"}){
+  return(<div className={`admin-switcher admin-switcher--${size}`} role="tablist" aria-label={label}>
+    {items.map(it=>(<button key={it.k} type="button" role="tab" aria-selected={active===it.k} className="admin-switcher__item" onClick={()=>onChange(it.k)}>
+      <span className="admin-switcher__label">{it.l}</span>
+      {it.hint&&<span className="admin-switcher__hint">{it.hint}</span>}
+    </button>))}
+  </div>);
+}
+
+function _workNote(key){
+  if(key==="flowi")return"홈 데이터 채팅 사용 권한 · 위임 대상 아님";
+  const notes=[];
+  if(VIEW_ONLY_PAGES.has(key))notes.push("조회 전용 — 위임해도 접근만 생김");
+  const from=_arr(INHERITED_TAB_ACCESS[key]);
+  if(from.length)notes.push(`승계: ${from.map(_tabLabel).join(", ")} 권한`);
+  const subs=_arr(SUB_TABS[key]);
+  if(subs.length)notes.push(`소탭: ${subs.map(s=>s.label).join(", ")}`);
+  return notes.join(" · ");
+}
+
+// 업무 한 줄에 "누가 쓰는지(직접·승계)"와 "누가 관리하는지(위임)"를 같이 둔다.
+function AccessByWorkPanel({users,onChanged,onEditUser}){
+  const[pa,setPa]=useState({});
+  const[busy,setBusy]=useState("");
+  const[query,setQuery]=useState("");
+  const[open,setOpen]=useState("");
+  const reload=()=>sf("/api/admin/page-admins").then(d=>setPa(d.page_admins||{})).catch(e=>toast.error("위임 목록을 불러오지 못했습니다: "+e.message));
   useEffect(()=>{reload();},[]);
-  // v8.8.21: 행=유저 / 열=페이지 매트릭스. admin 유저는 자동 전체 허용 (체크 disabled).
-  // v8.8.28: Array.isArray 가드 — users 가 object 로 떨어져도 PageAdminsPanel 크래시 방지.
-  const approved=(Array.isArray(users)?users:[]).filter(u=>u&&u.status==="approved");
-  const isFullAdmin=(u)=>u.role==="admin";
-  const toggle=(pageId,username)=>{
-    pageId=_canonicalPageId(pageId);
-    const cur=new Set(pa[pageId]||[]);
-    if(cur.has(username))cur.delete(username);else cur.add(username);
-    const next={...pa,[pageId]:Array.from(cur).sort()};
-    if(next[pageId].length===0)delete next[pageId];
-    setBusy(true);setMsg("");
-    sf("/api/admin/page-admins",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({page_id:pageId,usernames:next[pageId]||[]})})
-      .then(d=>{setPa(d.page_admins||{});setMsg("✔ "+_tabLabel(pageId)+" 저장");setTimeout(()=>setMsg(""),2000);})
-      .catch(e=>{setMsg("오류: "+e.message);reload();})
-      .finally(()=>setBusy(false));
+  const members=_arr(users).filter(u=>u?.role!=="admin"&&u?.status==="approved");
+  const nameOf=(username)=>{const u=members.find(m=>m.username===username);return u?.name?`${u.name}(${username})`:username;};
+  const setDelegates=(key,usernames)=>{
+    setBusy(key);
+    sf("/api/admin/page-admins",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({page_id:key,usernames})})
+      .then(d=>{setPa(d.page_admins||{});toast.ok(`${_tabLabel(key)} 관리 위임 ${usernames.length}명`);onChanged?.();})
+      .catch(e=>{toast.error("위임 저장 실패: "+e.message);reload();})
+      .finally(()=>setBusy(""));
   };
-  const applyPreset=(username,preset)=>{
-    setBusy(true);setMsg("");
-    sf("/api/admin/page-admins/user",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username,pages:preset.pages||[]})})
-      .then(d=>{setPa(d.page_admins||{});setMsg("✔ "+username+" "+preset.label+" 적용");setTimeout(()=>setMsg(""),2000);})
-      .catch(e=>{setMsg("오류: "+e.message);reload();})
-      .finally(()=>setBusy(false));
+  const accessOf=(key)=>{
+    const delegates=_arr(pa[key]);
+    const direct=[];const inherited=[];
+    members.forEach(u=>{
+      if(delegates.includes(u.username))return;
+      const ut=_tabsToArray(u.tabs);
+      if(_mainTabChecked(ut,key))direct.push(u);
+      else if(inheritedAccessSources(key,ut).length)inherited.push(u);
+    });
+    return{delegates,direct,inherited};
   };
-  return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16,overflow:"auto"}}>
-    <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
-      <div style={{fontSize:14,fontWeight:700}}>페이지별 권한 매트릭스</div>
-      <div style={{fontSize:14,color:"var(--text-secondary)"}}>
-        행=유저 · 열=페이지. 체크한 유저는 해당 페이지 관리 기능(설정/카탈로그/권한 편집) 수행 가능.
-        관리자 역할은 자동 전체 허용 (수정 불가). 위임을 받으면 해당 탭 전체에 접근할 수 있습니다.
-      </div>
-      {msg&&<span style={{fontSize:14,color:msg.startsWith("✔")?OK.fg:BAD.fg,marginLeft:"auto"}}>{msg}</span>}
-      {busy&&<span style={{fontSize:14,color:"var(--text-secondary)"}}>저장 중…</span>}
+  const q=query.trim().toLowerCase();
+  const matches=(key,access)=>!q||_tabLabel(key).toLowerCase().includes(q)||key.includes(q)
+    ||[...access.direct,...access.inherited].some(u=>[u.name,u.username].some(v=>String(v||"").toLowerCase().includes(q)))
+    ||access.delegates.some(n=>nameOf(n).toLowerCase().includes(q));
+  const cell={padding:"8px 12px",borderBottom:"1px solid var(--border)",verticalAlign:"top"};
+  const head={textAlign:"left",padding:"8px 12px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:13,color:"var(--text-secondary)",whiteSpace:"nowrap"};
+  const userChip=(u,tone)=>(<button key={u.username} type="button" onClick={()=>onEditUser?.(u)} title="이 사용자 권한 편집"
+    style={{display:"inline-flex",alignItems:"center",padding:"2px 8px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:tone,fontSize:12,cursor:"pointer"}}>{u.name?`${u.name}(${u.username})`:u.username}</button>);
+  return(<div style={{display:"grid",gap:12}}>
+    <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+      <input value={query} onChange={e=>setQuery(e.target.value)} placeholder="업무 또는 사용자 검색"
+        style={{padding:"7px 10px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:"var(--text-primary)",fontSize:14,minWidth:240}}/>
+      <span style={{fontSize:13,color:"var(--text-secondary)"}}>접근 = 직접 권한 + 다른 업무 권한에서 승계 · 위임 = 해당 업무 설정·관리 기능 (관리자 역할은 항상 전체)</span>
     </div>
-    <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
-      <thead><tr>
-        <th style={{position:"sticky",left:0,background:"var(--bg-tertiary)",textAlign:"left",padding:"8px 12px",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",zIndex:1,minWidth:140}}>유저</th>
-        <th style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>프리셋</th>
-        {PAGE_IDS.map(([pid,label])=><th key={pid} title={pid} style={{textAlign:"center",padding:"8px 6px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)",fontSize:14,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>{label}</th>)}
-      </tr></thead>
-      <tbody>{approved.map(u=>{
-        const full=isFullAdmin(u);
-        return(<tr key={u.username}>
-          <td style={{position:"sticky",left:0,background:"var(--bg-secondary)",padding:"6px 12px",borderBottom:"1px solid var(--border)",fontWeight:600,zIndex:1}}>
-            {u.username}{full&&<span style={{marginLeft:6,fontSize:14,padding:"1px 6px",borderRadius:8,background:BAD.bg,color:BAD.fg,fontWeight:700}}>ADMIN</span>}
-          </td>
-          <td style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)",whiteSpace:"nowrap"}}>
-            {!full&&PAGE_PRESETS.map(p=>(
-              <Button key={p.key} variant="ghost" disabled={busy} onClick={()=>applyPreset(u.username,p)} style={{padding:"4px 8px",fontSize:12,marginRight:4}}>{p.label}</Button>
-            ))}
-          </td>
-          {PAGE_IDS.map(([pid])=>{
-            const key=_canonicalPageId(pid);
-            const assigned=(pa[key]||[]).includes(u.username);
-            const checked=full||assigned;
-            return(<td key={pid} style={{textAlign:"center",padding:"6px",borderBottom:"1px solid var(--border)"}}>
-              <input type="checkbox" checked={checked} disabled={busy||full} onChange={()=>toggle(key,u.username)} title={full?"admin 자동 허용":""}/>
-            </td>);
-          })}
-        </tr>);
-      })}</tbody>
-    </table>
+    {WORK_PERMISSION_GROUPS.map(g=>{
+      const rows=g.keys.map(key=>[key,accessOf(key)]).filter(([key,access])=>matches(key,access));
+      if(!rows.length)return null;
+      return(<div key={g.id} style={{background:"var(--bg-secondary)",border:"1px solid var(--border)",borderRadius:4,overflow:"auto"}}>
+        <div style={{padding:"10px 12px",fontSize:14,fontWeight:700,borderBottom:"1px solid var(--border)"}}>{g.label} <span style={{fontWeight:400,color:"var(--text-secondary)",fontSize:13}}>{rows.length}개 업무</span></div>
+        <table style={{width:"100%",minWidth:860,borderCollapse:"collapse",fontSize:14,tableLayout:"fixed"}}>
+          <colgroup><col style={{width:170}}/><col style={{width:230}}/><col/><col style={{width:260}}/></colgroup>
+          <thead><tr><th style={head}>업무</th><th style={head}>접근 사용자</th><th style={head}>관리 위임</th><th style={head}>비고</th></tr></thead>
+          <tbody>{rows.map(([key,access])=>{
+            const total=access.direct.length+access.inherited.length+access.delegates.length;
+            const candidates=members.filter(u=>!access.delegates.includes(u.username));
+            const expanded=open===key;
+            return(<tr key={key}>
+              <td style={{...cell,fontWeight:600}}>{_tabLabel(key)}</td>
+              <td style={cell}>
+                <button type="button" onClick={()=>setOpen(expanded?"":key)} aria-expanded={expanded}
+                  style={{border:0,background:"transparent",padding:0,cursor:"pointer",color:"var(--text-primary)",fontSize:14,textAlign:"left"}}>
+                  <b>{total}명</b> <span style={{color:"var(--text-secondary)",fontSize:13}}>직접 {access.direct.length} · 승계 {access.inherited.length}{g.delegable?` · 위임 ${access.delegates.length}`:""}</span> <span style={{color:"var(--accent)",fontSize:12}}>{expanded?"접기":"보기"}</span>
+                </button>
+                {expanded&&<div style={{display:"flex",flexWrap:"wrap",gap:4,marginTop:6}}>
+                  {access.direct.map(u=>userChip(u,"var(--text-primary)"))}
+                  {access.inherited.map(u=>userChip(u,"var(--text-secondary)"))}
+                  {!access.direct.length&&!access.inherited.length&&<span style={{fontSize:12,color:"var(--text-secondary)"}}>직접·승계 접근 사용자 없음</span>}
+                </div>}
+              </td>
+              <td style={cell}>
+                {!g.delegable?<span style={{color:"var(--text-secondary)",fontSize:13}}>—</span>:<div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:6}}>
+                  {access.delegates.map(n=>(<span key={n} style={{display:"inline-flex",alignItems:"center",gap:4,padding:"2px 4px 2px 8px",borderRadius:4,background:"var(--accent-glow)",color:"var(--accent)",fontSize:12,fontWeight:600}}>
+                    {nameOf(n)}
+                    <button type="button" aria-label={`${nameOf(n)} 위임 해제`} disabled={busy===key} onClick={()=>setDelegates(key,access.delegates.filter(x=>x!==n))}
+                      style={{border:0,background:"transparent",color:"inherit",cursor:"pointer",fontSize:14,lineHeight:1,padding:"0 2px"}}>×</button>
+                  </span>))}
+                  <select value="" disabled={busy===key||!candidates.length} onChange={e=>{if(e.target.value)setDelegates(key,[...access.delegates,e.target.value]);}}
+                    aria-label={`${_tabLabel(key)} 위임 추가`}
+                    style={{padding:"3px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,maxWidth:180}}>
+                    <option value="">＋ 위임 추가</option>
+                    {candidates.map(u=><option key={u.username} value={u.username}>{u.name?`${u.name}(${u.username})`:u.username}</option>)}
+                  </select>
+                  {busy===key&&<span style={{fontSize:12,color:"var(--text-secondary)"}}>저장 중…</span>}
+                </div>}
+              </td>
+              <td style={{...cell,fontSize:12,color:"var(--text-secondary)"}}>{_workNote(key)||"-"}</td>
+            </tr>);
+          })}</tbody>
+        </table>
+      </div>);
+    })}
   </div>);
 }
 
@@ -1466,7 +1555,7 @@ function ConversationSkillCurationPanel(){
               fontSize:13,
             }}
           >
-            💬 사용자 대화 & 큐레이션 ({conversations.length})
+            <IconLabel icon="chat">사용자 대화 & 큐레이션 ({conversations.length})</IconLabel>
           </button>
           <button
             type="button"
@@ -1482,7 +1571,7 @@ function ConversationSkillCurationPanel(){
               fontSize:13,
             }}
           >
-            ✨ 등록된 스킬 ({skills.length})
+            <IconLabel icon="sparkle">등록된 스킬 ({skills.length})</IconLabel>
           </button>
         </div>
         <div style={{display:"flex",gap:8}}>
@@ -1501,7 +1590,7 @@ function ConversationSkillCurationPanel(){
       </div>
 
       <Banner tone="info">
-        <b>💡 Flow-i 스킬화 & 자동 학습 안내</b>:
+        <b><IconLabel icon="lightbulb">Flow-i 스킬화 & 자동 학습 안내</IconLabel></b>:
         관리자는 모든 사용자의 Flow-i 대화를 조회하여 유용한 분석 패턴을 공용 스킬로 즉시 큐레이션할 수 있습니다.
         또한 여러 사용자를 통해 유사한 질문이 <b>20회 이상</b> 성공적으로 사용되면 시스템이 <b>[자동 스킬]</b>로 자동 등록합니다.
       </Banner>
@@ -1567,7 +1656,7 @@ function ConversationSkillCurationPanel(){
           <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",display:"flex",flexDirection:"column",overflow:"hidden"}}>
             {!selectedConvId?(
               <div style={{padding:40,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>
-                👈 왼쪽 목록에서 대화를 선택하면 상세 내용과 스킬화 옵션을 확인할 수 있습니다.
+                <Icon name="arrow-left" style={{marginRight:6}} />왼쪽 목록에서 대화를 선택하면 상세 내용과 스킬화 옵션을 확인할 수 있습니다.
               </div>
             ):detailLoading?(
               <div style={{padding:40,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>
@@ -1612,7 +1701,7 @@ function ConversationSkillCurationPanel(){
                         >
                           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:4}}>
                             <span style={{fontSize:11,fontWeight:700,opacity:0.8}}>
-                              {isUser?"👤 사용자":"🤖 Flow-i"}
+                              {isUser?<IconLabel icon="user">사용자</IconLabel>:<IconLabel icon="bot">Flow-i</IconLabel>}
                             </span>
                             {!isUser&&(
                               <button
@@ -1633,7 +1722,7 @@ function ConversationSkillCurationPanel(){
                                 }}
                                 title="이 질의/답변을 공용 스킬로 등록"
                               >
-                                ⭐ 스킬화
+                                <IconLabel icon="star">스킬화</IconLabel>
                               </button>
                             )}
                           </div>
@@ -1736,7 +1825,7 @@ function ConversationSkillCurationPanel(){
       <Modal
         open={modalOpen}
         onClose={()=>!saving&&setModalOpen(false)}
-        title={modalMode==="create"?"⭐ 새 스킬 등록 (큐레이션)":"✏️ 스킬 정보 수정"}
+        title={modalMode==="create"?<IconLabel icon="star">새 스킬 등록 (큐레이션)</IconLabel>:<IconLabel icon="edit">스킬 정보 수정</IconLabel>}
         width={560}
       >
         <div style={{display:"grid",gap:14,padding:"12px 0"}}>
@@ -1983,7 +2072,7 @@ function BackupSchedulePanel(){
       <div style={L}>보관 개수 (최대 5)</div>
       <input type="number" min={1} max={5} value={form.keep} onChange={e=>setForm({...form,keep:parseInt(e.target.value)||3})} style={I}/>
       <button onClick={saveSettings} style={{marginTop:14,padding:"8px 20px",borderRadius:6,border:"none",background:"var(--accent)",color:WHITE,fontWeight:600,cursor:"pointer"}}>설정 저장</button>
-      <button onClick={runNow} style={{marginTop:14,marginLeft:8,padding:"8px 20px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",cursor:"pointer"}}>🗄 즉시 백업</button>
+      <button onClick={runNow} style={{marginTop:14,marginLeft:8,padding:"8px 20px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",cursor:"pointer"}}><IconLabel icon="database">즉시 백업</IconLabel></button>
     </div>
     <div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{fontSize:14,fontWeight:700,marginBottom:8}}>예약 백업 (서버 점검 대비)</div>
@@ -1993,15 +2082,15 @@ function BackupSchedulePanel(){
       <div style={L}>사유 (메모)</div>
       <input value={sched.reason} onChange={e=>setSched({...sched,reason:e.target.value})} placeholder="pre-maintenance" style={I}/>
       <div style={{display:"flex",gap:8,marginTop:14}}>
-        <button onClick={schedule} style={{padding:"8px 16px",borderRadius:6,border:"none",background:WARN.fg,color:WHITE,fontWeight:600,cursor:"pointer"}}>⏰ 예약</button>
+        <button onClick={schedule} style={{padding:"8px 16px",borderRadius:6,border:"none",background:WARN.fg,color:WHITE,fontWeight:600,cursor:"pointer"}}><IconLabel icon="alarm">예약</IconLabel></button>
         {st?.settings?.scheduled_at&&<button onClick={cancelSched} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",cursor:"pointer"}}>예약 취소</button>}
       </div>
-      {st?.settings?.scheduled_at&&<div style={{marginTop:10,padding:"6px 10px",borderRadius:6,background:WARN.bg,color:WARN.fg,fontSize:14}}>🔔 예약됨: {st.settings.scheduled_at} ({st.settings.scheduled_reason||"-"})</div>}
+      {st?.settings?.scheduled_at&&<div style={{marginTop:10,padding:"6px 10px",borderRadius:6,background:WARN.bg,color:WARN.fg,fontSize:14}}><Icon name="bell" style={{marginRight:4}} />예약됨: {st.settings.scheduled_at} ({st.settings.scheduled_reason||"-"})</div>}
     </div>
     <div style={{gridColumn:"1 / -1",background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
       <div style={{fontSize:14,fontWeight:700,marginBottom:8}}>최근 백업</div>
       {st?.settings?.last&&<div style={{fontSize:14,color:st.settings.last.ok?OK.fg:BAD.fg,marginBottom:8}}>
-        {st.settings.last.ok?"✔":"✗"} {st.settings.last.at} · {st.settings.last.reason||"-"} · {st.settings.last.bytes?Math.round(st.settings.last.bytes/1024)+" KB":""} {st.settings.last.error?"· "+st.settings.last.error:""}
+        <Icon name={st.settings.last.ok?"check":"close"} /> {st.settings.last.at} · {st.settings.last.reason||"-"} · {st.settings.last.bytes?Math.round(st.settings.last.bytes/1024)+" KB":""} {st.settings.last.error?"· "+st.settings.last.error:""}
       </div>}
       <table style={{width:"100%",borderCollapse:"collapse",fontSize:14}}>
         <thead><tr><th style={{textAlign:"left",padding:"6px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)"}}>파일</th><th style={{textAlign:"right",padding:"6px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)"}}>크기</th><th style={{textAlign:"left",padding:"6px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)"}}>시각</th><th style={{textAlign:"right",padding:"6px 10px",background:"var(--bg-tertiary)",borderBottom:"1px solid var(--border)"}}>작업</th></tr></thead>
@@ -2122,11 +2211,11 @@ function ChatPromptsPanel(){
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700, display: "flex", alignItems: "center", gap: 8 }}>
-              💬 데이터챗 추천 질문 관리 (Home Data Chat)
+              <IconLabel icon="chat">데이터챗 추천 질문 관리 (Home Data Chat)</IconLabel>
               <Pill tone="accent" size="sm">Admin Only</Pill>
             </div>
             <div style={{ fontSize: 13, color: "var(--text-secondary)", marginTop: 4, lineHeight: 1.5 }}>
-              홈 화면의 Data Chat에 노출되는 추천 질문을 관리합니다. 사용자가 실제로 질문하여 성공한 질의들이 자동으로 누적(⚡)되며, 관리자가 [📌 홈 챗에 고정]하여 최우선 추천 예제로 노출할 수 있습니다.
+              홈 화면의 Data Chat에 노출되는 추천 질문을 관리합니다. 사용자가 실제로 질문하여 성공한 질의들이 자동으로 누적(<Icon name="bolt" />)되며, 관리자가 [<Icon name="pin" /> 홈 챗에 고정]하여 최우선 추천 예제로 노출할 수 있습니다.
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -2143,7 +2232,7 @@ function ChatPromptsPanel(){
 
         {/* 새 질문 직접 등록 */}
         <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border)", display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>➕ 새 추천 질문 등록:</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}><IconLabel icon="plus">새 추천 질문 등록:</IconLabel></span>
           <input
             type="text"
             value={newText}
@@ -2159,7 +2248,7 @@ function ChatPromptsPanel(){
             placeholder="카테고리"
             style={{ width: 110, padding: "7px 10px", borderRadius: 6, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 13 }}
           />
-          <Button variant="primary" onClick={handleAdd} disabled={actionBusy || !newText.trim()}>📌 고정 질문으로 등록</Button>
+          <Button variant="primary" onClick={handleAdd} disabled={actionBusy || !newText.trim()}><IconLabel icon="pin">고정 질문으로 등록</IconLabel></Button>
         </div>
       </div>
 
@@ -2168,7 +2257,7 @@ function ChatPromptsPanel(){
         <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: "16px 18px", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <div style={{ fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
-              <span>📌</span> 관리자 고정 질문 ({filteredPinned.length}개)
+              <Icon name="pin" /> 관리자 고정 질문 ({filteredPinned.length}개)
               <span style={{ fontSize: 12, color: "var(--ok,#22c55e)", fontWeight: 500 }}>홈 챗 최우선 노출</span>
             </div>
           </div>
@@ -2176,7 +2265,7 @@ function ChatPromptsPanel(){
           <div style={{ flex: 1, maxHeight: 520, overflowY: "auto", display: "flex", flexDirection: "column", gap: 8 }}>
             {filteredPinned.length === 0 && (
               <div style={{ padding: "30px 10px", textAlign: "center", color: "var(--text-secondary)", fontSize: 13 }}>
-                고정된 질문이 없습니다. 오른쪽 실제 질문 목록에서 [📌 고정]을 누르거나 위에서 새로 등록하세요.
+                고정된 질문이 없습니다. 오른쪽 실제 질문 목록에서 [<Icon name="pin" /> 고정]을 누르거나 위에서 새로 등록하세요.
               </div>
             )}
             {filteredPinned.map((p, idx) => (
@@ -2200,7 +2289,7 @@ function ChatPromptsPanel(){
                       title="완전 삭제"
                       style={{ padding: "3px 7px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--danger,#ef4444)", fontSize: 12, cursor: "pointer" }}
                     >
-                      ✕
+                      <Icon name="close" />
                     </button>
                   </div>
                 </div>
@@ -2219,7 +2308,7 @@ function ChatPromptsPanel(){
         <div style={{ background: "var(--bg-secondary)", borderRadius: 10, border: "1px solid var(--border)", padding: "16px 18px", display: "flex", flexDirection: "column" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <div style={{ fontSize: 14, fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
-              <span>⚡</span> 실제 성공 질문 이력 ({filteredSuccess.length}개)
+              <Icon name="bolt" /> 실제 성공 질문 이력 ({filteredSuccess.length}개)
               <span style={{ fontSize: 12, color: "var(--text-secondary)", fontWeight: 400 }}>자동 누적된 질의</span>
             </div>
           </div>
@@ -2247,7 +2336,7 @@ function ChatPromptsPanel(){
                           disabled={actionBusy}
                           style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid var(--accent)", background: "var(--accent)", color: "#fff", fontSize: 12, cursor: "pointer", fontWeight: 600 }}
                         >
-                          📌 홈 챗에 고정
+                          <IconLabel icon="pin">홈 챗에 고정</IconLabel>
                         </button>
                       )}
                       <button
@@ -2256,7 +2345,7 @@ function ChatPromptsPanel(){
                         title="완전 삭제"
                         style={{ padding: "3px 7px", borderRadius: 4, border: "1px solid var(--border)", background: "transparent", color: "var(--danger,#ef4444)", fontSize: 12, cursor: "pointer" }}
                       >
-                        ✕
+                        <Icon name="close" />
                       </button>
                     </div>
                   </div>
@@ -2800,8 +2889,8 @@ function NameInlineEdit({u,onSave}){
       onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;safeSave(val.trim());setEdit(false);}else if(e.key==="Escape"){setVal(u?.name||"");setEdit(false);}}}
       placeholder="이름"
       style={{padding:"3px 6px",borderRadius:3,border:"1px solid var(--accent)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,minWidth:140}}/>
-    <span onClick={()=>{safeSave(val.trim());setEdit(false);}} style={{marginLeft:6,cursor:"pointer",color:OK.fg,fontSize:14}}>✔</span>
-    <span onClick={()=>{setVal(u?.name||"");setEdit(false);}} style={{marginLeft:4,cursor:"pointer",color:BAD.fg,fontSize:14}}>✕</span>
+    <span onClick={()=>{safeSave(val.trim());setEdit(false);}} style={{marginLeft:6,cursor:"pointer",color:OK.fg,fontSize:14}} title="저장"><Icon name="check" /></span>
+    <span onClick={()=>{setVal(u?.name||"");setEdit(false);}} style={{marginLeft:4,cursor:"pointer",color:BAD.fg,fontSize:14}} title="취소"><Icon name="close" /></span>
   </span>);
 }
 
@@ -2873,7 +2962,7 @@ function MailCfgPanel(){
   const L={fontSize:14,color:"var(--text-secondary)",marginBottom:4,marginTop:10,fontWeight:600};
   const I={width:"100%",padding:"8px 12px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none",fontFamily:"'Segoe UI',Arial,sans-serif"};
   return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:900}}>
-    <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>✉ 메일 API 설정</div>
+    <div style={{fontSize:14,fontWeight:700,marginBottom:4}}><IconLabel icon="mail">메일 API 설정</IconLabel></div>
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.6}}>
       사내 메일 API 규약: <code>multipart/form-data</code> POST.  top-level form field 는 <b><code>mailsendString</code></b> 한 개
       (값 = <code>{"{content, receiverList, senderMailAddress, statusCode, title}"}</code> 를 JSON 직렬화한 문자열),
@@ -2906,7 +2995,7 @@ function MailCfgPanel(){
 
     {/* v8.8.18: API 전체 틀 미리보기 */}
     <div style={{marginTop:18,padding:12,background:"var(--bg-card)",borderRadius:6,border:"1px solid var(--border)"}}>
-      <div style={{fontSize:14,fontWeight:700,marginBottom:6}}>🔍 전체 API 틀 미리보기</div>
+      <div style={{fontSize:14,fontWeight:700,marginBottom:6}}><IconLabel icon="search">전체 API 틀 미리보기</IconLabel></div>
       <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6,lineHeight:1.5}}>
         현재 저장된 설정 기반으로 실제 호출 시 전송될 request 구조. 본문/제목/수신자는 인폼·회의 등 발송 화면에서 채워집니다.
       </div>
@@ -3007,7 +3096,7 @@ function DataRootsPanel(){
     </div>);
   };
   return(<div data-admin-panel="data_roots" style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:20,maxWidth:760}}>
-    <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>📂 데이터 루트 (소프트랜딩)</div>
+    <div style={{fontSize:15,fontWeight:700,marginBottom:6}}><IconLabel icon="folder">데이터 루트 (소프트랜딩)</IconLabel></div>
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:16,lineHeight:1.5}}>
       flow 는 기본적으로 <b>DB 루트 하나</b>만 받습니다. 로컬 checkout 기본값은
       <span style={{fontFamily:"monospace"}}> data/Fab </span>,
@@ -3032,7 +3121,7 @@ function DataRootsPanel(){
 
     {/* v8.7.0: 백업 설정 */}
     <div style={{marginTop:28,paddingTop:20,borderTop:"1px solid var(--border)"}}>
-      <div style={{fontSize:15,fontWeight:700,marginBottom:6}}>💾 자동 백업</div>
+      <div style={{fontSize:15,fontWeight:700,marginBottom:6}}><IconLabel icon="save">자동 백업</IconLabel></div>
       <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:12,lineHeight:1.5}}>
         data_root 전체와 DB 루트 최상단 설정 파일을 zip 스냅샷으로 백업합니다.
         서버 기동 시 1회 + 설정된 주기로 자동 실행. 보관개수 초과 시 오래된 백업부터 자동 삭제.
@@ -3070,7 +3159,7 @@ function DataRootsPanel(){
         </button>
         <button onClick={runBackupNow} disabled={bkBusy}
           style={{padding:"8px 16px",borderRadius:6,border:`1px solid ${OK.fg}`,background:"transparent",color:OK.fg,fontWeight:600,cursor:bkBusy?"default":"pointer"}}>
-          💾 지금 백업
+          <IconLabel icon="save">지금 백업</IconLabel>
         </button>
         {backup.last&&backup.last.at&&(
           <span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:6}}>
@@ -3168,7 +3257,7 @@ function CategoryPanel(){
         <span onClick={()=>{if(n>0&&!confirm(`"${c.name}" 은(는) ${n}개 이슈에서 사용 중입니다. 그래도 삭제하시겠습니까? 기존 이슈는 고아(orphan) 상태가 됩니다.`))return;del(i);}} style={{cursor:"pointer",fontSize:14,color:BAD.fg,padding:"2px 6px"}}>삭제</span>
       </div>);})}
       {Object.keys(usage.orphans||{}).length>0&&<div style={{padding:"10px 12px",background:"rgba(239,68,68,0.08)",borderTop:"1px solid var(--border)"}}>
-        <div style={{fontSize:14,fontWeight:700,color:BAD.fg,marginBottom:4}}>⚠ 고아 카테고리 (이슈에서 사용 중이나 목록에 없음)</div>
+        <div style={{fontSize:14,fontWeight:700,color:BAD.fg,marginBottom:4}}><Icon name="warning" style={{marginRight:4}} />고아 카테고리 (이슈에서 사용 중이나 목록에 없음)</div>
         {Object.entries(usage.orphans).map(([oc,n])=>(<div key={oc} style={{display:"flex",justifyContent:"space-between",fontSize:14,fontFamily:"monospace",marginBottom:2}}>
           <span>{oc}</span>
           <span style={{color:"var(--text-secondary)"}}>{n}개 이슈 — <span onClick={()=>{if(confirm(`"${oc}" 을(를) 카테고리 목록에 복원하시겠습니까?`))save([...cats,{name:oc,color:"#64748b"}]);}} style={{cursor:"pointer",color:INFO.fg}}>복원</span></span>
@@ -3184,7 +3273,7 @@ function CatalogPanel(){
   const tS=(a)=>({padding:"6px 14px",fontSize:14,fontFamily:"monospace",cursor:"pointer",fontWeight:a?700:400,borderBottom:a?"2px solid var(--accent)":"2px solid transparent",color:a?"var(--accent)":"var(--text-secondary)"});
   return(<div>
     <div style={{display:"flex",gap:4,borderBottom:"1px solid var(--border)",marginBottom:16}}>
-      {[["matching","🔗 매칭 테이블"],["product","📋 Product 설정"],["s3","☁ S3 동기화"]].map(([k,l])=>(<div key={k} style={tS(sub===k)} onClick={()=>setSub(k)}>{l}</div>))}
+      {[["matching",<IconLabel icon="link">매칭 테이블</IconLabel>],["product",<IconLabel icon="clipboard">Product 설정</IconLabel>],["s3",<IconLabel icon="cloud">S3 동기화</IconLabel>]].map(([k,l])=>(<div key={k} style={tS(sub===k)} onClick={()=>setSub(k)}>{l}</div>))}
     </div>
     {sub==="matching"&&<MatchingPanel/>}
     {sub==="product"&&<ProductPanel/>}
@@ -3252,7 +3341,7 @@ function MatchingPanel(){
         </div>
         <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:2}}>{t.description}</div>
         <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:2,fontFamily:"monospace"}}>적용: {(t.applies_to||[]).join(", ")}</div>
-        {t.missing_cols?.length>0&&<div style={{fontSize:14,color:BAD.fg,marginTop:2}}>⚠ 누락 컬럼: {t.missing_cols.join(", ")}</div>}
+        {t.missing_cols?.length>0&&<div style={{fontSize:14,color:BAD.fg,marginTop:2}}><Icon name="warning" style={{marginRight:4}} />누락 컬럼: {t.missing_cols.join(", ")}</div>}
       </div>))}
     </div>
     <div style={{background:"var(--bg-secondary)",borderRadius:8,border:"1px solid var(--border)",padding:16,minHeight:300}}>
@@ -3262,13 +3351,13 @@ function MatchingPanel(){
           <span style={{fontSize:14,fontWeight:700,fontFamily:"monospace"}}>{sel}</span>
           <div style={{display:"flex",gap:6,alignItems:"center"}}>
             {saveMsg&&<span style={{fontSize:14,fontFamily:"monospace",color:saveMsg.startsWith("⚠")?BAD.fg:OK.fg}}>{saveMsg}</span>}
-            {hasAreaCol&&Object.keys(edits).length>0&&<button onClick={saveAreas} style={{padding:"4px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:WHITE,fontSize:14,fontWeight:700,cursor:"pointer"}} title="영역 편집 저장">💾 저장 ({Object.keys(edits).length})</button>}
-            <button onClick={()=>download(sel)} style={{padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}>⬇ CSV</button>
+            {hasAreaCol&&Object.keys(edits).length>0&&<button onClick={saveAreas} style={{padding:"4px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:WHITE,fontSize:14,fontWeight:700,cursor:"pointer"}} title="영역 편집 저장"><Icon name="save" style={{marginRight:4}} />저장 ({Object.keys(edits).length})</button>}
+            <button onClick={()=>download(sel)} style={{padding:"4px 10px",borderRadius:4,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,cursor:"pointer"}}><IconLabel icon="download">CSV</IconLabel></button>
           </div>
         </div>
         {sel==="matching_step"&&rollup&&rollup.total>0&&(
           <div style={{display:"flex",flexWrap:"wrap",gap:4,marginBottom:10,padding:"6px 8px",background:"var(--bg-primary)",borderRadius:6,border:"1px solid var(--border)"}} title="Process-area rollup (/api/match/area-rollup)">
-            <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",marginRight:4}}>🧩 area-rollup:</span>
+            <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",marginRight:4}}><IconLabel icon="puzzle">area-rollup:</IconLabel></span>
             {rollup.rollup.map(b=>(
               <span key={b.area} style={{display:"inline-flex",alignItems:"center",gap:4,padding:"1px 7px",borderRadius:10,fontSize:14,fontFamily:"monospace",background:(b.area==="(unmatched)"?"#4b5563":areaColor(b.area))+"22",color:b.area==="(unmatched)"?"#94a3b8":areaColor(b.area),border:"1px solid "+(b.area==="(unmatched)"?"#4b5563":areaColor(b.area))}}>
                 {b.area} · {b.count}
@@ -3331,7 +3420,7 @@ function ProductPanel(){
       {list.map(p=>(<div key={p.product} onClick={()=>pick(p.product)} style={{padding:"8px 10px",borderRadius:6,cursor:"pointer",marginBottom:4,background:sel===p.product?"var(--accent-glow)":"var(--bg-primary)",border:"1px solid "+(sel===p.product?"var(--accent)":"var(--border)")}}>
         <div style={{fontSize:14,fontWeight:700,fontFamily:"monospace"}}>{p.product}</div>
         <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:2}}>proc_id: {p.process_id||"-"} · owner: {p.owner||"-"}</div>
-        <div style={{fontSize:14,color:"var(--text-secondary)"}}>KNOB: {p.knob_count} · ET 항목: {p.et_key_count} · spec: {p.has_spec?"✓":"-"}</div>
+        <div style={{fontSize:14,color:"var(--text-secondary)"}}>KNOB: {p.knob_count} · ET 항목: {p.et_key_count} · spec: {p.has_spec?<Icon name="check" />:"-"}</div>
       </div>))}
     </div>
     <div style={{background:"var(--bg-secondary)",borderRadius:8,border:"1px solid var(--border)",padding:16,minHeight:300}}>
@@ -3385,7 +3474,7 @@ function S3Panel(){
   return(<div>
     <div style={{background:"var(--bg-secondary)",borderRadius:8,border:"1px solid var(--border)",padding:14,marginBottom:12}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-        <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>☁ S3 동기화 설정</div>
+        <div style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}><IconLabel icon="cloud">S3 동기화 설정</IconLabel></div>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           <label style={{display:"flex",alignItems:"center",gap:6,fontSize:14,fontWeight:700,cursor:"pointer",padding:"2px 10px",borderRadius:10,background:master?OK.bg:BAD.bg,color:master?OK.fg:BAD.fg}}>
             <input type="checkbox" checked={master} onChange={toggleMaster}/>{master?"S3 전체 ON":"S3 전체 OFF"}
@@ -3422,7 +3511,7 @@ function S3Panel(){
           <td style={{padding:"3px 6px",color:"var(--text-primary)"}}>{a.key}</td>
           <td style={{padding:"3px 6px",textAlign:"right",color:"var(--text-secondary)"}}>{(a.size/1024).toFixed(1)}KB</td>
           <td style={{padding:"3px 6px",textAlign:"center",color:"var(--text-secondary)"}}>{a.sha1||"-"}</td>
-          <td style={{padding:"3px 6px",textAlign:"center",color,fontWeight:700}}>{a.in_sync?"✓ 동기화됨":(st||"없음")}</td>
+          <td style={{padding:"3px 6px",textAlign:"center",color,fontWeight:700}}>{a.in_sync?<IconLabel icon="check">동기화됨</IconLabel>:(st||"없음")}</td>
         </tr>);})}</tbody>
       </table>
     </div>))}
@@ -3442,8 +3531,8 @@ function AdminMessagesPanel({user}){
   const tS=(a)=>({padding:"7px 14px",fontSize:14,cursor:"pointer",fontWeight:a?700:500,borderRadius:5,background:a?"var(--accent-glow)":"transparent",color:a?"var(--accent)":"var(--text-secondary)",fontFamily:"'JetBrains Mono',monospace"});
   return(<div>
     <div style={{display:"flex",gap:4,marginBottom:12}}>
-      <div style={tS(sub==="inbox")} onClick={()=>setSub("inbox")}>💬 받은함 (1:1)</div>
-      <div style={tS(sub==="notices")} onClick={()=>setSub("notices")}>📢 공지사항 관리</div>
+      <div style={tS(sub==="inbox")} onClick={()=>setSub("inbox")}><IconLabel icon="chat">받은함 (1:1)</IconLabel></div>
+      <div style={tS(sub==="notices")} onClick={()=>setSub("notices")}><IconLabel icon="megaphone">공지사항 관리</IconLabel></div>
     </div>
     {sub==="inbox"&&<AdminInbox user={user}/>}
     {sub==="notices"&&<AdminNotices user={user}/>}
@@ -3491,7 +3580,7 @@ function AdminInbox({user}){
       {!sel&&<div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:"var(--text-secondary)",fontSize:14}}>← 좌측에서 사용자를 선택하세요</div>}
       {sel&&thr&&<>
         <div style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",gap:8}}>
-          <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>💬 {sel}</span>
+          <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}><IconLabel icon="chat">{sel}</IconLabel></span>
           <span style={{fontSize:14,color:"var(--text-secondary)"}}>{(thr.messages||[]).length} 메시지</span>
           <div style={{flex:1}}/>
           <span onClick={()=>loadThread(sel)} style={{fontSize:14,color:"var(--text-secondary)",cursor:"pointer"}} title="새로고침">↻</span>
@@ -3553,8 +3642,8 @@ function AdminNotices({user}){
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
             <span style={{fontSize:14,fontWeight:700,color:"var(--text-primary)",flex:1}}>{n.title||"(제목 없음)"}</span>
             <span style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace"}}>{(n.created_at||"").replace("T"," ").slice(0,16)}</span>
-            <span style={{fontSize:14,color:"var(--accent)",fontFamily:"monospace"}}>👁 {n.read_count||0}/{n.total_recipients||"?"}</span>
-            <span onClick={()=>del(n.id)} style={{cursor:"pointer",color:"var(--danger)",fontSize:14}}>🗑</span>
+            <span style={{fontSize:14,color:"var(--accent)",fontFamily:"monospace"}}><Icon name="eye" style={{marginRight:4}} />{n.read_count||0}/{n.total_recipients||"?"}</span>
+            <span onClick={()=>del(n.id)} style={{cursor:"pointer",color:"var(--danger)",fontSize:14}} title="삭제"><Icon name="trash" /></span>
           </div>
           {n.body&&<div style={{fontSize:14,color:"var(--text-secondary)",lineHeight:1.5,whiteSpace:"pre-wrap",paddingLeft:2}}>{n.body}</div>}
           <div style={{fontSize:14,color:"var(--text-secondary)",fontFamily:"monospace",marginTop:4}}>by {n.author}</div>
@@ -3631,7 +3720,7 @@ function AWSPanel({user}){
         {msg&&<span style={{fontSize:14,color:msg.startsWith("오류")?"var(--danger)":"var(--ok)",fontFamily:"monospace"}}>{msg}</span>}
       </div>
 
-      {!data.aws_available&&<div style={{padding:"8px 12px",borderRadius:6,background:"rgba(251,191,36,0.1)",border:"1px solid rgba(251,191,36,0.3)",marginBottom:12,fontSize:14,color:"#fbbf24"}}>⚠ aws CLI 미설치 — sync 실행은 불가. 자격증명은 저장 가능.</div>}
+      {!data.aws_available&&<div style={{padding:"8px 12px",borderRadius:6,background:"rgba(251,191,36,0.1)",border:"1px solid rgba(251,191,36,0.3)",marginBottom:12,fontSize:14,color:"#fbbf24"}}><Icon name="warning" style={{marginRight:4}} />aws CLI 미설치 — sync 실행은 불가. 자격증명은 저장 가능.</div>}
 
       {/* Profile selector */}
       <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:16,flexWrap:"wrap"}}>
@@ -3998,7 +4087,7 @@ function BaseCsvPanel(){
                 ))}
                 <td style={{padding:"2px 4px",borderLeft:"1px solid var(--border)",whiteSpace:"nowrap"}}>
                   <span onClick={()=>moveRow(ri,-1)} style={{cursor:"pointer",color:"var(--text-secondary)",padding:"0 4px"}}>↑</span>
-                  <span onClick={()=>delRow(ri)} style={{cursor:"pointer",color:"var(--danger)",padding:"0 4px"}}>✕</span>
+                  <span onClick={()=>delRow(ri)} style={{cursor:"pointer",color:"var(--danger)",padding:"0 4px"}} title="행 삭제"><Icon name="close" /></span>
                 </td>
               </tr>
             ))}

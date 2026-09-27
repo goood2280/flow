@@ -1,5 +1,6 @@
 import { useMemo, useRef } from "react";
 import { moduleColor, moduleTextColor } from "../lib/moduleColors";
+import { Icon } from "./ui/Icon";
 
 export const SPLIT_CHECK_PREFIX_COLUMNS = ["항목", "값", "Split"];
 export const SPLITTABLE_COLUMN_WIDTH_DEFAULTS = Object.freeze({
@@ -951,9 +952,9 @@ export default function SplitTableSnapshotView({
                         {splitRowMode
                           ? display
                           : isMismatch
-                            ? <span style={{ color: "#fff", fontWeight: 800 }}>{"✗ "}{display}<span style={{ fontSize: 14, color: "rgba(255,255,255,0.85)" }}>{" (≠" + formatSplitCellValue(cell.plan, r._param, precision) + ")"}</span></span>
+                            ? <span style={{ color: "#fff", fontWeight: 800 }}><Icon name="close" style={{ marginRight: 3 }} />{display}<span style={{ fontSize: 14, color: "rgba(255,255,255,0.85)" }}>{" (≠" + formatSplitCellValue(cell.plan, r._param, precision) + ")"}</span></span>
                             : isPlanOnly
-                              ? <span style={{ fontStyle: "italic", fontWeight: 700 }}>{"📌 "}{formatSplitCellValue(cell.plan, r._param, precision)}</span>
+                              ? <span style={{ fontStyle: "italic", fontWeight: 700 }}><Icon name="pin" className="flow-icon--plan-pin" style={{ marginRight: 3 }} />{formatSplitCellValue(cell.plan, r._param, precision)}</span>
                               : display}
                       </td>
                     );

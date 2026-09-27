@@ -19,6 +19,7 @@ parquet I/O 다.
 from __future__ import annotations
 
 import os
+import sys
 
 _THREAD_ENV = (
     "POLARS_MAX_THREADS",
@@ -41,21 +42,53 @@ def download_threads() -> int:
         return 1
 
 
-def pin_threads() -> int:
+def pin_threads(threads: int | None = None) -> int:
     """폴라스/BLAS 스레드 상한을 환경변수로 고정한다. polars import 전에 호출."""
-    threads = download_threads()
+    threads = download_threads() if threads is None else max(1, int(threads))
     for name in _THREAD_ENV:
         os.environ[name] = str(threads)
     return threads
 
 
-# import 시점에 심어야 뒤이은 polars import 가 이 값을 본다.
-_PINNED = pin_threads()
+def lower_priority() -> int:
+    """이 프로세스의 OS 우선순위를 한 단계 낮춘다 — 적용한 nice 값(0=미적용).
+
+    ET 계산 자식은 사용자가 기다리는 배치성 작업이다. CPU 가 비어 있으면 제
+    속도로 돌지만, 운영 API 의 SplitTable 검색과 코어를 다툴 때는 스케줄러가
+    검색을 먼저 돌린다. `FLOW_REFORMATIZE_CHILD_NICE`(기본 5, 0=끔).
+    우선순위를 '낮추는' 것은 권한이 필요 없어 컨테이너에서도 동작한다.
+    """
+    raw = str(os.environ.get("FLOW_REFORMATIZE_CHILD_NICE", "") or "5").strip()
+    try:
+        nice = max(0, min(19, int(float(raw))))
+    except (TypeError, ValueError):
+        nice = 5
+    if nice <= 0:
+        return 0
+    try:
+        if os.name == "nt":
+            import psutil  # type: ignore
+
+            psutil.Process(os.getpid()).nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+        else:
+            os.nice(nice)
+        return nice
+    except Exception:
+        return 0
+
+
+# import 시점에 심어야 뒤이은 polars import 가 이 값을 본다. 단, 부모(API)
+# 프로세스도 download_entry 를 넘기려고 이 모듈을 import 한다 — 그때는 polars 가
+# 이미 올라와 풀 크기가 고정된 뒤라 의미가 없고, env 만 1로 덮여 부모가 이후
+# 띄우는 다른 하위 프로세스(auto report 등)까지 1코어를 물려받는다. 그래서
+# polars 가 아직 없는 프로세스(= spawn 자식)에서만 심는다.
+_PINNED = pin_threads() if "polars" not in sys.modules else download_threads()
 
 
 def download_entry(result_queue, *, product: str, filters: dict, wanted: list,
                    agg: str, is_admin: bool, path: str) -> None:
     """spawn 자식 본체 — 계산 결과를 CSV 파일로 쓰고 큐로 보고한다."""
+    lower_priority()
     try:
         from pathlib import Path
 

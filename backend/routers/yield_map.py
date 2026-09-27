@@ -176,7 +176,7 @@ def _et_index_map(req: EtIndexMapReq, user: dict) -> dict:
         if alias not in item_specs:
             raise HTTPException(400, f"ET Download에 공개된 ITEM alias가 아닙니다: {alias}")
         out, _out_cols, errors, vehicle_csv, _table, _raw_rows, notice = _rf._compute(
-            req.product, filters, selected_items=[alias], auto_trim=False,
+            req.product, filters, selected_items=[alias], auto_trim=False, isolate=True,
         )
         formula = str(item_specs.get(alias, {}).get("addp_form") or "")
         item_names = list(item_specs)

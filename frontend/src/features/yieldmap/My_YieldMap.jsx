@@ -172,7 +172,7 @@ function YieldDieMap({ rows, colors, shots = [] }) {
     }));
     return { xAxis, yAxis, cell, width, height, ox, oy, shotBoxes };
   }, [rows, shots]);
-  if (!model) return <EmptyState icon="◫" title="표시할 die 좌표가 없습니다" />;
+  if (!model) return <EmptyState icon="wafer" title="표시할 die 좌표가 없습니다" />;
   const { xAxis, yAxis, cell, width, height, ox, oy, shotBoxes } = model;
   return (
     <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`}
@@ -257,7 +257,7 @@ function WfGeometryMap({ kind, rows, geometry, colors, renderMode = "shot", anch
     };
     return { geo, radius, scale, shotW, shotH, byShot, anchorX, anchorY, samples, min, max, cols, chipRows, interpolate };
   }, [rows, geometry, anchorTeg, interpolationMethod]);
-  if (!model) return <EmptyState icon="◫" title="TEG 위치조회 WF geometry가 없습니다" />;
+  if (!model) return <EmptyState icon="wafer" title="TEG 위치조회 WF geometry가 없습니다" />;
   const { geo, radius, scale, shotW, shotH, byShot, samples, min, max, cols, chipRows, interpolate } = model;
   const sx = mmX => SIZE / 2 + Number(mmX) * scale;
   const sy = mmY => SIZE / 2 - Number(mmY) * scale;
@@ -366,7 +366,7 @@ function ShotPairScatter({ points, xKey, yKey, xLabel, yLabel, metric }) {
         r {correlation == null ? "계산 불가" : Number(correlation).toFixed(3)} · n {metric?.sample_count || 0}
       </Pill>
     </div>
-    {!model ? <EmptyState icon="↗" title="공통 shot 없음" /> : <svg viewBox={`0 0 ${SIZE} ${SIZE}`}
+    {!model ? <EmptyState icon="chart-line" title="공통 shot 없음" /> : <svg viewBox={`0 0 ${SIZE} ${SIZE}`}
       style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 8, background: "var(--bg-card)" }}>
       <line x1={LEFT} y1={SIZE - BOTTOM} x2={SIZE - RIGHT} y2={SIZE - BOTTOM} stroke="var(--muted)" />
       <line x1={LEFT} y1={TOP} x2={LEFT} y2={SIZE - BOTTOM} stroke="var(--muted)" />
@@ -387,7 +387,7 @@ function ShotPairScatter({ points, xKey, yKey, xLabel, yLabel, metric }) {
 
 function ShotComparisonChart({ data }) {
   const points = data?.points || [];
-  if (!points.length) return <EmptyState icon="↗" title="Yield와 같은 wafer/shot 좌표로 JOIN된 비교점이 없습니다" />;
+  if (!points.length) return <EmptyState icon="chart-line" title="Yield와 같은 wafer/shot 좌표로 JOIN된 비교점이 없습니다" />;
   const yieldLabel = `${data.selected_bin || "Yield"} · shot avg`;
   const etLabel = `ET · ${data.selected_item || "value"}`;
   const inlineLabel = `Inline · ${data.selected_inline_item || "value"}`;
@@ -419,7 +419,7 @@ function RelationScatter({ data, pair }) {
   const rows = useMemo(() => (data?.points || []).map(row => ({
     ...row, x: Number(row.values?.[pair?.left_id]), y: Number(row.values?.[pair?.right_id]),
   })).filter(row => Number.isFinite(row.x) && Number.isFinite(row.y)), [data, pair]);
-  if (!pair || !rows.length) return <EmptyState icon="↗" title="선택한 두 지표의 공통 shot이 없습니다" />;
+  if (!pair || !rows.length) return <EmptyState icon="chart-line" title="선택한 두 지표의 공통 shot이 없습니다" />;
   const SIZE = 520, LEFT = 64, RIGHT = 18, TOP = 20, BOTTOM = 52;
   const xMin = Math.min(...rows.map(row => row.x)), xMax = Math.max(...rows.map(row => row.x));
   const yMin = Math.min(...rows.map(row => row.y)), yMax = Math.max(...rows.map(row => row.y));
@@ -494,7 +494,7 @@ function RelationMapComparison({ data, pair }) {
     .filter(Boolean))].sort(naturalTextCompare).slice(0, 25), [data, pair]);
   const [mapMode, setMapMode] = useState("shot");
   const [mapInterpolation, setMapInterpolation] = useState("idw");
-  if (!pair || !data?.geometry || !wafers.length) return <EmptyState icon="◫" title="비교 MAP geometry 또는 공통 wafer가 없습니다" />;
+  if (!pair || !data?.geometry || !wafers.length) return <EmptyState icon="wafer" title="비교 MAP geometry 또는 공통 wafer가 없습니다" />;
   const metricRows = (metricId, waferId) => (data.points || []).filter(row =>
     String(row.wafer_id || row.wafer || "") === waferId && Number.isFinite(Number(row.values?.[metricId]))
   ).map(row => ({
@@ -1101,7 +1101,7 @@ export default function My_YieldMap({ user }) {
         {!!boot && <Pill tone="neutral">동일 기준 300 mm WF</Pill>}
       </div>
 
-      {boot && dataKind === "yield" && !boot.products?.length && <EmptyState icon="◫" title="BIN 데이터가 있는 제품이 없습니다" />}
+      {boot && dataKind === "yield" && !boot.products?.length && <EmptyState icon="wafer" title="BIN 데이터가 있는 제품이 없습니다" />}
 
       {dataKind === "yield" && product && <Card title={`제품별 BIN Map 설정 — ${product}`}
         right={<Button variant="primary" disabled={!canEdit || busy || !config.source || !vehicle || !config.shot_layout?.enabled} onClick={save}>설정 저장</Button>}>
@@ -1319,9 +1319,9 @@ export default function My_YieldMap({ user }) {
         {!!map?.rule_errors?.length && <div style={{ margin: "-5px 0 12px", color: "var(--danger)", fontSize: 11 }}>
           {map.rule_errors.join(" · ")}
         </div>}
-        {!map ? <EmptyState icon="◫" title="WF MAP을 조회해 주세요"
+        {!map ? <EmptyState icon="wafer" title="WF MAP을 조회해 주세요"
           hint="ROOT LOT ID를 입력하면 WAFER ID별 Map을 같은 300 mm 기준으로 나눠 표시합니다." /> : !map.rows?.length ?
-          <EmptyState icon="◫" title={`${map.root_lot_id || rootLotId}에 매칭되는 ${dataKind.toUpperCase()} 데이터가 없습니다`} /> :
+          <EmptyState icon="wafer" title={`${map.root_lot_id || rootLotId}에 매칭되는 ${dataKind.toUpperCase()} 데이터가 없습니다`} /> :
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             {dataKind === "yield" && <section style={{ width: "min(100%, 360px)", border: "1px solid var(--line)", borderRadius: 7, overflow: "hidden" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", minHeight: 34, padding: "0 10px", borderBottom: "1px solid var(--line)", background: "var(--bg-secondary)" }}>
@@ -1403,7 +1403,7 @@ export default function My_YieldMap({ user }) {
                 <Pill tone="neutral">{dimension.map?.product}</Pill>
                 <Button style={{ marginLeft: "auto" }} onClick={() => setDimensionMaps(current => current.filter(row => row.key !== dimension.key))}>×</Button>
               </div>
-              {!waferRows.length ? <EmptyState icon="◫" title={`WF ${dimensionWaferId} 데이터 없음`} /> : dimension.map?.geometry ?
+              {!waferRows.length ? <EmptyState icon="wafer" title={`WF ${dimensionWaferId} 데이터 없음`} /> : dimension.map?.geometry ?
                 <WfGeometryMap kind={dimension.kind} rows={waferRows} geometry={dimension.map.geometry} colors={dimension.colors}
                   renderMode={dimension.kind === "yield" ? "shot" : renderMode} anchorTeg={anchorTeg}
                   shotLayout={dimension.map.shot_layout} interpolationMethod={interpolationMethod} /> :
@@ -1414,7 +1414,7 @@ export default function My_YieldMap({ user }) {
       </Card>}
       </>}
 
-      {pageTab === "compare" && !comparisonProducts.length && <EmptyState icon="↗" title="Yield·ET·Inline에 공통으로 존재하는 제품이 없습니다"
+      {pageTab === "compare" && !comparisonProducts.length && <EmptyState icon="chart-line" title="Yield·ET·Inline에 공통으로 존재하는 제품이 없습니다"
         hint="Yield·ET·Inline 중 두 DB 이상에 같은 제품명이 있어야 Shot Corr. 비교를 실행할 수 있습니다." />}
       {pageTab === "compare" && !!relationProduct && <>
         <TabStrip label="비교 결과 보기" active={comparisonView} onChange={setComparisonView} items={[
@@ -1544,7 +1544,7 @@ export default function My_YieldMap({ user }) {
           </label>
           <RelationMapComparison data={relationResult} pair={(relationResult.pairs || []).find(row => row.id === relationPairId) || relationResult.pairs?.[0]} />
         </Card>}
-        {!relationResult && comparisonView === "map" && <EmptyState icon="◫" title="비교 MAP을 만들 지표가 없습니다" hint="위에서 기준 지표와 ET/Inline 후보를 설정한 뒤 Corr. 계산을 실행해 주세요." />}
+        {!relationResult && comparisonView === "map" && <EmptyState icon="wafer" title="비교 MAP을 만들 지표가 없습니다" hint="위에서 기준 지표와 ET/Inline 후보를 설정한 뒤 Corr. 계산을 실행해 주세요." />}
       </>}
 
       {false && pageTab === "compare" && !!product && comparisonProducts.some(name => String(name).toLowerCase() === String(product).toLowerCase()) && <Card title="Shot 비교 분석 · Yield/BIN ↔ ET ↔ Inline" right={comparison && <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
@@ -1649,7 +1649,7 @@ export default function My_YieldMap({ user }) {
           {!comparisonInlineRules.length ? `${product}에 Inline Matching table이 없어 비교할 수 없습니다.` :
             "선택한 Inline ITEM·STEP에 연결된 TEG Inline Mapsetting이 없습니다."}
         </div>}
-        {!comparison ? <EmptyState icon="↗" title="shot별 Yield/BIN·ET·Inline 값과 WF 패턴 유사도를 비교해 보세요" /> : <ShotComparisonChart data={comparison} />}
+        {!comparison ? <EmptyState icon="chart-line" title="shot별 Yield/BIN·ET·Inline 값과 WF 패턴 유사도를 비교해 보세요" /> : <ShotComparisonChart data={comparison} />}
       </Card>}
 
       <PageGear title="WF MAP DB 실제 열 매핑 시트" canEdit={canEdit} position="bottom-left" width={760}>

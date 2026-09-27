@@ -67,6 +67,25 @@ def revision(version: int, user=Depends(require_admin)):
         raise HTTPException(404, "해당 이력이 없습니다.") from exc
 
 
+class FileCatalogRequest(BaseModel):
+    body: str = Field(max_length=knowledge.MAX_BODY)
+
+
+@router.get("/file-catalog")
+def file_catalog(user=Depends(require_admin)):
+    """저장된 기본지식에서 홈 챗이 차트에 쓰는 단일 파일 설명."""
+    from core import file_knowledge
+    value = file_knowledge.catalog()
+    return {"version": value["version"], "entries": file_knowledge.public(value["entries"])}
+
+
+@router.post("/file-catalog")
+def file_catalog_preview(req: FileCatalogRequest, user=Depends(require_admin)):
+    """저장 전 편집 중인 본문을 실제 파일 헤더와 대조한다(저장하지 않음)."""
+    from core import file_knowledge
+    return {"version": None, "entries": file_knowledge.public(file_knowledge.parse(req.body))}
+
+
 @router.get("/references")
 def references(user=Depends(require_admin)):
     return knowledge.references()

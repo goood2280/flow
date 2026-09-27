@@ -9,6 +9,7 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
     columns = _settings_context_columns(req.columns, sample_rows)
     current_rule, current_warnings = _normalize_csv_rule_draft(req.current_rule or {}, columns=columns)
     warnings: list[str] = list(current_warnings)
+    scope = "sort" if str(getattr(req, "scope", "") or "").strip().casefold() in {"sort", "sort_logic", "정렬"} else "all"
     llm_info = {"available": False, "used": False, "error": ""}
     plan: dict = {}
     try:
@@ -26,7 +27,10 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
                 "ordered_by validates existing row order and blocks save when the current order is wrong; sort physically reorders rows on save only after validation passes. "
                 "If the user says 현재 순서 검증 or 순서가 맞는지 검사, use ordered_by. "
                 "If the user says 저장할 때 정렬 or 저장 순서대로 정렬, use sort. "
-                "Order spec type must be one of string, numeric, date, leading_number, rule_order. "
+                "Order spec type must be one of string, numeric, date, leading_number, rule_order, natural, custom; "
+                "see sort_spec_guide for case, values, and pattern options. "
+                "When current_rule already has sort/ordered_by and the user asks to change, add, or remove a key, "
+                "return the complete resulting list (unchanged keys kept in place). "
                 "For ppid_knob.csv, product is legacy/display-only; do not require or sort by product unless the user explicitly asks. "
                 "The ppid_knob.csv column contract is feature_name, rule_order, step_desc, operator, value, category. "
                 "conditions must be simple Polars SQL boolean expressions over supplied columns. "
@@ -35,6 +39,15 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
             ask = json.dumps({
                 "file": file_key,
                 "user_prompt": prompt,
+                "scope": scope,
+                "scope_rule": (
+                    "sort: return ONLY sort (and ordered_by if the user asks to validate order). "
+                    "Do not add validation keys. Return \"sort\": [] when the user asks to remove all sorting."
+                    if scope == "sort" else
+                    "all: draft validation_logic and sort_logic keys the prompt supports."
+                ),
+                "current_sort": current_rule.get("sort") or [],
+                "sort_spec_guide": _SETTINGS_SORT_SPEC_GUIDE,
                 "expert_mode": _settings_prompt_wants_expert(prompt),
                 "columns": columns[:200],
                 "column_profiles": _settings_column_profiles(columns, sample_rows),
@@ -64,7 +77,10 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
                             "regex": {"column": "pattern"},
                             "conditions": [{"expr": "column != ''", "message": "message"}],
                             "ordered_by": {"keys": [{"column": "column", "direction": "asc", "type": "string", "nulls": "last"}]},
-                            "sort": [{"column": "column", "direction": "asc", "type": "string", "nulls": "last"}],
+                            "sort": [
+                                {"column": "column", "direction": "asc", "type": "string", "nulls": "last"},
+                                {"column": "other_col", "direction": "asc", "type": "custom", "nulls": "last", "values": ["A", "B"]},
+                            ],
                         }
                     },
                     "warnings": ["optional warning"],
@@ -93,24 +109,57 @@ def filebrowser_settings_llm_draft(req: FileBrowserSettingsLlmDraftReq, request:
         _draft_warning(warnings, f"LLM failed: {llm_info['error']}")
     for item in (plan.get("warnings") if isinstance(plan, dict) else []) or []:
         _draft_warning(warnings, str(item))
-    explicit_rule = _settings_prompt_explicit_rule(prompt, columns, current_rule, warnings)
-    if explicit_rule is not None:
-        raw_rule = explicit_rule
-    else:
-        raw_rule = _settings_llm_rule_candidate(plan, file_key)
-        if not raw_rule:
-            raw_rule = _settings_draft_fallback_rule(prompt, columns, current_rule, warnings, file_key, sample_rows)
-    draft, draft_warnings = _normalize_csv_rule_draft(raw_rule, columns=columns)
-    for item in draft_warnings:
-        _draft_warning(warnings, item)
+
+    def _scoped(rule: dict) -> dict:
+        if scope != "sort":
+            return rule
+        return {k: v for k, v in (rule or {}).items() if k in {"sort", "ordered_by"}}
+
+    # 1) LLM 결과가 규칙으로 정규화되면 그것을 쓴다. 키워드 규칙은 LLM 이 없거나
+    #    실패했을 때의 대체 경로다(이전에는 키워드가 LLM 결과를 덮어써서
+    #    "rule_order 만 내림차순으로 바꿔" 같은 수정 요청이 반영되지 않았다).
+    draft: dict = {}
+    source = ""
+    llm_candidate = _settings_llm_rule_candidate(plan, file_key) if llm_info.get("used") else {}
+    llm_cleared_sort = (
+        isinstance(llm_candidate, dict)
+        and "sort" in llm_candidate
+        and not llm_candidate.get("sort")
+        and (scope == "sort" or _sort_edit_intent(prompt) == "clear")
+    )
+    if llm_candidate:
+        llm_draft, llm_warnings = _normalize_csv_rule_draft(llm_candidate, columns=columns)
+        llm_draft = _scoped(llm_draft)
+        if llm_draft or llm_cleared_sort:
+            draft, source = llm_draft, "llm"
+            for item in llm_warnings:
+                _draft_warning(warnings, item)
+        elif llm_warnings:
+            _draft_warning(warnings, "LLM draft was unusable; keyword draft was used. " + "; ".join(llm_warnings[:3]))
+    if not source:
+        explicit_rule = _settings_prompt_explicit_rule(prompt, columns, current_rule, warnings, sample_rows)
+        if explicit_rule is not None:
+            raw_rule, source = explicit_rule, "keyword"
+        else:
+            raw_rule, source = _settings_draft_fallback_rule(prompt, columns, current_rule, warnings, file_key, sample_rows), "fallback"
+        draft, draft_warnings = _normalize_csv_rule_draft(raw_rule, columns=columns)
+        draft = _scoped(draft)
+        for item in draft_warnings:
+            _draft_warning(warnings, item)
+    sort_cleared = bool(current_rule.get("sort")) and not draft.get("sort") and (
+        llm_cleared_sort or (source != "llm" and _sort_edit_intent(prompt) == "clear")
+    )
+    llm_info["source"] = source
     return {
         "ok": True,
         "saved": False,
         "file": file_key,
         "unit_action": "filebrowser.settings.llm.draft",
+        "scope": scope,
         "draft": draft,
         "draft_sections": _csv_rule_sections(draft),
         "csv_rules": {file_key: draft} if draft else {},
+        "sort_cleared": sort_cleared,
         "warnings": warnings,
         "columns": columns,
         "llm": llm_info,
@@ -1006,5 +1055,9 @@ def sql_guide():
         {"desc": "BETWEEN", "sql": "value BETWEEN 0.1 AND 0.9"},
         {"desc": "CAST 숫자 비교", "sql": "CAST(value AS DOUBLE) >= 10"},
         {"desc": "CAST 시간 비교", "sql": "CAST(tkout_time AS TIMESTAMP) >= '2024-04-21'"},
+        {"desc": "문자열 숫자를 숫자로 바꿔 정렬", "sql": "item_id = 'IOFF' ORDER BY CAST(value AS DOUBLE) DESC"},
+        {"desc": "검색 + 숫자 변환 정렬 + 빈 값 앞", "sql": "SELECT lot_id, value WHERE CAST(value AS DOUBLE) >= 10 ORDER BY CAST(value AS DOUBLE) ASC NULLS FIRST"},
+        {"desc": "문자열 시간을 시간으로 바꿔 최신순", "sql": "root_lot_id = 'A1000' ORDER BY CAST(tkout_time AS TIMESTAMP) DESC"},
+        {"desc": "정수 변환 정렬", "sql": "ORDER BY CAST(wafer_id AS BIGINT) ASC"},
         {"desc": "IS NOT NULL", "sql": "tkout_time IS NOT NULL"},
     ]}

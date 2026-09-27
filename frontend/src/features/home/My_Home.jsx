@@ -1,26 +1,30 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import BrandLogo from "../../components/BrandLogo";
 import { canAccessTab, isAdmin as isAdminUser, visibleTabsFor } from "../../lib/permissions";
 import HomeAlertsSection from "./HomeAlertsSection";
+import HomeAppIcon from "./HomeAppIcons";
 import HomeDataChat from "./HomeDataChat";
 import { preloadPage } from "../../app/pageManifest";
-
-const StructureModelWorkspace = lazy(() => import("../structure/StructureModelWorkspace"));
 
 const CARD_DESC = {
   filebrowser: "DB와 Files 데이터 조회",
   dashboard: "저장된 지표와 차트 확인",
   splittable: "Lot·Wafer split plan 관리",
   lotmanage: "주요 Lot 현황 관리",
+  productwiki: "제품별 공정과 분석 지식 확인",
+  ramcache: "제품별 데이터 캐시 상태 관리",
+  matchfill: "매칭되지 않은 데이터 연결",
   chartbuilder: "데이터 쿼리와 차트 생성",
   templatereport: "Template Report 작성",
   autoreport: "자동 리포트 생성과 이력",
   lotrequest: "Lot 배정과 요청 관리",
+  analysisrequest: "분석의뢰 · split·ET·DCOP 대조",
   lotlocation: "Lot·Wafer 현위치 및 공정 확인",
   inform: "공정 인폼 기록과 조회",
   meeting: "회의와 안건 관리",
   calendar: "일정과 변경점 관리",
   tracker: "ET 이슈 추적",
+  lottracker: "LOT 공정 이력과 진행 예측",
   valve: "매칭 알람 확인",
   teg: "TEG 좌표와 Mapfile 검증",
   yieldmap: "Wafer Map 조회",
@@ -29,16 +33,6 @@ const CARD_DESC = {
   dcop: "양산 DCOP 검사",
   admin: "사용자와 시스템 설정",
 };
-
-const APP_TONES = ["blue", "violet", "green", "amber", "pink"];
-const HOME_ICON_OVERRIDES = {
-  lotrequest: "🤝",
-};
-
-function appToneFor(key) {
-  const seed = [...String(key)].reduce((sum, character) => sum + character.charCodeAt(0), 0);
-  return APP_TONES[seed % APP_TONES.length];
-}
 
 function favoriteStorageKey(username) {
   return `flow:home-favorites:${username || "guest"}`;
@@ -68,73 +62,10 @@ function RoundedStar({ filled }) {
   );
 }
 
-const WAFER_SHOTS = [
-  [10, 5.8], [16, 5.8],
-  [5.2, 10.4], [11, 10.4], [16.8, 10.4], [22.6, 10.4],
-  [5.2, 15], [11, 15], [16.8, 15], [22.6, 15],
-  [5.2, 19.6], [11, 19.6], [16.8, 19.6], [22.6, 19.6],
-  [10, 24.2], [16, 24.2],
-];
-
-function WaferMapGlyph() {
-  const waferPath = "M16 2.5C23.46 2.5 29.5 8.54 29.5 16c0 6.12-4.08 11.3-9.68 12.95h-7.64C6.58 27.3 2.5 22.12 2.5 16 2.5 8.54 8.54 2.5 16 2.5Z";
-  return (
-    <svg className="home-wafer-glyph" viewBox="0 0 32 32" aria-hidden="true">
-      <defs>
-        <clipPath id="home-wafer-shot-clip">
-          <path d={waferPath} />
-        </clipPath>
-      </defs>
-      <path className="home-wafer-glyph__surface" d={waferPath} />
-      <g clipPath="url(#home-wafer-shot-clip)">
-        {WAFER_SHOTS.map(([x, y]) => (
-          <rect
-            key={`${x}-${y}`}
-            className="home-wafer-glyph__shot"
-            x={x}
-            y={y}
-            width="4.2"
-            height="3.3"
-            rx="0.55"
-          />
-        ))}
-      </g>
-      <path className="home-wafer-glyph__outline" d={waferPath} />
-      <path className="home-wafer-glyph__notch" d="M14.7 28.95 16 27.65l1.3 1.3" />
-    </svg>
-  );
-}
-
-function TemplateReportGlyph() {
-  return (
-    <svg className="home-template-report-glyph" viewBox="0 0 36 36" aria-hidden="true">
-      <rect className="home-template-report-glyph__template" x="2.5" y="3" width="31" height="30" rx="4" />
-      <rect className="home-template-report-glyph__report" x="6.5" y="6.5" width="23" height="23" rx="2.3" />
-      <path className="home-template-report-glyph__heading" d="M10 10.5h16M10 13h10" />
-      {[1, 2, 3].map((number, index) => {
-        const x = 11 + (index * 7);
-        return (
-          <g key={number}>
-            <circle className="home-template-report-glyph__step" cx={x} cy="19" r="2.8" />
-            <text className="home-template-report-glyph__number" x={x} y="21.15" textAnchor="middle">{number}</text>
-          </g>
-        );
-      })}
-      <path className="home-template-report-glyph__body" d="M10 24h16M10 26.7h12" />
-    </svg>
-  );
-}
-
-function HomeAppGlyph({ tab }) {
-  if (tab.key === "yieldmap") return <WaferMapGlyph />;
-  if (tab.key === "templatereport") return <TemplateReportGlyph />;
-  return HOME_ICON_OVERRIDES[tab.key] || tab.icon || tab.label?.slice(0, 1) || "•";
-}
-
 function FeatureCard({ tab, favorite, onFavorite, onOpen }) {
   const description = CARD_DESC[tab.key] || "기능 열기";
   return (
-    <div className="home-feature-item" data-app-key={tab.key} data-tone={appToneFor(tab.key)}>
+    <div className="home-feature-item" data-app-key={tab.key} data-app-group={["data", "system"].includes(tab.group) ? tab.group : "work"}>
       <button
         type="button"
         className={`home-feature-favorite${favorite ? " is-favorite" : ""}`}
@@ -156,7 +87,7 @@ function FeatureCard({ tab, favorite, onFavorite, onOpen }) {
       >
         <span className="home-feature-card__topline">
           <span className="home-feature-card__icon" aria-hidden="true">
-            <span className="home-feature-card__glyph"><HomeAppGlyph tab={tab} /></span>
+            <HomeAppIcon appKey={tab.key} />
           </span>
         </span>
         <span className="home-feature-card__content">
@@ -180,6 +111,7 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
   const [favorites, setFavorites] = useState(() => readFavorites(username));
   const [flowiOpen, setFlowiOpen] = useState(false);
   const [flowiProbeKey, setFlowiProbeKey] = useState(0);
+  const [flowiTarget, setFlowiTarget] = useState(null);
 
   useEffect(() => {
     setFavorites(readFavorites(username));
@@ -188,6 +120,7 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
 
   const toggleFlowi = () => {
     if (!flowiOpen) setFlowiProbeKey((key) => key + 1);
+    setFlowiTarget(null);
     setFlowiOpen(!flowiOpen);
   };
 
@@ -253,12 +186,11 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
 
       {canUseFlowi && flowiOpen && (
         <div id="home-flowi-chat" className="home-flowi-panel">
-          <HomeDataChat user={user} onNavigate={open} enabled probeKey={flowiProbeKey} onClose={() => setFlowiOpen(false)} />
+          <HomeDataChat user={user} onNavigate={open} enabled probeKey={flowiProbeKey} initialConversation={flowiTarget} onClose={() => setFlowiOpen(false)} />
         </div>
       )}
 
       {!flowiOpen && <div className="home-bottom-section">
-        <Suspense fallback={null}><StructureModelWorkspace onNavigate={open}/></Suspense>
         {orderedCards.length ? (
           <div className="home-feature-grid">
             {orderedCards.map((tab) => (

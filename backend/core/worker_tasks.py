@@ -80,6 +80,7 @@ def _filebrowser_sql_query(payload: dict) -> dict:
         sort_column=str(payload.get("sort_column") or ""),
         sort_direction=str(payload.get("sort_direction") or "asc"),
         sort_nulls=str(payload.get("sort_nulls") or "last"),
+        sort_cast=str(payload.get("sort_cast") or ""),
         agg_func=str(payload.get("agg_func") or ""),
         agg_column=str(payload.get("agg_column") or ""),
         agg_group_by=str(payload.get("agg_group_by") or ""),
@@ -201,6 +202,23 @@ def _flowi_chat_turn(payload: dict) -> dict:
         return {"ok": True, "result": result}
     except HTTPException as exc:
         return {"ok": True, "http_error": {"status": int(exc.status_code), "detail": exc.detail}}
+
+
+@handler("chart_builder_run")
+def _chart_builder_run(payload: dict) -> dict:
+    """차트생성·Template Report·홈 차트의 원본 데이터 조회 단계."""
+    from routers import filebrowser as _fb
+    return _fb.chart_builder_run_data_for_worker(payload)
+
+
+@handler("home_agent_turn")
+def _home_agent_turn(payload: dict) -> dict:
+    """홈 에이전트(Flow-i 데이터 채팅) 분석 턴 — LLM 대기와 원본 조회를 운영에서 덜어낸다.
+
+    버전이 다르거나 이 서버에서 LLM 을 쓸 수 없으면 ok=False 로 돌려 운영이
+    같은 턴을 로컬에서 실행한다. HTTPException 은 봉투로 돌려 이중 실행을 막는다."""
+    from core import home_agent_offload
+    return home_agent_offload.execute_payload(payload)
 
 
 @handler("splittable_lot_progress_cache_refresh")

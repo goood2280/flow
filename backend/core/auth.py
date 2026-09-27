@@ -253,7 +253,7 @@ def require_admin(request: Request) -> dict:
 DELEGABLE_PAGE_IDS = frozenset({
     "filebrowser", "dashboard", "splittable", "lotmanage", "productwiki",
     "ramcache", "matchfill", "chartbuilder", "templatereport", "autoreport",
-    "lotrequest", "lotlocation", "inform", "meeting", "calendar", "tracker",
+    "lotrequest", "analysisrequest", "lotlocation", "inform", "meeting", "calendar", "tracker",
     "lottracker", "valve", "teg", "yieldmap", "ettime", "reformatize", "dcop",
 })
 GRANTABLE_TAB_IDS = DELEGABLE_PAGE_IDS | {"flowi"}

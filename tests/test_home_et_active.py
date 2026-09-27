@@ -45,7 +45,7 @@ def test_download_plain_text_clarification_chain(env):
     assert result["tool"]["download_job"]["job_id"] == "qa-job"
     assert jobs[0].product == "PRODA" and jobs[0].days == 5 and jobs[0].items == ["VTH_IDX"]
     assert "pending_et" not in result["context"]
-    assert result["success_prompt"] == "ET DATA 뽑아줘"
+    assert "success_prompt" not in result  # answered through clarifications, not an example
 
 
 def test_time_lot_followup_preserves_exact_sublot(env):

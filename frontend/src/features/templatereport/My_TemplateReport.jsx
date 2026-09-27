@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { FlowPlotlyChart } from "../../components/PlotlyChart";
 import TegValueWaferMap from "../../components/TegValueWaferMap";
-import { chartPalette } from "../../components/UXKit";
+import { seriesColor } from "../../lib/chartTheme";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows, spreadsheetTextFromRows } from "../../components/SpreadsheetPasteGrid";
 import PageGear from "../../components/PageGear";
 import { toast } from "../../components/Toast";
+import { IconLabel } from "../../components/ui/Icon";
 import { computeBoxStats } from "../../lib/boxStats";
 import { chartColorMap, chartColorValue, parseChartColorRules } from "../../lib/chartColorRules";
 import { chartColorListRules, parseChartColorList } from "../../lib/chartColorList";
@@ -27,6 +28,20 @@ const primary={...btn,background:"var(--accent)",borderColor:"var(--accent)",col
 const label={fontSize:11,fontWeight:800,color:"var(--text-secondary)"};
 const KIND_LABEL={chart:"차트",split:"Split 표",text:"글",stats:"통계표",legend:"공통 Legend"};
 const CHART_BUILDER_TRANSFER_KEY="flow:chartbuilder:definition-transfer";
+// 분석의뢰 → Template Report: 의뢰 표의 Root Lot · Wafer · 그룹 색을 "모든 차트 일괄 적용"에 채운다.
+// 한 번 읽으면 지운다(다시 열었을 때 예전 의뢰 조건이 되살아나면 안 된다). 10분 넘은 값은 버린다.
+const REPORT_RUN_TRANSFER_KEY="flow:templatereport:run-transfer";
+// Template Report → 분석의뢰: 첨부한 보고서로 답글 초안을 연다 — My_AnalysisRequest.jsx 의 REPLY_DRAFT_KEY 와 같은 값.
+const REPLY_DRAFT_KEY="flow:analysisrequest:reply-draft";
+function takeRunTransfer(){
+  try{
+    const raw=window.sessionStorage.getItem(REPORT_RUN_TRANSFER_KEY);
+    if(!raw)return null;
+    window.sessionStorage.removeItem(REPORT_RUN_TRANSFER_KEY);
+    const value=JSON.parse(raw);
+    return value&&Date.now()-Number(value.timestamp||0)<10*60*1000?value:null;
+  }catch(_error){return null;}
+}
 const COLOR_LIST_COLUMNS=["root_lot_id","wafer_id","color"];
 const COLOR_LIST_ALIASES={root_lot:"root_lot_id",rootlotid:"root_lot_id",lot:"root_lot_id",wafer:"wafer_id",wf:"wafer_id",colour:"color",색상:"color",색:"color"};
 
@@ -157,6 +172,13 @@ function chartAxes(run){
   return{rows,columns,config,x,y};
 }
 
+// 보고서 차트 부제: 제품 · 조회 기간 · 표본 수 — 슬라이드만 보고도 근거 범위를 알 수 있게.
+function reportSubtitle(run,rows){
+  const sources=run?.definition?.sources||run?.request?.sources||[];
+  const products=[...new Set(sources.map(source=>text(source?.product).trim()).filter(Boolean))];
+  const days=sources.reduce((max,source)=>Math.max(max,Number(source?.runtime_recent_days)||0),0);
+  return [products.join(", "),days?`최근 ${days}일`:"",`n=${rows.length.toLocaleString()}`].filter(Boolean).join(" · ");
+}
 function reportChart(run){
   const{rows,columns,config,x,y}=chartAxes(run);
   if(!rows.length)return null;
@@ -175,10 +197,12 @@ function reportChart(run){
   };
   const title=text(config.title).trim()||[x,y].filter(Boolean).join(" × ")||run.chart_label||run.chart_id;
   const details={
+    subtitle:reportSubtitle(run,rows),
     point_size:Number(config.point_size)||10,marker_opacity:Number(config.marker_opacity)||.82,line_width:Number(config.line_width)||2.3,
     x_min:text(config.x_min).trim(),x_max:text(config.x_max).trim(),y_min:text(config.y_min).trim(),y_max:text(config.y_max).trim(),y_scale:config.y_scale||"linear",show_grid:config.show_grid!==false,
     legend_position:config.legend_position||"bottom",box_points:config.box_points||"outliers",show_legend:showLegend,
-    wafer_mode:config.wafer_mode||"value",wafer_spec_low:config.wafer_spec_low,wafer_spec_high:config.wafer_spec_high,
+    highlight_start:text(config.highlight_start).trim(),highlight_end:text(config.highlight_end).trim(),highlight_label:text(config.highlight_label).trim(),
+    wafer_mode:config.wafer_mode||"value",wafer_interpolation:config.wafer_interpolation||"none",wafer_spec_low:config.wafer_spec_low,wafer_spec_high:config.wafer_spec_high,
   };
   const labels={x_label:text(config.x_label).trim()||x,y_label:text(config.y_label).trim()||y};
   const decorate=row=>({...row,spec_low:config.spec_low&&columns.includes(config.spec_low)?row[config.spec_low]:row.spec_low,spec_high:config.spec_high&&columns.includes(config.spec_high)?row[config.spec_high]:row.spec_high});
@@ -188,7 +212,7 @@ function reportChart(run){
     if(!mapX||!mapY||!y)return null;
     const lotCol=columns.find(column=>column.toLowerCase()==="root_lot_id")||"",waferCol=columns.find(column=>column.toLowerCase()==="wafer_id")||"";
     const scope=config.map_scope||"root_wafer",aggregation=config.aggregation||"median",grouped=new Map();
-    rows.forEach(row=>{const lot=lotCol?text(row[lotCol]):"",wafer=waferCol?text(row[waferCol]):"",key=scope==="trellis_wafer"?wafer:`${lot}|${wafer}`,label=scope==="root_lot"?lot:scope==="trellis_wafer"?`W${wafer}`:`${lot} | W${wafer}`;if(!grouped.has(key))grouped.set(key,{key,label,lot,wafer,shots:new Map()});const group=grouped.get(key),coord=`${Number(row[mapX])},${Number(row[mapY])}`,shot=group.shots.get(coord)||{x:Number(row[mapX]),y:Number(row[mapY]),values:[]};const value=Number(row[y]);if(Number.isFinite(shot.x)&&Number.isFinite(shot.y)&&Number.isFinite(value)){shot.values.push(value);group.shots.set(coord,shot);}});
+    rows.forEach(row=>{const lot=lotCol?text(row[lotCol]):"",wafer=waferCol?text(row[waferCol]):"",key=scope==="trellis_wafer"?wafer:`${lot}|${wafer}`,label=scope==="root_lot"?lot:scope==="trellis_wafer"?`W${wafer}`:`${lot}_${wafer}`;if(!grouped.has(key))grouped.set(key,{key,label,lot,wafer,shots:new Map()});const group=grouped.get(key),coord=`${Number(row[mapX])},${Number(row[mapY])}`,shot=group.shots.get(coord)||{x:Number(row[mapX]),y:Number(row[mapY]),values:[]};const value=Number(row[y]);if(Number.isFinite(shot.x)&&Number.isFinite(shot.y)&&Number.isFinite(value)){shot.values.push(value);group.shots.set(coord,shot);}});
     const groups=[...grouped.values()].map(group=>({...group,points:[...group.shots.values()].map(shot=>({x:shot.x,y:shot.y,value:aggregateValues(shot.values,aggregation),n:shot.values.length}))})).filter(group=>group.points.length);
     const trellis=scope.startsWith("trellis_"),selected=groups.find(group=>group.key===config.map_target)||groups[0],source=(run?.result?.sources||[]).find(item=>item.product)||{};
     return{chart_type:"wafer_map",title,x_label:labels.x_label,map_y_label:mapY,y_label:labels.y_label,product:source.product||"",points:trellis?[]:(selected?.points||[]),panels:trellis?groups.map(group=>({key:group.key,label:group.label,points:group.points})):null,aggregation,map_scope:scope,map_target:selected,...details,wafer_palette:config.wafer_palette||"blue_gray_red",wafer_low:config.wafer_low,wafer_center:config.wafer_center,wafer_high:config.wafer_high};
@@ -280,7 +304,7 @@ function legendTable(block,runs){
   if(!counts.size)(chart.groups||[]).forEach(group=>{const name=text(group.label).trim()||"Series";counts.set(name,Number(group.count)||0);});
   const rows=[...counts.entries()].slice(0,24).map(([name,count],index)=>[
     name,
-    chart.color_map?.[name]||chartPalette.series[index%chartPalette.series.length],
+    chart.color_map?.[name]||seriesColor(index),
     String(count),
   ]);
   if(!rows.length)return null;
@@ -293,7 +317,7 @@ function LegendBlock({table}){
     {table.title&&<div style={{fontSize:12,fontWeight:600,color:IBM_TEXT,marginBottom:4}}>{table.title}</div>}
     <div style={{display:"flex",flexWrap:"wrap",gap:"5px 12px",alignContent:"flex-start",overflow:"hidden"}}>
       {(table.rows||[]).map((row,index)=><div key={`${row?.[0]}-${index}`} style={{display:"flex",alignItems:"center",gap:5,minWidth:0,fontSize:10,whiteSpace:"nowrap"}}>
-        <span aria-hidden="true" style={{width:10,height:10,borderRadius:2,background:text(row?.[1])||chartPalette.series[index%chartPalette.series.length],flex:"0 0 auto"}}/>
+        <span aria-hidden="true" style={{width:10,height:10,borderRadius:2,background:text(row?.[1])||seriesColor(index),flex:"0 0 auto"}}/>
         <span style={{overflow:"hidden",textOverflow:"ellipsis"}}>{text(row?.[0])}</span>
         {text(row?.[2])&&<span style={{color:IBM_MUTED}}>({text(row?.[2])})</span>}
       </div>)}
@@ -332,7 +356,7 @@ function ReportChart({chart,layout}){
   const scale=hostSize.width&&hostSize.height?Math.min(hostSize.width/width,hostSize.height/height):0;
   return <div ref={hostRef} style={{width:"100%",height:"100%",overflow:"hidden",position:"relative"}}>
     {!!scale&&<div style={{position:"absolute",left:"50%",top:"50%",width,height,transform:`translate(-50%, -50%) scale(${scale})`,transformOrigin:"center center"}}>
-      {chart.chart_type==="wafer_map"?<TegValueWaferMap vehicle={chart.product} points={chart.points} panels={chart.panels} title={chart.title||"WF MAP"} valueLabel={chart.y_label} palette={chart.wafer_palette} low={chart.wafer_low} center={chart.wafer_center} high={chart.wafer_high} mode={chart.wafer_mode} specLow={chart.wafer_spec_low} specHigh={chart.wafer_spec_high} interactive={false}/>:<FlowPlotlyChart chart={chart} cfg={{...chart,width,height,point_size:12,compact:true,hide_title:true,emphasize_axes:true,axis_title_size:22,axis_line_width:2.6,tick_font_size:13}} height={height} dark={false}/>}
+      {chart.chart_type==="wafer_map"?<TegValueWaferMap vehicle={chart.product} points={chart.points} panels={chart.panels} title={chart.title||"WF MAP"} valueLabel={chart.y_label} palette={chart.wafer_palette} low={chart.wafer_low} center={chart.wafer_center} high={chart.wafer_high} mode={chart.wafer_mode} interpolation={chart.wafer_interpolation} specLow={chart.wafer_spec_low} specHigh={chart.wafer_spec_high} interactive={false}/>:<FlowPlotlyChart chart={chart} cfg={{...chart,width,height,point_size:13,compact:true,hide_title:!chart.title,title_size:24,emphasize_axes:true,axis_title_size:19,axis_line_width:2,tick_font_size:16,legend_font_size:16}} height={height} dark={false}/>}
     </div>}
   </div>;
 }
@@ -594,6 +618,7 @@ export default function My_TemplateReport({user}){
   const[contextRootLots,setContextRootLots]=useState(""),[contextWafers,setContextWafers]=useState("");
   const[overrideRecentDays,setOverrideRecentDays]=useState(false),[contextRecentDays,setContextRecentDays]=useState("7"),[contextDateColumn,setContextDateColumn]=useState("tkout_time");
   const[contextColorRows,setContextColorRows]=useState(()=>normalizeSpreadsheetRows([],COLOR_LIST_COLUMNS)),[contextColorElse,setContextColorElse]=useState("gray");
+  const[contextOpen,setContextOpen]=useState(false),[runHandoff,setRunHandoff]=useState(null);
   const[deck,setDeck]=useState(null),[runs,setRuns]=useState({}),[tables,setTables]=useState({}),[images,setImages]=useState([]);
   const[busy,setBusy]=useState(false),[saving,setSaving]=useState(false),[downloading,setDownloading]=useState("");
   const[runProgress,setRunProgress]=useState("");
@@ -604,8 +629,16 @@ export default function My_TemplateReport({user}){
     setLoadError("");
     const[data,chartData,settingsData]=await Promise.all([sf(`${API}/templates`),sf(`${API}/charts`),sf(`${API}/settings`)]);
     setTemplates(data.templates||[]);setCharts(chartData.charts||[]);setReportSettings(settingsData.settings||{background:{configured:false,data_url:""},backgrounds:[]});
-    const linkedId=new URLSearchParams(window.location.search).get("template_id");
-    setSelectedId(current=>current||(data.templates||[]).find(item=>item.id===linkedId)?.id||(data.templates?.[0]?.id||""));
+    const transfer=takeRunTransfer();
+    if(transfer){
+      const colors=(transfer.colors||[]).map(row=>({root_lot_id:text(row.root_lot_id),wafer_id:text(row.wafer_id),color:text(row.color)}));
+      setContextRootLots((transfer.root_lot_ids||[]).join("\n"));
+      setContextWafers((transfer.wafer_ids||[]).join("\n"));
+      setContextColorRows(normalizeSpreadsheetRows(colors,COLOR_LIST_COLUMNS,{minRows:10,maxRows:200}));
+      setContextOpen(true);setRunHandoff(transfer);
+    }
+    const linkedId=transfer?.template_id||new URLSearchParams(window.location.search).get("template_id");
+    setSelectedId(current=>(transfer?"":current)||(data.templates||[]).find(item=>item.id===linkedId)?.id||current||(data.templates?.[0]?.id||""));
   },[]);
   useEffect(()=>{load().catch(error=>{const message=templateApiError(error);setLoadError(message);toast.error(message);}).finally(()=>setLoading(false));},[load]);
   const selected=useMemo(()=>templates.find(template=>template.id===selectedId)||null,[templates,selectedId]);
@@ -796,6 +829,25 @@ export default function My_TemplateReport({user}){
     catch(error){toast.error(error.message||String(error));}finally{setDownloading("");}
   };
 
+  // 분석의뢰에서 넘어온 실행이면 같은 PPTX 를 만들어 그 의뢰의 답글 첨부로 올리고, 답글 초안을 연 채로 돌아간다.
+  const attachToRequest=async()=>{
+    if(busy||!runHandoff?.request_id)return;
+    if(!images.length&&!Object.keys(tables).length){toast.error("먼저 Report를 실행해 주세요.");return;}
+    const template=selected||draft;
+    const repeatValues=text(repeatText).split(/[,\n]+/).map(item=>item.trim()).filter(Boolean);
+    const payload={template_id:template.id,bindings,repeat_values:repeatValues,context:runContext(),images,
+      tables:Object.entries(tables).map(([key,table])=>({key,title:table.title||"",columns:table.columns||[],rows:table.rows||[],note:table.note||""}))};
+    setDownloading("attach");
+    try{
+      const file=await postJson(`/api/analysis-requests/${encodeURIComponent(runHandoff.request_id)}/report-attachment`,payload);
+      window.sessionStorage.setItem(REPLY_DRAFT_KEY,JSON.stringify({request_id:runHandoff.request_id,timestamp:Date.now(),
+        attachments:[{uid:file.uid,name:file.name,size:file.size,url:file.url}],
+        body:`<p>Template Report '${text(template.name).replace(/[<>&]/g,"")}' 결과를 첨부합니다.</p><p></p>`}));
+      toast.ok("보고서를 분석의뢰 답글 초안에 첨부했습니다. 코멘트를 넣고 등록하세요.");
+      window.dispatchEvent(new CustomEvent("flow:navigate",{detail:{tab:"analysisrequest",search:`?request=${encodeURIComponent(runHandoff.request_id)}`}}));
+    }catch(error){toast.error(error.message||String(error));}finally{setDownloading("");}
+  };
+
   const remove=async()=>{
     if(!selected||!window.confirm(`'${selected.name}' Template을 삭제할까요?`))return;
     try{await sf(`${API}/templates/${encodeURIComponent(selected.id)}`,{method:"DELETE"});setSelectedId("");setDraft(null);resetRun();await load();toast.ok("Template을 삭제했습니다.");}catch(error){toast.error(error.message||String(error));}
@@ -862,7 +914,13 @@ export default function My_TemplateReport({user}){
               {variables.filter(item=>item.name!==repeatVariable).map(item=><label key={item.name} style={label}>{item.label||item.name}<input aria-label={item.label||item.name} value={bindings[item.name]??""} onChange={event=>setBindings(old=>({...old,[item.name]:event.target.value}))} placeholder={`{{${item.name}}}`} style={{...input,width:170,marginTop:4,fontFamily:"monospace"}}/></label>)}
               {variables.some(item=>item.name===repeatVariable)&&<label style={{...label,flex:"1 1 260px"}}>{repeatVariable} 목록 <span style={{fontWeight:500}}>· 콤마로 여러 개(랏마다 페이지 반복)</span><input aria-label={`${repeatVariable} 목록`} value={repeatText} onChange={event=>setRepeatText(event.target.value)} placeholder="A1234, A5678, A9012" style={{...input,marginTop:4,fontFamily:"monospace"}}/></label>}
             </div>}
-            <details style={{border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-primary)",overflow:"hidden"}}>
+            {runHandoff&&<div role="status" style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap",border:"1px solid var(--border)",borderLeft:"3px solid var(--accent)",borderRadius:4,padding:"8px 10px",background:"var(--bg-secondary)",fontSize:12}}>
+              <strong>분석의뢰에서 가져온 조건</strong>
+              <span style={{color:"var(--text-secondary)"}}>{text(runHandoff.title)} · Lot {(runHandoff.root_lot_ids||[]).join(", ")} · Wafer {(runHandoff.wafer_ids||[]).length}</span>
+              {runHandoff.request_id&&<span style={{color:"var(--text-secondary)"}}>실행 후 “분석의뢰 답글에 첨부”로 이 의뢰에 바로 올릴 수 있습니다</span>}
+              <button type="button" onClick={()=>setRunHandoff(null)} style={{...btn,marginLeft:"auto",padding:"3px 8px",fontSize:11}}>닫기</button>
+            </div>}
+            <details open={contextOpen} onToggle={event=>setContextOpen(event.currentTarget.open)} style={{border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-primary)",overflow:"hidden"}}>
               <summary style={{cursor:"pointer",padding:"11px 12px",userSelect:"none"}}>
                 <span style={{display:"inline-flex",width:"calc(100% - 20px)",gap:8,alignItems:"center",flexWrap:"wrap",verticalAlign:"middle"}}>
                   <strong style={{fontSize:12}}>모든 차트 일괄 적용</strong>
@@ -920,6 +978,7 @@ export default function My_TemplateReport({user}){
               <button type="button" onClick={runReport} disabled={busy} style={primary}>{busy?"실행·캡처 중…":"실행"}</button>
               <button type="button" onClick={()=>download("pptx")} disabled={busy||!deck||(!images.length&&!Object.keys(tables).length)||!!downloading} style={btn}>{downloading==="pptx"?"PPTX 생성 중…":"PPTX 다운로드"}</button>
               <button type="button" onClick={()=>download("images")} disabled={busy||!images.length||!!downloading} style={btn}>{downloading==="images"?"ZIP 생성 중…":"차트별 PNG ZIP"}</button>
+              {runHandoff?.request_id&&<button type="button" onClick={attachToRequest} disabled={busy||!deck||(!images.length&&!Object.keys(tables).length)||!!downloading} style={primary}>{downloading==="attach"?"첨부 만드는 중…":"분석의뢰 답글에 첨부"}</button>}
               <span style={{fontSize:11,color:"var(--text-secondary)"}}>{runProgress||`공통 컨텍스트로 모든 차트를 함께 바꾸고 PPTX로 내려받습니다.${deck?` · ${deck.pages.length}장 생성됨`:""}`}</span>
             </div>
           </div>}
@@ -941,7 +1000,7 @@ export default function My_TemplateReport({user}){
           <div style={{display:"grid",gridTemplateColumns:"minmax(280px,.72fr) minmax(420px,1.28fr)",gap:10,alignItems:"stretch"}}>
             <div style={{display:"grid",gap:8,alignContent:"start"}}>
               {canUseLlm&&<div style={{border:"1px solid var(--border)",borderRadius:8,padding:10,background:"var(--bg-primary)",display:"grid",gap:7}}>
-                <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}><strong style={{fontSize:12}}>✨ AI Template Assistant</strong><span style={{fontSize:10,color:"var(--text-secondary)"}}>전체 코드를 생성하거나 필요한 부분만 수정</span></div>
+                <div style={{display:"flex",gap:7,alignItems:"center",flexWrap:"wrap"}}><strong style={{fontSize:12}}><IconLabel icon="sparkle">AI Template Assistant</IconLabel></strong><span style={{fontSize:10,color:"var(--text-secondary)"}}>전체 코드를 생성하거나 필요한 부분만 수정</span></div>
                 <textarea aria-label="AI Template 요청" value={templateAiPrompt} onChange={event=>setTemplateAiPrompt(event.target.value)} rows={5} placeholder={"예: 최근 14일 VTH trend를 위에 길게 두고, 아래에는 IDSAT corr·chamber box·leakage bar를 배치해줘\n예: 모든 차트의 root lot을 {{LOT}} 변수로 바꿔줘"} style={{...input,resize:"vertical",lineHeight:1.5}}/>
                 <button type="button" onClick={askTemplateAi} disabled={templateAiBusy} style={{...primary,justifySelf:"start"}}>{templateAiBusy?"AI가 전체 코드 작성 중…":"AI로 전체 코드 만들기·수정"}</button>
                 {templateAiMessage&&<div style={{fontSize:11,lineHeight:1.5,color:"var(--text-secondary)",whiteSpace:"pre-wrap"}}>{templateAiMessage}</div>}

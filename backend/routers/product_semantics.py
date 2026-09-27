@@ -115,10 +115,17 @@ def save_desc_alias(body: DescAliasRequest, user=Depends(require_productwiki_man
 @router.delete("/desc-alias")
 def delete_desc_alias(body: DescAliasDelete, user=Depends(require_productwiki_manager)):
     try:
-        removed = inline_alias.delete_desc_alias(body.product, body.desc, body.step_id, body.item_id)
+        removed = inline_alias.delete_desc_alias(body.product, body.desc, body.step_id, body.item_id, user["username"])
     except (ValueError, TypeError) as exc:
         raise HTTPException(400, str(exc)) from exc
     return {"ok": True, "removed": removed}
+
+
+@router.get("/alias-log")
+def alias_log(product: str = Query("", max_length=200), kind: str = Query("", max_length=20),
+              limit: int = Query(300, ge=1, le=2000), user=Depends(require_productwiki_manager)):
+    """제품 별칭·Inline/ET 별칭·item_desc 별칭 변경 이력 (관리자 화면·홈 챗·백업 복원)."""
+    return {"entries": semantic.alias_log(product.strip(), limit=limit, kind=kind.strip())}
 
 
 @router.post("/aliases-backup-import")

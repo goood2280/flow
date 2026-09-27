@@ -67,7 +67,7 @@ def test_api_product_lot_chain_evidence_and_restore(client, monkeypatch):
     assert evidence["targets"]["product"] == "REAL_ALPHA"
     assert evidence["sources"] == final["tool"]["sources"]
     assert evidence["query"] == {}  # illustrative view_split is not executed SQL
-    assert final["success_prompt"] == "스플릿테이블 보여줘"
+    assert "success_prompt" not in final  # a product/lot clarification chain is not an example
     restored = client.get(f"/api/home-agent/conversations/{cid}").json()
     assert len(restored["messages"]) == 6
     assert restored["messages"][-1]["response"]["evidence"] == final["evidence"]

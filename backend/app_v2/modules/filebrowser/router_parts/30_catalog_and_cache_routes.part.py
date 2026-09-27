@@ -161,11 +161,20 @@ class ChartBuilderSourceReq(BaseModel):
     reformatter_agg_scope: str = "package"
     runtime_recent_days: int = 0
     runtime_date_column: str = "tkout_time"
+    runtime_date_from: str = ""
+    runtime_date_to: str = ""
     runtime_root_lot_ids: list[str] = []
     runtime_wafer_ids: list[str] = []
     runtime_lot_wafer_pairs: list[dict[str, str]] = []
     derived_columns: list[dict] = []
     runtime_filters: list[dict] = []
+    wafer_filter_mode: str = ""
+    wafer_filter_column: str = ""
+    wafer_filter_low: float | None = None
+    wafer_filter_high: float | None = None
+    wafer_filter_agg: str = ""
+    wafer_filter_op: str = ""
+    wafer_filter_threshold: float | None = None
 
 
 class ChartBuilderJoinReq(BaseModel):
@@ -890,6 +899,7 @@ def base_dir_children(path: str = Query(""), request: Request = None):
             item = dict(item)
             if item.get("kind") != "dir":
                 item["description"] = _file_description_for(item.get("path") or item.get("name") or "", item.get("description") or "", settings)
+                item["description_custom"] = bool(_custom_file_description(item.get("path") or item.get("name") or "", settings))
                 item["display_name"] = _file_display_name(item.get("path") or item.get("name") or "", item.get("name") or "", settings)
             key = str(item.get("path") or "").lower()
             if key and key not in seen:
@@ -978,6 +988,7 @@ def _base_files_fast_payload(base_root: Path, db_root: Path, folder_names: set[s
     files.sort(key=lambda item: (item.get("order", 999), item["name"].casefold()))
     for item in files:
         item["description"] = _file_description_for(item.get("path") or item.get("name") or "", item.get("description") or "", settings)
+        item["description_custom"] = bool(_custom_file_description(item.get("path") or item.get("name") or "", settings))
         item["display_name"] = _file_display_name(item.get("path") or item.get("name") or "", item.get("name") or "", settings)
     dirs.sort(key=lambda item: item["name"].casefold())
     return {
@@ -1204,6 +1215,7 @@ def base_files(request: Request = None, fast: bool = Query(False)):
             seen_names.add(f.name.lower())
     for item in files:
         item["description"] = _file_description_for(item.get("path") or item.get("name") or "", item.get("description") or "", settings)
+        item["description_custom"] = bool(_custom_file_description(item.get("path") or item.get("name") or "", settings))
         item["display_name"] = _file_display_name(item.get("path") or item.get("name") or "", item.get("name") or "", settings)
     files.sort(key=lambda x: (x.get("order", 999), x["name"].lower()))
     deduped_dirs = {}

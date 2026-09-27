@@ -448,18 +448,27 @@ def check_targets_put(req: CheckTargetsReq, user=Depends(_require_manager)):
 @router.get("/map")
 def wf_map(vehicle: str = Query(...), user=Depends(current_user)):
     _require_product_access(user, vehicle)
+    # 일반 사용자는 최대 MAX_TEG_SELECTION 개까지만 동시 선택 (전체 렌더 방지). 관리자는 무제한.
+    max_selection = None if _is_teg_manager(user) else MAX_TEG_SELECTION
     try:
-        payload = _tm.map_payload(vehicle)
+        # 같은 기준 파일·제품이면 직렬화된 응답을 그대로 재사용한다(캐시 적중에도
+        # 매번 붙던 deepcopy + JSON 인코딩 제거).
+        body = _tm.map_payload_json(vehicle, max_selection)
+        payload = None
+        if body is None:
+            payload = _tm.map_payload(vehicle)
+            payload["max_selection"] = max_selection
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except LookupError as e:
         raise HTTPException(404, str(e))
-    # 일반 사용자는 최대 MAX_TEG_SELECTION 개까지만 동시 선택 (전체 렌더 방지). 관리자는 무제한.
-    payload["max_selection"] = None if _is_teg_manager(user) else MAX_TEG_SELECTION
     # 활동 대시보드: 어떤 제품(vehicle)의 WF MAP 을 봤는지.
     from core.audit import record_user as _audit_user
     _audit_user(user.get("username", ""), "teg-map:view", detail=f"vehicle={vehicle}", tab="teg")
-    return payload
+    if payload is not None:
+        return payload
+    from core import json_fast
+    return json_fast.response(body)
 
 
 class InspectReq(BaseModel):

@@ -520,12 +520,43 @@ def _glob_data_files(directory: Path):
     return sorted(files)
 
 
+# ChartBuilder logical root for one data file under the DB root. ``product``
+# carries the DB-root relative path ("AA_yld.csv", "yield/AA_yld.csv").
+SINGLE_FILE_ROOT = "DB_FILE"
+_SINGLE_FILE_BLOCKED_DIRS = {"cache", "confidential", "credential", "teg_location", "mapfile"}
+
+
+def resolve_db_single_file(relative: str) -> Path | None:
+    """DB 루트 아래의 보이는 단일 데이터 파일만 돌려준다(경로 이탈·숨김·기밀 폴더 거부)."""
+    raw = str(relative or "").strip().replace("\\", "/")
+    parts = [part for part in raw.split("/") if part]
+    if not parts or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
+        return None
+    for part in parts[:-1]:
+        folded = part.casefold()
+        if part in {".", ".."} or part.startswith((".", "_")) or folded in _SINGLE_FILE_BLOCKED_DIRS or "backup" in folded:
+            return None
+    if parts[-1] in {".", ".."} or parts[-1].startswith(".") or Path(parts[-1]).suffix.lower() not in DATA_EXTENSIONS:
+        return None
+    db_base = PATHS.db_root
+    fp = db_base.joinpath(*parts)
+    try:
+        if fp.is_symlink() or not fp.is_file() or not fp.resolve().is_relative_to(db_base.resolve()):
+            return None
+    except OSError:
+        return None
+    return fp
+
+
 def source_data_files(source_type: str = "", root: str = "", product: str = "",
                       file: str = "", max_files: int | None = None) -> list[Path]:
     """Resolve physical data files for a Flow DB source without reading them."""
     DB_BASE = PATHS.db_root
     files: list[Path] = []
-    if str(root or "").strip().upper() == "ML_TABLE" and product:
+    if str(root or "").strip().upper() == SINGLE_FILE_ROOT and product:
+        fp = resolve_db_single_file(product)
+        files = [fp] if fp else []
+    elif str(root or "").strip().upper() == "ML_TABLE" and product:
         # Logical ChartBuilder source; resolve only a catalog product, never a path.
         if Path(str(product)).name != str(product) or str(product) in {".", ".."}:
             return []
@@ -1021,17 +1052,71 @@ def jsonl_page(path: Path, limit: int = 100, offset: int = 0, filter_fn=None):
             "has_more": offset + len(logs) < total}
 
 
+def jsonl_iter_reverse(path: Path, chunk_size: int = 64 * 1024):
+    """Stream complete JSON objects newest-first by reading blocks from the end.
+
+    Tail views (monitor history, SQL/AI history, audit panels) need only the
+    last few hundred records of logs that grow to hundreds of MB on the shared
+    workspace. Reading backwards makes their cost proportional to the page,
+    not the file. Damaged or partially appended lines are skipped exactly like
+    ``jsonl_iter``.
+    """
+    if not path.exists():
+        return
+
+    def parse(raw: bytes):
+        if not raw.strip():
+            return None
+        try:
+            entry = json.loads(raw.decode("utf-8", errors="replace"))
+        except (ValueError, TypeError):
+            return None
+        return entry if isinstance(entry, dict) else None
+
+    with path.open("rb") as stream:
+        stream.seek(0, 2)
+        position = stream.tell()
+        carry = b""
+        while position > 0:
+            step = min(chunk_size, position)
+            position -= step
+            stream.seek(position)
+            lines = (stream.read(step) + carry).split(b"\n")
+            carry = lines[0]
+            for raw in reversed(lines[1:]):
+                entry = parse(raw)
+                if entry is not None:
+                    yield entry
+        entry = parse(carry)
+        if entry is not None:
+            yield entry
+
+
 def jsonl_read(path: Path, limit: int = 200, filter_fn=None):
-    """Read JSONL, return last `limit` entries that pass `filter_fn`."""
-    from collections import deque
-    logs = deque(maxlen=limit) if limit > 0 else []
+    """Read JSONL, return last `limit` entries that pass `filter_fn`.
+
+    With a positive limit the file is read backwards and stops once enough
+    records matched; ``limit <= 0`` keeps the full forward scan."""
+    if limit > 0:
+        newest = []
+        for entry in jsonl_iter_reverse(path):
+            try:
+                if filter_fn is None or filter_fn(entry):
+                    newest.append(entry)
+            except Exception:
+                continue
+            if len(newest) >= limit:
+                break
+        newest.reverse()
+        return newest
+    logs = []
     for entry in jsonl_iter(path):
         try:
             if filter_fn is None or filter_fn(entry):
                 logs.append(entry)
         except Exception:
             continue
-    return list(logs)
+    return logs
 
 
 def jsonl_trim(path: Path, max_lines: int):

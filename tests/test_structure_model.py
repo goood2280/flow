@@ -40,8 +40,8 @@ def test_scene_is_explicit_and_variants_change_geometry(isolated):
     assert small["parameters"]["cell_height"] < large["parameters"]["cell_height"]
     hd = model.build_scene(isolated, kind="sram", variant="HD")
     hc = model.build_scene(isolated, kind="sram", variant="HC")
-    assert sum(part["role"] == "channel" for part in hd["parts"]) == 4
-    assert sum(part["role"] == "channel" for part in hc["parts"]) == 6
+    assert sum(part["role"] == "channel" for part in hd["parts"]) == 12
+    assert sum(part["role"] == "channel" for part in hc["parts"]) == 18
     assert any(part["role"] == "bitline" for part in hd["parts"])
 
 
@@ -138,7 +138,7 @@ def test_dimension_anchors_and_per_sheet_mts_are_product_specific(isolated):
     assert a["measurements"]["ns_top_to_m0"]["anchor"]["status"] == "matched"
     assert a["measurements"]["ns_top_to_m0"]["height_nm"] != b["measurements"]["ns_top_to_m0"]["height_nm"]
     source = next(part for part in a["parts"] if part["role"] == "source")
-    assert source["shape"] == "profile_box"
+    assert source["shape"] == "faceted_epi"
     assert source["metadata"]["sd_doping_log10_cm3"] == 20
     assert source["profile_widths"] == pytest.approx([1, 26 / 31, 18 / 31], abs=0.0001)
     assert b["shape_profiles"] == {}
@@ -231,6 +231,7 @@ def test_latchup_view_has_adjacent_wells_and_no_fake_prediction(isolated):
     assert {"nwell", "pwell", "well_tap", "latch_path"} <= {part["role"] for part in scene["parts"]}
     assert scene["measurements"] == {}
     assert "trigger/holding" in scene["latchup_path"]["meaning"]
+    assert {"injection", "well_boundary", "tap"} == {row["id"] for row in scene["latchup_path"]["hotspots"]}
     with pytest.raises(ValueError):
         model.build_scene(isolated, view="unknown")
 
@@ -247,3 +248,38 @@ def test_shape_and_measurement_validation(isolated):
     bad["dimensions"]["invalid"] = {"label": "bad", "from": "ns_stack_top", "to": "ns_stack_top"}
     with pytest.raises(ValueError):
         model.validate(bad)
+
+
+def test_default_pillars_and_mol_levels_have_distinct_geometry_and_colors(isolated):
+    scene = model.build_scene(isolated, kind="sram", variant="HD")
+    assert next(part for part in scene["parts"] if part["role"] == "source")["shape"] == "faceted_epi"
+    assert next(part for part in scene["parts"] if part["role"] == "gate")["shape"] == "gate_shell"
+    assert next(part for part in scene["parts"] if part["role"] == "contact")["shape"] == "tapered_cylinder"
+    mol = [part for part in scene["parts"] if part["role"] == "mol" and part["metadata"]["mol_kind"] == "line"]
+    assert {part["metadata"]["mol_level"] for part in mol} == {1, 2}
+    assert len({part["color"] for part in mol}) == 2
+    assert len([part for part in scene["parts"] if part["role"] == "source"]) == 6
+    custom = deepcopy(isolated)
+    custom["shape_profiles"] = {"sram/HD": {"source": {
+        "tcd_nm": 22, "mcd_nm": 22, "bcd_nm": 22, "primitive": "cylinder"}}}
+    assert next(part for part in model.build_scene(custom, kind="sram", variant="HD")["parts"]
+                if part["role"] == "source")["shape"] == "cylinder"
+    custom["shape_profiles"]["sram/HD"]["source"]["tcd_nm"] = 24
+    with pytest.raises(ValueError, match="원기둥"):
+        model.build_scene(custom, kind="sram", variant="HD")
+
+
+def test_epi_protrusion_and_contacts_follow_actual_top_sheet(isolated):
+    scene = model.build_scene(isolated)
+    source = next(part for part in scene["parts"] if part["role"] == "source")
+    assert source["center"][1] + source["size"][1] / 2 == pytest.approx(
+        scene["landmarks"]["ns_stack_top"] + 22.4 / 40, abs=0.001)
+    contact = next(part for part in scene["parts"] if part["role"] == "contact")
+    assert contact["center"][1] + contact["size"][1] / 2 == pytest.approx(
+        scene["landmarks"]["mol_m0_bottom"] + 0.07, abs=0.001)
+    assert contact["profile_widths"][0] < contact["profile_widths"][2]
+    assert source["metadata"]["facet_angle_deg"] == pytest.approx(54.7356)
+    custom = deepcopy(isolated)
+    custom["variants"]["logic"]["6T"]["epi_facet_angle_deg"] = 60
+    updated = model.build_scene(custom)
+    assert next(part for part in updated["parts"] if part["role"] == "source")["metadata"]["facet_angle_deg"] == 60

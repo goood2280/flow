@@ -20,11 +20,13 @@ PRODUCT = {"ok": False, "tool": {"missing": ["product"]}}
 LOT = {"tool": {"missing": ["lot"]}}
 
 
-def test_success_uses_chain_origin_and_ignores_intermediate_answers():
+def test_clarification_chain_is_not_a_success_example():
+    # Asking back for the product/lot is human-in-the-loop: neither the
+    # incomplete question nor the answers are reusable example questions.
     messages = [user("스플릿테이블 보여줘"), assistant(PRODUCT), user("REAL_ALPHA"), assistant(LOT), user("AZAAA.1")]
-    origin = chat_prompts.completed_origin(messages, DONE)
-    assert origin["prompt"] == "스플릿테이블 보여줘"
-    assert set(origin["answers"]) == {"REAL_ALPHA", "AZAAA.1"}
+    assert chat_prompts.completed_origin(messages, DONE, products=["REAL_ALPHA"]) is None
+    direct = chat_prompts.completed_origin([user("REAL_ALPHA AZAAA.1 스플릿테이블 보여줘")], DONE)
+    assert direct["prompt"] == "REAL_ALPHA AZAAA.1 스플릿테이블 보여줘"
     assert chat_prompts.completed_origin(messages, LOT) is None
     assert chat_prompts.completed_origin(messages, {"ok": False, "tool": {"feature": "splittable"}}) is None
     assert chat_prompts.completed_origin(messages[:-1] + [user("취소")], DONE) is None
@@ -54,8 +56,8 @@ def private_store(monkeypatch, tmp_path):
     monkeypatch.setattr(chat_prompts, "PROMPTS_FILE", tmp_path / "sample.json")
 
 
-def test_server_records_only_after_chain_completes(private_store, monkeypatch):
-    outputs = iter([PRODUCT, LOT, DONE])
+def test_server_skips_clarification_chains_and_records_direct_questions(private_store, monkeypatch):
+    outputs = iter([PRODUCT, LOT, DONE, DONE])
     monkeypatch.setattr(chat_router.flowi_turn, "execute", lambda *a, **k: deepcopy(next(outputs)))
     monkeypatch.setattr(chat_router.flowi_personalization, "resolve_skill_for_prompt", lambda *a: None)
     monkeypatch.setattr(chat_router.audit, "record", lambda *a, **k: None)
@@ -65,20 +67,25 @@ def test_server_records_only_after_chain_completes(private_store, monkeypatch):
     second = chat_router.orchestrate(chat_router.ChatRequest(prompt="REAL_ALPHA", conversation_id=first["conversation_id"]), request, _user={"username": "alice"})
     assert not chat_prompts.get_sample_prompts("alice")["successful"]
     third = chat_router.orchestrate(chat_router.ChatRequest(prompt="AZAAA.1", conversation_id=second["conversation_id"]), request, _user={"username": "alice"})
-    assert third["success_prompt"] == "스플릿테이블 보여줘"
-    assert [row["prompt"] for row in chat_prompts.get_sample_prompts("alice")["successful"]] == ["스플릿테이블 보여줘"]
+    assert "success_prompt" not in third
+    assert not chat_prompts.get_sample_prompts("alice")["successful"]
+    direct = chat_router.orchestrate(chat_router.ChatRequest(prompt="REAL_ALPHA AZAAA.1 스플릿테이블 보여줘"), request, _user={"username": "alice"})
+    assert direct["success_prompt"] == "REAL_ALPHA AZAAA.1 스플릿테이블 보여줘"
+    assert [row["prompt"] for row in chat_prompts.get_sample_prompts("alice")["successful"]] == ["REAL_ALPHA AZAAA.1 스플릿테이블 보여줘"]
 
 
-def test_existing_answer_records_are_repaired_from_owned_history(private_store):
+def test_existing_hitl_records_are_dropped_using_owned_history(private_store, monkeypatch):
+    monkeypatch.setattr(chat_prompts, "_product_names", lambda: ["REAL_ALPHA"])
     with chat_conversations.turn("alice") as state:
         for role, content, response in [("user", "스플릿테이블 보여줘", None), ("assistant", "제품 선택", PRODUCT),
                                          ("user", "REAL_ALPHA", None), ("assistant", "완료", DONE)]:
             chat_conversations.append(state, role, content, **({"response": response} if response else {}))
-    chat_prompts.record_success("REAL_ALPHA", user="alice")
+    for prompt in ("REAL_ALPHA", "스플릿테이블 보여줘", "기록에 없는 질문"):
+        chat_prompts.record_success(prompt, user="alice")
     chat_prompts.record_success("REAL_ALPHA", user="bob")
-    assert [row["prompt"] for row in chat_prompts.get_sample_prompts("alice")["successful"]] == ["스플릿테이블 보여줘"]
+    # Answer and chain start are gone; a record without chat history stays.
+    assert [row["prompt"] for row in chat_prompts.get_sample_prompts("alice")["successful"]] == ["기록에 없는 질문"]
     assert [row["prompt"] for row in chat_prompts.get_sample_prompts("bob")["successful"]] == ["REAL_ALPHA"]
-    assert chat_prompts.get_sample_prompts("alice")["successful"][0]["count"] == 1
 
 
 def test_legacy_pending_only_question_is_not_success(private_store):
@@ -89,18 +96,30 @@ def test_legacy_pending_only_question_is_not_success(private_store):
     assert chat_prompts.get_sample_prompts("alice")["successful"] == []
 
 
-def test_shared_answer_reconstructs_each_successful_origin(private_store):
-    for prompt in ("스플릿테이블 보여줘", "wafer 몇 장 있어"):
+def test_question_that_also_completed_directly_is_kept(private_store, monkeypatch):
+    monkeypatch.setattr(chat_prompts, "_product_names", lambda: ["REAL_ALPHA"])
+    for chain in ([("user", "wafer 몇 장 있어", None), ("assistant", "제품 선택", PRODUCT),
+                   ("user", "REAL_ALPHA", None), ("assistant", "완료", DONE)],
+                  [("user", "wafer 몇 장 있어", None), ("assistant", "완료", DONE)]):
         with chat_conversations.turn("alice") as state:
-            chat_conversations.append(state, "user", prompt)
-            chat_conversations.append(state, "assistant", "제품 선택", response=PRODUCT)
-            chat_conversations.append(state, "user", "REAL_ALPHA")
-            chat_conversations.append(state, "assistant", "완료", response=DONE)
-    chat_prompts.record_success("REAL_ALPHA", user="alice")
-    chat_prompts.record_success("REAL_ALPHA", user="alice")
-    rows = chat_prompts.get_sample_prompts("alice")["successful"]
-    assert {row["prompt"] for row in rows} == {"스플릿테이블 보여줘", "wafer 몇 장 있어"}
-    assert [row["count"] for row in rows] == [1, 1]
+            for role, content, response in chain:
+                chat_conversations.append(state, role, content, **({"response": response} if response else {}))
+    chat_prompts.record_success("wafer 몇 장 있어", user="alice")
+    assert [row["prompt"] for row in chat_prompts.get_sample_prompts("alice")["successful"]] == ["wafer 몇 장 있어"]
+
+
+def test_followup_that_relied_on_earlier_answer_is_not_recorded():
+    messages = [user("REAL_ALPHA 대시보드 보여줘"), assistant(DONE), user("최근 1000일로 다시 보여줘")]
+    assert chat_prompts.completed_origin(messages, DONE, products=["REAL_ALPHA"]) is None
+    named = messages[:2] + [user("REAL_ALPHA ET 트렌드 보여줘")]
+    assert chat_prompts.completed_origin(named, DONE, products=["REAL_ALPHA"])["prompt"] == "REAL_ALPHA ET 트렌드 보여줘"
+
+
+def test_pasted_tables_and_admin_alias_changes_are_not_examples():
+    table = user("PRODA Inline 별칭 업데이트\nstep_id\titem_id\talias\nP10\tI1\t선폭")
+    assert chat_prompts.completed_origin([table], DONE, products=[]) is None
+    alias = {"ok": True, "tool": {"feature": "semantic.alias_update", "table": {"rows": [{"a": 1}]}}}
+    assert chat_prompts.completed_origin([user("PRODA 이름 프로드A도 인식하게 해줘")], alias, products=[]) is None
 
 
 @pytest.fixture

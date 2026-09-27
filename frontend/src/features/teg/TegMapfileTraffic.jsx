@@ -2,17 +2,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
+import { IconLabel, StatusDot } from "../../components/ui/Icon";
 import { Button, Card, EmptyState, Pill } from "../../components/UXKit";
+import { setVisibleInterval } from "../../lib/visibleInterval";
 
 const API = "/api/teg-map";
 const POLL_MS = 2000;
 const LIGHTS = {
-  green: { label: "정상", color: "#2f9e63", bg: "rgba(47,158,99,.12)", icon: "🟢" },
-  blue: { label: "갱신 중", color: "#2563eb", bg: "rgba(37,99,235,.12)", icon: "🔵" },
-  yellow: { label: "확인 필요", color: "#b7791f", bg: "rgba(217,154,26,.12)", icon: "🟡" },
-  red: { label: "불일치", color: "#dc2626", bg: "rgba(220,38,38,.12)", icon: "🔴" },
-  none: { label: "해당 없음", color: "#6b7280", bg: "rgba(107,114,128,.08)", icon: "⚪" },
-  gray: { label: "대기", color: "#6b7280", bg: "rgba(107,114,128,.08)", icon: "⚪" },
+  green: { label: "정상", color: "#2f9e63", bg: "rgba(47,158,99,.12)", tone: "ok" },
+  blue: { label: "갱신 중", color: "#2563eb", bg: "rgba(37,99,235,.12)", tone: "info" },
+  yellow: { label: "확인 필요", color: "#b7791f", bg: "rgba(217,154,26,.12)", tone: "warn" },
+  red: { label: "불일치", color: "#dc2626", bg: "rgba(220,38,38,.12)", tone: "danger" },
+  none: { label: "해당 없음", color: "#6b7280", bg: "rgba(107,114,128,.08)", tone: "neutral" },
+  gray: { label: "대기", color: "#6b7280", bg: "rgba(107,114,128,.08)", tone: "neutral" },
 };
 
 function TrafficPill({ light, prefix = "", mismatchCount }) {
@@ -23,7 +25,7 @@ function TrafficPill({ light, prefix = "", mismatchCount }) {
   return <span style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px",
     borderRadius: 12, fontSize: 11, fontWeight: 700, color: item.color, background: item.bg,
     border: `1px solid ${item.color}`, whiteSpace: "nowrap" }}>
-    {item.icon} {prefix}{item.label}{light === "red" && hasMismatchCount ? ` ${count}건` : ""}
+    <StatusDot tone={item.tone} style={{ marginRight: 5 }} />{prefix}{item.label}{light === "red" && hasMismatchCount ? ` ${count}건` : ""}
   </span>;
 }
 
@@ -43,7 +45,7 @@ function CommentSummary({ summary }) {
   if (!count) return <span style={{ color: "var(--muted)" }}>코멘트 없음</span>;
   const latest = summary.latest || {};
   return <div style={{ display: "grid", gap: 2, minWidth: 180 }}>
-    <span style={{ fontSize: 11, fontWeight: 700 }}>💬 {count}개 · {latest.author || "작성자 미상"}</span>
+    <span style={{ fontSize: 11, fontWeight: 700 }}><IconLabel icon="chat">{count}개</IconLabel> · {latest.author || "작성자 미상"}</span>
     <span title={latest.text || ""} style={{ color: "var(--muted)", overflow: "hidden",
       textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 280 }}>{latest.text || "-"}</span>
   </div>;
@@ -138,8 +140,7 @@ export default function TegMapfileTraffic({ vehicle, onOpenCheck, initialFilenam
 
   useEffect(() => {
     if (!data?.refreshing) return undefined;
-    const timer = window.setInterval(() => loadTraffic({ quiet: true }), POLL_MS);
-    return () => window.clearInterval(timer);
+    return setVisibleInterval(() => loadTraffic({ quiet: true }), POLL_MS);
   }, [data?.refreshing, loadTraffic]);
 
   const openInCheck = async file => {
@@ -171,7 +172,7 @@ export default function TegMapfileTraffic({ vehicle, onOpenCheck, initialFilenam
     }
   };
 
-  if (!vehicle) return <EmptyState icon="🚦" title="제품을 선택해 주세요" />;
+  if (!vehicle) return <EmptyState icon="traffic" title="제품을 선택해 주세요" />;
   const groups = data?.groups?.length
     ? data.groups
     : (data?.files?.length ? [{ key: "all", label: "Mapfile", files: data.files, overall_light: data.overall_light }] : []);
@@ -194,7 +195,7 @@ export default function TegMapfileTraffic({ vehicle, onOpenCheck, initialFilenam
         {data?.error && <span style={{ color: "var(--danger)" }}>{data.error}</span>}
       </div>
     </Card>
-    {!loading && !groups.length && <EmptyState icon="🚦" title="저장된 검사 결과가 없습니다"
+    {!loading && !groups.length && <EmptyState icon="traffic" title="저장된 검사 결과가 없습니다"
       hint="백그라운드 검사가 끝나면 자동으로 표시됩니다." />}
     {groups.map(group => <Card key={group.key || group.label}
       title={`${group.label || group.key} · ${group.files?.length || 0}개`}

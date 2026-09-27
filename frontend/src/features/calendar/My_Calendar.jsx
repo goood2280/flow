@@ -12,6 +12,7 @@ import { canManagePage } from "../../lib/permissions";
 import PageGear from "../../components/PageGear";
 import Modal from "../../components/Modal";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import { Button, Card, Chip, EmptyState, PageHeader, Pill } from "../../components/UXKit";
 
 const API = "/api/calendar";
@@ -216,7 +217,7 @@ export default function My_Calendar({ user }) {
       : isEnd ? "0 3px 3px 0"
       : "3px";
     const label = (isStart || occ.kind === "single")
-      ? (isDecision ? "● " : isAction ? "📍 " : "") + (e.title || "")
+      ? <>{isDecision ? "● " : isAction ? <Icon name="location" style={{ marginRight: 3 }} /> : null}{e.title || ""}</>
       : (isEnd ? "↘ " : "…");
     // Styles
     const fill = `color-mix(in srgb, ${color} ${isAction ? 8 : 14}%, transparent)`;
@@ -247,7 +248,7 @@ export default function My_Calendar({ user }) {
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 10 }}>
           카테고리별 색상을 관리합니다. 회의관리의 회의 카테고리도 이 팔레트를 공유합니다.
         </div>
-        <button onClick={startEditCats} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>🎨 카테고리 팔레트 편집</button>
+        <button onClick={startEditCats} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}><IconLabel icon="palette">카테고리 팔레트 편집</IconLabel></button>
       </PageGear>
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
         <PageHeader
@@ -265,7 +266,7 @@ export default function My_Calendar({ user }) {
                 <option value="all">전체 이벤트</option>
                 <option value="manual">일반 이벤트만</option>
                 {meetings.map(m => (
-                  <option key={m.meeting_id} value={m.meeting_id}>{m.color ? "● " : "🗓 "}{m.meeting_title || m.meeting_id} ({m.count})</option>
+                  <option key={m.meeting_id} value={m.meeting_id}>{m.color ? "● " : ""}{m.meeting_title || m.meeting_id} ({m.count})</option>
                 ))}
               </select>
               <input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;runSearch();}}}
@@ -281,7 +282,7 @@ export default function My_Calendar({ user }) {
             <div style={{ display: "flex", gap: 14, fontSize: 14, color: "var(--text-secondary)", flexWrap: "wrap" }}>
               <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--info-50)", border: "1px solid var(--info)", marginRight: 4, verticalAlign: "middle" }} /> 일반</span>
               <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--ok-50)", border: "1px solid var(--ok)", marginRight: 4, verticalAlign: "middle" }} /> 결정사항</span>
-              <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--pink-50)", border: "1px solid var(--pink)", borderLeft: "3px solid var(--pink)", marginRight: 4, verticalAlign: "middle" }} /> 📍 액션아이템</span>
+              <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--pink-50)", border: "1px solid var(--pink)", borderLeft: "3px solid var(--pink)", marginRight: 4, verticalAlign: "middle" }} /> <Icon name="location" /> 액션아이템</span>
             </div>
           </Card>
         </div>
@@ -394,12 +395,12 @@ export default function My_Calendar({ user }) {
             <span style={{ fontSize: 14, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>
               {selected._new ? "+ 신규 이벤트" : `이벤트 상세 · ${SOURCE_LABEL[selected.source_type || "manual"]}`}
             </span>
-            <span onClick={() => { setSelected(null); setConflict(null); }} style={{ cursor: "pointer", fontSize: 16 }}>✕</span>
+            <button type="button" className="flow-icon-button" onClick={() => { setSelected(null); setConflict(null); }} title="닫기" style={{ fontSize: 16, color: "var(--text-secondary)" }}><Icon name="close" /></button>
           </div>
           <div style={{ flex: 1, overflow: "auto", padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
             {conflict && (
               <div style={{ padding: 10, borderRadius: 6, background: "var(--danger-50)", border: "1px solid var(--danger-line)", fontSize: 14 }}>
-                ⚠ 다른 사용자가 이 이벤트를 수정했습니다.
+                <Icon name="warning" style={{ marginRight: 4 }} />다른 사용자가 이 이벤트를 수정했습니다.
                 <div style={{ marginTop: 6, display: "flex", gap: 6 }}>
                   <button onClick={acceptServer} style={smallBtnPrimary}>최신 데이터 불러오기</button>
                   <button onClick={() => setConflict(null)} style={smallBtn}>닫기</button>
@@ -408,8 +409,8 @@ export default function My_Calendar({ user }) {
             )}
             {!selected._new && (selected.source_type || "manual") !== "manual" && (
               <div style={{ padding: 8, borderRadius: 5, background: "var(--info-50)", border: "1px dashed var(--info-line)", fontSize: 14, color: "var(--text-secondary)" }}>
-                🔗 회의에서 auto-sync 된 이벤트입니다. 수정/삭제는 회의관리의 해당 결정/액션에서.
-                {selected.meeting_ref?.meeting_title && <div style={{ marginTop: 4, fontWeight: 600, color: "var(--accent)" }}>🗓 {selected.meeting_ref.meeting_title}</div>}
+                <Icon name="link" style={{ marginRight: 4 }} />회의에서 auto-sync 된 이벤트입니다. 수정/삭제는 회의관리의 해당 결정/액션에서.
+                {selected.meeting_ref?.meeting_title && <div style={{ marginTop: 4, fontWeight: 600, color: "var(--accent)" }}><IconLabel icon="calendar">{selected.meeting_ref.meeting_title}</IconLabel></div>}
               </div>
             )}
             <Field label="날짜">
@@ -513,7 +514,7 @@ export default function My_Calendar({ user }) {
         </div>
       )}
 
-      <Modal open={editCats} onClose={() => setEditCats(false)} title="🎨 카테고리 관리" width={480}>
+      <Modal open={editCats} onClose={() => setEditCats(false)} title={<IconLabel icon="palette">카테고리 관리</IconLabel>} width={480}>
             {!isAdmin && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>(관리자만 저장할 수 있습니다 — 보기 전용)</div>}
             {draftCats.map((c, i) => (
               <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>

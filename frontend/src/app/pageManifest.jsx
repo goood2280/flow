@@ -13,7 +13,7 @@ const definitions = [
   { key: "dashboard", label: "대시보드", icon: "📊", group: "data", layout: "analysis", scrollMode: "locked", helpId: "dashboard", defaultEnabled: true, load: () => import("../pages/My_Dashboard") },
   { key: "splittable", label: "스플릿 테이블", icon: "🗂️", group: "data", layout: "explorer", helpId: "splittable", defaultEnabled: true, subtabs: [{ key: "view", label: "View" }, { key: "history", label: "History" }], load: () => import("../pages/My_SplitTable") },
   { key: "lotmanage", label: "랏 관리", icon: "🏷️", group: "data", layout: "explorer", helpId: "lotmanage", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_LotManagement") },
-  { key: "productwiki", label: "제품_Wiki", icon: "📖", group: "data", layout: "workboard", helpId: "productwiki", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_ProductWiki") },
+  { key: "productwiki", label: "제품 위키", icon: "📖", group: "data", layout: "workboard", helpId: "productwiki", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_ProductWiki") },
   { key: "ramcache", label: "캐시 관리", icon: "🧠", group: "data", layout: "admin", helpId: "ramcache", defaultEnabled: false, load: () => import("../pages/My_RamCache") },
   { key: "matchfill", label: "매칭 채우기", icon: "🧩", group: "data", layout: "workflow", helpId: "matchfill", defaultEnabled: false, load: () => import("../pages/My_MatchFill") },
 
@@ -21,6 +21,7 @@ const definitions = [
   { key: "templatereport", label: "Template Report", icon: "🖼️", group: "work", layout: "workflow", helpId: "templatereport", defaultEnabled: true, load: () => import("../pages/My_TemplateReport") },
   { key: "autoreport", label: "Auto report", icon: "📑", group: "work", layout: "workflow", helpId: "autoreport", defaultEnabled: true, load: () => import("../pages/My_AutoReport") },
   { key: "lotrequest", label: "랏 배정/요청", icon: "📨", group: "work", layout: "workboard", helpId: "lotrequest", defaultEnabled: true, load: () => import("../pages/My_LotRequest") },
+  { key: "analysisrequest", label: "분석의뢰", icon: "🔬", group: "work", layout: "workboard", helpId: "analysisrequest", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_AnalysisRequest") },
   { key: "lotlocation", label: "랏 현위치 확인", icon: "📍", group: "work", layout: "workflow", helpId: "lotlocation", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_LotLocation") },
   { key: "inform", label: "인폼 로그", icon: "📢", group: "work", layout: "workboard", helpId: "inform", defaultEnabled: false, subtabs: [{ key: "inform", label: "인폼" }, { key: "matrix", label: "매트릭스" }, { key: "audit", label: "로그" }], load: () => import("../pages/My_Inform") },
   { key: "meeting", label: "회의관리", icon: "🗓", group: "work", layout: "workboard", helpId: "meeting", defaultEnabled: false, load: () => import("../pages/My_Meeting") },

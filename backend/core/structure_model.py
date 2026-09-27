@@ -8,19 +8,20 @@ from contextlib import closing
 from datetime import datetime, timezone
 
 from core.paths import PATHS
-from core import product_semantics
+from core import product_semantics, structure_topology
 
 
 ROLES = {"substrate": "기판", "source": "소스", "drain": "드레인", "channel": "나노시트 채널",
-         "inner_gate": "Inner gate", "gate": "상부 게이트", "spacer": "스페이서",
+         "inner_gate": "Inner gate", "gate": "게이트 금속", "highk": "High-k 게이트 절연막", "spacer": "스페이서",
          "contact": "MOL 콘택트", "mol": "MOL M0", "beol": "BEOL M1/M2", "bitline": "비트라인",
          "rx": "RX 활성 영역", "field": "Field 절연 영역", "sdb": "SDB",
          "nwell": "N-Well", "pwell": "P-Well", "well_tap": "Well/Substrate tap",
-         "latch_path": "기생 PNPN 경로"}
+         "latch_path": "기생 PNPN 경로", "guard_ring": "Guard ring"}
 STAGES = {"substrate": "FEOL", "source": "FEOL", "drain": "FEOL", "channel": "FEOL",
-          "inner_gate": "FEOL", "gate": "FEOL", "spacer": "FEOL", "contact": "MOL",
+          "inner_gate": "FEOL", "gate": "FEOL", "highk": "FEOL", "spacer": "FEOL", "contact": "MOL",
           "mol": "MOL", "beol": "BEOL", "bitline": "BEOL", "rx": "FEOL", "field": "FEOL", "sdb": "FEOL",
-          "nwell": "FEOL", "pwell": "FEOL", "well_tap": "FEOL", "latch_path": "FEOL"}
+          "nwell": "FEOL", "pwell": "FEOL", "well_tap": "FEOL", "latch_path": "FEOL",
+          "guard_ring": "FEOL"}
 # Only the nanosheet dimensions are calibrated. Other shapes show topology.
 NANOSHEET_NM_PER_UNIT = 40.0
 NANOSHEET_THICKNESS_NM = 5.0
@@ -35,8 +36,10 @@ DETAIL_LIMITS = {**{f"ns{i}_{field}_nm": (2.0, 80.0 if field == "width" else 15.
                  "mol_level_count": (1, 3),
                  "sdb_width_nm": (2.0, 40.0), "gate_to_sd_gap_nm": (0.0, 30.0),
                  "sd_width_nm": (8.0, 80.0), "sd_protrusion_nm": (0.0, 80.0),
+                 "epi_facet_angle_deg": (25.0, 80.0),
                  "mol_height_nm": (8.0, 100.0), "mol_level_pitch_nm": (8.0, 80.0)}
 SHAPABLE_ROLES = {"source", "drain", "gate", "spacer", "contact", "mol", "beol", "sdb"}
+SHAPE_PRIMITIVES = {"profile_box", "cylinder", "tapered_cylinder", "faceted_epi", "gate_shell"}
 SHAPE_CD_LIMITS = (2.0, 120.0)
 STRUCTURE_QUERY = re.compile(
     r"gaa|nanosheet|nano.?sheet|ns\s*\d|inner.?gate|gate|source|drain|cell.?height|mol|beol|sdb|latch.?up|well|"
@@ -198,9 +201,15 @@ def _shape_profiles(profiles, label):
     if not isinstance(profiles, dict) or set(profiles) - SHAPABLE_ROLES:
         raise ValueError(f"{label}: 구조 프로파일 역할이 올바르지 않습니다.")
     for role, cds in profiles.items():
-        if not isinstance(cds, dict) or set(cds) != {"tcd_nm", "mcd_nm", "bcd_nm"}:
+        if (not isinstance(cds, dict) or not {"tcd_nm", "mcd_nm", "bcd_nm"} <= set(cds)
+                or set(cds) - {"tcd_nm", "mcd_nm", "bcd_nm", "primitive"}):
             raise ValueError(f"{label}/{role}: TCD/MCD/BCD가 필요합니다.")
-        for key, value in cds.items():
+        if "primitive" in cds and cds["primitive"] not in SHAPE_PRIMITIVES:
+            raise ValueError(f"{label}/{role}: 지원하지 않는 기본 형상입니다.")
+        if cds.get("primitive") == "cylinder" and len({cds[key] for key in ("tcd_nm", "mcd_nm", "bcd_nm")}) != 1:
+            raise ValueError(f"{label}/{role}: 원기둥은 TCD/MCD/BCD가 같아야 합니다.")
+        for key in ("tcd_nm", "mcd_nm", "bcd_nm"):
+            value = cds[key]
             if (isinstance(value, bool) or not isinstance(value, (int, float))
                     or not SHAPE_CD_LIMITS[0] <= value <= SHAPE_CD_LIMITS[1]):
                 raise ValueError(f"{label}/{role}/{key}: 2~120 nm 범위가 필요합니다.")
@@ -383,7 +392,7 @@ def build_scene(document, product="", kind="", variant="", *, include_candidates
         role_profile = shape_profiles.get(role)
         if role_profile:
             cds = [role_profile[key] for key in ("bcd_nm", "mcd_nm", "tcd_nm")]
-            shape = "profile_box"
+            shape = role_profile.get("primitive", shape if shape in SHAPE_PRIMITIVES else "profile_box")
             profile_widths = [round(cd / max(cds), 4) for cd in cds]
             size = [max(cds) / NANOSHEET_NM_PER_UNIT, size[1], size[2]]
             metadata = {**(metadata or {}), **role_profile}
@@ -407,12 +416,12 @@ def build_scene(document, product="", kind="", variant="", *, include_candidates
     doping_log = params.get("sd_doping_log10_cm3")
     doping = (doping_log - 17.0) / 4.0 if doping_log is not None else params.get("sd_doping_relative")
     sd_width = params.get("sd_width_nm", 26.0) / NANOSHEET_NM_PER_UNIT
-    sd_extent = max([sd_width, *(max(shape_profiles[role].values()) / NANOSHEET_NM_PER_UNIT
+    sd_extent = max([sd_width, *(max(shape_profiles[role][key] for key in ("tcd_nm", "mcd_nm", "bcd_nm")) / NANOSHEET_NM_PER_UNIT
                                  for role in ("source", "drain") if role in shape_profiles)])
     sd_x = gate_max / 2 + sd_extent / 2 + params.get("gate_to_sd_gap_nm", 14.2) / NANOSHEET_NM_PER_UNIT
-    shifts = [-1.55, 1.55] if kind == "sram" else [0]
+    shifts = [0]
     for cell_index, shift in enumerate(shifts):
-        suffix = f" {cell_index + 1}" if kind == "sram" else ""
+        suffix = ""
         box("substrate", "기판" + suffix, [shift, -0.16, 0], [2.9, 0.32, h], "#43536b")
         box("rx", "RX 활성 영역" + suffix, [shift, 0.015, 0], [2.55, 0.035, min(h, 1.3)], "#478b7a", opacity=0.45)
         for z in (-(h + 0.24) / 2, (h + 0.24) / 2):
@@ -422,90 +431,105 @@ def build_scene(document, product="", kind="", variant="", *, include_candidates
             [params.get("sdb_width_nm", 5.2) / NANOSHEET_NM_PER_UNIT, 0.4, h],
             "#d6b8a2", opacity=0.8)
         top = 0.43 + (count - 1) * space
-        source_top = top + params.get("sd_protrusion_nm", 22.4) / NANOSHEET_NM_PER_UNIT
+        ns_top_y = top + params.get(f"ns{count}_thickness_nm", NANOSHEET_THICKNESS_NM) / (2 * NANOSHEET_NM_PER_UNIT)
+        source_top = ns_top_y + params.get("sd_protrusion_nm", 22.4) / NANOSHEET_NM_PER_UNIT
+        epi_depth = max(params.get(f"ns{i}_width_nm", width * NANOSHEET_NM_PER_UNIT)
+                        for i in range(1, count + 1)) / NANOSHEET_NM_PER_UNIT + 0.28
+        mol_y = source_top + params.get("mol_height_nm", 24.0) / NANOSHEET_NM_PER_UNIT
+        sheet_holes = [{"y": 0.43 + i * space,
+                        "thickness": params.get(f"ns{i + 1}_thickness_nm", NANOSHEET_THICKNESS_NM) / NANOSHEET_NM_PER_UNIT,
+                        "width": params.get(f"ns{i + 1}_width_nm", width * NANOSHEET_NM_PER_UNIT) / NANOSHEET_NM_PER_UNIT}
+                       for i in range(count)]
         for side, x in (("소스", -sd_x), ("드레인", sd_x)):
             role = "source" if x < 0 else "drain"
             box(role, side + suffix, [shift + x, source_top / 2, 0],
-                [sd_width, source_top, width * 0.8],
-                "#4b80bd" if doping is not None and doping >= 0.65 else "#3e90b4",
-                opacity=0.88, shape="profile_box", profile_widths=[0.72, 1.0, 0.82],
+                [sd_width, source_top, epi_depth],
+                "#bd839f" if doping is None else "#4b80bd" if doping >= 0.65 else "#3e90b4",
+                shape="faceted_epi",
                 metadata={"sd_doping_log10_cm3": doping_log, "sd_color_scale": doping,
-                          "meaning": "color-only display; no calibrated electrical inference"} if doping is not None else None)
-            box("contact", side + " 콘택트" + suffix, [shift + x, source_top + 0.22, 0],
-                [0.32, 0.44, 0.32], "#e2ae61")
+                          "material": "SiGe:B (pFET example)", "facet_angle_deg": params.get("epi_facet_angle_deg", 54.7356),
+                          "cap_height": min(max(0, source_top - ns_top_y), epi_depth * 0.32),
+                          "meaning": "{111}/{001} illustrative facet section; process-dependent, not a TEM reconstruction"})
+            box("contact", side + " 콘택트" + suffix, [shift + x, (source_top + mol_y) / 2, 0],
+                [0.32, mol_y - source_top, 0.32], "#e2ae61", shape="tapered_cylinder",
+                profile_widths=[0.65, 0.82, 1.0], metadata={"process": "positive etch taper; wider opening, narrower bottom"})
         for index in range(count):
             y = 0.43 + index * space
             sheet_width_nm = params.get(f"ns{index + 1}_width_nm", width * NANOSHEET_NM_PER_UNIT)
             sheet_thickness_nm = params.get(f"ns{index + 1}_thickness_nm", NANOSHEET_THICKNESS_NM)
             box("channel", f"나노시트 {index + 1}" + suffix, [shift, y, 0],
-                [2.02, sheet_thickness_nm / NANOSHEET_NM_PER_UNIT,
+                [2 * sd_x - sd_width + 0.06, sheet_thickness_nm / NANOSHEET_NM_PER_UNIT,
                  sheet_width_nm / NANOSHEET_NM_PER_UNIT], "#65c4dd",
                 metadata={"sheet_index": index + 1, "width_nm": sheet_width_nm, "thickness_nm": sheet_thickness_nm})
-            for side, offset in (("상", 0.12), ("하", -0.12)):
+            dielectric_height = sheet_thickness_nm / NANOSHEET_NM_PER_UNIT + 0.024
+            box("highk", f"High-k {index + 1}" + suffix, [shift, y, 0],
+                [gate_max, dielectric_height, sheet_width_nm / NANOSHEET_NM_PER_UNIT + 0.024],
+                "#e8efe6", opacity=0.7, shape="gate_shell",
+                metadata={"sheet_holes": [sheet_holes[index]], "hole_clearance": 0,
+                          "base_y": y - dielectric_height / 2})
+            for side, sign in (("상", 1), ("하", -1)):
+                offset = sign * (sheet_thickness_nm / (2 * NANOSHEET_NM_PER_UNIT) + 0.025)
                 box("inner_gate", f"Inner gate {index + 1} {side}" + suffix,
-                    [shift, y + offset, 0], [gate, 0.06, width + 0.26], "#aa80d5", opacity=0.82)
-        box("gate", "상부 게이트" + suffix, [shift, top + 0.19, 0],
-            [gate_max, 0.26, width + 0.42], "#8f63c7", opacity=0.9,
-            shape="profile_box", profile_widths=gate_profile,
-            metadata={"TCD_nm": gate_cds["top"], "MCD_nm": gate_cds["middle"],
-                      "BCD_nm": gate_cds["bottom"]})
-        for z in (-(width + 0.25) / 2, (width + 0.25) / 2):
-            box("gate", "게이트 측벽" + suffix, [shift, (top + 0.28) / 2, z],
-                [gate, top + 0.28, 0.16], "#8f63c7", opacity=0.75)
-        for x in (-(gate_max + 0.16) / 2, (gate_max + 0.16) / 2):
-            box("spacer", "스페이서" + suffix, [shift + x, (top + 0.3) / 2, 0], [0.12, top + 0.3, width + 0.35], "#e7c47f", opacity=0.75)
-        mol_y = source_top + params.get("mol_height_nm", 24.0) / NANOSHEET_NM_PER_UNIT
+                    [shift, y + offset, 0], [gate_max, 0.03, sheet_width_nm / NANOSHEET_NM_PER_UNIT + 0.05], "#aa80d5", opacity=0.82)
         gate_top = top + 0.32
+        box("gate", "상부 게이트" + suffix, [shift, gate_top / 2, 0],
+            [gate_max, gate_top, epi_depth + 0.14], "#8f63c7", opacity=0.72,
+            shape="gate_shell", profile_widths=gate_profile,
+            metadata={"TCD_nm": gate_cds["top"], "MCD_nm": gate_cds["middle"],
+                      "BCD_nm": gate_cds["bottom"], "sheet_holes": sheet_holes,
+                      "base_y": 0, "process": "replacement metal gate wrapping each nanosheet"})
+        for x in (-(gate_max + 0.16) / 2, (gate_max + 0.16) / 2):
+            box("spacer", "Outer / inner spacer" + suffix, [shift + x, (top + 0.3) / 2, 0],
+                [0.12, top + 0.3, epi_depth + 0.07], "#e7c47f", opacity=0.65,
+                shape="gate_shell", metadata={"sheet_holes": sheet_holes, "base_y": 0})
         box("contact", "게이트 콘택트" + suffix, [shift, (gate_top + mol_y) / 2, 0],
-            [0.3, mol_y - gate_top, 0.3], "#e2ae61")
+            [0.3, mol_y - gate_top, 0.3], "#e2ae61", shape="tapered_cylinder", profile_widths=[0.68, 0.84, 1.0])
         for x, name in ((-sd_x, "소스"), (0, "게이트"), (sd_x, "드레인")):
             box("mol", f"MOL M0 {name}" + suffix, [shift + x, mol_y, 0],
-                [0.55, 0.14, 0.72], "#e9ae63")
+                [0.55, 0.14, 0.72], "#eda951", metadata={"mol_level": 1, "mol_kind": "line"})
         mol_levels = int(params.get("mol_level_count", 2))
         mol_pitch = params.get("mol_level_pitch_nm", 12.8) / NANOSHEET_NM_PER_UNIT
+        mol_colors = {2: "#50b7d9", 3: "#ab8ce0"}
         for level in range(2, mol_levels + 1):
             local_y = mol_y + (level - 1) * mol_pitch
             for x, name in ((-sd_x, "소스"), (0, "게이트"), (sd_x, "드레인")):
                 box("mol", f"MOL V{level - 1} {name}" + suffix,
                     [shift + x, local_y - mol_pitch / 2, 0],
-                    [0.16, mol_pitch, 0.16], "#d7b77f")
-                box("mol", f"MOL M0-{level} {name}" + suffix,
-                    [shift + x, local_y, 0], [0.45, 0.12, 0.64], "#d9a662")
+                    [0.16, mol_pitch, 0.16], mol_colors[level], shape="cylinder",
+                    metadata={"mol_level": level, "mol_kind": "via"})
+                box("mol", f"MOL M{level - 1} {name}" + suffix,
+                    [shift + x, local_y, 0], [0.45, 0.12, 0.64], mol_colors[level],
+                    metadata={"mol_level": level, "mol_kind": "line"})
         mol_top = mol_y + (mol_levels - 1) * mol_pitch
         m1_y = mol_top + 0.52
         m2_y = m1_y + 0.55
         for x, name in ((-sd_x, "소스"), (0, "게이트"), (sd_x, "드레인")):
             box("beol", f"BEOL V0 {name}" + suffix, [shift + x, (mol_top + m1_y) / 2, 0],
-                [0.18, m1_y - mol_top, 0.18], "#9bc5d9")
+                [0.18, m1_y - mol_top, 0.18], "#9bc5d9", shape="cylinder")
             box("beol", f"BEOL M1 {name}" + suffix, [shift + x, m1_y, 0],
                 [0.2, 0.16, 2.0], "#8bc4e0")
         box("beol", "BEOL V1" + suffix, [shift - sd_x, (m1_y + m2_y) / 2, 0.75],
-            [0.18, m2_y - m1_y, 0.18], "#d4e3e9")
+            [0.18, m2_y - m1_y, 0.18], "#d4e3e9", shape="cylinder")
         box("beol", "BEOL M2" + suffix, [shift, m2_y, 0.75],
             [2.8, 0.16, 0.22], "#d4e3e9")
-    if kind == "sram":
-        box("bitline", "SRAM 비트라인", [0, mol_y + 0.25, -0.75], [4.4, 0.12, 0.18], "#e2ae61")
+    topology = {"kind": "single GAA transistor"}
+    netlist = []
+    annotations = structure_topology.gaa_annotations(parts)
+    references = list(structure_topology.GAA_REFERENCES)
+    latchup_path = None
     if view == "latchup":
-        parts.clear()
-        box("substrate", "P형 기판", [0, -0.47, 0], [5.8, 0.5, 2.2], "#53647a")
-        box("nwell", "N-Well · PMOS 영역", [-1.35, -0.13, 0],
-            [2.5, 0.35, 1.8], "#6885bc", opacity=0.68)
-        box("pwell", "P-Well · NMOS 영역", [1.35, -0.13, 0],
-            [2.5, 0.35, 1.8], "#b8809a", opacity=0.68)
-        for x, name, color in ((-1.95, "P+ PMOS S/D", "#e3a2ad"),
-                               (-0.75, "P+ PMOS S/D", "#e3a2ad"),
-                               (0.75, "N+ NMOS S/D", "#72c5d9"),
-                               (1.95, "N+ NMOS S/D", "#72c5d9")):
-            box("source" if x < 0 else "drain", name, [x, 0.18, 0],
-                [0.42, 0.28, 0.9], color)
-        box("well_tap", "N-Well tap → VDD", [-2.48, 0.22, 0.55],
-            [0.24, 0.35, 0.24], "#dcb572")
-        box("well_tap", "P-Well tap → VSS", [2.48, 0.22, 0.55],
-            [0.24, 0.35, 0.24], "#dcb572")
-        box("gate", "PMOS gate", [-1.35, 0.36, 0], [0.2, 0.34, 1.0], "#a281d1")
-        box("gate", "NMOS gate", [1.35, 0.36, 0], [0.2, 0.34, 1.0], "#a281d1")
-        box("latch_path", "기생 PNP/NPN 결합 경로", [0, -0.15, -0.62],
-            [3.8, 0.06, 0.09], "#ec764e")
+        assembled = structure_topology.build_latchup(parts)
+        parts = assembled["parts"]
+        topology, netlist = assembled["topology"], assembled["netlist"]
+        annotations = assembled["annotations"]
+        references.extend(assembled["references"])
+        latchup_path = assembled["latchup_path"]
+    elif kind == "sram":
+        assembled = structure_topology.build_sram_6t(parts)
+        parts = assembled["parts"]
+        topology, netlist = assembled["topology"], assembled["netlist"]
+        annotations = assembled["annotations"]
+        references.extend(assembled["references"])
     sheet_pitch_nm = round(space * NANOSHEET_NM_PER_UNIT, 2)
     sheet_width_nm = round(width * NANOSHEET_NM_PER_UNIT, 2)
     thicknesses = [params.get(f"ns{i}_thickness_nm", NANOSHEET_THICKNESS_NM) for i in range(1, count + 1)]
@@ -549,10 +573,10 @@ def build_scene(document, product="", kind="", variant="", *, include_candidates
             "layer_order": ["FEOL: nanosheet and inner gate", "FEOL: upper gate",
                             "MOL: contact and M0", "BEOL: V0, M1, V1, M2"],
             "roles": ROLES, "parts": parts, "anchors": checked,
+            "topology": topology, "netlist": netlist,
+            "annotations": annotations, "references": references,
             "dimension_anchors": dimension_anchors,
-            "latchup_path": {"sequence": ["P+ PMOS", "N-Well", "P-Well/P형 기판", "N+ NMOS"],
-                             "meaning": "기생 PNP와 NPN이 결합하는 개념 경로; trigger/holding 수치 예측이 아님"}
-                             if view == "latchup" else None,
+            "latchup_path": latchup_path,
             "anchor_candidates": candidates[:3000] if include_candidates else [], "anchor_candidate_count": len(candidates),
             "warnings": [f"{role}: 해당 제품의 INLINE 매칭에서 앵커를 찾지 못했습니다." for role, value in checked.items() if value["status"] == "missing"]
                         + [f"{key}: 해당 제품의 INLINE 매칭에서 측정 구간 앵커를 찾지 못했습니다." for key, value in dimension_anchors.items() if value["status"] == "missing"],

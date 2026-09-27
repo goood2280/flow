@@ -5,6 +5,7 @@ import { sf } from "../../lib/api";
 import { canManagePage, isAdmin as isAdminUser } from "../../lib/permissions";
 import { Pill, statusPalette, chartPalette } from "../../components/UXKit";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import Modal from "../../components/Modal";
 const API="/api/dbmap";
 
@@ -327,7 +328,7 @@ function GraphView({config,groups,tables,onNodeClick,onNodeDblClick,onAddRelatio
           <rect x={gp.x} y={gp.y} width={bw} height={members.length?bh:70} rx={12}
             fill={groupColor+"26"} stroke={groupColor} strokeWidth={2.5} strokeDasharray="6,4" opacity={0.95}
             />
-          <text x={gp.x+INNER_PAD} y={gp.y+18} fill={groupColor} fontSize={11} fontWeight={700}>📚 {gn.name}</text>
+          <text x={gp.x+INNER_PAD} y={gp.y+18} fill={groupColor} fontSize={11} fontWeight={700}>{gn.name}</text>
           <text x={gp.x+bw-INNER_PAD-(canManage?26:0)} y={gp.y+18} fill={groupColor+"aa"} fontSize={9} textAnchor="end">{members.length} 테이블</text>
           <ColorPicker node={gn} color={groupColor} x={gp.x+bw-24} y={gp.y+4}/>
           {groupProducts.length>0&&(
@@ -651,10 +652,10 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
         <div style={{fontSize:16,fontWeight:700,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
           <span>{form.id?"테이블 편집":"새 테이블"}</span>
           {form.name&&<span style={{fontSize:14,color:"#a3a3a3",fontWeight:400,fontFamily:"monospace"}}>→ Base/{(form.name.replace(/[^a-zA-Z0-9_-]/g,"_")||"table")}.csv</span>}
-          {previewVer&&<span style={{fontSize:14,padding:"2px 10px",borderRadius:12,background:"rgba(59,130,246,0.15)",color:"#3b82f6",fontWeight:700,fontFamily:"monospace"}}>👁 미리보기: {previewVer}</span>}
+          {previewVer&&<span style={{fontSize:14,padding:"2px 10px",borderRadius:12,background:"rgba(59,130,246,0.15)",color:"#3b82f6",fontWeight:700,fontFamily:"monospace"}}><IconLabel icon="eye">{`미리보기: ${previewVer}`}</IconLabel></span>}
           {previewVer&&<span onClick={clearPreview} style={{fontSize:14,cursor:"pointer",color:"var(--text-secondary)",textDecoration:"underline"}}>원본 복구</span>}
         </div>
-        <span onClick={onClose} style={{cursor:"pointer",fontSize:18}}>✕</span>
+        <button type="button" className="flow-icon-button" onClick={onClose} title="닫기" style={{fontSize:18,color:"var(--text-secondary)"}}><Icon name="close" /></button>
       </div>
       <div style={{display:"flex",gap:8,marginBottom:8}}>
         <div style={{flex:2}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>이름 <span style={{color:"#a3a3a3",fontWeight:400}}>(파일명 기준)</span></div><input value={form.name} onChange={e=>u("name",e.target.value)} style={S} placeholder="matching_step"/></div>
@@ -699,7 +700,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
               <option value="string">string</option><option value="int">int</option><option value="float">float</option><option value="bool">bool</option>
             </select>
             <input value={c.desc||""} data-tmcol={`${i}-desc`} onChange={e=>updateCol(i,"desc",e.target.value)} onKeyDown={colKD("desc")} disabled={!!groupCols} placeholder="설명" style={{...S,flex:2}}/>
-            {!groupCols&&<span onClick={()=>delCol(i)} style={{padding:"4px 8px",color:"#ef4444",cursor:"pointer"}}>✕</span>}
+            {!groupCols&&<span onClick={()=>delCol(i)} title="열 삭제" style={{padding:"4px 8px",color:"#ef4444",cursor:"pointer",display:"inline-flex"}}><Icon name="close" /></span>}
           </div>);
         })}
         {effectiveCols.length===0&&!groupCols&&<div style={{marginTop:6,padding:10,fontSize:14,color:"var(--text-secondary)",textAlign:"center",background:"var(--bg-tertiary)",borderRadius:4,border:"1px dashed var(--border)"}}>컬럼이 없습니다. <b>+ 컬럼 추가</b> 를 클릭하세요.</div>}
@@ -709,7 +710,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
       {!groupCols&&<div style={{marginBottom:8,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)"}}>
         <div onClick={()=>setShowValidation(s=>!s)} style={{padding:"6px 10px",cursor:"pointer",display:"flex",alignItems:"center",gap:6,fontSize:14,fontWeight:600,userSelect:"none"}}>
           <span style={{fontSize:14,color:"var(--text-secondary)"}}>{showValidation?"▼":"▶"}</span>
-          <span>🛡 검증 & 정렬 규칙</span>
+          <IconLabel icon="shield">검증 & 정렬 규칙</IconLabel>
           {form.validation?.enabled&&<span style={{fontSize:14,padding:"1px 6px",borderRadius:10,background:"rgba(16,185,129,0.15)",color:"#10b981",fontWeight:700}}>ENABLED</span>}
           <label style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:4,fontSize:14,color:"var(--text-secondary)",fontWeight:400}} onClick={e=>e.stopPropagation()}>
             <input type="checkbox" checked={!!form.validation?.enabled} onChange={e=>u("validation",{...(form.validation||{}),enabled:e.target.checked})}/>
@@ -767,7 +768,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
       </div>}
       {/* v8.7.2: Save errors */}
       {saveErrors.length>0&&<div style={{marginBottom:8,padding:"8px 10px",background:"rgba(239,68,68,0.08)",border:"1px solid #ef4444",borderRadius:6,fontSize:14,color:"#ef4444",maxHeight:140,overflow:"auto"}}>
-        <div style={{fontWeight:700,marginBottom:4}}>⚠ 검증 실패 — 저장되지 않았습니다 ({saveErrors.length}건)</div>
+        <div style={{fontWeight:700,marginBottom:4}}><Icon name="warning" style={{ marginRight: 4 }} />검증 실패 — 저장되지 않았습니다 ({saveErrors.length}건)</div>
         {saveErrors.slice(0,20).map((m,i)=><div key={i} style={{fontFamily:"monospace",fontSize:14}}>• {m}</div>)}
         {saveErrors.length>20&&<div style={{fontSize:14}}>... 외 {saveErrors.length-20}건</div>}
       </div>}
@@ -862,7 +863,7 @@ function TableEditor({table,groups,onSave,onDelete,onClose,user}){
                     </td>);
                   })}
                   <td style={{width:32,minWidth:32,padding:"2px 4px",textAlign:"center",border:"1px solid #d1d5db",background:i%2===0?"#fff":"#f9fafb"}}>
-                    <span onClick={()=>delRow(i)} title="행 삭제" style={{cursor:"pointer",color:"#ef4444",fontSize:14,fontWeight:700}}>✕</span>
+                    <span onClick={()=>delRow(i)} title="행 삭제" style={{cursor:"pointer",color:"#ef4444",fontSize:14,display:"inline-flex"}}><Icon name="close" /></span>
                   </td>
                 </tr>
               ))}
@@ -919,7 +920,7 @@ function GroupEditor({group,onSave,onClose}){
   return(<Modal open onClose={onClose} width={600} zIndex={9999}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
         <div style={{fontSize:16,fontWeight:700}}>{form.id?"그룹 편집":"새 테이블 그룹"}</div>
-        <span onClick={onClose} style={{cursor:"pointer",fontSize:18}}>✕</span>
+        <button type="button" className="flow-icon-button" onClick={onClose} title="닫기" style={{fontSize:18,color:"var(--text-secondary)"}}><Icon name="close" /></button>
       </div>
       <div style={{marginBottom:8}}><div style={{fontSize:14,color:"var(--text-secondary)"}}>그룹명 (예: TABLE_ET)</div>
         <input value={form.name} onChange={e=>u("name",e.target.value)} style={S} placeholder="예: TABLE_ET"/></div>
@@ -936,7 +937,7 @@ function GroupEditor({group,onSave,onClose}){
             <option value="string">string</option><option value="int">int</option><option value="float">float</option><option value="bool">bool</option>
           </select>
           <input value={c.desc||""} onChange={e=>updateCol(i,"desc",e.target.value)} placeholder="설명" style={{...S,flex:2}}/>
-          <span onClick={()=>delCol(i)} style={{padding:"4px 8px",color:"#ef4444",cursor:"pointer"}}>✕</span>
+          <span onClick={()=>delCol(i)} title="열 삭제" style={{padding:"4px 8px",color:"#ef4444",cursor:"pointer",display:"inline-flex"}}><Icon name="close" /></span>
         </div>))}
       </div>
       <div style={{display:"flex",gap:8,marginTop:12}}>
@@ -1609,8 +1610,8 @@ export default function My_TableMap({user}){
     {/* DB ref detail modal */}
     {dbInfo&&<Modal open onClose={()=>{setDbInfo(null);setSelectedNode(null);}} width={600} zIndex={9999}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}}>
-          <div style={{fontSize:16,fontWeight:700,color:"#3b82f6"}}>🗄️ {dbInfo.name}</div>
-          <span onClick={()=>{setDbInfo(null);setSelectedNode(null);}} style={{cursor:"pointer",fontSize:18}}>✕</span>
+          <div style={{fontSize:16,fontWeight:700,color:"#3b82f6"}}><IconLabel icon="database">{dbInfo.name}</IconLabel></div>
+          <button type="button" className="flow-icon-button" onClick={()=>{setDbInfo(null);setSelectedNode(null);}} title="닫기" style={{fontSize:18,color:"var(--text-secondary)"}}><Icon name="close" /></button>
         </div>
         {/* Info grid */}
         <div style={{display:"grid",gridTemplateColumns:"110px 1fr",gap:"6px 12px",fontSize:14,marginBottom:14}}>
@@ -1649,7 +1650,7 @@ export default function My_TableMap({user}){
 
     {view==="manage"&&<div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:12}}>
       {visibleGroups.map(g=>(<div key={g.id} style={{background:"var(--bg-secondary)",borderRadius:8,border:"1px solid #a855f7",padding:12}}>
-        <div style={{fontSize:14,color:"#a855f7",fontWeight:700,marginBottom:4}}>📚 그룹</div>
+        <div style={{fontSize:14,color:"#a855f7",fontWeight:700,marginBottom:4}}><IconLabel icon="layers">그룹</IconLabel></div>
         <div style={{fontSize:14,fontWeight:600,marginBottom:4}}>{g.name}</div>
         <div style={{fontSize:14,color:"var(--text-secondary)"}}>{g.tables?.length||0} 테이블 | {g.updated?.slice(0,10)}</div>
         <div style={{display:"flex",gap:4,marginTop:6}}>
@@ -1658,9 +1659,9 @@ export default function My_TableMap({user}){
         </div>
       </div>))}
       {visibleTables.map(t=>(<div key={t.id} style={{background:"var(--bg-secondary)",borderRadius:8,border:"1px solid var(--accent)",padding:12}}>
-        <div style={{fontSize:14,color:"var(--accent)",fontWeight:700,marginBottom:4}}>📋 테이블{t.group_id?" (그룹 내)":""}</div>
+        <div style={{fontSize:14,color:"var(--accent)",fontWeight:700,marginBottom:4}}><IconLabel icon="table">{"테이블"+(t.group_id?" (그룹 내)":"")}</IconLabel></div>
         <div style={{fontSize:14,fontWeight:600,marginBottom:4}}>{t.name}</div>
-        <div style={{fontSize:14,color:"var(--text-secondary)"}}>{t.updated?.slice(0,10)} · <span style={{fontFamily:"monospace",color:"#f97316"}}>📄 {(t.name||t.id).replace(/[^a-zA-Z0-9_-]/g,"_")}.csv</span></div>
+        <div style={{fontSize:14,color:"var(--text-secondary)"}}>{t.updated?.slice(0,10)} · <span style={{fontFamily:"monospace",color:"#f97316"}}><Icon name="file" style={{marginRight:4}} />{(t.name||t.id).replace(/[^a-zA-Z0-9_-]/g,"_")}.csv</span></div>
         <div style={{display:"flex",gap:4,marginTop:6}}>
           <span onClick={()=>sf(API+"/tables/"+t.id).then(d=>setEditingTable(d)).catch(()=>{})} style={{color:"var(--accent)",cursor:"pointer",fontSize:14}}>편집</span>
           {canManage&&<span onClick={()=>{if(confirm("삭제할까요? (아카이브됨)"))deleteTable(t.id);}} style={{color:"#ef4444",cursor:"pointer",fontSize:14}}>삭제</span>}
@@ -1701,7 +1702,7 @@ export default function My_TableMap({user}){
             <span style={{padding:"4px 9px",borderRadius:999,background:"var(--accent-glow)",color:"var(--accent)",fontSize:14,fontWeight:900,fontFamily:"monospace"}}>
               {relationPairs.length} MATCH
             </span>
-            <span onClick={closeRelationModal} style={{cursor:"pointer",fontSize:18}}>✕</span>
+            <button type="button" className="flow-icon-button" onClick={closeRelationModal} title="닫기" style={{fontSize:18,color:"var(--text-secondary)"}}><Icon name="close" /></button>
           </div>
         </div>
 
@@ -1781,7 +1782,7 @@ export default function My_TableMap({user}){
     {showImport&&<Modal open onClose={()=>setShowImport(false)} width={560} zIndex={9999}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
           <div style={{fontSize:16,fontWeight:700}}>기존 데이터 임포트</div>
-          <span onClick={()=>setShowImport(false)} style={{cursor:"pointer",fontSize:18}}>✕</span>
+          <button type="button" className="flow-icon-button" onClick={()=>setShowImport(false)} title="닫기" style={{fontSize:18,color:"var(--text-secondary)"}}><Icon name="close" /></button>
         </div>
         <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:12}}>Base/DB 의 parquet/csv 를 TableMap 테이블로 가져옵니다. 스키마 + 최대 rows 건.</div>
         <div style={{marginBottom:8}}>
@@ -1807,7 +1808,7 @@ export default function My_TableMap({user}){
     {pickingDb&&<Modal open onClose={()=>setPickingDb(false)} width={600} zIndex={9999}>
         <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
           <div style={{fontSize:16,fontWeight:700}}>DB 참조 고정</div>
-          <span onClick={()=>setPickingDb(false)} style={{cursor:"pointer",fontSize:18}}>✕</span>
+          <button type="button" className="flow-icon-button" onClick={()=>setPickingDb(false)} title="닫기" style={{fontSize:18,color:"var(--text-secondary)"}}><Icon name="close" /></button>
         </div>
         <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:8}}>맵 노드로 추가할 DB 소스를 선택하세요 (참조만, 실제 데이터는 변경되지 않습니다)</div>
         {dbSources.map(s=><div key={s.label} onClick={()=>addDbRef(s)} style={{padding:"8px 12px",background:"var(--bg-card,var(--bg-primary,#fff))",color:"var(--text-primary,#111827)",borderRadius:6,marginBottom:4,cursor:"pointer",fontSize:14,fontWeight:600,border:"1px solid var(--border)"}}>

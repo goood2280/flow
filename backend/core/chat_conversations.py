@@ -50,6 +50,87 @@ def list_conversations(username):
     return sorted(rows, key=lambda row: row["updated_at"], reverse=True)
 
 
+_RESULT_KINDS = (
+    ("report_template", "report"), ("chart_result", "chart"), ("chart_panels", "chart"),
+    ("split_view", "table"), ("table", "table"), ("download_job", "download"),
+)
+
+
+def _result_kind(tool: dict) -> str:
+    for key, kind in _RESULT_KINDS:
+        if tool.get(key):
+            return kind
+    if tool.get("rows") or tool.get("teg") or tool.get("related_tegs"):
+        return "table"
+    return ""
+
+
+def _awaiting_input(tool: dict) -> bool:
+    approval = tool.get("approval") or {}
+    if tool.get("feature") == "report.template" and tool.get("report_template"):
+        return False
+    return bool(tool.get("needs_input") or (tool.get("clarification") or {}).get("kind")
+                or tool.get("missing") or approval.get("status") == "pending")
+
+
+def recent_results(username, limit: int = 8, scan_conversations: int = 12):
+    """Latest completed results (charts, tables, reports) across a user's chats.
+
+    The home landing lists them so work done through Flow-i can be reopened
+    without scrolling a conversation. Only summaries leave this function; the
+    full result is loaded again with the conversation."""
+    out = []
+    for summary in list_conversations(username)[:max(1, int(scan_conversations))]:
+        try:
+            state = read(username, summary["id"])
+        except (FileNotFoundError, ValueError, sqlite3.Error):
+            continue
+        question = ""
+        for message in state["messages"]:
+            if message.get("role") == "user":
+                content = str(message.get("content") or "").strip()
+                # "5"·"avg" 같은 선택지 답은 질문이 아니다 — 원래 요청을 유지한다.
+                if len(content) > 6 or not question:
+                    question = content
+                continue
+            response = message.get("response") if isinstance(message.get("response"), dict) else {}
+            tool = response.get("tool") if isinstance(response.get("tool"), dict) else {}
+            if message.get("error") or not tool or tool.get("error") or tool.get("blocked") or _awaiting_input(tool):
+                continue
+            kind = _result_kind(tool)
+            if not kind:
+                continue
+            chart = tool.get("chart_result") if isinstance(tool.get("chart_result"), dict) else {}
+            report = tool.get("report_template") if isinstance(tool.get("report_template"), dict) else {}
+            scope = tool.get("context") if isinstance(tool.get("context"), dict) else {}
+            query_scope = tool.get("query_scope") if isinstance(tool.get("query_scope"), dict) else {}
+            out.append({
+                "conversation_id": state["id"],
+                "message_id": message.get("id") or "",
+                "conversation_title": state.get("title") or "",
+                "question": question[:160],
+                "answer": str(message.get("content") or "")[:200],
+                "feature": str(tool.get("feature") or tool.get("action") or kind),
+                "action": str(tool.get("action") or ""),
+                "kind": kind,
+                "title": str(report.get("name") or chart.get("title") or "")[:120],
+                "chart_type": str(chart.get("chart_type") or ""),
+                "product": str(scope.get("product") or query_scope.get("product") or chart.get("product") or ""),
+                "lot": str(scope.get("root_lot_id") or scope.get("lot_id") or query_scope.get("root_lot_id") or ""),
+                "saved_chart_id": str((tool.get("saved_chart") or {}).get("id") or ""),
+                "created_at": float(message.get("created_at") or state.get("updated_at") or 0),
+            })
+    out.sort(key=lambda row: row["created_at"], reverse=True)
+    unique, seen = [], set()
+    for row in out:
+        key = (row["title"], row["question"], row["kind"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(row)
+    return unique[:max(1, int(limit))]
+
+
 def list_all_conversations(limit: int = 100):
     rows = []
     base_dir = PATHS.data_root / "home_conversations"
@@ -120,7 +201,8 @@ def append(state, role, content, **extra):
                               "created_at": time.time(), **extra})
     state["updated_at"] = time.time()
     if role == "user" and len(state["messages"]) == 1:
-        state["title"] = content[:80]
+        # A pasted Excel range starts with tabs and line breaks.
+        state["title"] = " ".join(str(content).split())[:80]
 
 
 def history(state):

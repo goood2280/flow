@@ -23,6 +23,26 @@ def test_file_display_name_is_saved_and_listed_without_changing_source_path(tmp_
     assert filebrowser._load_filebrowser_settings()["file_name_aliases"] == {source.name: "측정 파일"}
 
 
+def test_written_file_description_is_flagged_for_hover_tooltip(tmp_path, monkeypatch):
+    described = tmp_path / "measurements.csv"
+    described.write_text("lot,value\nL1,3\n", encoding="utf-8")
+    plain = tmp_path / "other.csv"
+    plain.write_text("lot,value\nL1,3\n", encoding="utf-8")
+    settings_path = tmp_path / "filebrowser_settings.json"
+    monkeypatch.setattr(filebrowser, "_filebrowser_settings_path", lambda: settings_path)
+    monkeypatch.setattr(filebrowser, "_base_root", lambda: tmp_path)
+    monkeypatch.setattr(filebrowser, "_db_root", lambda: tmp_path)
+    monkeypatch.setattr(filebrowser, "_require_filebrowser_user", lambda request: {"role": "user"})
+    filebrowser._LIST_CACHE.clear()
+
+    filebrowser._save_filebrowser_settings({"file_descriptions": {described.name: "lot별 측정값 원본"}})
+    files = {item["name"]: item for item in filebrowser.base_files(request=object(), fast=True)["files"]}
+    assert files[described.name]["description"] == "lot별 측정값 원본"
+    assert files[described.name]["description_custom"] is True
+    # 설명을 적지 않은 파일은 기본 설명만 있고 툴팁 대상이 아니다.
+    assert files[plain.name]["description_custom"] is False
+
+
 def test_nested_file_display_name_uses_relative_path(tmp_path, monkeypatch):
     folder = tmp_path / "reports"
     folder.mkdir()

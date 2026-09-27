@@ -1,9 +1,10 @@
-/* PageGear.jsx — 페이지별 공용 톱니(⚙️) 설정 패널.
- * 스타일은 40 × 40 / ⚙️ emoji / 그림자로 FileBrowser 자체 톱니(좌하단)와 통일.
+/* PageGear.jsx — 페이지별 공용 톱니(gear 아이콘) 설정 패널.
+ * 스타일은 48 × 48 원형 / 공용 gear 아이콘(24px) — 모든 페이지 톱니가 이 버튼 하나를 쓴다.
  * 위치는 페이지가 명시한 position 을 우선한다. 우측 상세 패널을 두는 페이지는
  * bottom-left 를 지정해 우측 콘텐츠(삭제/저장 버튼 등)를 가리지 않는다.
  */
 import { useEffect, useRef, useState } from "react";
+import { Icon } from "./ui/Icon";
 
 /*
  * 사용법:
@@ -18,7 +19,7 @@ import { useEffect, useRef, useState } from "react";
  *   - position: "bottom-left" (default) | "bottom-right" | "top-right" | "inline".
  *
  * 특징:
- *   - 버튼: 40 x 40, ⚙️ emoji, 보더/그림자 FileBrowser S3 gear 와 동일.
+ *   - 버튼: 48 x 48(inline 은 40), 공용 gear 아이콘(components/ui/Icon) 24px.
  *   - 클릭 시 우측에 360px drawer 오픈.
  *   - ESC 또는 외부 클릭 시 닫힘.
  *   - z-index 50 (모달·dropdown 아래).
@@ -36,24 +37,29 @@ function gearPosition(position) {
 }
 
 export function PageGearButton({ title = "설정", canEdit = true, position = "bottom-left", onClick, zIndex = 40, style = {} }) {
+  // 떠 있는 톱니는 48px·아이콘 24px 로 키운다(페이지 머리에 끼우는 inline 은 40px).
+  const inline = position === "inline";
+  const box = inline ? 40 : 48;
   return (
     <button
       type="button"
+      className="flow-page-gear"
       onClick={onClick}
       title={canEdit ? title : title + " (읽기 전용)"}
+      aria-label={title}
       style={{
         ...gearPosition(position),
         zIndex,
-        width: 40, height: 40, borderRadius: "50%",
-        border: "1px solid var(--border)",
-        background: "var(--bg-secondary)",
-        color: "var(--text-secondary)",
-        cursor: "pointer", fontSize: 18,
+        width: box, height: box, minHeight: box, padding: 0, borderRadius: "50%",
+        border: "1px solid var(--border-strong)",
+        background: "var(--surface-panel)",
+        color: "var(--text-strong)",
+        cursor: "pointer",
         display: "flex", alignItems: "center", justifyContent: "center",
-        boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+        boxShadow: inline ? "none" : "var(--shadow-flyout)",
         ...style,
       }}
-    >⚙️</button>
+    ><Icon name="gear" size={inline ? 20 : 24} /></button>
   );
 }
 
@@ -82,15 +88,16 @@ export default function PageGear({ title = "설정", children, canEdit = true, p
             position: "fixed", top: 48, right: 0, bottom: 0,
             width, maxWidth: "calc(100vw - 24px)", background: "var(--bg-secondary)",
             borderLeft: "1px solid var(--border)",
-            boxShadow: "-4px 0 16px rgba(0,0,0,0.3)",
+            boxShadow: "var(--shadow-modal)",
             zIndex: 50, display: "flex", flexDirection: "column",
           }}>
-            <div style={{ padding: "12px 16px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 14, fontWeight: 700, flex: 1 }}>{title}</span>
-              {!canEdit && <span style={{ fontSize: 14, padding: "2px 8px", borderRadius: 999, background: "var(--bg-tertiary)", color: "var(--text-secondary)" }}>읽기 전용</span>}
-              <span onClick={() => setOpen(false)} style={{ cursor: "pointer", color: "var(--text-secondary)", padding: "2px 8px" }}>×</span>
+            <div style={{ padding: "16px 20px", borderBottom: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 10 }}>
+              <Icon name="gear" size={20} style={{ color: "var(--text-muted)" }} />
+              <span style={{ fontSize: 18, fontWeight: 700, flex: 1, color: "var(--text-strong)" }}>{title}</span>
+              {!canEdit && <span style={{ fontSize: 12, fontWeight: 600, padding: "2px 9px", borderRadius: 999, border: "1px solid var(--border)", background: "var(--surface-subtle)", color: "var(--text-muted)" }}>읽기 전용</span>}
+              <button type="button" className="flow-icon-button" onClick={() => setOpen(false)} title="닫기" aria-label="닫기"><Icon name="close" /></button>
             </div>
-            <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
+            <div style={{ flex: 1, overflow: "auto", padding: "16px 20px 20px" }}>
               {children}
             </div>
           </div>

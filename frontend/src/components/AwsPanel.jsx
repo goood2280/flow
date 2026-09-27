@@ -4,6 +4,7 @@
 
 import { useState, useEffect } from "react";
 import Loading from "./Loading";
+import { IconLabel } from "./ui/Icon";
 
 const sf = (url, o) => fetch(url, o).then(r => {
   if (!r.ok) return r.json().then(d => { throw new Error(d.detail || "HTTP " + r.status); });
@@ -82,7 +83,7 @@ export default function AwsPanel({ user, compact = false }) {
         {msg && <span style={{ fontSize: 14, color: msg.startsWith("오류") ? "var(--danger)" : "var(--ok)", fontFamily: "monospace" }}>{msg}</span>}
       </div>
 
-      {!data.aws_available && <div style={{ padding: "8px 12px", borderRadius: 6, background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", marginBottom: 12, fontSize: 14, color: "#fbbf24" }}>⚠ aws CLI 미설치 — sync 실행은 불가. 자격증명은 저장 가능.</div>}
+      {!data.aws_available && <div style={{ padding: "8px 12px", borderRadius: 6, background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", marginBottom: 12, fontSize: 14, color: "#fbbf24" }}><IconLabel icon="warning">aws CLI 미설치 — sync 실행은 불가. 자격증명은 저장 가능.</IconLabel></div>}
 
       {/* Profile selector */}
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>

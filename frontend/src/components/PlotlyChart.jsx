@@ -1,7 +1,8 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { chartBoxFor, chartLayoutKind, useElementWidth } from "../lib/chartLayout";
 import { sortCategoryValues } from "../lib/boxStats";
-import { chartPalette, buildSeriesColors } from "./UXKit";
+import { buildSeriesColors } from "./UXKit";
+import { axisStyle, chartColors, chartSeries, CHART_FONT_FAMILY } from "../lib/chartTheme";
 
 // Load the chart engine only when there is a chart, without suspending the page.
 const PlotlyRenderer = lazy(() => import("./PlotlyRenderer"));
@@ -11,7 +12,6 @@ function Plot(props) {
   </Suspense>;
 }
 
-const SERIES = chartPalette.series || ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#f59e0b", "#0891b2"];
 const MISSING_COLOR = "#9ca3af";
 
 function lightenHex(hex, amount = 0.52) {
@@ -23,6 +23,11 @@ function lightenHex(hex, amount = 0.52) {
 
 function text(value) {
   return value == null ? "" : String(value);
+}
+
+// Plotly 제목은 HTML 일부를 해석한다 — 사용자 입력 제목을 그대로 넣지 않는다.
+function escapeHtml(value) {
+  return text(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
 
 function numberOrValue(value) {
@@ -135,7 +140,7 @@ export function FlowPlotlyChart({
   const title = cfg.title || chart?.title || "";
   const axisXLabel = chartType === "bar_horizontal" ? yLabel : xLabel;
   const axisYLabel = chartType === "bar_horizontal" ? xLabel : yLabel;
-  const markerSize = Number(cfg.point_size || chart?.render_preset?.point_size || 9);
+  const markerSize = Number(cfg.point_size || chart?.render_preset?.point_size || 11);
   const markerOpacity = Math.max(0.05, Math.min(1, Number(cfg.marker_opacity ?? chart?.marker_opacity ?? 0.82)));
   const lineWidth = Math.max(0.5, Math.min(8, Number(cfg.line_width ?? chart?.line_width ?? 2.3)));
   const isTrendScatter = Boolean(cfg.trend_grain || chart?.trend_grain);
@@ -144,9 +149,12 @@ export function FlowPlotlyChart({
   const compact = Boolean(cfg.compact || chart?.compact);
   const hideTitle = Boolean(cfg.hide_title || chart?.hide_title);
   const emphasizeAxes = Boolean(cfg.emphasize_axes || chart?.emphasize_axes);
-  const axisTitleSize = Number(cfg.axis_title_size || chart?.axis_title_size || (isTrendScatter ? 18 : 16));
-  const axisLineWidth = Number(cfg.axis_line_width || chart?.axis_line_width || (emphasizeAxes ? 2 : 1));
-  const tickFontSize = Number(cfg.tick_font_size || chart?.tick_font_size || 11);
+  const axisTitleSize = Number(cfg.axis_title_size || chart?.axis_title_size || (isTrendScatter ? 15 : 14));
+  const titleSize = Number(cfg.title_size || chart?.title_size || (compact ? 15 : 17));
+  const legendFontSize = Number(cfg.legend_font_size || chart?.legend_font_size || (compact ? 12 : 13));
+  const subtitle = text(cfg.subtitle ?? chart?.subtitle).trim();
+  const axisLineWidth = Number(cfg.axis_line_width || chart?.axis_line_width || (emphasizeAxes ? 2 : 1.5));
+  const tickFontSize = Number(cfg.tick_font_size || chart?.tick_font_size || 12);
   // 아래에 눈금과 정렬된 표가 붙을 때는 x 눈금 글자를 끈다 — 표 머리글이 같은
   // 이름을 다시 쓰므로 그대로 두면 카테고리 이름이 두 줄로 겹쳐 보인다.
   const hideXTicks = Boolean(cfg.hide_x_ticks || chart?.hide_x_ticks);
@@ -180,9 +188,17 @@ export function FlowPlotlyChart({
   const fitOk = fit && Number.isFinite(Number(fit.slope)) && Number.isFinite(Number(fit.intercept));
   const fitLabel = fitOk && Number.isFinite(Number(fit.r2)) ? `R²=${Number(fit.r2).toFixed(4)}` : "";
   const cubicFit = Boolean(cfg.cubic_fit || chart?.cubic_fit);
-  const bg = dark ? "#111111" : "#ffffff";
-  const fg = dark ? "#e5e7eb" : "#111827";
-  const grid = dark ? "rgba(148,163,184,0.22)" : "rgba(15,23,42,0.12)";
+  const theme = chartColors(dark);
+  const SERIES = chartSeries(dark);
+  const bg = theme.bg;
+  const highlightStart = text(cfg.highlight_start ?? chart?.highlight_start).trim();
+  const highlightEnd = text(cfg.highlight_end ?? chart?.highlight_end).trim();
+  const highlightLabel = text(cfg.highlight_label ?? chart?.highlight_label).trim();
+  const periodHighlight = !radial && highlightStart && highlightEnd ? {
+    type: "rect", xref: "x", yref: "paper", x0: highlightStart, x1: highlightEnd, y0: 0, y1: 1,
+    fillcolor: theme.highlightFill,
+    line: { color: theme.highlightLine, width: 1 }, layer: "below",
+  } : null;
 
   const { traces, legendCounts, categorical, columnCount, rowCount, categoryArray } = useMemo(() => {
     if ((chartType === "pie" || chartType === "donut") && groups.length) {
@@ -329,12 +345,14 @@ export function FlowPlotlyChart({
         customdata: rows,
         marker: {
           size: markerSize,
-          color: isForecast ? "transparent" : emphasizeMarkers ? lightenHex(seriesColor) : seriesColor,
+          color: isForecast ? "transparent" : seriesColor,
           opacity: emphasizeMarkers ? Math.max(markerOpacity,0.92) : missing ? Math.min(markerOpacity,0.58) : markerOpacity,
-          symbol: rows[0]?.marker_symbol || (isForecast ? "circle" : "circle"),
+          symbol: rows[0]?.marker_symbol || "circle",
+          // 발표 화면에서도 점이 배경·이웃 점과 갈라지도록 얇은 검은 테를 두른다.
+          // 예측 계열만 속이 빈 계열색 테로 남겨 실측과 구분한다.
           line: {
-            color: seriesColor,
-            width: isForecast ? 2 : emphasizeMarkers ? 1.3 : 0.6,
+            color: isForecast ? seriesColor : theme.markerLine,
+            width: isForecast ? 2 : emphasizeMarkers ? 1 : 0.8,
           },
         },
         line: {
@@ -379,7 +397,7 @@ export function FlowPlotlyChart({
           x: [first.displayX, last.displayX],
           y: [Number(fit.slope) * first.x + Number(fit.intercept), Number(fit.slope) * last.x + Number(fit.intercept)],
           hoverinfo: "skip",
-          line: { color: "#ef4444", width: 2.4, dash: "dash" },
+          line: { color: theme.reference, width: 2, dash: "dash" },
         });
       }
     }
@@ -395,7 +413,7 @@ export function FlowPlotlyChart({
           x: specRows.map((row) => row.x),
           y: specRows.map((row) => row.y),
           hovertemplate: `${specName}: %{y}<extra></extra>`,
-          line: { color: "#ef4444", width: 1.6, shape: "hv", dash: "dot" },
+          line: { color: theme.reference, width: 1.4, shape: "hv", dash: "dot" },
         });
       }
     }
@@ -406,7 +424,7 @@ export function FlowPlotlyChart({
       columnCount: 0,
       rowCount: 0,
     };
-  }, [points, groups, boxStats, colorBy, colorMap, chartType, xLabel, yLabel, markerSize, markerOpacity, lineWidth, boxPoints, dark, fitOk, fit, fitLabel, cubicFit, isTrendScatter, emphasizeMarkers, useSvg]);
+  }, [points, groups, boxStats, colorBy, colorMap, chartType, xLabel, yLabel, markerSize, markerOpacity, lineWidth, boxPoints, dark, fitOk, fit, fitLabel, cubicFit, isTrendScatter, emphasizeMarkers, useSvg, SERIES, bg, theme]);
 
   const [highlightSelection, setHighlightSelection] = useState(null);
   useEffect(() => { setHighlightSelection(null); }, [points, chartType, colorBy, enableHighlight]);
@@ -445,6 +463,32 @@ export function FlowPlotlyChart({
     onGeometry(next);
   };
 
+  const showTitle = Boolean(title && !hideTitle);
+  const subtitleSize = Math.round(titleSize * 0.78);
+  const subtitleBand = showTitle && subtitle ? Math.round(subtitleSize * 1.5) : 0;
+  const titleBand = showTitle ? Math.round(titleSize * 1.45) + 10 + subtitleBand : 0;
+  const legendVisible = showLegend && (colorBy ? true : legendCounts.length > 1);
+  const legendNames = legendVisible ? traces.filter((trace) => trace.showlegend !== false && trace.name).map((trace) => text(trace.name)) : [];
+  // 가로 범례가 몇 줄로 접힐지 대략 계산해 그 높이만큼 여백을 비운다.
+  let legendRows = 0;
+  if (legendNames.length && (legendPosition === "bottom" || legendPosition === "top")) {
+    const available = Math.max(200, (plotWidth || 600) - 40);
+    let used = 0;
+    legendRows = 1;
+    for (const name of legendNames) {
+      const itemWidth = 40 + name.length * legendFontSize * 0.62;
+      if (used > 0 && used + itemWidth > available) { legendRows += 1; used = 0; }
+      used += itemWidth;
+    }
+  }
+  const legendBand = legendRows ? legendRows * Math.round(legendFontSize * 1.75) + 8 : 0;
+  const topLegendBand = legendPosition === "top" ? legendBand : 0;
+  const { titleFont: axisTitleFontBase, ...axisBase } = axisStyle(theme, {
+    titleSize: axisTitleSize, tickSize: tickFontSize, lineWidth: axisLineWidth, showGrid,
+  });
+  const axisTitleFont = { ...axisTitleFontBase, weight: emphasizeAxes ? 700 : 600 };
+  if (emphasizeAxes) axisBase.linecolor = theme.axisTitle;
+
   if (!points.length && !groups.length && !boxStats.length) {
     return <div style={{ minHeight: Math.max(180, plotHeight), display: "flex", alignItems: "center", justifyContent: "center", color: dark ? "#9ca3af" : "#64748b", fontSize: 14 }}>차트로 표시할 point가 없습니다.</div>;
   }
@@ -455,23 +499,37 @@ export function FlowPlotlyChart({
       <Plot
         data={renderedTraces}
         layout={{
-          title: title && !hideTitle ? { text: title, font: { size: compact ? 15 : 18, color: fg } } : undefined,
+          // 제목은 왼쪽 정렬·굵게, 부제(출처·기간 등)는 그 아래 회색 한 줄 — 보고서 차트 규약.
+          // 위에서부터 제목 → 부제 → (위쪽 범례) → 그림. 모두 그림 영역 왼쪽 끝에 맞춘다.
+          title: showTitle ? {
+            text: escapeHtml(title),
+            x: 0, xref: "paper", xanchor: "left",
+            y: 1, yref: "paper", yanchor: "bottom",
+            pad: { b: 6 + subtitleBand + topLegendBand },
+            font: { size: titleSize, color: theme.title, family: CHART_FONT_FAMILY, weight: 700 },
+          } : undefined,
+          font: { family: CHART_FONT_FAMILY, size: tickFontSize, color: theme.tick },
           autosize: true,
           height: plotHeight,
           paper_bgcolor: bg,
           plot_bgcolor: bg,
           // 축 라벨이 없는 원 차트는 좌우 여백이 필요 없다 — 원을 키운다.
+          // 범례 띠(legendBand)는 제목·축 제목과 겹치지 않도록 여백에 따로 더한다.
           margin: radial
-            ? { l: 20, r: 20, t: title && !hideTitle ? 44 : 16, b: 16 }
-            : { l: 64, r: 22, t: title && !hideTitle ? 48 : 20, b: 56 },
+            ? { l: 20, r: 20, t: 16 + titleBand, b: 16 }
+            : { l: 64, r: 24, t: 14 + titleBand + (legendPosition === "top" ? legendBand : 0), b: 50 + (legendPosition === "bottom" ? legendBand : 0) },
           hovermode: "closest",
+          hoverlabel: { bgcolor: theme.hoverBg, bordercolor: theme.hoverBorder, align: "left",
+            font: { family: CHART_FONT_FAMILY, size: 12, color: theme.title } },
           dragmode: "pan",
-          shapes: geometryOverlay?.shapes || [],
+          bargap: 0.3,
+          shapes: [...(geometryOverlay?.shapes || []), ...(periodHighlight ? [periodHighlight] : [])],
           clickmode: enableHighlight ? "event+select" : "event",
           ...(radial ? {} : {
             xaxis: {
-              title: { text: axisXLabel, font: { size: Number(cfg?.x_font_size||chart?.x_font_size)||axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
-              tickfont: { size: Number(cfg?.x_font_size||chart?.x_font_size)||tickFontSize, color: fg },
+              ...axisBase,
+              title: { text: axisXLabel, standoff: 8, font: { ...axisTitleFont, size: Number(cfg?.x_font_size||chart?.x_font_size)||axisTitleSize } },
+              tickfont: { ...axisBase.tickfont, size: Number(cfg?.x_font_size||chart?.x_font_size)||tickFontSize },
               ...(cfg?.x_type === "category"
                 ? {
                     type: "category",
@@ -483,45 +541,45 @@ export function FlowPlotlyChart({
                 ? { type: "category", categoryorder: "array", categoryarray: categoryArray }
                 : (valueAxisIsX ? { type: yScale, ...yAxisRange } : xAxisRange)),
               showticklabels: !hideXTicks,
-              showgrid: showGrid,
-              gridcolor: grid,
-              zerolinecolor: grid,
-              color: fg,
-              showline: emphasizeAxes,
-              linecolor: emphasizeAxes ? "#000000" : fg,
-              linewidth: axisLineWidth,
-              mirror: false,
-              automargin: true,
+              // 범주축(막대·상자)은 세로 눈금선이 막대 사이를 가르므로 끈다.
+              showgrid: showGrid && !categorical,
+              // 0 기준선은 값축(y)에만 — x=0 세로선은 시간·순번 축에서 의미가 없다.
+              zeroline: valueAxisIsX,
               ...(geometryOverlay ? { range: geometryOverlay.xRange, constrain: "domain" } : {}),
               ...(cfg?.xaxis || {}),
             },
             yaxis: {
-              title: { text: axisYLabel, font: { size: Number(cfg?.y_font_size||chart?.y_font_size)||axisTitleSize, color: fg, family: emphasizeAxes ? "Arial Black, Malgun Gothic, sans-serif" : undefined } },
-              tickfont: { size: Number(cfg?.y_font_size||chart?.y_font_size)||tickFontSize, color: fg },
+              ...axisBase,
+              title: { text: axisYLabel, standoff: 8, font: { ...axisTitleFont, size: Number(cfg?.y_font_size||chart?.y_font_size)||axisTitleSize } },
+              tickfont: { ...axisBase.tickfont, size: Number(cfg?.y_font_size||chart?.y_font_size)||tickFontSize },
               ...(!valueAxisIsX ? { type: yScale, ...yAxisRange } : xAxisRange),
-              showgrid: showGrid,
-              gridcolor: grid,
-              zerolinecolor: grid,
-              color: fg,
-              showline: emphasizeAxes,
-              linecolor: emphasizeAxes ? "#000000" : fg,
-              linewidth: axisLineWidth,
-              mirror: false,
-              automargin: true,
               ...(geometryOverlay ? { range: geometryOverlay.yRange, scaleanchor: "x", scaleratio: 1 } : {}),
             },
           }),
-          legend: legendPosition==="right"
-            ? {orientation:"v",x:1.02,y:1,xanchor:"left",yanchor:"top",font:{size:11,color:fg}}
-            : legendPosition==="top"
-              ? {orientation:"h",x:0,y:1.08,xanchor:"left",yanchor:"bottom",font:{size:11,color:fg}}
-              : legendPosition==="inside"
-                ? {orientation:"v",x:0.99,y:0.99,xanchor:"right",yanchor:"top",bgcolor:dark?"rgba(17,17,17,.75)":"rgba(255,255,255,.8)",font:{size:11,color:fg}}
-                : {orientation:"h",y:-0.22,x:0,font:{size:11,color:fg}},
-          showlegend: showLegend && (colorBy ? true : legendCounts.length > 1),
+          legend: {
+            font: { family: CHART_FONT_FAMILY, size: legendFontSize, color: theme.axisTitle },
+            itemsizing: "constant",
+            bgcolor: "rgba(0,0,0,0)",
+            ...(legendPosition==="right"
+              ? {orientation:"v",x:1.02,y:1,xanchor:"left",yanchor:"top"}
+              : legendPosition==="top"
+                ? {orientation:"h",x:0,y:1,xanchor:"left",yanchor:"bottom",yref:"paper"}
+                : legendPosition==="inside"
+                  ? {orientation:"v",x:0.99,y:0.99,xanchor:"right",yanchor:"top",bgcolor:dark?"rgba(22,22,22,.82)":"rgba(255,255,255,.86)",bordercolor:theme.hoverBorder,borderwidth:1}
+                  // 아래 범례는 그림 맨 아래에 고정 — 축 제목과 같은 줄에 겹치지 않는다.
+                  : {orientation:"h",x:0,xanchor:"left",y:0,yanchor:"bottom",yref:"container"}),
+          },
+          showlegend: legendVisible,
           // 회귀 라벨은 그림 "안쪽" 오른쪽 위에 둔다 — 예전처럼 y=1.08 로 밖에
           // 내보내면 위 여백이 좁을 때 글자 윗줄이 카드에 잘려 나갔다.
-          annotations: fitLabel ? [{
+          annotations: [
+            ...(showTitle && subtitle ? [{
+              text: escapeHtml(subtitle), showarrow: false,
+              xref: "paper", x: 0, xanchor: "left",
+              yref: "paper", y: 1, yanchor: "bottom", yshift: 4 + topLegendBand,
+              font: { size: subtitleSize, color: theme.subtitle, family: CHART_FONT_FAMILY },
+            }] : []),
+            ...(fitLabel ? [{
             xref: "paper",
             yref: "paper",
             x: 0.99,
@@ -530,11 +588,17 @@ export function FlowPlotlyChart({
             yanchor: "top",
             showarrow: false,
             text: fit?.equation ? `${fit.equation}<br>${fitLabel}` : fitLabel,
-            font: { size: 12, color: "#ef4444" },
-            bgcolor: dark ? "rgba(17,17,17,0.78)" : "rgba(255,255,255,0.9)",
-            bordercolor: "rgba(239,68,68,0.35)",
+            font: { size: 12, color: theme.reference, family: CHART_FONT_FAMILY },
+            bgcolor: dark ? "rgba(22,22,22,0.82)" : "rgba(255,255,255,0.9)",
+            bordercolor: theme.hoverBorder,
             borderwidth: 1,
-          }] : [],
+            }] : []),
+            ...(periodHighlight && highlightLabel ? [{
+              xref: "x", yref: "paper", x: highlightStart, y: 1, xanchor: "left", yanchor: "bottom", showarrow: false,
+              text: highlightLabel, font: { size: 11, color: theme.highlightText, family: CHART_FONT_FAMILY },
+              bgcolor: dark ? "rgba(22,22,22,.82)" : "rgba(255,255,255,.92)", bordercolor: theme.highlightLine, borderwidth: 1, borderpad: 3,
+            }] : []),
+          ],
         }}
         config={{
           responsive: true,

@@ -25,6 +25,7 @@ import datetime as dt
 import io
 import json
 import math
+import os
 import re
 import threading
 import uuid
@@ -97,7 +98,8 @@ REPORT_BORDER = (229, 229, 229)
 REPORT_BORDER_STRONG = (163, 163, 163)
 REPORT_FONT = "Malgun Gothic"
 MAX_TABLE_ROWS = 26
-MAX_TABLE_COLUMNS = 24
+# split 표는 wafer 가 열이다 — 한 랏 25매 + 항목 열이 잘리지 않아야 한다(24 였을 때 #24·#25 가 PPTX 에서 빠졌다).
+MAX_TABLE_COLUMNS = 40
 MAX_BACKGROUND_BYTES = 12 * 1024 * 1024
 MAX_BACKGROUND_PIXELS = 40_000_000
 DEFAULT_SETTINGS = {
@@ -1005,6 +1007,25 @@ def template_assistant(req: TemplateAssistantReq, user=Depends(current_user)):
     if not instruction:
         raise HTTPException(400, "AI에게 만들거나 수정할 Template 내용을 입력해 주세요.")
     current = _normalize_code_template(_template_request_from_code(req.template_code), user)
+    return run_template_assistant(current, instruction, user)
+
+
+def _assistant_timeout(minimum: int = 45) -> int:
+    """LLM 설정의 timeout_s 를 따르되 최소 ``minimum`` 초 — Template 전체를 다시 쓰는
+    응답은 길어서 기본 20초로는 끊긴다."""
+    try:
+        from core import llm_adapter
+        configured = int((llm_adapter.get_config(redact=True) or {}).get("timeout_s") or 0)
+    except Exception:
+        configured = 0
+    return max(minimum, min(600, configured))
+
+
+def run_template_assistant(current: dict, instruction: str, user: dict, *, timeout: int | None = None,
+                           include_available_charts: bool = True) -> dict:
+    """정규화된 Template(dict) + 지시문 → LLM 이 고친 Template(정규화·검증 후).
+
+    /assistant 와 분석의뢰의 'AI로 Template 맞추기' 가 같은 경로를 쓴다(권한 확인은 호출자)."""
     try:
         from core import llm_adapter
 
@@ -1019,11 +1040,12 @@ def template_assistant(req: TemplateAssistantReq, user=Depends(current_user)):
         system = """You create or edit a Flow semiconductor Template Report as one JSON object.
 Return only an object with keys message and template. Preserve all unrelated fields.
 The template must contain name, options, variables, and 1-30 pages. Each page contains title, subtitle, and slots.
-Allowed slot kinds: chart, split, text. A chart slot must contain position, x, y, chart_width, chart_height, chart_name, and a complete valid definition_code in Flow ChartBuilder DSL. chart_id may reference an existing id or be blank for an inline chart.
+Allowed slot kinds: chart, split, text, stats, legend. stats and legend slots point at a chart on the same page through source_position; keep them when the chart stays. A chart slot must contain position, x, y, chart_width, chart_height, chart_name, and a complete valid definition_code in Flow ChartBuilder DSL. chart_id may reference an existing id or be blank for an inline chart.
 Layout uses a 1920x1080 design: x/y are percentages and chart_width/chart_height are pixels. Every slot must stay inside the slide.
 ChartBuilder DSL uses Q1/TABLE/PRODUCT/SQL, optional JOIN, then CHART with TYPE/X/Y/COLOR/TRELLIS/X_MIN/X_MAX/Y_MIN/Y_MAX/WAFER_MODE/WAFER_SPEC_LOW/WAFER_SPEC_HIGH/WIDTH/HEIGHT and MAX_ROWS.
 Prefer readable one-page semiconductor meeting reports with bold axes and chart diversity when requested. Never invent database secrets or unsupported slot kinds."""
-        available = list_charts(user).get("charts", [])[:40]
+        # 랏·split 교체처럼 현재 Template 만 고치는 요청에는 저장 차트 목록이 잡음이라 뺀다.
+        available = list_charts(user).get("charts", [])[:40] if include_available_charts else []
         payload = {
             "instruction": instruction,
             "current_template": current,
@@ -1041,7 +1063,7 @@ Prefer readable one-page semiconductor meeting reports with bold axes and chart 
         out = llm_adapter.complete_json(
             json.dumps(payload, ensure_ascii=False),
             system=system,
-            timeout=45,
+            timeout=timeout or _assistant_timeout(),
             max_retries=1,
             schema={
                 "keys": ["message", "template"],
@@ -1305,6 +1327,29 @@ def prepare_run(req: TemplateRunReq, user=Depends(current_user)):
     }
 
 
+def _compact_split_rows(rows: list[list[str]], column_count: int) -> list[list[str]]:
+    """wafer 가 많은 split 표는 칸이 좁다 — 모든 wafer 값에 공통인 '_' 단위 접두어를 항목 이름 쪽으로 옮긴다.
+
+    예) PPID_05_ECN / PPID_05_REF → 칸에는 ECN / REF, 항목은 'KNOB_5.0 PC (PPID_05_…)'.
+    값이 하나뿐이거나 공통 접두어가 없으면 그대로 둔다(뜻이 바뀌는 축약은 하지 않는다)."""
+    if column_count <= 13:
+        return rows
+    out = []
+    for row in rows:
+        values = [value for value in row[1:] if str(value).strip()]
+        distinct = sorted(set(values))
+        prefix = ""
+        if len(distinct) > 1:
+            common = os.path.commonprefix(distinct)
+            cut = common.rfind("_")
+            prefix = common[:cut + 1] if cut >= 3 else ""
+        if prefix and all(len(value) > len(prefix) for value in values):
+            out.append([f"{row[0]} ({prefix}…)", *[value[len(prefix):] if value else value for value in row[1:]]])
+        else:
+            out.append(row)
+    return out
+
+
 @router.post("/split-table")
 def split_table_block(req: SplitBlockReq, _user=Depends(current_user)):
     """Split 블록 내용 — Inform 스냅샷과 같은 SplitTable 화면 규약을 그대로 쓴다."""
@@ -1313,7 +1358,7 @@ def split_table_block(req: SplitBlockReq, _user=Depends(current_user)):
     columns = [item.strip() for item in str(req.columns or "").split(",") if item.strip()]
     embed = build_splittable_embed(product=req.product, lot_id=req.lot_id, custom_cols=columns)
     header = ["parameter", *(embed.get("st_view", {}).get("headers") or [])]
-    rows = [[str(cell) for cell in row] for row in (embed.get("rows") or [])]
+    rows = _compact_split_rows([[str(cell) for cell in row] for row in (embed.get("rows") or [])], len(header))
     max_rows = max(1, min(MAX_TABLE_ROWS * 4, int(req.max_rows or MAX_TABLE_ROWS)))
     truncated = len(rows) > max_rows
     return {
@@ -1590,7 +1635,11 @@ def _add_table(slide, rect: dict, table: dict):
     shape = slide.shapes.add_table(count, len(columns), Inches(x), Inches(y), Inches(width), Inches(row_height * count))
     grid = shape.table
     # 첫 열은 항목 이름이라 넓게, 나머지는 균등 — SplitTable 화면과 같은 감각.
-    first = min(width * 0.34, 2.6) if len(columns) > 2 else width / len(columns)
+    # wafer 가 열인 split 표(열이 많다)는 값 칸이 한 글자씩 줄바꿈되지 않게 첫 열을 좁힌다.
+    if len(columns) > 14:
+        first = min(width * 0.15, 1.7)
+    else:
+        first = min(width * 0.34, 2.6) if len(columns) > 2 else width / len(columns)
     rest = (width - first) / max(1, len(columns) - 1) if len(columns) > 1 else width
     grid.columns[0].width = Inches(first)
     for index in range(1, len(columns)):
@@ -1598,10 +1647,12 @@ def _add_table(slide, rect: dict, table: dict):
     for index in range(count):
         grid.rows[index].height = Inches(row_height)
 
-    font_size = 9 if len(columns) <= 8 else (8 if len(columns) <= 14 else 7)
+    font_size = 9 if len(columns) <= 8 else (8 if len(columns) <= 14 else (7 if len(columns) <= 20 else 6.5))
+    wide = len(columns) > 14
     for index, name in enumerate(columns):
         cell = grid.cell(0, index)
         cell.text = str(name)
+        cell.text_frame.word_wrap = False
         cell.fill.solid()
         cell.fill.fore_color.rgb = _rgb(REPORT_SUBTLE)
         cell.vertical_anchor = MSO_ANCHOR.MIDDLE
@@ -1618,7 +1669,9 @@ def _add_table(slide, rect: dict, table: dict):
         stripe = _rgb(REPORT_PAGE) if row_index % 2 == 0 else _rgb(REPORT_PANEL)
         for column_index, value in enumerate(row):
             cell = grid.cell(row_index, column_index)
-            cell.text = str(value)
+            # 넓은 표(wafer 열)는 칸이 좁아 PowerPoint 가 글자 중간에서 줄을 바꾼다 — '_' 뒤에서만
+            # 줄이 바뀌도록 폭 없는 공백을 넣는다(EQP22_ / CH2, PPID_07_ / REF).
+            cell.text = str(value).replace("_", "_\u200b") if wide and column_index else str(value)
             cell.fill.solid()
             cell.fill.fore_color.rgb = stripe
             cell.vertical_anchor = MSO_ANCHOR.MIDDLE
@@ -2002,8 +2055,8 @@ def _pptx_bytes(template: dict, images: dict[str, bytes], *,
     return out.getvalue()
 
 
-@router.post("/export/pptx")
-def export_pptx(req: ExportReq, user=Depends(current_user)):
+def build_pptx_export(req: ExportReq, user: dict) -> tuple[str, bytes, dict]:
+    """PPTX 바이트 + 파일 이름 — 다운로드와 분석의뢰 답글 첨부가 같은 결과를 쓴다."""
     template = _template_or_404(req.template_id)
     params = _run_params(template, req, user)
     deck_spec = _expand_deck(template, params)
@@ -2018,6 +2071,12 @@ def export_pptx(req: ExportReq, user=Depends(current_user)):
     )
     stamp = dt.datetime.now().strftime("%Y%m%d")
     filename = safe_filename(f"{template.get('name') or 'template_report'}_{stamp}.pptx")
+    return filename, payload, template
+
+
+@router.post("/export/pptx")
+def export_pptx(req: ExportReq, user=Depends(current_user)):
+    filename, payload, template = build_pptx_export(req, user)
     username = user.get("username") or "anonymous"
     jsonl_append(PATHS.download_log, {
         "source": "template_report",

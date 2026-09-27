@@ -165,7 +165,7 @@ export function RichBoardContent({ html, className = "", style = {} }) {
 
 export default function RichBoardEditor({
   value = "", onChange, uploadUrl, placeholder = "본문을 입력하세요", minHeight = 150,
-  disabled = false, onUploadError, showCommands = true,
+  disabled = false, onUploadError, showCommands = true, showHint = true,
 }) {
   const ref = useRef(null);
   const lastEmitted = useRef("");
@@ -277,15 +277,17 @@ export default function RichBoardEditor({
       .rich-board-editor th,.rich-board-content th{background:var(--bg-tertiary);font-weight:750}
       .rich-board-editor p{margin:4px 0}.rich-board-content p{margin:4px 0}
     `}</style>
-    <div className="rich-board-toolbar">
+    {/* showCommands·showHint 를 둘 다 끄면 도구줄은 업로드 중에만 보인다.
+        붙여넣기(이미지·표)는 도구줄과 상관없이 onPaste 가 처리한다. */}
+    {(showCommands || showHint || uploading) && <div className="rich-board-toolbar">
       {showCommands && <>
         <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => command("bold")} disabled={disabled}><b>B</b> 굵게</button>
         <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => command("insertUnorderedList")} disabled={disabled}>• 목록</button>
       </>}
       {/* 버튼을 감춰도 서식은 살아 있다 — contentEditable 이 Ctrl+B/I/U 를 직접 처리하고,
           그때 input 이벤트가 떠서 emit 이 그대로 걸린다. */}
-      <span>{uploading ? "이미지 업로드 중…" : showCommands ? "이미지·Excel 표 Ctrl+V 지원" : "Ctrl+B 굵게 · 이미지·Excel 표 Ctrl+V 지원"}</span>
-    </div>
+      <span>{uploading ? "이미지 업로드 중…" : !showHint ? "" : showCommands ? "이미지·Excel 표 Ctrl+V 지원" : "Ctrl+B 굵게 · 이미지·Excel 표 Ctrl+V 지원"}</span>
+    </div>}
     <div ref={ref} className="rich-board-editor" contentEditable={!disabled} suppressContentEditableWarning
       data-placeholder={placeholder} onInput={emit} onBlur={emit} onPaste={paste}
       style={{ minHeight, maxHeight: Math.max(360, minHeight * 2.5) }} />

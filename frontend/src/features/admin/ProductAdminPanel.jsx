@@ -3,11 +3,14 @@ import { Banner, Button, Input, Select, TabStrip } from "../../components/ui";
 import { sf } from "../../lib/api";
 import ProductStructure from "../productwiki/ProductStructure";
 import ProductSemanticPanel from "../productwiki/ProductSemanticPanel";
+import SemanticAliasLog from "./SemanticAliasLog";
+import { Icon } from "../../components/ui/Icon";
 
 const ADMIN_SECTIONS = [
   { k: "product_aliases", l: "1. 제품별 별칭 연결 테이블" },
   { k: "inline_items", l: "2. Inline별 Step / Item & 별칭 매핑 테이블" },
   { k: "structure", l: "3. 공정 모듈 & 세부 구조물 단계" },
+  { k: "alias_log", l: "4. 별칭 변경 이력" },
 ];
 
 const post = (path, body) =>
@@ -418,6 +421,7 @@ export default function ProductAdminPanel({ user }) {
                     </h4>
                     <p style={{ margin: 0, fontSize: 13, color: "var(--text-secondary)" }}>
                       홈 Flow-i 질의 또는 검색 시 이 제품을 가리키는 모든 동의어 및 코드명을 연결합니다.
+                      홈 챗에서 “{product} 이름 프로드A도 인식하게 해줘”처럼 요청해도 확인 후 추가됩니다.
                     </p>
                   </div>
                 </div>
@@ -472,7 +476,7 @@ export default function ProductAdminPanel({ user }) {
                                     padding: 0,
                                   }}
                                 >
-                                  ✕
+                                  <Icon name="close" />
                                 </button>
                               </span>
                             ))}
@@ -589,7 +593,7 @@ export default function ProductAdminPanel({ user }) {
                     {sourceFilter === "ET" ? (
                       <>정규 항목은 <code>reformatter</code> ALIAS 기준이며 Step 없이 Item(ALIAS) 단위로 별칭을 연결합니다. 원천(raw item·수식)은 아이템 설명에 표시됩니다.</>
                     ) : (
-                      <>기본 Step ID · Item ID는 <code>Inline_matching.csv</code>에서 자동 연동되며, 등록된 별칭(Aliases)은 공백·대소문자·기호 무관하게 질의 및 검색에 유연하게 연결됩니다.</>
+                      <>기본 Step ID · Item ID는 <code>Inline_matching.csv</code>에서 자동 연동되며, 등록된 별칭(Aliases)은 공백·대소문자·기호 무관하게 질의 및 검색에 유연하게 연결됩니다. 홈 챗에 “{product} Inline 별칭 업데이트”와 함께 엑셀의 step_id · item_id · alias 표를 붙여 넣으면 확인 후 한 번에 추가됩니다.</>
                     )}
                   </p>
                 </div>
@@ -756,7 +760,7 @@ export default function ProductAdminPanel({ user }) {
                                           }
                                           style={{ border: "none", background: "transparent", cursor: "pointer", padding: 0 }}
                                         >
-                                          ✕
+                                          <Icon name="close" />
                                         </button>
                                       </span>
                                     ))}
@@ -980,6 +984,8 @@ export default function ProductAdminPanel({ user }) {
               <ProductStructure product={product} user={user} entries={[]} />
             </section>
           )}
+
+          {section === "alias_log" && <SemanticAliasLog product={product} refreshKey={semanticRefreshKey} />}
         </div>
       )}
 

@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import PageGear from "../../components/PageGear";
-import { Button, EmptyState, Input, PageHeader, Pill, Select } from "../../components/UXKit";
+import { Icon } from "../../components/ui/Icon";
+import { Button, EmptyState, Input, PageHeader, Pill, Select, Textarea } from "../../components/UXKit";
 import { sf } from "../../lib/api";
-import { canManagePage } from "../../lib/permissions";
+import { canManagePage, isAdmin } from "../../lib/permissions";
 
 // 서버 영속 저장소 도입 전 브라우저에 저장하던 키. 서버 파일이 아직 없으면 이
 // 값을 한 번 자동 이관하고, 이후에도 API 장애 시 임시 사본으로만 유지한다.
 const SETTINGS_KEY = "flow:dcop-check:settings:v1";
 const SETTINGS_API = "/api/dcop/settings";
+// 연결된 LLM으로 규칙 초안 만들기 — 서버가 global admin 만 허용한다.
+const LLM_DRAFT_API = "/api/dcop/rules/llm/draft";
+const LLM_SAMPLE_ROWS = 5;
 const PAGE_SIZE = 100;
 const INPUT_PAGE_SIZE = 40;
 const INITIAL_GRID_ROWS = 3;
@@ -538,6 +542,7 @@ function RuleOverview({ numberedRules, headers, hasTable }) {
                 <b style={{ fontSize: 12, minWidth: 60, flexShrink: 0 }}>규칙 {index + 1}번</b>
                 <Pill tone={rule.severity === "fail" ? "bad" : "warn"}>{String(rule.severity || "fail").toUpperCase()}</Pill>
                 <Pill tone={state.tone}>{state.label}</Pill>
+                {rule.source === "llm" && <Pill tone="info" title="관리자가 AI 초안에서 추가한 규칙">AI 생성</Pill>}
                 <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>{ruleConditionText(rule)}</span>
               </div>
               <div style={{ paddingLeft: 68, fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.45 }}>
@@ -601,15 +606,125 @@ const tableCell = {
   textOverflow: "ellipsis",
 };
 
-function RuleEditor({ settings, setSettings, headers, canEdit, storeState, onSave }) {
+/* 관리자 전용: 설명을 적으면 연결된 LLM이 규칙 초안을 만들고, 고른 것만 규칙에 추가한다.
+   초안은 서버에서 연산자·기준값·정규식을 검증한 뒤 내려오며, 추가하면 기존 자동 저장
+   경로(PUT /api/dcop/settings)로 flow-data에 저장돼 "설정된 규칙"에도 바로 보인다. */
+function AiRuleDraft({ headers, sampleRows, disabled, onAdd }) {
+  const [prompt, setPrompt] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const [picked, setPicked] = useState(() => new Set());
+  const [notice, setNotice] = useState("");
+
+  const requestDraft = () => {
+    const text = prompt.trim();
+    if (!text || busy) return;
+    setBusy(true);
+    setNotice("");
+    setDraft(null);
+    sf(LLM_DRAFT_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: text, columns: headers, sample_rows: sampleRows }),
+    }).then((response) => {
+      const rules = Array.isArray(response?.rules) ? response.rules : [];
+      setDraft({
+        ok: Boolean(response?.ok),
+        rules,
+        warnings: Array.isArray(response?.warnings) ? response.warnings : [],
+        message: String(response?.message || ""),
+        model: String(response?.model || ""),
+      });
+      setPicked(new Set(rules.map((rule) => rule.id)));
+    }).catch((error) => {
+      setDraft({ ok: false, rules: [], warnings: [], message: `AI 초안 요청 실패 · ${error.message || "연결 오류"}`, model: "" });
+    }).finally(() => setBusy(false));
+  };
+
+  const togglePick = (id) => setPicked((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const addPicked = () => {
+    const chosen = (draft?.rules || []).filter((rule) => picked.has(rule.id));
+    if (!chosen.length) return;
+    onAdd(chosen);
+    setNotice(`AI 규칙 ${chosen.length}개를 추가했습니다. 아래 목록과 "설정된 규칙"에서 확인할 수 있습니다.`);
+    setDraft(null);
+    setPrompt("");
+  };
+
+  return (
+    <section style={{ border: "1px solid var(--border)", borderRadius: 4, padding: 10, display: "grid", gap: 8, background: "var(--bg-secondary)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <b style={{ fontSize: 13 }}>AI로 규칙 추가</b>
+        <Pill tone="neutral">관리자 전용</Pill>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.5 }}>
+        검사하고 싶은 조건을 문장으로 적으면 연결된 LLM이 규칙 초안을 만듭니다. 확인 후 고른 규칙만 추가됩니다.
+        {headers.length ? ` 현재 표의 열 ${headers.length}개를 참고합니다.` : " 표를 먼저 붙여넣으면 열 이름을 참고해 더 정확해집니다."}
+      </div>
+      <Textarea
+        rows={4}
+        value={prompt}
+        disabled={disabled || busy}
+        placeholder={"예: DCOP_NAME은 40자 이하, PRODUCT+STEP_ID 조합은 중복 불가,\nSPEC_LOW ≤ TARGET ≤ SPEC_HIGH 순서, USE_YN은 Y 또는 N만 허용"}
+        onChange={(event) => setPrompt(event.target.value)}
+        style={{ width: "100%", boxSizing: "border-box", resize: "vertical" }}
+      />
+      <div>
+        <Button variant="primary" disabled={disabled || busy || !prompt.trim()} onClick={requestDraft}>
+          {busy ? "AI가 규칙을 만드는 중..." : "AI 규칙 초안 만들기"}
+        </Button>
+      </div>
+      {notice && !draft && <div style={{ fontSize: 12, color: "var(--ok)" }}>{notice}</div>}
+      {draft && (
+        <div style={{ display: "grid", gap: 6 }}>
+          {draft.message && <div style={{ fontSize: 12, color: draft.ok ? "var(--text-secondary)" : "var(--danger)" }}>{draft.message}</div>}
+          {draft.rules.map((rule) => (
+            <label key={rule.id} style={{ display: "grid", gridTemplateColumns: "auto 1fr", gap: 8, alignItems: "start", padding: "6px 4px", borderTop: "1px solid var(--border)", cursor: "pointer" }}>
+              <input type="checkbox" checked={picked.has(rule.id)} onChange={() => togglePick(rule.id)} style={{ marginTop: 3 }} />
+              <span style={{ display: "grid", gap: 3, minWidth: 0 }}>
+                <span style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                  <Pill tone={rule.severity === "fail" ? "bad" : "warn"}>{String(rule.severity || "fail").toUpperCase()}</Pill>
+                  <span style={{ fontSize: 12, wordBreak: "break-word" }}>{ruleConditionText(rule)}</span>
+                </span>
+                <span style={{ fontSize: 12, color: "var(--text-secondary)", wordBreak: "break-word" }}>{rule.message || defaultMessage(rule)}</span>
+              </span>
+            </label>
+          ))}
+          {draft.warnings.length > 0 && (
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "var(--warn)", lineHeight: 1.5 }}>
+              {draft.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+            </ul>
+          )}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {draft.rules.length > 0 && <Button variant="primary" disabled={!picked.size} onClick={addPicked}>선택한 {picked.size}개 규칙 추가</Button>}
+            <Button onClick={() => setDraft(null)}>닫기</Button>
+            {draft.model && <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--text-secondary)" }}>{draft.model}</span>}
+          </div>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function RuleEditor({ settings, setSettings, headers, sampleRows, canEdit, canUseAi, storeState, onSave }) {
   const updateRule = (id, patch) => setSettings((current) => ({
     ...current,
     rules: current.rules.map((rule) => rule.id === id ? { ...rule, ...patch } : rule),
   }));
   const removeRule = (id) => setSettings((current) => ({ ...current, rules: current.rules.filter((rule) => rule.id !== id) }));
-  const duplicateRule = (source) => setSettings((current) => ({
+  // 복제본은 사람이 만든 규칙으로 본다 — AI 출처 표시는 원본에만 남긴다.
+  const duplicateRule = ({ source: _source, ...rest }) => setSettings((current) => ({
     ...current,
-    rules: [...current.rules, { ...source, id: `${Date.now()}-${Math.random().toString(36).slice(2)}` }],
+    rules: [...current.rules, { ...rest, id: `${Date.now()}-${Math.random().toString(36).slice(2)}` }],
+  }));
+  const addDraftRules = (rules) => setSettings((current) => ({
+    ...current,
+    rules: [...current.rules, ...rules.map((rule) => ({ ...rule, source: "llm", id: `${Date.now()}-${Math.random().toString(36).slice(2)}` }))],
   }));
   const addRule = () => setSettings((current) => ({ ...current, rules: [...current.rules, makeRule()] }));
   const toggleUniqueColumn = (rule, column) => {
@@ -631,6 +746,14 @@ function RuleEditor({ settings, setSettings, headers, canEdit, storeState, onSav
         </span>
         {storeState.status === "error" && canEdit && <button type="button" onClick={onSave} style={{ marginLeft: "auto", border: 0, background: "transparent", color: "var(--accent)", cursor: "pointer" }}>다시 저장</button>}
       </div>
+      {canUseAi && (
+        <AiRuleDraft
+          headers={headers}
+          sampleRows={sampleRows}
+          disabled={!canEdit || storeState.status === "loading"}
+          onAdd={addDraftRules}
+        />
+      )}
       <fieldset disabled={!canEdit || storeState.status === "loading"} style={{ border: 0, padding: 0, margin: 0, minWidth: 0, display: "grid", gap: 12 }}>
         <datalist id="dcop-header-options">
           {headers.map((header) => <option key={header} value={header} />)}
@@ -645,6 +768,7 @@ function RuleEditor({ settings, setSettings, headers, canEdit, storeState, onSav
           <div key={rule.id} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 10, display: "grid", gap: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <b style={{ fontSize: 13 }}>규칙 {index + 1}</b>
+              {rule.source === "llm" && <Pill tone="info" title="관리자가 AI 초안에서 추가한 규칙">AI 생성</Pill>}
               <label style={{ marginLeft: "auto", fontSize: 12 }}><input type="checkbox" checked={rule.enabled} onChange={(e) => updateRule(rule.id, { enabled: e.target.checked })} /> 사용</label>
               <button type="button" onClick={() => duplicateRule(rule)} style={{ border: 0, background: "transparent", color: "var(--accent)", cursor: "pointer" }}>복제</button>
               <button type="button" onClick={() => removeRule(rule.id)} style={{ border: 0, background: "transparent", color: "var(--danger)", cursor: "pointer" }}>삭제</button>
@@ -677,7 +801,7 @@ function RuleEditor({ settings, setSettings, headers, canEdit, storeState, onSav
                         onClick={() => toggleUniqueColumn(rule, header)}
                         style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 8px", borderRadius: 4, border: checked ? "1px solid var(--accent)" : "1px solid var(--border)", background: checked ? "var(--accent-glow)" : "var(--bg-secondary)", color: checked ? "var(--accent)" : "var(--text-primary)", fontSize: 12, cursor: "pointer" }}
                       >
-                        <span aria-hidden="true">{checked ? "✓" : "＋"}</span>
+                        <Icon name={checked ? "check" : "plus"} />
                         {header}
                       </button>;
                     })}
@@ -781,6 +905,10 @@ export default function MyDcopCheck({ user }) {
     return lastColumn >= 0 ? uniqueHeaders(firstRow.slice(0, lastColumn + 1)) : [];
   }, [draftGrid]);
   const ruleHeaders = table.headers.length ? table.headers : draftHeaders;
+  // AI 초안에 열 이름과 함께 보내는 예시 몇 행 — 허용값·자릿수 추정에 쓴다.
+  const ruleSampleRows = useMemo(
+    () => (table.rows.length ? table.rows : tableFromGrid(draftGrid.slice(0, LLM_SAMPLE_ROWS + 1)).rows).slice(0, LLM_SAMPLE_ROWS),
+    [table.rows, draftGrid]);
 
   const enqueueSave = (snapshot) => {
     const serialized = JSON.stringify(snapshot);
@@ -1033,7 +1161,9 @@ export default function MyDcopCheck({ user }) {
           settings={settings}
           setSettings={setSettings}
           headers={ruleHeaders}
+          sampleRows={ruleSampleRows}
           canEdit={canEdit && settingsReady}
+          canUseAi={isAdmin(user)}
           storeState={storeState}
           onSave={saveNow}
         />

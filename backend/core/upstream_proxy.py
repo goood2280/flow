@@ -61,6 +61,8 @@ _AI_PROXY_PATHS_DEFAULT = (
     "/api/home-agent/orchestrate",
     "/api/filebrowser/sql/llm/draft",
     "/api/filebrowser/settings/llm/draft",
+    "/api/dcop/rules/llm/draft",
+    "/api/analysis-requests/report-draft",
     "/api/filebrowser/chart-builder/assistant",
     "/api/agent/unit-ai/",
     "/api/agent/unit/",

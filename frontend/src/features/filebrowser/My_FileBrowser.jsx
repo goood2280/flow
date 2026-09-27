@@ -7,6 +7,10 @@ import { dl, qs, sf } from "../../lib/api";
 import { allowedSubTabs, canManagePage } from "../../lib/permissions";
 import { statusPalette, chartPalette } from "../../components/UXKit";
 import { copyHistoryShareLink, historyIdFromLocation } from "../../lib/historyShare";
+import { setVisibleInterval } from "../../lib/visibleInterval";
+import SortRuleEditor from "./SortRuleEditor";
+import { Icon, IconLabel } from "../../components/ui/Icon";
+import "./filebrowser.css";
 const API="/api/filebrowser";
 const PAGE_SIZE=100;
 // DB(hive) 제품 첫 프리뷰는 최신 date 파티션에서만 읽으므로 500행까지 요청한다.
@@ -24,9 +28,12 @@ const FB_AMBER = chartPalette.series[1];
 const FB_MUTED = "#64748b";
 const FB_DISABLED = "#94a3b8";
 const FB_GRID_LINE = "1px solid var(--border)";
+const COL_PANEL_LIMIT = 300; // 수천 열 스키마도 DOM 을 가볍게: 나머지는 검색으로
 // 파일 목록 렌더용 확장자 색/아이콘 — 행 map 안에서 객체를 재할당하지 않도록 모듈 상수로 유지.
 const EXT_COLOR={parquet:"var(--ok)",csv:FB_INFO.fg,json:FB_AMBER,md:FB_DISABLED,yaml:"var(--warn)",yml:"var(--warn)",dir:FB_DISABLED};
-const EXT_ICON={parquet:"📊",csv:"📋",json:"🔧",md:"📄",yaml:"⚙️",yml:"⚙️",dir:"📂"};
+// 아이콘 이름은 components/ui/Icon 의 ICONS 키. DB/Files 스코프 아이콘도 여기서 정한다(백엔드 icon 필드는 쓰지 않음).
+const EXT_ICON={parquet:"chart-bar",csv:"table",json:"braces",md:"file",yaml:"sliders",yml:"sliders",dir:"folder"};
+const SCOPE_ICON={DB:"database",Base:"files"};
 const BASE_EDIT_FILE_EXTS = new Set(["csv","parquet"]);
 const BASE_EDIT_FILE_SOURCES = new Set(["base_root","db_root"]);
 const fileAliasKey=(file)=>String(file?.path||file?.name||file||"").replace(/\\/g,"/").replace(/^\.\//,"");
@@ -472,11 +479,38 @@ const parseConditionLines=(text)=>String(text||"").split(/\n/).map(line=>{
   return {expr:String(expr||"").trim(),message:rest.join("=>").trim()};
 }).filter(x=>x.expr);
 const formatConditionLines=(value)=>Array.isArray(value)?value.map(x=>`${x.expr||""}${x.message?" => "+x.message:""}`).join("\n"):"";
-const parseSortLines=(text)=>String(text||"").split(/\n/).map(line=>{
-  const [column,direction="asc",type="string",nulls="last"]=line.trim().split(/\s+/).filter(Boolean);
-  return column?{column,direction,type,nulls}:null;
-}).filter(Boolean);
-const formatSortLines=(value)=>Array.isArray(value)?value.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].filter(Boolean).join(" ")).join("\n"):"";
+// 정렬 한 줄: "column [asc|desc] [type] [last|first] [case=i] [values=A|B|C] [pattern=정규식]"
+// (옵션은 공백 없이 key=value. 패턴 안 공백은 \s 로 쓴다) — 서버 _order_spec_line_to_dict 와 같은 문법.
+const SORT_OPTION_KEYS=new Set(["case","values","order","pattern","regex"]);
+// 조회(검색) 정렬 변환 — 서버 _VIEW_SORT_CAST_ALIASES 와 맞춘다. 정렬 키만 바뀌고 표시 값은 원본.
+const VIEW_SORT_CASTS=new Set(["DOUBLE","BIGINT","TIMESTAMP","DATE","VARCHAR"]);
+const VIEW_SORT_CAST_ALIASES={DOUBLE:"DOUBLE",FLOAT:"DOUBLE",NUMERIC:"DOUBLE",DECIMAL:"DOUBLE",REAL:"DOUBLE",BIGINT:"BIGINT",INTEGER:"BIGINT",INT:"BIGINT",INT64:"BIGINT",TIMESTAMP:"TIMESTAMP",DATETIME:"TIMESTAMP",TIME:"TIMESTAMP",DATE:"DATE",VARCHAR:"VARCHAR",STRING:"VARCHAR",TEXT:"VARCHAR"};
+const parseSortLine=(line)=>{
+  const positional=[];const opts={};
+  String(line||"").trim().split(/\s+/).filter(Boolean).forEach(token=>{
+    const eq=token.indexOf("=");
+    const key=eq>0?token.slice(0,eq).toLowerCase():"";
+    if(eq>0&&SORT_OPTION_KEYS.has(key))opts[key]=token.slice(eq+1);
+    else positional.push(...token.split(",").filter(Boolean));
+  });
+  const [column,direction="asc",type="string",nulls="last"]=positional;
+  if(!column)return null;
+  const spec={column,direction,type,nulls};
+  if(opts.case)spec.case=/^(i|ci|insensitive|ignore)$/i.test(opts.case)?"insensitive":opts.case;
+  const values=opts.values??opts.order;
+  if(values!==undefined)spec.values=String(values).split("|").map(v=>v.trim()).filter(Boolean);
+  const pattern=opts.pattern??opts.regex;
+  if(pattern)spec.pattern=pattern;
+  return spec;
+};
+const parseSortLines=(text)=>String(text||"").split(/\n/).map(parseSortLine).filter(Boolean);
+const formatSortSpec=(x)=>[
+  x.column,x.direction||"asc",x.type||"string",x.nulls||"last",
+  x.case==="insensitive"?"case=i":"",
+  Array.isArray(x.values)&&x.values.length?`values=${x.values.join("|")}`:"",
+  x.pattern?`pattern=${String(x.pattern).replace(/\s/g,"\\s")}`:"",
+].filter(Boolean).join(" ");
+const formatSortLines=(value)=>Array.isArray(value)?value.map(formatSortSpec).join("\n"):"";
 const parseOrderedByLines=(text)=>{
   const keys=parseSortLines(text);
   return keys.length?{keys}:null;
@@ -581,8 +615,8 @@ const ruleSummaryGroups=(rule={})=>{
   list("date","날짜/시간",rule.date||[]);
   if(rule.regex&&Object.keys(rule.regex).length)groups.push({key:"regex",label:"정규식",items:Object.entries(rule.regex).map(([col,pattern])=>`${col}: ${pattern}`)});
   if(rule.conditions?.length)groups.push({key:"conditions",label:"조건",items:rule.conditions.map(x=>`${x.expr||""}${x.message?" => "+x.message:""}`)});
-  if(rule.ordered_by?.keys?.length)groups.push({key:"ordered_by",label:"현재 순서 검증",items:rule.ordered_by.keys.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].join(" "))});
-  if(rule.sort?.length)groups.push({key:"sort",label:"저장 정렬",items:rule.sort.map(x=>[x.column,x.direction||"asc",x.type||"string",x.nulls||"last"].join(" "))});
+  if(rule.ordered_by?.keys?.length)groups.push({key:"ordered_by",label:"현재 순서 검증",items:rule.ordered_by.keys.map(formatSortSpec)});
+  if(rule.sort?.length)groups.push({key:"sort",label:"저장 정렬",items:rule.sort.map(formatSortSpec)});
   return groups;
 };
 const VALIDATION_RULE_KEYS=new Set(["required_columns","not_empty","unique_keys","enums","numeric","date","regex","conditions","ordered_by"]);
@@ -1003,12 +1037,12 @@ export default function My_FileBrowser({
       else idleTimeout=setTimeout(run,1200);
     };
     loadFast().then(scheduleFull,scheduleFull);
-    const fastTimer=setInterval(loadFast,30000);
-    const fullTimer=setInterval(loadFull,5*60*1000);
+    const stopFast=setVisibleInterval(loadFast,30000);
+    const stopFull=setVisibleInterval(loadFull,5*60*1000,{refreshOnVisible:false});
     return()=>{
       alive=false;
-      clearInterval(fastTimer);
-      clearInterval(fullTimer);
+      stopFast();
+      stopFull();
       if(idleTimeout!=null)clearTimeout(idleTimeout);
       if(idleId!=null&&typeof window!=="undefined"&&typeof window.cancelIdleCallback==="function")window.cancelIdleCallback(idleId);
     };
@@ -1049,7 +1083,7 @@ export default function My_FileBrowser({
     const latestItemStale=freshnessState==="stale_item"||(latestItemStaleRaw&&!syncFresh);
     if(!info&&!s3StatusReady)return{color:FB_DISABLED,tip:"S3 상태 확인 중...",directionLabel:"확인중",directionArrow:"·",freshLabel:"-",latestItemStale:false};
     if(!info&&s3StatusLoadError)return{color:FB_DISABLED,tip:"S3 상태 확인 실패 — 다음 polling에서 다시 확인합니다",directionLabel:"확인실패",directionArrow:"·",freshLabel:"-",latestItemStale:false};
-    if(!info)return{color:FB_BAD.fg,tip:"S3 동기화 미설정 — FileBrowser 우하단 ⚙️에서 상태와 실행 권한을 확인하세요",directionLabel:"미설정",directionArrow:"·",freshLabel:"-",latestItemStale:false};
+    if(!info)return{color:FB_BAD.fg,tip:"S3 동기화 미설정 — FileBrowser 우하단 톱니 설정에서 상태와 실행 권한을 확인하세요",directionLabel:"미설정",directionArrow:"·",freshLabel:"-",latestItemStale:false};
     if(info.is_queued)return{color:FB_AMBER,tip:(inh?`상위 경로 '${fromLabel}' 에서 상속\n`:"")+`S3 ${directionLabel} 대기 중\n이전 실행: ${lastStr}\n최신 항목: ${latestItemStr}`,directionLabel,directionArrow,freshLabel:latestItemStale?"6h+":latestItemStr,latestItemStale};
     if(info.is_running)return{color:FB_INFO.fg,tip:(inh?`상위 경로 '${fromLabel}' 에서 상속\n`:"")+`S3 ${directionLabel} 실행 중…\n이전 실행: ${lastStr}\n최신 항목: ${latestItemStr}`,directionLabel,directionArrow,freshLabel:latestItemStr,latestItemStale:false};
     let color,line;
@@ -1066,9 +1100,11 @@ export default function My_FileBrowser({
   // 두 정보를 서로 다른 채널로 나눠서 색각 이상이나 흑백 출력에서도 방향이 남는다.
   // directionArrow/directionLabel 은 s3Light 가 예전부터 계산해 두고도 화면에
   // 내보내지 않던 값이다 — 툴팁에만 있던 걸 여기서 눈에 보이게 한다.
+  const[rootCollapsed,setRootCollapsed]=useState(false);
+  const[colPanelOpen,setColPanelOpen]=useState(false);
   const lightDot=(name)=>{const l=s3Light(name);return(
-    <span title={l.tip} style={{display:"inline-flex",alignItems:"center",gap:3,flexShrink:0,marginTop:3,marginRight:6}}>
-      <span style={{display:"inline-block",width:14,height:14,borderRadius:"50%",background:l.color,flexShrink:0,boxShadow:"0 0 5px "+l.color,border:l.latestItemStale?"2px solid var(--danger)":(l.inherited?"1px dashed rgba(255,255,255,0.6)":"1px solid rgba(0,0,0,0.1)")}}>
+    <span title={l.tip} style={{display:"inline-flex",alignItems:"center",gap:3,flexShrink:0}}>
+      <span style={{display:"inline-block",width:10,height:10,borderRadius:"50%",background:l.color,flexShrink:0,boxSizing:"content-box",border:l.latestItemStale?"2px solid var(--danger)":(l.inherited?"1px dashed var(--border-strong)":"1px solid transparent")}}>
       </span>
       <span aria-label={"S3 "+l.directionLabel} style={{fontFamily:"var(--font-mono)",fontSize:11,fontWeight:700,lineHeight:1,color:l.color,flexShrink:0,width:7,textAlign:"center"}}>
         {l.directionArrow}
@@ -1095,9 +1131,9 @@ export default function My_FileBrowser({
   const canRunS3Ingest=isFileBrowserAdmin;
   const canManageS3Ingest=isAdmin;
   const s3AllowedTabs=[
+    "folder","file",
     ...(canRunS3Ingest?["items","history"]:[]),
     ...(canManageS3Ingest?["add","aws"]:[]),
-    "folder","file",
   ];
   const s3AllowedTabKey=s3AllowedTabs.join("|");
   const loadBaseVersions=useCallback((file=selBaseFile)=>{
@@ -1139,11 +1175,23 @@ export default function My_FileBrowser({
     }catch(e){setBaseVersionMsg(e.message||"버전 미리보기 실패");}
     finally{setBaseVersionPreviewLoading(false);}
   };
+  // 저장·롤백 사유 입력창. window.prompt 대신 앱 모달로 받고, 취소하면 null.
+  const[reasonDialog,setReasonDialog]=useState(null);
+  const askReason=(opts)=>new Promise(resolve=>setReasonDialog({value:opts.defaultValue||"",...opts,resolve}));
+  const closeReasonDialog=(value)=>{
+    setReasonDialog(cur=>{if(cur)cur.resolve(value);return null;});
+  };
   const rollbackBaseVersion=async(version)=>{
     if(!selBaseFile||!version)return;
     if(!isFileBrowserAdmin){toast.warn("Admin 또는 FileBrowser page_admin 만 롤백할 수 있습니다.");return;}
-    if(!window.confirm(`${selBaseFile}\n${version} 버전으로 롤백하시겠습니까?\n현재 파일은 pre-rollback 버전으로 먼저 보존됩니다.`))return;
-    const note=window.prompt("롤백 사유를 입력하세요.", `Rollback to ${version}`);
+    const note=await askReason({
+      title:`${version} 버전으로 롤백`,
+      desc:"사유는 버전 이력에 남습니다.",
+      warn:`${selBaseFile}\n현재 파일은 pre-rollback 버전으로 먼저 보존된 뒤 ${version} 으로 되돌아갑니다.`,
+      defaultValue:`Rollback to ${version}`,
+      confirmLabel:"롤백",
+      danger:true,
+    });
     if(note===null)return;
     try{
       const d=await sf(API+"/base-file/rollback",{method:"POST",headers:{"Content-Type":"application/json"},
@@ -1161,7 +1209,7 @@ export default function My_FileBrowser({
   const saveRawBaseFile=async()=>{
     if(!canEditRawBase||!selBaseFile)return;
     if(baseSaveBusy)return;
-    const note=window.prompt("변경 사유를 입력하세요.", "Raw EDM edit");
+    const note=await askReason({title:"변경 사유",desc:"사유는 버전 이력에 남습니다.",defaultValue:"",placeholder:"예: 설정값 갱신",fallback:"Raw EDM edit",confirmLabel:"저장"});
     if(note===null)return;
     setBaseSaveBusy("raw");
     setBaseVersionMsg("저장 중...");
@@ -1181,7 +1229,7 @@ export default function My_FileBrowser({
   const[s3Items,setS3Items]=useState([]);
   const[s3AutoSync,setS3AutoSync]=useState(null);
   const[s3Avail,setS3Avail]=useState({dbs:[],root_parquets:[]});
-  const[s3Tab,setS3Tab]=useState("items"); // items | add | history
+  const[s3Tab,setS3Tab]=useState("folder"); // folder | file | items | add | history | aws
   const[s3Hist,setS3Hist]=useState([]);
   const[s3Form,setS3Form]=useState(null);
   const[s3AwsOk,setS3AwsOk]=useState(true);
@@ -1212,8 +1260,12 @@ export default function My_FileBrowser({
   const[fbSelectedFile,setFbSelectedFile]=useState("");
   const[fbDescriptionFile,setFbDescriptionFile]=useState("");
   const[fbDescriptionText,setFbDescriptionText]=useState("");
+  // 파일 목록 hover 툴팁 — 관리자가 설명을 적어 둔 파일만 이름+설명을 바로 띄운다.
+  const[fileTip,setFileTip]=useState(null);
   const[fbFileNameText,setFbFileNameText]=useState("");
   const[fbRuleForm,setFbRuleForm]=useState(emptyRuleForm());
+  const[fbRuleColumns,setFbRuleColumns]=useState([]);
+  const[fbSettingsLlmScope,setFbSettingsLlmScope]=useState("all");
   const[fbValidation,setFbValidation]=useState(null);
   const[fbSettingsLlmPrompt,setFbSettingsLlmPrompt]=useState("현재 CSV 컬럼 기준으로 필수 컬럼, 빈 값 금지, unique key 검증로직과 저장 시 정렬로직 초안 만들어줘");
   const[fbSettingsLlmBusy,setFbSettingsLlmBusy]=useState(false);
@@ -1390,6 +1442,13 @@ export default function My_FileBrowser({
       return{columns:[],sample_rows:[]};
     }
   };
+  useEffect(()=>{
+    if(!fbSelectedFile){setFbRuleColumns([]);return undefined;}
+    let alive=true;
+    loadFileRuleDraftContext().then(ctx=>{if(alive)setFbRuleColumns(ctx.columns||[]);});
+    return()=>{alive=false;};
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[fbSelectedFile]);
   const draftFileRuleByLlm=async()=>{
     if(!fbSelectedFile){setFbSettingsMsg("CSV 파일을 먼저 선택하세요.");return;}
     const prompt=String(fbSettingsLlmPrompt||"").trim();
@@ -1403,10 +1462,12 @@ export default function My_FileBrowser({
         columns:ctx.columns||[],
         sample_rows:ctx.sample_rows||[],
         current_rule:formToRule(fbRuleForm),
+        scope:fbSettingsLlmScope,
       })});
       setFbSettingsLlmDraft(d);
+      if(ctx.columns?.length)setFbRuleColumns(ctx.columns);
       const warnCount=(d.warnings||[]).length;
-      setFbSettingsMsg(`규칙 초안 생성 완료${warnCount?` · warnings ${warnCount}`:""}`);
+      setFbSettingsMsg(`${fbSettingsLlmScope==="sort"?"정렬로직":"규칙"} 초안 생성 완료${d.sort_cleared?" · 저장 정렬 해제":""}${warnCount?` · warnings ${warnCount}`:""}`);
     }catch(e){
       setFbSettingsLlmDraft({ok:false,error:e.message||"규칙 초안 생성 실패"});
       setFbSettingsMsg(e.message||"규칙 초안 생성 실패");
@@ -1416,10 +1477,14 @@ export default function My_FileBrowser({
   };
   const applyFileRuleDraft=()=>{
     const draft=fbSettingsLlmDraft?.draft||fbSettingsLlmDraft?.csv_rules?.[fbSelectedFile]||null;
-    if(!draft)return;
-    setFbRuleForm(ruleToForm(mergeCsvRule(formToRule(fbRuleForm),draft)));
+    const cleared=!!fbSettingsLlmDraft?.sort_cleared;
+    if(!draft&&!cleared)return;
+    const merged=mergeCsvRule(formToRule(fbRuleForm),draft||{});
+    // 정렬 초안은 병합이 아니라 교체(서버가 현재 정렬에 수정 요청을 반영한 전체 목록을 준다).
+    if(cleared)delete merged.sort;
+    setFbRuleForm(ruleToForm(merged));
     setFbValidation(null);
-    setFbSettingsMsg("초안을 기존 form에 병합했습니다. 저장을 눌러야 반영됩니다.");
+    setFbSettingsMsg(cleared?"저장 정렬을 비웠습니다. 저장을 눌러야 반영됩니다.":"초안을 기존 form에 병합했습니다(정렬로직은 초안으로 교체). 저장을 눌러야 반영됩니다.");
   };
   const loadFilebrowserCacheStatus=async()=>{
     try{
@@ -1474,8 +1539,7 @@ export default function My_FileBrowser({
     loadItems();
     if(canManageS3Ingest&&s3Tab==="add"){loadAvail();loadProfiles();}
     if(s3Tab==="history")loadHist();
-    const t=setInterval(()=>{loadItems();if(s3Tab==="history")loadHist();},5000);
-    return()=>clearInterval(t);
+    return setVisibleInterval(()=>{loadItems();if(s3Tab==="history")loadHist();},5000);
   },[s3Open,s3Tab,s3Tick,canRunS3Ingest,canManageS3Ingest,user?.username]);
 
   useEffect(()=>{
@@ -1610,7 +1674,7 @@ export default function My_FileBrowser({
   // (loaded only when user switches scope) to keep the default cold-start fast.
   const loadInitial = async () => {
     try {
-      const sc = await sf(API+"/scopes").catch(()=>({scopes:[{key:"DB",label:"DB",exists:true,icon:"🗄️"}]}));
+      const sc = await sf(API+"/scopes").catch(()=>({scopes:[{key:"DB",label:"DB",exists:true}]}));
       // v9.1.x: 소탭 단위 권한 — 허용된 scope(DB→db, Files/Base→files)만 노출.
       const fbAllowed = allowedSubTabs("filebrowser");
       const SCOPE_SUBTAB = { DB: "db", Base: "files" };
@@ -1700,11 +1764,12 @@ export default function My_FileBrowser({
     if(!column)return null;
     const direction=String(sort.direction||"asc").toLowerCase()==="desc"?"desc":"asc";
     const nulls=String(sort.nulls||"last").toLowerCase()==="first"?"first":"last";
-    return{column,direction,nulls};
+    const cast=VIEW_SORT_CASTS.has(String(sort.cast||"").toUpperCase())?String(sort.cast).toUpperCase():"";
+    return cast?{column,direction,nulls,cast}:{column,direction,nulls};
   };
   const sortParams=(spec)=>{
     const s=cleanSortSpec(spec);
-    return s?{sort_column:s.column,sort_direction:s.direction,sort_nulls:s.nulls}:{};
+    return s?{sort_column:s.column,sort_direction:s.direction,sort_nulls:s.nulls,...(s.cast?{sort_cast:s.cast}:{})}:{};
   };
   const cleanAggregateSpec=(agg)=>{
     if(!agg||typeof agg!=="object")return null;
@@ -1798,14 +1863,17 @@ export default function My_FileBrowser({
   const splitDisplaySql=(value,columns=currentColumns())=>{
     const text=String(value||"").trim();
     const identPattern="(?:`(?:``|[^`])+`|\"(?:\"\"|[^\"])+\"|[A-Za-z_][A-Za-z0-9_]*)";
-    const orderMatch=text.match(new RegExp("^(.*?)\\s+ORDER\\s+BY\\s+("+identPattern+")\\s+(ASC|DESC)(?:\\s+NULLS\\s+(FIRST|LAST))?\\s*$","i"));
+    // ORDER BY col | CAST(col AS TYPE) [ASC|DESC] [NULLS FIRST|LAST] — 서버 _AI_SQL_ORDER_BY_RE 와 같은 형태.
+    const keyPattern="(?:(?:TRY_CAST|CAST)\\s*\\(\\s*("+identPattern+")\\s+AS\\s+([A-Za-z0-9_]+)\\s*\\)|("+identPattern+"))";
+    const orderMatch=text.match(new RegExp("^(.*?)(?:^|\\s+)ORDER\\s+BY\\s+"+keyPattern+"(?:\\s+(ASC|DESC))?(?:\\s+NULLS\\s+(FIRST|LAST))?\\s*$","i"));
     const body=orderMatch?String(orderMatch[1]||"").trim():text;
     const lookup=new Map(columns.map(c=>[c.toLowerCase(),c]));
     let sortSpec=null;
     if(orderMatch){
-      const sortCol=unquoteDisplaySqlIdent(orderMatch[2]);
+      const sortCol=unquoteDisplaySqlIdent(orderMatch[2]||orderMatch[4]);
       const hit=lookup.get(sortCol.toLowerCase());
-      if(hit)sortSpec={column:hit,direction:String(orderMatch[3]||"asc").toLowerCase(),nulls:String(orderMatch[4]||"last").toLowerCase()};
+      const cast=VIEW_SORT_CAST_ALIASES[String(orderMatch[3]||"").toUpperCase()]||"";
+      if(hit)sortSpec={column:hit,direction:String(orderMatch[5]||"asc").toLowerCase(),nulls:String(orderMatch[6]||"last").toLowerCase(),...(cast?{cast}:{})};
     }
     if(!/^select\b/i.test(body))return{whereSql:body,selectedColumns:[],sortSpec};
     const match=body.match(/^\s*SELECT\s+([\s\S]+?)(?:\s+WHERE\s+([\s\S]*))?\s*$/i);
@@ -1834,7 +1902,10 @@ export default function My_FileBrowser({
     else if(selected.length)base=`SELECT ${rendered.join(", ")}`;
     else base=where;
     const s=cleanSortSpec(sortOverride);
-    if(s)base=`${base} ORDER BY ${displaySqlIdent(s.column)} ${s.direction.toUpperCase()}${s.nulls==="first"?" NULLS FIRST":""}`.trim();
+    if(s){
+      const key=s.cast?`CAST(${displaySqlIdent(s.column)} AS ${s.cast})`:displaySqlIdent(s.column);
+      base=`${base} ORDER BY ${key} ${s.direction.toUpperCase()}${s.nulls==="first"?" NULLS FIRST":""}`.trim();
+    }
     return base;
   };
   const setSqlFromInput=(value)=>{
@@ -2811,7 +2882,7 @@ export default function My_FileBrowser({
     setEditCols(saveCols);
     setEditRows(saveRows);
     const csvText=buildSaveText(saveCols,saveRows,saveDelimiter,includeHeader);
-    const note=window.prompt("변경 사유를 입력하세요.", "Grid EDM edit");
+    const note=await askReason({title:"변경 사유",desc:"사유는 버전 이력에 남습니다.",defaultValue:"",placeholder:"예: IOFF 상한 1.25 로 갱신",fallback:"Grid EDM edit",confirmLabel:"저장"});
     if(note===null)return;
     setBaseSaveBusy("grid");
     setBaseVersionMsg("저장 중...");
@@ -2938,6 +3009,7 @@ export default function My_FileBrowser({
       url+="&sort_column="+encodeURIComponent(activeSort.column);
       url+="&sort_direction="+encodeURIComponent(activeSort.direction);
       url+="&sort_nulls="+encodeURIComponent(activeSort.nulls);
+      if(activeSort.cast)url+="&sort_cast="+encodeURIComponent(activeSort.cast);
     }
     if(mode==="base"){
       url+="&file="+encodeURIComponent(selBaseFile);
@@ -2968,6 +3040,9 @@ export default function My_FileBrowser({
     {k:"folder",l:"폴더 설정"},
     {k:"file",l:"파일 설정"},
   ];
+  const s3SubTabs=settingsTabs.filter(t=>["items","add","history","aws"].includes(t.k));
+  const settingsMainTabs=[{k:"folder",l:"폴더 설정"},{k:"file",l:"파일 설정"},...(s3SubTabs.length?[{k:"s3",l:"S3 동기화"}]:[])];
+  const settingsMainActive=["folder","file","cache"].includes(s3Tab)?s3Tab:"s3";
   const settingsTitle=s3Tab==="folder"?"FileBrowser 폴더 설정":(s3Tab==="file"?"FileBrowser 파일 설정":(s3Tab==="items"||s3Tab==="history"?"S3 동기화 실행/이력":"S3 동기화 설정 — aws s3 cp/sync"));
   const activeQueryMode=!!(String(sql||"").trim() || selectedCols.length || aggregateSpec || data?.selected_cols);
   const effectiveCsvMaxRows=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_rows||500000),Number(fbSettings.csv_download_max_rows||500000)||500000));
@@ -2983,8 +3058,104 @@ export default function My_FileBrowser({
   const sidebarRowBase={display:"flex",alignItems:"center",gap:6,minWidth:0,overflow:"hidden"};
   const sidebarStack={display:"flex",flexDirection:"column",gap:2,flex:1,minWidth:0,overflow:"hidden"};
   const sidebarMetaLine={display:"flex",alignItems:"center",gap:6,minWidth:0,overflow:"hidden",lineHeight:1.15};
+  // 단일 파일 버전 이력 — 파일 이름·행수는 위 머리 한 줄에만 두고, 여기는 버전 목록만.
+  const renderVersionCard=()=>{
+    if(!(mode==="base"&&selBaseFile))return null;
+    const q=baseVersionFilter.trim().toLowerCase();
+    const rows=q?baseVersions.filter(v=>[v.version,v.actor,v.action,v.note,v.created_at].some(x=>String(x||"").toLowerCase().includes(q))):baseVersions;
+    const msgTone=baseVersionMsg.includes("완료")?"fb-chip--ok":(baseVersionMsg.includes("중")?"":"fb-chip--danger");
+    return <div className="fb-versions">
+      <div className="fb-versions__head">
+        <span className="fb-versions__title">버전 이력</span>
+        <span className="fb-versions__sub">{baseVersioned?`${baseVersions.length}/${baseVersionCap}개 보관`:"버전 관리 대상 아님 · 미리보기만"}</span>
+        {(baseVersionLoading||baseVersionPreviewLoading)&&<span className="fb-versions__sub">불러오는 중…</span>}
+        {baseSaveBusy&&<Loading text="저장 중..." size="sm" />}
+        {baseVersionMsg&&<span className={"fb-chip "+msgTone}>{baseVersionMsg}</span>}
+        <div className="fb-versions__tools">
+          {baseVersions.length>3&&<input className="fb-versions__filter" value={baseVersionFilter} onChange={e=>setBaseVersionFilter(e.target.value)} placeholder="작성자·사유 검색"/>}
+          <button className="fb-btn fb-btn--sm fb-btn--ghost" onClick={()=>loadBaseVersions(selBaseFile)}><Icon name="refresh" size={14}/>새로고침</button>
+        </div>
+      </div>
+      {baseVersioned&&baseVersions.length===0&&<div className="fb-versions__empty">아직 저장된 이전 버전이 없습니다. 다음 저장부터 수정 전 스냅샷이 남습니다.</div>}
+      {rows.length>0&&<div className="fb-versions__list">
+        {rows.map(v=>{
+          const legacy=String(v.version||"").startsWith("legacy_");
+          const isCur=!!baseCurrentVersion&&v.version===baseCurrentVersion;
+          const change=versionChangeLabel(v.change_summary);
+          const unchanged=!change||change.includes("없음");
+          const when=(v.created_at||"").replace("T"," ").slice(0,16)||"-";
+          return <div key={v.version} className="fb-version-row" data-current={isCur?"1":"0"}>
+            <span className="fb-version-row__ver" title={v.storage_version||v.version}>{legacy?"legacy":v.version}</span>
+            <span className="fb-version-row__main">
+              <span className="fb-version-row__note" title={`${v.version} · ${v.action||"edit"}`}>{isCur?"현재 · ":""}{v.note||v.action||"edit"}</span>
+              <span className="fb-version-row__meta">{when} · {v.actor||"-"} · {v.rows??"-"}행 × {v.columns??"-"}열 · {formatSize(v.size)}</span>
+            </span>
+            <span className="fb-version-row__changes" title={JSON.stringify(v.change_summary||{})}>
+              <span className={"fb-chip "+(unchanged?"":"fb-chip--warn")}>{change||"변경 없음"}</span>
+            </span>
+            <span className="fb-version-row__actions">
+              <button className="fb-link fb-link--steel" onClick={()=>previewBaseVersion(v.version)}>보기</button>
+              <button className="fb-link fb-link--danger" onClick={()=>rollbackBaseVersion(v.version)} disabled={!isFileBrowserAdmin}
+                title={isFileBrowserAdmin?"이 버전으로 되돌립니다 (사유 기록)":"관리자만 롤백할 수 있습니다"}>롤백</button>
+            </span>
+          </div>;
+        })}
+      </div>}
+      {q&&rows.length===0&&<div className="fb-versions__empty">검색 결과가 없습니다.</div>}
+      {baseVersionPreview&&<div style={{marginTop:10,border:"1px solid var(--border)",borderRadius:6,overflow:"hidden",background:"var(--bg-primary)"}}>
+              <div style={{display:"flex",gap:8,alignItems:"center",padding:"7px 9px",borderBottom:"1px solid var(--border)",fontSize:12,flexWrap:"wrap"}}>
+                <b style={{fontFamily:"monospace",color:"var(--accent)"}}>{baseVersionPreview.version}</b>
+                <span style={{color:"var(--text-secondary)"}}>{baseVersionPreview.kind||"file"} preview</span>
+                {baseVersionPreview.diff&&<span style={{color:baseVersionPreview.diff.checksum_equal?FB_OK.fg:"#eab308"}}>
+                  {baseVersionPreview.diff.checksum_equal?"현재와 동일":"현재와 다름"}
+                  {diffTableCountLabel(baseVersionPreview.diff_table)?` · ${diffTableCountLabel(baseVersionPreview.diff_table)}`:""}
+                </span>}
+                <span style={{color:"var(--text-secondary)",fontFamily:"monospace"}}>
+                  {tableShapeLabel(baseVersionPreview.current_profile,"현재")} · {tableShapeLabel(baseVersionPreview.version_profile,"버전")}
+                </span>
+                <button onClick={()=>setBaseVersionPreview(null)} style={{marginLeft:"auto",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>닫기</button>
+              </div>
+              {baseVersionPreview.diff&&(baseVersionPreview.diff.added_columns_in_current?.length||baseVersionPreview.diff.removed_columns_from_current?.length)?<div style={{padding:"6px 9px",fontSize:12,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)"}}>
+                {baseVersionPreview.diff.added_columns_in_current?.length?`현재에만 있는 컬럼: ${baseVersionPreview.diff.added_columns_in_current.slice(0,12).join(", ")}${baseVersionPreview.diff.added_columns_in_current.length>12?"...":""}`:""}
+                {baseVersionPreview.diff.added_columns_in_current?.length&&baseVersionPreview.diff.removed_columns_from_current?.length?" / ":""}
+                {baseVersionPreview.diff.removed_columns_from_current?.length?`버전에만 있는 컬럼: ${baseVersionPreview.diff.removed_columns_from_current.slice(0,12).join(", ")}${baseVersionPreview.diff.removed_columns_from_current.length>12?"...":""}`:""}
+              </div>:null}
+              {baseVersionPreview.diff_table?.rows?.length?<div style={{maxHeight:320,overflow:"auto"}}>
+                <div style={{padding:"6px 9px",fontSize:12,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)",display:"flex",gap:10,flexWrap:"wrap"}}>
+                  <b style={{color:"var(--text-primary)"}}>직전 버전 대비 변경점</b>
+                  <span>수정 {baseVersionPreview.diff_table.counts?.modified||0}</span>
+                  <span>추가 {baseVersionPreview.diff_table.counts?.added||0}</span>
+                  <span>삭제 {baseVersionPreview.diff_table.counts?.deleted||0}</span>
+                  {baseVersionPreview.diff_table.truncated&&<span style={{color:FB_BAD.fg}}>일부만 표시됨</span>}
+                </div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <thead><tr>{(baseVersionPreview.diff_table.columns||[]).map(c=><th key={c} style={{position:"sticky",top:0,background:"var(--bg-secondary)",borderBottom:"1px solid var(--border)",padding:5,textAlign:"left",zIndex:1}}>{c==="changed_cols"?"변경컬럼":c}</th>)}</tr></thead>
+                  <tbody>{baseVersionPreview.diff_table.rows.map((r,i)=>{
+                    const st=revStyle(r.rev);
+                    const changed=new Set(r._changed_cols||[]);
+                    return <tr key={i} style={{background:st.bg,color:st.fg,borderLeft:"4px solid "+st.line}}>{(baseVersionPreview.diff_table.columns||[]).map((c,ci)=>{
+                      const isChanged=changed.has(c)&&r.rev==="수정";
+                      return <td key={c} style={{borderBottom:"1px solid var(--border)",padding:5,fontFamily:ci<=1?"monospace":"inherit",fontWeight:c==="rev"||isChanged?800:500,background:isChanged?"#fde68a":undefined,color:st.fg,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={String(r[c]??"")}>{String(r[c]??"")}</td>;
+                    })}</tr>;
+                  })}</tbody>
+                </table>
+              </div>:null}
+              {!baseVersionPreview.diff_table&&baseVersionPreview.text!=null?<pre style={{margin:0,padding:10,maxHeight:260,overflow:"auto",fontSize:12,lineHeight:1.45,whiteSpace:"pre-wrap",color:"var(--text-primary)"}}>{baseVersionPreview.text}</pre>:null}
+              {!baseVersionPreview.diff_table&&baseVersionPreview.rows?.length?<div style={{maxHeight:260,overflow:"auto"}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr>{(baseVersionPreview.columns||[]).map(c=><th key={c} style={{position:"sticky",top:0,background:"var(--bg-secondary)",borderBottom:"1px solid var(--border)",padding:5,textAlign:"left"}}>{c}</th>)}</tr></thead>
+                <tbody>{baseVersionPreview.rows.map((r,i)=><tr key={i}>{(baseVersionPreview.columns||[]).map(c=><td key={c} style={{borderBottom:"1px solid var(--border)",padding:5}}>{String(r[c]??"")}</td>)}</tr>)}</tbody></table>
+              </div>:null}
+            </div>}
+    </div>;
+  };
   return(
     <div className="flow-connected-page" style={{display:"flex",height:embedded?"calc(100vh - 190px)":"calc(100vh - 52px)",minHeight:embedded?620:undefined,background:"var(--bg-primary)",color:"var(--text-primary)",border:embedded?"1px solid var(--border)":undefined,borderRadius:embedded?8:undefined,overflow:"hidden"}}>
+      {fileTip&&<div role="tooltip" className="filebrowser-file-tip"
+        style={{position:"fixed",left:fileTip.x,top:fileTip.y,zIndex:"var(--z-dropdown)",maxWidth:340,padding:"8px 10px",border:"1px solid var(--border)",borderLeft:"3px solid var(--accent)",borderRadius:4,background:"var(--bg-card)",boxShadow:"var(--shadow-flyout)",pointerEvents:"none",fontSize:13,lineHeight:1.5,color:"var(--text-primary)"}}>
+        <div style={{fontWeight:700,wordBreak:"break-all"}}>{fileTip.name}</div>
+        {fileTip.path!==fileTip.name&&<div style={{fontSize:11,color:"var(--text-secondary)",fontFamily:"monospace",wordBreak:"break-all",marginTop:1}}>{fileTip.path}</div>}
+        <div style={{marginTop:5,whiteSpace:"pre-wrap",wordBreak:"break-word",color:"var(--text-primary)"}}>{fileTip.text}</div>
+      </div>}
       {/* Sidebar */}
       <div style={{width:260,minWidth:260,borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",background:"var(--bg-secondary)",overflow:"hidden"}}>
         <div className="flow-sidebar-header" style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",fontSize:14,fontWeight:700,color:"var(--text-secondary)"}}>
@@ -3001,14 +3172,14 @@ export default function My_FileBrowser({
               style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",textAlign:"center",padding:"6px 8px",borderRadius:5,fontSize:14,cursor:disabled?"not-allowed":"pointer",fontWeight:active?700:500,
                 background:active?"var(--accent-glow)":"var(--bg-hover)",color:disabled?"var(--text-secondary)":(active?"var(--accent)":"var(--text-primary)"),
                 opacity:disabled?0.4:1,border:"1px solid "+(active?"var(--accent)":"var(--border)")}}>
-              {s.icon} {s.label}
+              <IconLabel icon={SCOPE_ICON[s.key]||"folder"}>{s.label}</IconLabel>
             </span>);
           })}
         </div>}
         {sideLoading?<div style={{padding:20}}><Loading text="DB root 확인 중" size="sm"/></div>:scope==="Base"?<>
           {/* Root-level DB files — legacy scope key remains "Base" for compatibility. */}
           <div style={{flex:1,overflow:"auto",padding:"6px 8px"}}>
-            <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>
+            <div className="fb-tree-group fb-tree-group--top">
               {embedded?"TEG 기준파일":(baseDir||"운영 파일")} ({baseFileCount}){baseDirLoading&&<span style={{marginLeft:6,fontWeight:400,textTransform:"none"}}>불러오는 중…</span>}
             </div>
             {baseDir&&baseDirTruncated&&<div style={{padding:"6px 12px",fontSize:12,color:"var(--warn)"}}>
@@ -3024,11 +3195,18 @@ export default function My_FileBrowser({
               const isDir=kind==="dir";
               const isDirUp=kind==="dir_up";
               const extColor=EXT_COLOR[f.ext]||FB_MUTED;
-              const icon=isDirUp?"↩":(EXT_ICON[f.ext]||"📁");
+              const icon=isDirUp?"folder-up":(isDir?"folder":(EXT_ICON[f.ext]||"file"));
               const displayName=baseDir&&!isDirUp?String(fileKey).replace(new RegExp("^"+baseDir.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")+"/"),""):f.name;
               const titlePath=[f.name];
+              const customDescription=!isDir&&!isDirUp&&f.description_custom&&String(f.description||"").trim();
               return(<div key={fileKey} className="filebrowser-base-file" data-file={fileKey} data-ext={f.ext}
+                onMouseEnter={customDescription?(e)=>{
+                  const rect=e.currentTarget.getBoundingClientRect();
+                  setFileTip({key:fileKey,name:f.display_name||displayName,path:fileKey,text:customDescription,x:rect.right+8,y:Math.max(8,Math.min(rect.top,window.innerHeight-180))});
+                }:undefined}
+                onMouseLeave={customDescription?()=>setFileTip(null):undefined}
                 onClick={()=>{
+                  setFileTip(null);
                   if(isDirUp){
                     // 최상위로 튀지 않고 바로 위 폴더로. (예: valve-alerts/pipeline → valve-alerts)
                     setBaseDir(baseDir.includes("/")?baseDir.slice(0,baseDir.lastIndexOf("/")):"");
@@ -3049,84 +3227,62 @@ export default function My_FileBrowser({
                   }
                   setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSelBaseMeta(f);loadBaseFileView(fileKey);setIsBaseEditing(false);setError("");setData(null);setBaseRaw(null);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
                 }}
-                title={(f.description||titlePath.join(" "))+ (f.role?`\n${f.role}`:"")}
-                style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
-                  background:isSel?"var(--bg-hover)":"transparent",color:isSel?"var(--accent)":"var(--text-primary)"}}>
-                {/* v8.7.5: Base 단일 파일도 S3 신호등 표시 (다운로드/업로드 양방향). */}
-                {!embedded&&!isDir&&!isDirUp&&lightDot(fileKey)}
-                <span style={{flexShrink:0,lineHeight:1.5}}>{icon}</span>
-                <span style={sidebarStack}>
-                  <span style={sidebarText} title={f.display_name||displayName}>{f.display_name||displayName}</span>
-                  <span style={sidebarMetaLine}>
-                    {!embedded&&!isDir&&!isDirUp&&lightFreshText(fileKey)}
-                    {/* v8.7.7: `db` 소스 태그 제거 — Base 단일 파일은 소스 구분 없이 한 번만 표시. */}
-                    {!isDir&&!isDirUp&&<>
-                      <span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:`color-mix(in srgb, ${extColor} 13%, transparent)`,color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>{f.ext}</span>
-                      <span style={sidebarMeta}>{formatSize(f.size)}</span>
-                    </>}
-                    {isDir&&<span style={{fontSize:11,padding:"1px 4px",borderRadius:3,background:`color-mix(in srgb, ${extColor} 13%, transparent)`,color:extColor,fontWeight:700,fontFamily:"monospace",flexShrink:0}}>DIR</span>}
-                  </span>
-                </span>
+                title={customDescription?undefined:(f.description||titlePath.join(" "))+ (f.role?`\n${f.role}`:"")}
+                className="fb-tree-row fb-tree-row--file" data-selected={isSel?"1":"0"}>
+                <span className="fb-tree-icon" style={{color:isDir||isDirUp?"var(--text-secondary)":extColor}}><Icon name={icon} size={16}/></span>
+                <span className="fb-tree-name" title={customDescription?undefined:(f.display_name||displayName)}>{f.display_name||displayName}</span>
+                {/* v8.7.7: `db` 소스 태그 제거 — Base 단일 파일은 소스 구분 없이 한 번만 표시. */}
+                {!isDir&&!isDirUp&&<span className="fb-tree-meta">{formatSize(f.size)}</span>}
+                {isDir&&<span className="fb-tree-meta">DIR</span>}
                 {/* DB/root 원본은 read-only. Flow-i가 Files 영역에 등록한 uploads 파일만 삭제 가능. */}
                 {isAdmin&&!isDir&&f.source==="uploads"&&<span
                   onClick={(e)=>{e.stopPropagation();deleteBaseFile(f.name);}}
                   title={"Files 등록 파일 삭제 (admin) — "+f.name+" 을 .trash 로 이동"}
                   style={{fontSize:14,lineHeight:1,padding:"1px 5px",borderRadius:3,cursor:"pointer",color:FB_BAD.fg,border:"1px solid var(--danger-line)",background:"transparent",flexShrink:0}}>
-                  🗑
+                  <Icon name="trash" />
                 </span>}
+                {/* v8.7.5: Base 단일 파일도 S3 신호등 표시 (다운로드/업로드 양방향). */}
+                {!embedded&&!isDir&&!isDirUp&&lightDot(fileKey)}
               </div>);
             })}
           </div>
         </>:<>
-          <div style={{padding:"8px 12px"}}>
+          <div className="fb-tree" style={{flex:1,overflow:"auto"}}>
             {roots.map(r=>{
-              // v8.4.3: icon + level badge 제거 — 깔끔한 이름만.
-              return (
-              <div key={r.name} onClick={()=>{setSelRoot(r.name);setSelectedCols([]);setAggregateSpec(null);}} title={r.description||""} style={{...sidebarRowBase,alignItems:"flex-start",padding:"7px 12px",borderRadius:6,cursor:"pointer",fontSize:14,
-                background:selRoot===r.name?"var(--bg-hover)":"transparent",fontWeight:selRoot===r.name?600:400,color:selRoot===r.name?"var(--accent)":"var(--text-primary)"}}>
-                {lightDot(r.name)}
-                <span style={sidebarStack}>
-                  <span style={sidebarText} title={r.name}>{r.display_name||r.canonical||r.name}</span>
-                  <span style={sidebarMetaLine}>
-                    {lightFreshText(r.name)}
-                    {!r.metadata_deferred&&<span style={{...sidebarMeta,maxWidth:60}}>파일 {r.parquet_count}</span>}
-                  </span>
-                </span>
+              const isSel=selRoot===r.name;
+              const open=isSel&&!rootCollapsed;
+              return (<div key={r.name}>
+                <div className="fb-tree-row" data-selected={isSel&&!selProd&&!selRootPq?"1":"0"} title={r.description||r.name}
+                  onClick={()=>{if(isSel){setRootCollapsed(v=>!v);return;}setRootCollapsed(false);setSelRoot(r.name);setSelectedCols([]);setAggregateSpec(null);}}>
+                  <span className="fb-tree-caret" data-open={open?"1":"0"}><Icon name="chevron-down" size={14}/></span>
+                  <span className="fb-tree-name" style={{fontWeight:700}}>{r.display_name||r.canonical||r.name}</span>
+                  {!r.metadata_deferred&&<span className="fb-tree-meta">{r.parquet_count}</span>}
+                  {lightDot(r.name)}
+                </div>
+                {open&&productsLoading&&<div className="fb-tree-empty"><Loading text="제품 목록 확인 중" size="sm"/></div>}
+                {open&&!productsLoading&&products.map(p=>(
+                  <div key={p.name} className="fb-tree-row fb-tree-row--child" data-selected={selProd===p.name?"1":"0"}
+                    title={[p.name,p.latest_date?`최신 파티션 ${p.latest_date}`:""].filter(Boolean).join(" · ")}
+                    onClick={()=>{setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0,sortOverride:null,aggregateOverride:null});}}>
+                    <span className="fb-tree-name">{p.name}</span>
+                    {/* v8.8.2: 제품별 S3 신호등 — 본인 설정 없으면 상위 DB 에서 상속. */}
+                    {lightDot(selRoot+"/"+p.name)}
+                  </div>))}
+                {open&&!productsLoading&&!products.length&&!rootPqs.length&&<div className="fb-tree-empty">제품이 없습니다.</div>}
+                {open&&rootPqs.length>0&&<>
+                  <div className="fb-tree-group">루트 Parquet</div>
+                  {rootPqs.map(f=>(
+                    <div key={f.name} className="fb-tree-row fb-tree-row--child" data-selected={selRootPq===f.name?"1":"0"} title={f.name}
+                      onClick={()=>{setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);loadRootPqView(f.name,"",[],{sortOverride:null,aggregateOverride:null});}}>
+                      <span className="fb-tree-icon" style={{color:"var(--ok)"}}><Icon name="chart-bar" size={14}/></span>
+                      <span className="fb-tree-name">{f.name}</span>
+                      <span className="fb-tree-meta">{formatSize(f.size)}</span>
+                      {lightDot(f.name)}
+                    </div>))}
+                </>}
               </div>);
             })}
           </div>
-          {productsLoading&&<div style={{borderTop:"1px solid var(--border)",padding:"10px 12px"}}><Loading text="제품 목록 확인 중" size="sm"/></div>}
-          {!productsLoading&&products.length>0&&<div style={{flex:1,overflow:"auto",borderTop:"1px solid var(--border)",padding:"4px 8px"}}>
-            <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>제품</div>
-            {products.map(p=>(
-              <div key={p.name} onClick={()=>{setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);setSql("");loadHiveView(selRoot,p.name,"",[],{full:true,page:0,sortOverride:null,aggregateOverride:null});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
-                background:selProd===p.name?"var(--bg-hover)":"transparent",color:selProd===p.name?"var(--accent)":"var(--text-primary)"}}>
-                {/* v8.8.2: 제품별 S3 신호등 — 본인 설정 없으면 상위 DB 에서 상속. */}
-                {lightDot(selRoot+"/"+p.name)}
-                <span style={sidebarStack}>
-                  <span style={sidebarText} title={p.name}>{p.name}</span>
-                  <span style={sidebarMetaLine}>
-                    {lightFreshText(selRoot+"/"+p.name)}
-                    {!!p.latest_date&&<span style={sidebarMeta}>{p.latest_date}</span>}
-                  </span>
-                </span>
-              </div>))}
-          </div>}
-          {rootPqs.length>0&&<div style={{borderTop:"1px solid var(--border)",padding:"4px 8px",maxHeight:200,overflow:"auto"}}>
-            <div style={{fontSize:14,fontWeight:700,color:"var(--text-secondary)",padding:"6px 8px",textTransform:"uppercase"}}>루트 Parquet</div>
-            {rootPqs.map(f=>(
-              <div key={f.name} onClick={()=>{setSelectedCols([]);setSortSpec(null);setAggregateSpec(null);loadRootPqView(f.name,"",[],{sortOverride:null,aggregateOverride:null});}} style={{...sidebarRowBase,alignItems:"flex-start",padding:"6px 10px",borderRadius:5,cursor:"pointer",fontSize:14,marginBottom:1,
-                background:selRootPq===f.name?"var(--bg-hover)":"transparent",color:selRootPq===f.name?"var(--accent)":"var(--text-primary)"}}>
-                {lightDot(f.name)}
-                <span style={sidebarStack}>
-                  <span style={sidebarText} title={f.name}>📊 {f.name}</span>
-                  <span style={sidebarMetaLine}>
-                    {lightFreshText(f.name)}
-                    <span style={sidebarMeta}>{formatSize(f.size)}</span>
-                  </span>
-                </span>
-              </div>))}
-          </div>}
         </>}
       </div>
       {/* Main */}
@@ -3137,11 +3293,17 @@ export default function My_FileBrowser({
           <FileBrowserSqlAutocomplete value={sql} onChange={setSqlFromInput} onExecute={applySql}
             mode={mode} root={selRoot} product={selProd} file={mode==="base"?selBaseFile:selRootPq} accessScope={accessScope}
             columns={data?.all_columns||data?.columns||[]} disabled={mode==="base"&&isBaseEditing}/>
-          <button onClick={applySql} disabled={mode==="base"&&isBaseEditing}
-            style={{padding:"6px 14px",borderRadius:5,border:"none",background:mode==="base"&&isBaseEditing?"var(--border)": "var(--accent)",color:mode==="base"&&isBaseEditing?"var(--text-secondary)":"#fff",fontSize:14,fontWeight:600,cursor:mode==="base"&&isBaseEditing?"default":"pointer"}}>실행</button>
-          {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={()=>setShowAggregateBuilder(v=>!v)} title="그룹 기준과 집계 함수를 선택합니다." style={{padding:"6px 12px",borderRadius:5,border:"1px solid var(--border)",background:showAggregateBuilder?"var(--accent-glow)":"transparent",color:showAggregateBuilder?"var(--accent)":"var(--text-secondary)",fontSize:13,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}>피벗/집계</button>}
-          {data&&!(mode==="base"&&isBaseEditing)&&<button onClick={downloadCsv} title={`표시는 ${PAGE_SIZE}행, CSV는 서버 허용 한도까지 다운로드합니다.`} style={{padding:"6px 14px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer"}}>CSV</button>}
-          {data&&!(mode==="base"&&isBaseEditing)&&<span style={{fontSize:12,color:"var(--text-secondary)",whiteSpace:"nowrap"}}>CSV 최대 {effectiveCsvMaxRows.toLocaleString()}행/{effectiveCsvMaxMb.toLocaleString()}MB</span>}
+          <button className="fb-btn fb-btn--primary" onClick={applySql} disabled={mode==="base"&&isBaseEditing}>실행</button>
+          {/* AI SQL 은 항상 보인다. 한국어 요청 → /sql/llm/draft(LLM, 미설정이면 규칙 기반) → SQL 반영 후 바로 조회. */}
+          <button className="fb-btn fb-btn--accent" onClick={()=>{setAiSqlOpen(true);setAiSqlResult(null);}}
+            disabled={!data||(mode==="base"&&isBaseEditing)}
+            title={data?"한국어로 원하는 조회를 쓰면 LLM 이 SQL 을 만들어 바로 조회합니다.":"먼저 DB 제품이나 파일을 여세요."}>
+            <Icon name="sparkle" size={16}/>AI SQL</button>
+          <button className="fb-btn" data-active={colPanelOpen&&data?"1":"0"} onClick={()=>setColPanelOpen(v=>!v)}
+            disabled={!data||(mode==="base"&&isBaseEditing)} title="열 목록(스키마) — 볼 열을 고르고 실행">
+            <Icon name="table" size={16}/>컬럼{data?` ${Number(data.total_cols||allCols.length||0).toLocaleString()}`:""}</button>
+          {data&&!(mode==="base"&&isBaseEditing)&&<button className="fb-btn" data-active={showAggregateBuilder?"1":"0"} onClick={()=>setShowAggregateBuilder(v=>!v)} title="그룹 기준과 집계 함수를 선택합니다.">피벗/집계</button>}
+          {data&&!(mode==="base"&&isBaseEditing)&&<button className="fb-btn" onClick={downloadCsv} title={`표시는 ${PAGE_SIZE}행, CSV는 최대 ${effectiveCsvMaxRows.toLocaleString()}행 / ${effectiveCsvMaxMb.toLocaleString()}MB 까지 다운로드합니다.`}><Icon name="download" size={16}/>CSV</button>}
         </div>
         {showAggregateBuilder&&data&&!(mode==="base"&&isBaseEditing)&&<div style={{padding:"9px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"end",gap:8,flexWrap:"wrap"}}>
           <label style={{display:"flex",flexDirection:"column",gap:4,minWidth:230,fontSize:12,color:"var(--text-secondary)",fontWeight:700}}>
@@ -3192,6 +3354,12 @@ export default function My_FileBrowser({
             <div>CAST(value AS DOUBLE) &gt;= 10 <span style={{color:"var(--accent)"}}>— 문자열 숫자 비교</span></div>
             <div>CAST(tkout_time AS TIMESTAMP) &gt;= '2024-04-21' <span style={{color:"var(--accent)"}}>— 문자열 시간 비교</span></div>
             <div>tkout_time IS NOT NULL <span style={{color:"var(--accent)"}}>— NOT NULL</span></div>
+            <div style={{marginTop:6,fontWeight:700,color:"var(--text-primary)",fontFamily:"inherit"}}>검색 결과를 변환(CAST)한 뒤 정렬</div>
+            <div>item_id = 'IOFF' ORDER BY CAST(value AS DOUBLE) DESC <span style={{color:"var(--accent)"}}>— 문자열 숫자를 숫자 크기로 (10 &gt; 9 &gt; 2.5)</span></div>
+            <div>SELECT lot_id, value WHERE CAST(value AS DOUBLE) &gt;= 10 ORDER BY CAST(value AS DOUBLE) ASC NULLS FIRST <span style={{color:"var(--accent)"}}>— 검색 + 변환 정렬 + 빈 값 먼저</span></div>
+            <div>root_lot_id = 'A1000' ORDER BY CAST(tkout_time AS TIMESTAMP) DESC <span style={{color:"var(--accent)"}}>— 문자열 시간을 최신순</span></div>
+            <div>ORDER BY CAST(wafer_id AS BIGINT) ASC <span style={{color:"var(--accent)"}}>— 조건 없이 정수 순서로만</span></div>
+            <div style={{color:"var(--text-secondary)",fontFamily:"inherit"}}>타입: DOUBLE(숫자) · BIGINT(정수) · TIMESTAMP(날짜시간) · DATE(날짜) · VARCHAR(문자열). 정렬 키는 하나, 변환 안 되는 값은 빈 값으로 취급(NULLS LAST 기본). 표시 값은 바뀌지 않습니다.</div>
             <div style={{color:"var(--accent)",marginTop:4}}>팁: 컬럼 탭에서 컬럼명 클릭 → SELECT 토글, 실행 → 조회 적용, + WHERE → 조건 템플릿 삽입</div>
           </div>}
           {showSqlHistory&&<div style={{background:"var(--bg-card)",borderRadius:6,padding:"7px 10px",border:"1px solid var(--border)",fontSize:12,color:"var(--text-secondary)",minWidth:0,maxHeight:280,overflow:"auto"}}>
@@ -3206,7 +3374,7 @@ export default function My_FileBrowser({
                   <span style={{display:"inline-flex",alignItems:"center",gap:7,minWidth:0}}>
                     <span style={{fontWeight:900,color:h.ok?FB_OK.fg:FB_BAD.fg,flexShrink:0}}>{h.ok?"성공":"실패"}</span>
                     <span style={{fontFamily:"monospace",fontWeight:800,color:"var(--accent)",overflow:"hidden",textOverflow:"ellipsis"}} title="SQL 이력 고유키">{h.history_id||"-"}</span>
-                    <span style={{fontWeight:900,color:"var(--text-secondary)",flexShrink:0}} title="이 고유키로 다시 실행된 횟수">🔄 {Number(h.reuse_count||0).toLocaleString()}</span>
+                    <span style={{fontWeight:900,color:"var(--text-secondary)",flexShrink:0}} title="이 고유키로 다시 실행된 횟수"><IconLabel icon="refresh">{Number(h.reuse_count||0).toLocaleString()}</IconLabel></span>
                     {mode==="hive"&&h.product&&<span style={{padding:"1px 5px",borderRadius:4,border:"1px solid var(--border)",color:"var(--text-secondary)",fontFamily:"monospace",flexShrink:0}} title="최초 실행 제품">{h.product}</span>}
                   </span>
                   <span style={{display:"inline-flex",alignItems:"center",justifyContent:"flex-end",gap:7,minWidth:0,marginLeft:"auto",overflow:"hidden"}}>
@@ -3229,98 +3397,12 @@ export default function My_FileBrowser({
 
         {/* Error display */}
         {error&&<div style={{margin:"0 16px 8px",padding:"8px 12px",background:FB_BAD.bg,border:`1px solid ${FB_BAD.fg}`,borderRadius:6,fontSize:14,color:FB_BAD.fg}}>
-          {error} <span onClick={()=>setError("")} style={{cursor:"pointer",marginLeft:8}}>✕</span>
+          {error} <button type="button" className="flow-icon-button" onClick={()=>setError("")} title="닫기" style={{marginLeft:8,color:"inherit",verticalAlign:"middle"}}><Icon name="close" /></button>
         </div>}
 
         {/* Content */}
         <div style={{flex:1,overflow:"auto",padding:16}}>
           {loading&&<div style={{padding:40,textAlign:"center"}}><Loading text="로딩 중..."/></div>}
-          {mode==="base"&&selBaseFile&&<div style={{margin:"10px 12px 0",padding:12,border:"1px solid var(--border)",borderRadius:8,background:"var(--bg-secondary)"}}>
-            <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
-              <b style={{fontSize:14}}>Version History</b>
-              <span style={{fontSize:12,color:"var(--text-secondary)",maxWidth:260,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={selBaseFile}>
-                {selBaseFile}
-              </span>
-              {baseCurrentVersion&&<span style={{fontSize:12,fontWeight:800,color:"var(--accent)",background:"var(--accent-glow)",border:"1px solid var(--accent)",borderRadius:4,padding:"2px 6px",fontFamily:"monospace"}}>
-                현재 {baseCurrentVersion}
-              </span>}
-              <span style={{fontSize:12,color:baseVersioned?"var(--accent)":"var(--text-secondary)",fontFamily:"monospace"}}>
-                {baseVersioned?`versioned · ${baseVersions.length}/${baseVersionCap}`:"preview only"}
-              </span>
-              {(baseVersionLoading||baseVersionPreviewLoading)&&<span style={{fontSize:12,color:"var(--text-secondary)"}}>loading...</span>}
-              {baseSaveBusy&&<Loading text="저장 중..." size="sm" />}
-              {baseVersionMsg&&<span style={{fontSize:12,color:baseVersionMsg.includes("완료")?FB_OK.fg:(baseVersionMsg.includes("중")?"var(--text-secondary)":FB_BAD.fg)}}>{baseVersionMsg}</span>}
-              <input value={baseVersionFilter} onChange={e=>setBaseVersionFilter(e.target.value)} placeholder="filter actor/action/note" style={{marginLeft:"auto",padding:"3px 7px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,width:170}}/>
-              <button onClick={()=>loadBaseVersions(selBaseFile)} style={{padding:"3px 8px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>새로고침</button>
-            </div>
-            {baseCurrentProfile&&<div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:6,fontSize:12,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-              <span>{baseCurrentProfile.rows??"-"}행 / {baseCurrentProfile.columns??"-"}열</span>
-              <span>size={formatSize(baseCurrentProfile.size)}</span>
-              <span>modified={(baseCurrentProfile.modified_at||"").replace("T"," ").slice(0,16)||"-"}</span>
-            </div>}
-            {baseVersioned&&baseVersions.length===0&&<div style={{fontSize:12,color:"var(--text-secondary)"}}>아직 저장된 이전 버전이 없습니다. 다음 저장부터 수정 전 snapshot 이 남습니다.</div>}
-            {baseVersions.length>0&&<div style={{display:"flex",flexDirection:"column",gap:2,maxHeight:150,overflow:"auto"}}>
-              {baseVersions.filter(v=>{
-                const q=baseVersionFilter.trim().toLowerCase();
-                if(!q)return true;
-                return [v.version,v.actor,v.action,v.note,v.created_at].some(x=>String(x||"").toLowerCase().includes(q));
-              }).map(v=><div key={v.version} style={{display:"grid",gridTemplateColumns:"58px minmax(120px,0.9fr) minmax(130px,1fr) 96px 72px 136px 82px 58px 70px",gap:8,alignItems:"center",fontSize:12,padding:"2px 6px",border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-primary)"}}>
-                <span style={{fontFamily:"monospace",fontWeight:900,color:String(v.version||"").startsWith("legacy_")?"#a855f7":"var(--accent)"}} title={v.storage_version||v.version}>{String(v.version||"-").startsWith("legacy_")?"legacy":v.version}</span>
-                <span style={{color:"var(--text-primary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={`${v.version} · ${v.action||"edit"}`}>{v.note||v.action||"edit"}</span>
-                <span style={{color:"#eab308",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"monospace"}} title={JSON.stringify(v.change_summary||{})}>{versionChangeLabel(v.change_summary)}</span>
-                <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{v.rows??"-"}행 / {v.columns??"-"}열</span>
-                <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{formatSize(v.size)}</span>
-                <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{(v.created_at||"").replace("T"," ").slice(0,16)||"-"}</span>
-                <span style={{color:"var(--text-secondary)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v.actor||"-"}</span>
-                <button onClick={()=>previewBaseVersion(v.version)} style={{padding:"1px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>보기</button>
-                <button onClick={()=>rollbackBaseVersion(v.version)} disabled={!isFileBrowserAdmin} style={{padding:"1px 7px",borderRadius:4,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:isFileBrowserAdmin?FB_BAD.fg:"var(--text-secondary)",fontSize:12,cursor:isFileBrowserAdmin?"pointer":"not-allowed"}}>롤백</button>
-              </div>)}
-            </div>}
-            {baseVersionPreview&&<div style={{marginTop:10,border:"1px solid var(--border)",borderRadius:6,overflow:"hidden",background:"var(--bg-primary)"}}>
-              <div style={{display:"flex",gap:8,alignItems:"center",padding:"7px 9px",borderBottom:"1px solid var(--border)",fontSize:12,flexWrap:"wrap"}}>
-                <b style={{fontFamily:"monospace",color:"var(--accent)"}}>{baseVersionPreview.version}</b>
-                <span style={{color:"var(--text-secondary)"}}>{baseVersionPreview.kind||"file"} preview</span>
-                {baseVersionPreview.diff&&<span style={{color:baseVersionPreview.diff.checksum_equal?FB_OK.fg:"#eab308"}}>
-                  {baseVersionPreview.diff.checksum_equal?"현재와 동일":"현재와 다름"}
-                  {diffTableCountLabel(baseVersionPreview.diff_table)?` · ${diffTableCountLabel(baseVersionPreview.diff_table)}`:""}
-                </span>}
-                <span style={{color:"var(--text-secondary)",fontFamily:"monospace"}}>
-                  {tableShapeLabel(baseVersionPreview.current_profile,"현재")} · {tableShapeLabel(baseVersionPreview.version_profile,"버전")}
-                </span>
-                <button onClick={()=>setBaseVersionPreview(null)} style={{marginLeft:"auto",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>닫기</button>
-              </div>
-              {baseVersionPreview.diff&&(baseVersionPreview.diff.added_columns_in_current?.length||baseVersionPreview.diff.removed_columns_from_current?.length)?<div style={{padding:"6px 9px",fontSize:12,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)"}}>
-                {baseVersionPreview.diff.added_columns_in_current?.length?`현재에만 있는 컬럼: ${baseVersionPreview.diff.added_columns_in_current.slice(0,12).join(", ")}${baseVersionPreview.diff.added_columns_in_current.length>12?"...":""}`:""}
-                {baseVersionPreview.diff.added_columns_in_current?.length&&baseVersionPreview.diff.removed_columns_from_current?.length?" / ":""}
-                {baseVersionPreview.diff.removed_columns_from_current?.length?`버전에만 있는 컬럼: ${baseVersionPreview.diff.removed_columns_from_current.slice(0,12).join(", ")}${baseVersionPreview.diff.removed_columns_from_current.length>12?"...":""}`:""}
-              </div>:null}
-              {baseVersionPreview.diff_table?.rows?.length?<div style={{maxHeight:320,overflow:"auto"}}>
-                <div style={{padding:"6px 9px",fontSize:12,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)",display:"flex",gap:10,flexWrap:"wrap"}}>
-                  <b style={{color:"var(--text-primary)"}}>직전 버전 대비 변경점</b>
-                  <span>수정 {baseVersionPreview.diff_table.counts?.modified||0}</span>
-                  <span>추가 {baseVersionPreview.diff_table.counts?.added||0}</span>
-                  <span>삭제 {baseVersionPreview.diff_table.counts?.deleted||0}</span>
-                  {baseVersionPreview.diff_table.truncated&&<span style={{color:FB_BAD.fg}}>일부만 표시됨</span>}
-                </div>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                  <thead><tr>{(baseVersionPreview.diff_table.columns||[]).map(c=><th key={c} style={{position:"sticky",top:0,background:"var(--bg-secondary)",borderBottom:"1px solid var(--border)",padding:5,textAlign:"left",zIndex:1}}>{c==="changed_cols"?"변경컬럼":c}</th>)}</tr></thead>
-                  <tbody>{baseVersionPreview.diff_table.rows.map((r,i)=>{
-                    const st=revStyle(r.rev);
-                    const changed=new Set(r._changed_cols||[]);
-                    return <tr key={i} style={{background:st.bg,color:st.fg,borderLeft:"4px solid "+st.line}}>{(baseVersionPreview.diff_table.columns||[]).map((c,ci)=>{
-                      const isChanged=changed.has(c)&&r.rev==="수정";
-                      return <td key={c} style={{borderBottom:"1px solid var(--border)",padding:5,fontFamily:ci<=1?"monospace":"inherit",fontWeight:c==="rev"||isChanged?800:500,background:isChanged?"#fde68a":undefined,color:st.fg,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={String(r[c]??"")}>{String(r[c]??"")}</td>;
-                    })}</tr>;
-                  })}</tbody>
-                </table>
-              </div>:null}
-              {!baseVersionPreview.diff_table&&baseVersionPreview.text!=null?<pre style={{margin:0,padding:10,maxHeight:260,overflow:"auto",fontSize:12,lineHeight:1.45,whiteSpace:"pre-wrap",color:"var(--text-primary)"}}>{baseVersionPreview.text}</pre>:null}
-              {!baseVersionPreview.diff_table&&baseVersionPreview.rows?.length?<div style={{maxHeight:260,overflow:"auto"}}>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr>{(baseVersionPreview.columns||[]).map(c=><th key={c} style={{position:"sticky",top:0,background:"var(--bg-secondary)",borderBottom:"1px solid var(--border)",padding:5,textAlign:"left"}}>{c}</th>)}</tr></thead>
-                <tbody>{baseVersionPreview.rows.map((r,i)=><tr key={i}>{(baseVersionPreview.columns||[]).map(c=><td key={c} style={{borderBottom:"1px solid var(--border)",padding:5}}>{String(r[c]??"")}</td>)}</tr>)}</tbody></table>
-              </div>:null}
-            </div>}
-          </div>}
           {!loading&&!data&&!baseRaw&&!error&&<div style={{padding:60,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>사이드바에서 제품 또는 루트 parquet 을 선택하세요</div>}
           {!loading&&baseRaw&&<div className="filebrowser-base-raw" data-kind={baseRaw.kind}>
             <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12}}>
@@ -3335,6 +3417,7 @@ export default function My_FileBrowser({
                 <button onClick={()=>{setRawEditing(false);setRawEditText("");}} disabled={!!baseSaveBusy} style={{padding:"4px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:baseSaveBusy?"wait":"pointer",opacity:baseSaveBusy?0.5:1}}>취소</button>
               </>}
             </div>
+            {renderVersionCard()}
             {rawEditing?<textarea value={rawEditText} onChange={e=>setRawEditText(e.target.value)} spellCheck={false} disabled={!!baseSaveBusy}
               style={{width:"100%",minHeight:"55vh",boxSizing:"border-box",margin:0,padding:12,background:"var(--bg-card)",border:"1px solid var(--accent)",borderRadius:6,fontSize:14,lineHeight:1.5,fontFamily:"monospace",color:"var(--text-primary)",resize:"vertical"}}/>:
               <pre style={{margin:0,padding:12,background:"var(--bg-card)",border:"1px solid var(--border)",borderRadius:6,fontSize:14,lineHeight:1.5,fontFamily:"monospace",color:"var(--text-primary)",whiteSpace:"pre-wrap",wordBreak:"break-word",maxHeight:"calc(100vh - 240px)",overflow:"auto"}}>
@@ -3342,74 +3425,49 @@ export default function My_FileBrowser({
               </pre>}
           </div>}
             {!loading&&data&&<>
-              <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:12,flexWrap:"wrap"}}>
-                {/* v8.8.31: 어떤 datalake 소스(FAB/INLINE/ET) 인지 한눈에 보이게 배지.
-                     selRoot 이 "1.RAWDATA_DB_FAB" / "_INLINE" / "_ET" 로 끝나는지 판정. */}
-              {mode==="hive" && selRoot && (()=>{
-                const name=(selRoot||"").toUpperCase();
-                let label="",bg="",fg="";
-                if(name.endsWith("_FAB")||name.endsWith(".RAWDATA_DB_FAB")){label="FAB";bg="var(--info-50)";fg="var(--info)";}
-                else if(name.endsWith("_INLINE")){label="INLINE";bg="var(--ok-50)";fg="var(--ok)";}
-                else if(name.endsWith("_ET")){label="ET";bg="var(--pink-50)";fg="var(--pink)";}
-                if(!label) return null;
-                return <span title={`datalake 소스: ${label} (${selRoot})`}
-                  style={{fontSize:14,fontWeight:700,fontFamily:"monospace",padding:"3px 10px",borderRadius:4,background:bg,color:fg,letterSpacing:0.5}}>{label}</span>;
-              })()}
-              <span style={{fontSize:14,fontWeight:600,flex:"1 1 220px",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={selProd||selRootPq||selBaseFile}>{selProd||selRootPq||selBaseFile}</span>
-                <span style={{fontSize:14,color:"var(--text-secondary)",background:"var(--bg-card)",padding:"4px 10px",borderRadius:6,flexShrink:0}}>
+              <div className="fb-head">
+                {/* v8.8.31: 어떤 datalake 소스(FAB/INLINE/ET) 인지 한눈에 보이게 배지. */}
+                {mode==="hive" && selRoot && (()=>{
+                  const name=(selRoot||"").toUpperCase();
+                  let label="",tone="";
+                  if(name.endsWith("_FAB")||name.endsWith(".RAWDATA_DB_FAB")){label="FAB";tone="fb-chip--steel";}
+                  else if(name.endsWith("_INLINE")){label="INLINE";tone="fb-chip--ok";}
+                  else if(name.endsWith("_ET")){label="ET";tone="fb-chip--brand";}
+                  if(!label) return null;
+                  return <span className={"fb-chip fb-chip--mono "+tone} title={`datalake 소스: ${label} (${selRoot})`}>{label}</span>;
+                })()}
+                <span className="fb-head__title" title={selProd||selRootPq||selBaseFile}>{selProd||selRootPq||selBaseFile}</span>
+                {mode==="base"&&baseCurrentVersion&&<span className="fb-chip fb-chip--steel fb-chip--mono">현재 {baseCurrentVersion}</span>}
+                <span className="fb-head__meta">
                   {data.meta_only
-                    ?<>스키마만 · {data.total_cols}열{data.row_count_unknown?<> · 행수 미계산</>:data.total_rows?<> · {data.total_rows.toLocaleString()}행</>:null}{data.all_columns_truncated?<> · 컬럼 일부 표시</>:null}{sampleLoading&&<span style={{color:"var(--accent)",fontWeight:700}}> · 샘플 행 불러오는 중…</span>}</>
-                    :<><span style={{color:"var(--accent)",fontWeight:700}}>{previewStatusLabel}</span> · 표시 {data.showing}행{!data.single_file_full_read&&data.preview_row_limit?<> / 최대 {data.preview_row_limit}행</>:null}{data.latest_order_col?<> · 기준 {data.latest_order_col}</>:null} | {data.total_rows?.toLocaleString()}행 × {data.total_cols}열
-                       {data.selected_cols&&<span style={{color:"var(--accent)"}}> | {selectedCols.length||String(data.selected_cols).split(",").filter(Boolean).length}열 선택됨</span>}
-                       {data.truncated_cols&&<span style={{color:"var(--accent)"}}> | 기본 미리보기 {data.preview_cols}열</span>}</>}
-                  {data.source_modified&&<span title={data.source_path||""}> | 수정 {new Date(data.source_modified*1000).toLocaleString()}</span>}
+                    ?<>스키마만 · {data.total_cols}열{data.row_count_unknown?<> · 행수 미계산</>:data.total_rows?<> · {data.total_rows.toLocaleString()}행</>:null}{sampleLoading&&<b> · 샘플 행 불러오는 중…</b>}</>
+                    :<><b>{previewStatusLabel}</b> · 표시 {data.showing}행{!data.single_file_full_read&&data.preview_row_limit?<> / 최대 {data.preview_row_limit}행</>:null} · {data.total_rows?.toLocaleString()}행 × {data.total_cols}열{data.latest_order_col?<> · 기준 {data.latest_order_col}</>:null}
+                       {data.selected_cols&&<b> · {selectedCols.length||String(data.selected_cols).split(",").filter(Boolean).length}열 선택됨</b>}
+                       {data.truncated_cols&&<> · 기본 미리보기 {data.preview_cols}열</>}</>}
+                  {data.source_modified&&<span title={data.source_path||""}> · 수정 {new Date(data.source_modified*1000).toLocaleString()}</span>}
                 </span>
-                {mode==="base"&&data.csv_rule_summary&&ruleCount(data.csv_rule_summary)>0&&<span title={JSON.stringify(data.csv_rule_summary)} style={{fontSize:12,fontWeight:700,padding:"4px 9px",borderRadius:5,background:FB_OK.bg,color:"#16a34a",fontFamily:"monospace"}}>
-                  CSV rule {ruleCount(data.csv_rule_summary)}{data.csv_rule_summary.sort?` · sort ${data.csv_rule_summary.sort}`:""}
+                {mode==="base"&&data.csv_rule_summary&&ruleCount(data.csv_rule_summary)>0&&<span className="fb-chip fb-chip--ok fb-chip--mono" title={JSON.stringify(data.csv_rule_summary)}>
+                  저장 규칙 {ruleCount(data.csv_rule_summary)}{data.csv_rule_summary.sort?` · sort ${data.csv_rule_summary.sort}`:""}
                 </span>}
-                <div style={{display:"inline-flex",alignItems:"center",gap:6,marginLeft:"auto",flexWrap:"wrap"}}>
-                  {mode==="base"&&isFileBrowserAdmin&&BASE_EDIT_FILE_EXTS.has(baseFileExt)&&baseFileEditable&&
-                    <button onClick={startBaseEdit} disabled={!canEnterBaseEdit}
+                <div className="fb-head__actions">
+                  {tab==="data"&&!findOpen&&<button className="fb-btn fb-btn--sm" onClick={openFind} title="표에서 값 찾기 (Ctrl+F)"><Icon name="search" size={14}/>값 찾기</button>}
+                  {mode==="base"&&isFileBrowserAdmin&&BASE_EDIT_FILE_EXTS.has(baseFileExt)&&baseFileEditable&&!isBaseEditingMode&&
+                    <button className="fb-btn fb-btn--sm fb-btn--primary" onClick={startBaseEdit} disabled={!canEnterBaseEdit}
                       title={!canEnterBaseEdit?(baseFileComplete? "편집 대상이 아닙니다. (Base/db_root 단일 CSV, Parquet만 가능)": "미리보기 전체 행이 필요합니다. 전체 조회 후 시작하세요.")
-                      : "클립보드로 붙여넣고 저장할 수 있습니다."}
-                      style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--accent)",background:canEnterBaseEdit?"var(--accent)":"transparent",color:canEnterBaseEdit?"#fff":"var(--text-secondary)",fontSize:14,fontWeight:600,cursor:canEnterBaseEdit?"pointer":"default"}}>편집</button>}
+                      : "클립보드로 붙여넣고 저장할 수 있습니다."}><Icon name="edit" size={14}/>편집</button>}
                   {isBaseEditingMode&&<>
-                    <button onClick={addBaseEditColumn} style={{padding:"5px 10px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:13,fontWeight:700,cursor:"pointer"}}>열 추가</button>
-                    <button onClick={()=>deleteBaseEditColumn(selectedEditCell.c)} disabled={editCols.length<=1}
-                      style={{padding:"5px 10px",borderRadius:5,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:editCols.length>1?FB_BAD.fg:"var(--text-secondary)",fontSize:13,fontWeight:700,cursor:editCols.length>1?"pointer":"default",opacity:editCols.length>1?1:0.45}}>활성 열 삭제</button>
-                    <button onClick={saveBaseEdit} disabled={!!baseSaveBusy} style={{padding:"5px 12px",borderRadius:5,border:"none",background:baseSaveBusy?"var(--text-secondary)":"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:baseSaveBusy?"wait":"pointer",opacity:baseSaveBusy?0.75:1}}>{baseSaveBusy==="grid"?"저장 중...":"저장"}</button>
-                    <button onClick={restoreBaseEdit} disabled={!!baseSaveBusy} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:baseSaveBusy?"wait":"pointer",opacity:baseSaveBusy?0.5:1}}>원본복원</button>
-                    <button onClick={cancelBaseEdit} disabled={!!baseSaveBusy} style={{padding:"5px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:baseSaveBusy?"wait":"pointer",opacity:baseSaveBusy?0.5:1}}>취소</button>
-                    <span style={{fontSize:13,color:"var(--text-secondary)",display:"inline-flex",gap:6,alignItems:"center"}}>
-                      <span>붙여넣기:</span>
-                      <select value={pasteMode} onChange={e=>setPasteMode(e.target.value)} style={{padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}>
-                        <option value="replace">replace</option>
-                        <option value="append">append</option>
-                      </select>
-                    </span>
-                    <span style={{fontSize:13,color:"var(--text-secondary)",display:"inline-flex",gap:6,alignItems:"center"}}>
-                      <span>저장 구분자:</span>
-                      <select value={saveDelimiter} onChange={e=>setSaveDelimiter(e.target.value)} style={{padding:"2px 6px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}>
-                        <option value="tab">tab</option>
-                        <option value="comma">comma</option>
-                        <option value="auto">auto</option>
-                      </select>
-                    </span>
-                    <label style={{fontSize:13,color:"var(--text-secondary)",display:"inline-flex",gap:6,alignItems:"center",cursor:"pointer",lineHeight:1.2}}>
-                      <input type="checkbox" checked={includeHeader} onChange={e=>setIncludeHeader(e.target.checked)}
-                        style={{width:14,height:14}}/> 헤더 포함</label>
-                    <span style={{padding:"2px 8px",borderRadius:4,border:"1px dashed var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:12}}>Ctrl+V 붙여넣기 안내</span>
+                    <span className="fb-chip fb-chip--brand">편집 중</span>
+                    <button className="fb-btn fb-btn--sm" onClick={addBaseEditColumn}>열 추가</button>
+                    <button className="fb-btn fb-btn--sm fb-btn--danger" onClick={()=>deleteBaseEditColumn(selectedEditCell.c)} disabled={editCols.length<=1}>활성 열 삭제</button>
+                    <button className="fb-btn fb-btn--sm" onClick={restoreBaseEdit} disabled={!!baseSaveBusy}>원본복원</button>
+                    <button className="fb-btn fb-btn--sm" onClick={cancelBaseEdit} disabled={!!baseSaveBusy}>취소</button>
+                    <button className="fb-btn fb-btn--sm fb-btn--primary" onClick={saveBaseEdit} disabled={!!baseSaveBusy}>{baseSaveBusy==="grid"?"저장 중...":"저장"}</button>
                   </>}
                 </div>
               </div>
-              {/* Tabs: Data + Columns */}
-              <div style={{display:"flex",gap:0,borderBottom:"1px solid var(--border)",marginBottom:12,alignItems:"center"}}>
-                {baseEditingTabs.map(t=>(<div key={t} onClick={()=>setTab(t)} style={{padding:"8px 16px",fontSize:14,cursor:"pointer",fontWeight:tab===t?600:400,
-                  borderBottom:tab===t?"2px solid var(--accent)":"2px solid transparent",color:tab===t?"var(--text-primary)":"var(--text-secondary)"}}>
-                  {t==="data"?"데이터 ("+data.showing+")":"컬럼 ("+allCols.length+")"}</div>))}
-                {tab==="data"&&!findOpen&&<button onClick={openFind} title="표에서 값 찾기 (Ctrl+F)"
-                  style={{marginLeft:"auto",padding:"4px 11px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:13,fontWeight:600,cursor:"pointer"}}>값 찾기</button>}
-              </div>
+              {renderVersionCard()}
+              <div className="fb-body">
+              <div className="fb-body__main">
               {tab==="data"&&findOpen&&<div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",margin:"0 0 10px",padding:"7px 10px",borderRadius:6,border:"1px solid var(--accent)",background:"var(--accent-glow)"}}>
                 <span style={{fontSize:13,fontWeight:700,color:"var(--accent)"}}>값 찾기</span>
                 <input ref={findInputRef} value={findQuery} onChange={e=>setFindQuery(e.target.value)} onKeyDown={onFindKeyDown}
@@ -3431,10 +3489,26 @@ export default function My_FileBrowser({
                 </span>}
               </div>}
               {tab==="data"&&isBaseEditingMode&&<>
-                <div style={{margin:"0 0 8px",fontSize:12,color:"var(--text-secondary)"}}>
-                  셀 기준 붙여넣기: 입력 중인 셀을 시작점으로 반영되며, 첫 행이 헤더면 열 이름으로 반영됩니다.
-                  탭·줄바꿈이 없는 단일 값은 커서 위치에 그대로 삽입됩니다.
-                  <br/>셀 이동: ↑↓ · Enter(위로는 Shift+Enter) · Tab / Shift+Tab. ←→ 는 커서가 셀 텍스트 끝에 닿으면 옆 셀로 넘어갑니다.
+                <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap",margin:"0 0 8px",fontSize:13,color:"var(--text-secondary)"}}>
+                  <label style={{display:"inline-flex",gap:6,alignItems:"center"}}>붙여넣기
+                    <select className="fb-select" value={pasteMode} onChange={e=>setPasteMode(e.target.value)} style={{width:104,height:28}}>
+                      <option value="replace">replace</option>
+                      <option value="append">append</option>
+                    </select>
+                  </label>
+                  <label style={{display:"inline-flex",gap:6,alignItems:"center"}}>저장 구분자
+                    <select className="fb-select" value={saveDelimiter} onChange={e=>setSaveDelimiter(e.target.value)} style={{width:96,height:28}}>
+                      <option value="tab">tab</option>
+                      <option value="comma">comma</option>
+                      <option value="auto">auto</option>
+                    </select>
+                  </label>
+                  <label style={{display:"inline-flex",gap:6,alignItems:"center",cursor:"pointer"}}>
+                    <input type="checkbox" checked={includeHeader} onChange={e=>setIncludeHeader(e.target.checked)} style={{width:14,height:14,accentColor:"var(--accent)"}}/> 헤더 포함</label>
+                  <span style={{flexBasis:"100%",fontSize:12,lineHeight:1.5}}>
+                    Ctrl+V 는 입력 중인 셀을 시작점으로 반영되고, 첫 행이 헤더면 열 이름으로 맞춥니다. 탭·줄바꿈 없는 단일 값은 커서 위치에 들어갑니다.
+                    셀 이동: ↑↓ · Enter(위로 Shift+Enter) · Tab / Shift+Tab. 행 메뉴는 우클릭.
+                  </span>
                 </div>
                 <div ref={baseEditGridRef} style={baseEditWrap} onPaste={onBasePaste} onScroll={editVirt.onScroll} data-base-edit-grid="1">
                   <table style={baseEditTable}>
@@ -3523,36 +3597,59 @@ export default function My_FileBrowser({
                     </tbody>
                   </table></div>;
               })()}
-              {tab==="columns"&&!isBaseEditingMode&&<div>
-                <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
-                  <input value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색..."
-                    style={{flex:1,padding:"8px 12px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,outline:"none"}}/>
-                  {selectedCols.length>0&&<span style={{fontSize:14,color:"var(--accent)",fontWeight:600}}>{selectedCols.length}개 선택됨</span>}
+              </div>
+              {/* 컬럼 패널 = 스키마. 수천 열 테이블도 검색으로 좁혀 고르게 목록은 일부만 그린다. */}
+              {colPanelOpen&&!isBaseEditingMode&&<aside className="fb-colpanel" aria-label="컬럼">
+                <div className="fb-colpanel__head">
+                  <span className="fb-colpanel__title">컬럼</span>
+                  <span className="fb-chip fb-chip--mono">{Number(data.total_cols||allCols.length||0).toLocaleString()}</span>
+                  {selectedCols.length>0&&<span className="fb-chip fb-chip--brand">{selectedCols.length}개 선택</span>}
+                  <button type="button" className="flow-icon-button" onClick={()=>setColPanelOpen(false)} title="닫기"><Icon name="close"/></button>
                 </div>
-              <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:8,padding:"4px 0",lineHeight:1.6}}>
-                컬럼명 클릭 → SELECT 토글 후 실행으로 조회 | + WHERE → 조건 템플릿 삽입
-                {data.all_columns_truncated&&<span style={{color:"var(--accent)"}}> | schema {data.schema_columns_returned}/{data.total_cols}열 표시{remoteColsLoading?" · 검색 중":""}</span>}
+                <div className="fb-colpanel__search">
+                  <input className="fb-input" value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색..." autoFocus/>
+                  <div className="fb-colpanel__hint">
+                    체크한 열이 SELECT 절에 들어갑니다. <b>실행</b>을 눌러야 조회에 반영돼요. + WHERE 는 조건 틀을 SQL 칸에 넣습니다.
+                    {data.all_columns_truncated&&<> 스키마 {Number(data.schema_columns_returned||0).toLocaleString()}/{Number(data.total_cols||0).toLocaleString()}열 — 나머지는 검색하면 서버에서 찾습니다{remoteColsLoading?" (검색 중)":""}.</>}
+                  </div>
+                </div>
+                <div className="fb-colpanel__list">
+                  {displayCols.slice(0,COL_PANEL_LIMIT).map(c=>{
+                    const isSelected=selectedCols.includes(c);
+                    return <label key={c} className="fb-colrow" data-selected={isSelected?"1":"0"} title={c}>
+                      <input type="checkbox" checked={isSelected} onChange={()=>toggleCol(c)}/>
+                      <span className="fb-colrow__name">{c}</span>
+                      {data.dtypes?.[c]&&<span className="fb-colrow__type">{String(data.dtypes[c]).slice(0,10)}</span>}
+                      <button type="button" className="fb-link" onClick={e=>{e.preventDefault();insertColToSql(c);}} title="WHERE 조건 템플릿 추가">+ WHERE</button>
+                    </label>;
+                  })}
+                  {displayCols.length>COL_PANEL_LIMIT&&<div className="fb-colpanel__hint" style={{padding:"8px"}}>외 {(displayCols.length-COL_PANEL_LIMIT).toLocaleString()}개 — 검색으로 좁혀 보세요.</div>}
+                  {!displayCols.length&&<div className="fb-colpanel__hint" style={{padding:"8px"}}>{colSearch?"일치하는 컬럼이 없습니다.":"컬럼 정보가 없습니다."}</div>}
+                </div>
+                <div className="fb-colpanel__foot">
+                  {selectedCols.length>0&&<button type="button" className="fb-btn fb-btn--sm fb-btn--ghost" onClick={()=>setSelectedCols([])}>선택 해제</button>}
+                  <button type="button" className="fb-btn fb-btn--sm fb-btn--primary" style={{marginLeft:"auto"}} onClick={()=>applySql()}>실행</button>
+                </div>
+              </aside>}
               </div>
-              <div style={{maxHeight:"calc(100vh - 340px)",overflow:"auto"}}>
-                {displayCols.map((c,i)=>{
-                  const isSelected=selectedCols.includes(c);
-                  return(
-                  <div key={i} style={{display:"flex",alignItems:"center",padding:"5px 12px",borderBottom:"1px solid var(--border)",fontSize:14,gap:8}}>
-                    {/* Checkbox mirrors the SELECT clause for keyboard-friendly toggling. */}
-                    <input type="checkbox" checked={isSelected} onChange={()=>toggleCol(c)} title="실행을 눌러 조회에 적용됩니다."
-                      style={{width:14,height:14,accentColor:"var(--accent)",cursor:"pointer",flexShrink:0}}/>
-                    {/* Column name toggles SELECT projection. */}
-                    <span onClick={()=>toggleCol(c)} style={{flex:1,cursor:"pointer",fontWeight:isSelected?600:500,color:isSelected?"var(--accent)":"var(--text-primary)"}} title={"SELECT 절에 추가/제거됩니다. 실행을 눌러 조회에 적용됩니다."}>
-                      {c}
-                    </span>
-                    {data.dtypes&&<span style={{fontSize:14,padding:"1px 6px",borderRadius:3,background:"var(--bg-tertiary)",color:"var(--accent)",flexShrink:0}}>{data.dtypes[c]}</span>}
-                    <span onClick={()=>insertColToSql(c)} style={{fontSize:14,color:"var(--accent)",cursor:"pointer",padding:"2px 6px",borderRadius:3,background:"var(--accent-glow)",flexShrink:0}} title="WHERE 조건 템플릿 추가">+ WHERE</span>
-                  </div>);})}
-              </div>
-            </div>}
           </>}
         </div>
       </div>
+      {reasonDialog&&(
+        <Modal open onClose={()=>closeReasonDialog(null)} title={reasonDialog.title} width={500} zIndex={120} closeOnBackdrop={false}>
+          <form className="fb-dialog" onSubmit={e=>{e.preventDefault();closeReasonDialog(String(reasonDialog.value||"").trim()||reasonDialog.fallback||"");}}>
+            {reasonDialog.desc&&<div className="fb-dialog__desc">{reasonDialog.desc}</div>}
+            {reasonDialog.warn&&<div className="fb-dialog__warn">{reasonDialog.warn}</div>}
+            <input className="fb-input" autoFocus value={reasonDialog.value}
+              onChange={e=>{const v=e.target.value;setReasonDialog(cur=>cur&&{...cur,value:v});}}
+              placeholder={reasonDialog.placeholder||""} maxLength={200} style={{height:40,fontSize:14}}/>
+            <div className="fb-dialog__actions">
+              <button type="button" className="fb-btn" onClick={()=>closeReasonDialog(null)}>취소</button>
+              <button type="submit" className={"fb-btn "+(reasonDialog.danger?"fb-btn--danger":"fb-btn--primary")}>{reasonDialog.confirmLabel||"확인"}</button>
+            </div>
+          </form>
+        </Modal>
+      )}
       {aiSqlOpen&&(
         <Modal open onClose={()=>setAiSqlOpen(false)} title="AI SQL 작성" width={560} zIndex={101}>
           <div style={{display:"grid",gap:10,fontSize:14,color:"var(--text-primary)"}}>
@@ -3566,20 +3663,33 @@ export default function My_FileBrowser({
                 <button onClick={draftAiSql} disabled={aiSqlBusy} style={{padding:"7px 14px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:700,cursor:aiSqlBusy?"wait":"pointer",opacity:aiSqlBusy?0.6:1}}>{aiSqlBusy?"작성 중":"작성"}</button>
               </div>
             </div>
-            {aiSqlResult&&<div style={{display:"grid",gap:5,padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",fontSize:12,fontFamily:"monospace",color:aiSqlResult.ok===false?FB_BAD.fg:"var(--text-secondary)",lineHeight:1.45}}>
-              <span>llm={aiSqlResult.llm?.used?"used":(aiSqlResult.llm?.available?"available":"fallback")} · saved=false · draft={aiSqlResult.draft_id||"-"}</span>
-              {aiSqlResult.feedback_context_used?<span>feedback: like {aiSqlResult.feedback_context?.positive||0} · dislike {aiSqlResult.feedback_context?.negative||0}</span>:null}
-              {cleanAggregateSpec(aiSqlResult.aggregate)?<span>aggregate: {aggregateLabel(aiSqlResult.aggregate)}</span>:null}
-              {aiSqlResult.display_sql?<span style={{color:"var(--accent)"}}>display_sql: {aiSqlResult.display_sql}</span>:null}
-              {aiSqlResult.where_sql?<span>where_sql: {aiSqlResult.where_sql}</span>:null}
-              {aiSqlResult.selected_columns?.length?<span>selected_columns: {aiSqlResult.selected_columns.join(", ")}</span>:null}
-              {aiSqlResult.sample_profile?<span>profile: rows {aiSqlResult.sample_profile.rows_sampled||0} · cols {aiSqlResult.sample_profile.columns_scanned||0} · {aiSqlResult.sample_profile.source||"request"}</span>:null}
-              {aiSqlResult.resolved_columns?.length?<span>resolved: {aiSqlResult.resolved_columns.join(", ")}</span>:null}
-              {aiSqlResult.unknown_column_terms?.length?<span style={{color:FB_BAD.fg}}>unknown: {aiSqlResult.unknown_column_terms.join(", ")}</span>:null}
-              {aiSqlResult.resolved_values?.length?<span>values: {aiSqlResult.resolved_values.join(", ")}</span>:null}
-              {aiSqlResult.value_terms?.length?<span>value terms: {aiSqlResult.value_terms.join(", ")}</span>:null}
-              {aiSqlResult.sql&&<span>sql: {aiSqlResult.sql}</span>}
-              {(aiSqlResult.warnings||[]).slice(0,4).map((w,i)=><span key={i}>warn: {w}</span>)}
+            {aiSqlResult&&<div style={{display:"grid",gap:8,padding:12,borderRadius:4,border:"1px solid var(--border)",background:"var(--surface-page)",fontSize:13,lineHeight:1.45}}>
+              <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                {aiSqlResult.ok===false
+                  ?<span className="fb-chip fb-chip--danger">초안 실패</span>
+                  :<span className="fb-chip fb-chip--ok">조회에 반영됨</span>}
+                <span className={"fb-chip "+(aiSqlResult.llm?.used?"fb-chip--brand":"")} title={aiSqlResult.llm?.error||""}>
+                  {aiSqlResult.llm?.used?"LLM 작성":(aiSqlResult.llm?.available?"LLM 연결 실패 · 규칙 기반":"LLM 미설정 · 규칙 기반")}</span>
+                {cleanAggregateSpec(aiSqlResult.aggregate)?<span className="fb-chip fb-chip--mono">{aggregateLabel(aiSqlResult.aggregate)}</span>:null}
+              </div>
+              {(aiSqlResult.display_sql||aiSqlResult.sql)&&<code className="fb-mono" style={{display:"block",padding:"8px 10px",borderRadius:4,background:"var(--surface-panel)",border:"1px solid var(--border)",color:"var(--text-strong)",fontSize:13,overflowWrap:"anywhere"}}>{aiSqlResult.display_sql||aiSqlResult.sql}</code>}
+              {aiSqlResult.resolved_columns?.length?<div style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center",fontSize:12,color:"var(--text-muted)"}}>사용한 열
+                {aiSqlResult.resolved_columns.map(c=><span key={c} className="fb-chip fb-chip--mono fb-chip--steel">{c}</span>)}</div>:null}
+              {aiSqlResult.unknown_column_terms?.length?<div style={{fontSize:12,color:"var(--danger)"}}>찾지 못한 열: {aiSqlResult.unknown_column_terms.join(", ")}</div>:null}
+              {aiSqlResult.ok===false&&(aiSqlResult.warnings||[])[0]&&<div style={{fontSize:12,color:"var(--danger)"}}>{aiSqlResult.warnings[0]}</div>}
+              <details style={{fontSize:12,color:"var(--text-muted)"}}>
+                <summary style={{cursor:"pointer",fontWeight:700}}>진단 정보</summary>
+                <div className="fb-mono" style={{display:"grid",gap:3,marginTop:6,fontSize:12}}>
+                  <span>llm={aiSqlResult.llm?.used?"used":(aiSqlResult.llm?.available?"available":"fallback")} · draft={aiSqlResult.draft_id||"-"}</span>
+                  {aiSqlResult.feedback_context_used?<span>feedback: like {aiSqlResult.feedback_context?.positive||0} · dislike {aiSqlResult.feedback_context?.negative||0}</span>:null}
+                  {aiSqlResult.where_sql?<span>where_sql: {aiSqlResult.where_sql}</span>:null}
+                  {aiSqlResult.selected_columns?.length?<span>selected_columns: {aiSqlResult.selected_columns.join(", ")}</span>:null}
+                  {aiSqlResult.sample_profile?<span>profile: rows {aiSqlResult.sample_profile.rows_sampled||0} · cols {aiSqlResult.sample_profile.columns_scanned||0} · {aiSqlResult.sample_profile.source||"request"}</span>:null}
+                  {aiSqlResult.resolved_values?.length?<span>values: {aiSqlResult.resolved_values.join(", ")}</span>:null}
+                  {aiSqlResult.value_terms?.length?<span>value terms: {aiSqlResult.value_terms.join(", ")}</span>:null}
+                  {(aiSqlResult.warnings||[]).slice(0,4).map((w,i)=><span key={i}>warn: {w}</span>)}
+                </div>
+              </details>
               {Array.isArray(aiSqlResult.alternatives)&&aiSqlResult.alternatives.length>0&&<div style={{display:"grid",gap:4,marginTop:4}}>
                 {aiSqlResult.alternatives.map(alt=><button key={alt.key} onClick={()=>{const nextSort=cleanSortSpec(alt.sort);const nextAggregate=cleanAggregateSpec(alt.aggregate);const altCols=Array.isArray(alt.selected_columns)?alt.selected_columns:[];const altSql=alt.display_sql||buildDisplaySql(altCols,alt.where_sql||alt.sql||"",nextSort);setSql(altSql);setSelectedCols(altCols);setSortSpec(null);setAggregateSpec(nextAggregate);applySql(altSql,altCols,null,nextAggregate);submitAiSqlFeedback("up","alternative "+alt.key,{sql:altSql,sort:nextSort||{},aggregate:nextAggregate||{},selected_columns:altCols,choice:alt.key});}} style={{textAlign:"left",padding:"5px 7px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:12,cursor:"pointer",fontFamily:"inherit"}}>
                   {alt.key}안 {alt.label}: {(alt.display_sql||alt.sql||"(no filter)")}{cleanAggregateSpec(alt.aggregate)?` · ${aggregateLabel(alt.aggregate)}`:""}
@@ -3606,20 +3716,27 @@ export default function My_FileBrowser({
       {!embedded&&isFileBrowserAdmin&&<>
         <PageGearButton onClick={toggleS3Settings} title={isAdmin?"폴더 설정 / 파일 설정 / S3 동기화 / AWS 설정":"S3 실행 / 이력 / 폴더 설정 / 파일 설정"} zIndex={97} />
         {s3Open&&<>
-          <Modal open onClose={closeS3Settings} width={1040} zIndex={98}>
-          <div style={{display:"flex",flexDirection:"column",maxHeight:"86vh"}}>
-            <div style={{display:"flex",alignItems:"center",padding:"12px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",borderRadius:"10px 10px 0 0"}}>
-              <span style={{fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace",flex:1}}>{settingsTitle}</span>
-              {!s3AwsOk&&<span style={{fontSize:14,padding:"2px 8px",borderRadius:4,background:FB_BAD.bg,color:FB_BAD.fg,marginRight:8}}>aws CLI 미설치</span>}
-              <span onClick={closeS3Settings} style={{cursor:"pointer",color:"var(--text-secondary)",fontSize:18,padding:"0 4px"}}>✕</span>
+          <Modal open onClose={closeS3Settings} width={1120} zIndex={98}>
+          <div className="fb-settings">
+            <div className="fb-settings__head">
+              <Icon name="gear" size={20} style={{color:"var(--text-muted)"}}/>
+              <span className="fb-settings__title">파일탐색기 설정</span>
+              {!s3AwsOk&&settingsMainActive==="s3"&&<span className="fb-chip fb-chip--danger">aws CLI 미설치</span>}
+              <button type="button" className="flow-icon-button" onClick={closeS3Settings} title="닫기" aria-label="닫기"><Icon name="close" /></button>
             </div>
-            {/* Tabs */}
-            <div style={{display:"flex",gap:4,padding:"8px 12px",borderBottom:"1px solid var(--border)",background:"var(--bg-primary)"}}>
-              {settingsTabs.map(t=>(
-                <span key={t.k} onClick={()=>{setS3Tab(t.k);if(t.k==="add"&&canManageS3Ingest)setS3Form({id:"",kind:"db",target:"",s3_url:"",command:"sync",direction:"download",extra_args:"",endpoint_url:"",profile:"",interval_min:0,enabled:true});}} style={{padding:"5px 12px",borderRadius:5,fontSize:14,cursor:"pointer",fontWeight:s3Tab===t.k?700:500,background:s3Tab===t.k?"var(--accent-glow)":"transparent",color:s3Tab===t.k?"var(--accent)":"var(--text-secondary)"}}>{t.l}</span>
+            <div className="fb-settings__tabs" role="tablist">
+              {settingsMainTabs.map(t=>(
+                <button key={t.k} type="button" role="tab" className="fb-settings__tab" data-active={settingsMainActive===t.k?"1":"0"}
+                  onClick={()=>setS3Tab(t.k==="s3"?(s3SubTabs.some(x=>x.k===s3Tab)?s3Tab:s3SubTabs[0].k):t.k)}>{t.l}</button>
               ))}
             </div>
-            <div style={{flex:1,overflow:"auto",padding:"12px 16px"}}>
+            <div className="fb-settings__body">
+              {settingsMainActive==="s3"&&<div className="fb-settings__subtabs">
+                {s3SubTabs.map(t=>(
+                  <button key={t.k} type="button" className="fb-btn fb-btn--sm" data-active={s3Tab===t.k?"1":"0"}
+                    onClick={()=>{setS3Tab(t.k);if(t.k==="add"&&canManageS3Ingest)setS3Form({id:"",kind:"db",target:"",s3_url:"",command:"sync",direction:"download",extra_args:"",endpoint_url:"",profile:"",interval_min:0,enabled:true});}}>{t.l}</button>
+                ))}
+              </div>}
               {s3Tab==="cache"&&<div style={{display:"grid",gap:12,fontSize:14}}>
                 {fbCacheTargets.map(([target,title,desc,status])=>{
                   const isScheduled=target==="lot_progress";
@@ -3747,157 +3864,187 @@ export default function My_FileBrowser({
                   {fbCacheMsg&&<span style={{fontSize:14,color:fbCacheMsg.includes("실패")||fbCacheMsg.includes("비활성")?FB_BAD.fg:"var(--text-secondary)"}}>{fbCacheMsg}</span>}
                 </div>
               </div>}
-              {s3Tab==="folder"&&<div style={{maxWidth:520,display:"flex",flexDirection:"column",gap:10,fontSize:14}}>
-                <div style={{display:"grid",gap:7,padding:"10px 12px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
-                  <div style={{fontWeight:800,color:"var(--text-primary)"}}>DB 이름 표시 매칭</div>
-                  <div style={{fontSize:12,color:"var(--text-secondary)",lineHeight:1.45}}>왼쪽 실제 폴더명은 유지하고 파일탐색기에는 오른쪽 표시명으로 보여줍니다. 기본 규칙은 <code>1.RAWDATA_DB → FAB</code>, <code>1.RAWDATA_DB_이름 → 이름</code>입니다.</div>
-                  {Object.entries(fbDbNameAliases||{}).sort(([a],[b])=>a.localeCompare(b)).map(([source,display])=><label key={source} style={{display:"grid",gridTemplateColumns:"minmax(190px,1fr) minmax(120px,0.7fr)",gap:8,alignItems:"center"}}>
-                    <span title={source} style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",fontFamily:"monospace",fontSize:12,color:"var(--text-secondary)"}}>{source}</span>
-                    <input value={display} onChange={e=>setFbDbNameAliases(prev=>({...prev,[source]:e.target.value}))} placeholder={source} style={{minWidth:0,padding:"6px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}/>
-                  </label>)}
-                  {!Object.keys(fbDbNameAliases||{}).length&&<span style={{fontSize:12,color:"var(--text-secondary)"}}>표시할 DB 폴더가 없습니다.</span>}
+              {s3Tab==="folder"&&<div style={{display:"grid",gap:14,maxWidth:760}}>
+                <section className="fb-card">
+                  <div className="fb-card__head"><span className="fb-card__title">DB 이름 표시 매칭</span><span className="fb-card__caption">실제 폴더명은 그대로, 화면에만 다른 이름</span></div>
+                  <div className="fb-card__body">
+                    <div className="fb-note">기본 규칙은 <code>1.RAWDATA_DB → FAB</code>, <code>1.RAWDATA_DB_이름 → 이름</code>입니다.</div>
+                    {Object.entries(fbDbNameAliases||{}).sort(([a],[b])=>a.localeCompare(b)).map(([source,display])=><label key={source} className="fb-field-row" style={{alignItems:"center"}}>
+                      <span className="fb-mono" title={source} style={{paddingTop:0,fontWeight:400,color:"var(--text-muted)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{source}</span>
+                      <input className="fb-input" value={display} onChange={e=>setFbDbNameAliases(prev=>({...prev,[source]:e.target.value}))} placeholder={source}/>
+                    </label>)}
+                    {!Object.keys(fbDbNameAliases||{}).length&&<span className="fb-note">표시할 DB 폴더가 없습니다.</span>}
+                  </div>
+                </section>
+                <section className="fb-card">
+                  <div className="fb-card__head"><span className="fb-card__title">Files 에 보일 폴더</span><span className="fb-card__caption">한 줄에 폴더 하나</span></div>
+                  <div className="fb-card__body">
+                    <textarea className="fb-textarea fb-mono" value={fbHiddenDbDirsText} onChange={e=>setFbHiddenDbDirsText(e.target.value)} rows={4} spellCheck={false} placeholder={"reformatter"}/>
+                    <div className="fb-note">여기에 등록한 운영 폴더와 최상위 파일만 Files 목록에 보입니다. cache, credential, teg_location 과 이름에 backup 이 들어간 폴더는 관리자에게도 항상 숨깁니다.</div>
+                  </div>
+                </section>
+                <section className="fb-card">
+                  <div className="fb-card__head"><span className="fb-card__title">폴더 안 파일 버전 관리</span><span className="fb-card__caption">저장할 때마다 이전 상태를 스냅샷으로</span></div>
+                  <div className="fb-card__body">
+                    <textarea className="fb-textarea fb-mono" value={fbVersionedDirsText} onChange={e=>setFbVersionedDirsText(e.target.value)} rows={3} spellCheck={false} placeholder={"reformatter"}/>
+                    <div className="fb-note">버전 이력은 flow-data/file_versions 에 저장되고 파일 목록에는 노출되지 않습니다.</div>
+                  </div>
+                </section>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <button type="button" className="fb-btn fb-btn--primary" onClick={()=>saveFilebrowserSettings("folder")} disabled={fbSettingsLoading}>저장</button>
+                  {fbSettingsMsg&&<div className="fb-msg" data-tone={fbSettingsMsg.includes("실패")||fbSettingsMsg.includes("오류")?"bad":undefined} style={{flex:1}}>{fbSettingsMsg}</div>}
                 </div>
-                <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                  Files에 표시할 폴더
-                  <textarea value={fbHiddenDbDirsText} onChange={e=>setFbHiddenDbDirsText(e.target.value)} rows={4} spellCheck={false} placeholder={"reformatter"} style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
-                  <span style={{fontSize:12,fontWeight:400,color:"var(--text-secondary)",lineHeight:1.45}}>한 줄에 폴더 하나. 여기에 등록한 운영 폴더와 최상위 파일만 Files 목록에 보입니다. cache, credential, teg_location 및 이름에 backup이 포함된 폴더는 관리자에게도 DB와 Files에서 항상 숨깁니다.</span>
-                </label>
-                <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                  폴더 안 파일 버전 관리
-                  <textarea value={fbVersionedDirsText} onChange={e=>setFbVersionedDirsText(e.target.value)} rows={3} spellCheck={false} placeholder={"reformatter"} style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
-                </label>
-                <div style={{fontSize:12,color:"var(--text-secondary)",lineHeight:1.45}}>버전 이력은 flow-data/file_versions에 저장되고, 파일 목록에는 별도 파일로 노출되지 않습니다.</div>
-                <button onClick={()=>saveFilebrowserSettings("folder")} disabled={fbSettingsLoading} style={{alignSelf:"flex-start",padding:"8px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:800,cursor:fbSettingsLoading?"default":"pointer",opacity:fbSettingsLoading?0.5:1}}>저장</button>
-                {fbSettingsMsg&&<div style={{padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:fbSettingsMsg.includes("실패")||fbSettingsMsg.includes("오류")?FB_BAD.fg:"var(--text-secondary)",lineHeight:1.45}}>{fbSettingsMsg}</div>}
               </div>}
-              {s3Tab==="file"&&<div style={{display:"grid",gridTemplateColumns:"minmax(180px,240px) 1fr",gap:14,fontSize:14}}>
-                <div style={{display:"flex",flexDirection:"column",gap:10}}>
-                  <div style={{display:"grid",gap:7,padding:"9px 10px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
-                    <div style={{fontSize:13,fontWeight:900,color:"var(--text-primary)"}}>Files 표시 이름 / 설명</div>
-                    <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                      파일
-                      <select value={fbDescriptionFile} onChange={e=>selectDescriptionFile(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}>
-                        <option value="">파일 선택</option>
-                        {settingsBaseFiles.map(f=>{const key=fileAliasKey(f);return <option key={key} value={key}>{f.display_name&&f.display_name!==key?`${f.display_name} (${key})`:key}</option>;})}
-                      </select>
-                    </label>
-                    <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                      표시 이름
-                      <input value={fbFileNameText} onChange={e=>setFbFileNameText(e.target.value.slice(0,80))} maxLength={80} disabled={!fbDescriptionFile} placeholder="사람에게 보여줄 파일 이름" style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}/>
-                      <span style={{fontSize:11,fontWeight:400,color:"var(--text-secondary)"}}>비워 두고 저장하면 원래 파일명이 표시됩니다.</span>
-                    </label>
-                    <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                      설명
-                      <textarea value={fbDescriptionText} onChange={e=>setFbDescriptionText(e.target.value.slice(0,500))} rows={3} maxLength={500} disabled={!fbDescriptionFile} placeholder="파일의 용도, 원천, 갱신 주기 등을 입력하세요." style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,lineHeight:1.4}}/>
-                    </label>
-                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,fontSize:11,color:"var(--text-secondary)"}}>
-                      <span>Files 목록에서 파일에 커서를 올리면 표시됩니다.</span>
-                      <span>{fbDescriptionText.length}/500</span>
-                    </div>
-                    <button onClick={()=>saveFilebrowserSettings("description")} disabled={!fbDescriptionFile||fbSettingsLoading} style={{padding:"7px 10px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:13,fontWeight:800,cursor:!fbDescriptionFile||fbSettingsLoading?"default":"pointer",opacity:!fbDescriptionFile||fbSettingsLoading?0.5:1}}>저장</button>
+              {s3Tab==="file"&&<div>
+                <div className="fb-settings__toolbar">
+                  <span className="fb-card__title">CSV 파일</span>
+                  <select className="fb-select fb-mono" value={fbSelectedFile} onChange={e=>selectFileRule(e.target.value)} style={{flex:"1 1 260px",maxWidth:420}}>
+                    <option value="">CSV 선택</option>
+                    {csvBaseFiles.map(f=><option key={f.path||f.name} value={f.path||f.name}>{f.path||f.name}</option>)}
+                  </select>
+                  <span className="fb-note">저장할 때 이 파일에 적용할 검증·정렬 규칙과 표시·다운로드 한도</span>
+                  <div style={{display:"flex",gap:6,marginLeft:"auto"}}>
+                    <button type="button" className="fb-btn" onClick={()=>selectFileRule(fbSelectedFile,{...fbSettings,csv_rules:{...(fbSettings.csv_rules||{}),[fbSelectedFile]:{}}})} disabled={!fbSelectedFile}>규칙 비우기</button>
+                    <button type="button" className="fb-btn fb-btn--accent" onClick={testFileRule} disabled={!fbSelectedFile||fbSettingsLoading}>검증 테스트</button>
+                    <button type="button" className="fb-btn fb-btn--primary" onClick={()=>saveFilebrowserSettings("file")} disabled={fbSettingsLoading}>저장</button>
                   </div>
-                  <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                    CSV 전체 표시 기준 (MB)
-                    <input type="number" min={0} step={0.5} value={fbThresholdMb} onChange={e=>setFbThresholdMb(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
-                  </label>
-                  <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                    CSV 다운로드 최대 크기 (MB)
-                    <input type="number" min={1} max={Math.round((fbSettings.max_csv_download_max_bytes||100000000)/1048576)} step={1} value={fbDownloadMb} onChange={e=>setFbDownloadMb(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
-                  </label>
-                  <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                    CSV 다운로드 최대 행 (1~{Number(fbSettings.max_csv_download_max_rows||500000).toLocaleString()})
-                    <input type="number" min={1} max={fbSettings.max_csv_download_max_rows||500000} step={1000} value={fbDownloadRows} onChange={e=>setFbDownloadRows(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
-                  </label>
-                  <label style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                    CSV 파일
-                    <select value={fbSelectedFile} onChange={e=>selectFileRule(e.target.value)} style={{padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace"}}>
-                      <option value="">CSV 선택</option>
-                      {csvBaseFiles.map(f=><option key={f.path||f.name} value={f.path||f.name}>{f.path||f.name}</option>)}
-                    </select>
-                  </label>
-                  <button onClick={testFileRule} disabled={!fbSelectedFile||fbSettingsLoading} style={{padding:"8px 12px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:700,cursor:!fbSelectedFile||fbSettingsLoading?"default":"pointer",opacity:!fbSelectedFile||fbSettingsLoading?0.5:1}}>검증 테스트</button>
-                  <button onClick={()=>saveFilebrowserSettings("file")} disabled={fbSettingsLoading} style={{padding:"8px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:800,cursor:fbSettingsLoading?"default":"pointer",opacity:fbSettingsLoading?0.5:1}}>저장</button>
-                  <button onClick={()=>selectFileRule(fbSelectedFile,{...fbSettings,csv_rules:{...(fbSettings.csv_rules||{}),[fbSelectedFile]:{}}})} disabled={!fbSelectedFile} style={{padding:"7px 12px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:!fbSelectedFile?"default":"pointer"}}>규칙 비우기</button>
-                  <div style={{display:"grid",gap:7,padding:"9px 10px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
-                    <div style={{fontSize:13,fontWeight:800,color:"var(--text-primary)"}}>LLM으로 규칙 초안</div>
-                    <textarea value={fbSettingsLlmPrompt} onChange={e=>setFbSettingsLlmPrompt(e.target.value)} rows={3} spellCheck={false} disabled={!fbSelectedFile||fbSettingsLlmBusy}
-                      style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
-                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                      <button onClick={draftFileRuleByLlm} disabled={!fbSelectedFile||fbSettingsLlmBusy} style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--accent)",background:"var(--accent-glow)",color:"var(--accent)",fontSize:13,fontWeight:800,cursor:!fbSelectedFile?"default":fbSettingsLlmBusy?"wait":"pointer",opacity:!fbSelectedFile||fbSettingsLlmBusy?0.55:1}}>{fbSettingsLlmBusy?"작성 중":"초안 생성"}</button>
-                      <button onClick={applyFileRuleDraft} disabled={!fbDraftRule} style={{padding:"6px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",fontSize:13,fontWeight:700,cursor:!fbDraftRule?"default":"pointer",opacity:!fbDraftRule?0.55:1}}>초안 적용</button>
-                    </div>
-                    {fbSettingsLlmDraft&&<div style={{display:"grid",gap:4,fontSize:12,color:fbSettingsLlmDraft.ok===false?"var(--danger,#ef4444)":"var(--text-secondary)",fontFamily:"monospace",lineHeight:1.4}}>
-                      <span>llm={fbSettingsLlmDraft.llm?.used?"used":(fbSettingsLlmDraft.llm?.available?"available":"fallback")} · saved={String(!!fbSettingsLlmDraft.saved)}</span>
-                      {(fbSettingsLlmDraft.warnings||[]).slice(0,4).map((w,i)=><span key={i}>warn: {w}</span>)}
-                      {fbSettingsLlmDraft.error&&<span>{fbSettingsLlmDraft.error}</span>}
-                      {fbDraftRule&&<div style={{display:"grid",gap:6,marginTop:4,padding:8,border:"1px solid var(--border)",borderRadius:5,background:"var(--bg-primary)",fontFamily:"inherit"}}>
-                        <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"center"}}>
-                          <span style={{fontWeight:800,color:"var(--text-primary)"}}>초안 미리보기</span>
-                          <span style={{color:"var(--text-secondary)"}}>{fbDraftRuleSections.reduce((sum,s)=>sum+s.groups.length,0)} groups</span>
-                        </div>
-                        {fbDraftRuleSections.some(section=>section.groups.length)?<div style={{display:"grid",gap:7}}>
-                          {fbDraftRuleSections.map(section=>section.groups.length?<div key={section.key} style={{display:"grid",gap:5}}>
-                            <span style={{fontWeight:900,color:"var(--text-primary)"}}>{section.label}</span>
-                            {section.groups.map(group=><div key={group.key} style={{display:"grid",gap:3,paddingLeft:8,borderLeft:"2px solid var(--border)"}}>
-                              <span style={{fontWeight:800,color:"var(--accent)",textTransform:"uppercase"}}>{group.label}</span>
-                              {group.items.slice(0,8).map((item,i)=><span key={i} style={{color:"var(--text-primary)",overflowWrap:"anywhere"}}>{item}</span>)}
-                              {group.items.length>8&&<span style={{color:"var(--text-secondary)"}}>+{group.items.length-8}</span>}
-                            </div>)}
-                          </div>:null)}
-                        </div>:<span>적용할 규칙이 없습니다.</span>}
-                        <details>
-                          <summary style={{cursor:"pointer",fontWeight:800,color:"var(--text-secondary)"}}>JSON</summary>
-                          <pre style={{margin:"6px 0 0",maxHeight:220,overflow:"auto",whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.45,color:"var(--text-primary)"}}>{JSON.stringify(fbDraftRule,null,2)}</pre>
-                        </details>
-                      </div>}
-                    </div>}
-                  </div>
-                  {fbSettingsMsg&&<div style={{padding:9,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-secondary)",color:fbSettingsMsg.includes("실패")||fbSettingsMsg.includes("오류")?FB_BAD.fg:"var(--text-secondary)",lineHeight:1.45}}>{fbSettingsMsg}</div>}
                 </div>
-                <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,alignItems:"start"}}>
-                  <div style={{gridColumn:"1 / -1",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)",overflow:"hidden"}}>
-                    <div style={{padding:"8px 10px",borderBottom:"1px solid var(--border)",fontWeight:800,color:"var(--text-primary)"}}>적용 규칙</div>
-                    {fbActiveRuleSections.some(section=>section.groups.length)?<div style={{display:"grid",gap:10,padding:10}}>
-                      {fbActiveRuleSections.map(section=>section.groups.length?<div key={section.key} style={{display:"grid",gap:7}}>
-                        <div style={{fontSize:13,fontWeight:900,color:"var(--text-primary)"}}>{section.label}</div>
-                        <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(210px,1fr))",gap:8}}>
-                          {section.groups.map(group=><div key={group.key} style={{display:"grid",gap:5,minWidth:0}}>
-                            <div style={{fontSize:12,fontWeight:800,color:"var(--text-secondary)",textTransform:"uppercase"}}>{group.label}</div>
-                            <div style={{display:"flex",gap:5,flexWrap:"wrap",minWidth:0}}>
-                              {group.items.slice(0,12).map((item,i)=><span key={i} title={item} style={{maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:12,fontFamily:"monospace"}}>{item}</span>)}
-                              {group.items.length>12&&<span style={{padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:12}}>+{group.items.length-12}</span>}
-                            </div>
-                          </div>)}
+                {fbSettingsMsg&&<div className="fb-msg" data-tone={fbSettingsMsg.includes("실패")||fbSettingsMsg.includes("오류")?"bad":undefined} style={{marginBottom:14}}>{fbSettingsMsg}</div>}
+                <div className="fb-settings__grid">
+                  <div className="fb-settings__col">
+                    {fbValidation&&<section className="fb-card">
+                      <div className="fb-card__head">
+                        <span className={"fb-chip "+(fbValidation.ok?"fb-chip--ok":"fb-chip--danger")}>{fbValidation.ok?"검증 통과":"검증 실패"} · {fbValidation.ok?`rows ${fbValidation.row_count??fbValidation.rows??"-"}`:`${fbValidation.error_count||0}건`}</span>
+                        {!fbValidation.ok&&<span className="fb-card__caption">이 상태로는 저장이 차단됩니다.</span>}
+                      </div>
+                      {fbValidation.errors?.length?<div style={{maxHeight:180,overflow:"auto"}}>
+                        {fbValidation.errors.slice(0,50).map((err,i)=><div key={i} style={{display:"grid",gridTemplateColumns:"64px 120px minmax(0,1fr)",gap:10,padding:"7px 14px",borderBottom:"1px solid var(--border)",fontSize:13}}>
+                          <span className="fb-mono" style={{color:"var(--text-muted)"}}>{err.row?`${err.row}행`:"-"}</span>
+                          <span className="fb-mono" style={{color:"var(--accent)",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{err.column||err.rule}</span>
+                          <span>{err.message}</span>
+                        </div>)}
+                      </div>:<div className="fb-card__body fb-note">검증을 통과하면 저장 정렬이 적용됩니다.</div>}
+                    </section>}
+                    <section className="fb-card">
+                      <div className="fb-card__head"><span className="fb-card__title">검증로직</span><span className="fb-card__caption">하나라도 실패하면 저장이 차단됩니다.</span></div>
+                      <div className="fb-card__body">
+                        {validationRuleFields.map(([key,label,ph])=><label key={key} className="fb-field-row">
+                          <span>{label}</span>
+                          <textarea className="fb-textarea fb-mono" value={fbRuleForm[key]||""} onChange={e=>setFbRuleForm(f=>({...f,[key]:e.target.value}))}
+                            placeholder={ph} rows={key==="conditions"||key==="ordered_by"?2:1} spellCheck={false}/>
+                        </label>)}
+                      </div>
+                    </section>
+                    <section className="fb-card">
+                      <div className="fb-card__head"><span className="fb-card__title">정렬로직</span><span className="fb-card__caption">검증을 통과하면 이 순서로 저장합니다.</span></div>
+                      <div className="fb-card__body">
+                        <SortRuleEditor value={fbRuleForm.sort||""} onChange={text=>setFbRuleForm(f=>({...f,sort:text}))} columns={fbRuleColumns}
+                          parseLines={parseSortLines} formatLines={formatSortLines} placeholder={sortRuleFields[0][2]}/>
+                        <div className="fb-note">
+                          숫자·날짜로 변환해 비교하거나, 자연 정렬(A2 &lt; A10), 직접 순서(RUN|HOLD|DONE), 정규식으로 값 일부만 떼어 비교할 수 있습니다.
+                          텍스트 한 줄 문법: <span className="fb-mono">컬럼 asc|desc 타입 last|first [case=i] [values=A|B] [pattern=_(\d+)$]</span>
                         </div>
-                      </div>:null)}
-                    </div>:<div style={{padding:"9px 10px",fontSize:12,color:"var(--text-secondary)"}}>현재 form에 적용된 CSV 규칙이 없습니다.</div>}
+                      </div>
+                    </section>
                   </div>
-                  {[
-                    {key:"validation",label:"검증로직",caption:"실패하면 저장이 차단됩니다.",fields:validationRuleFields},
-                    {key:"sort",label:"정렬로직",caption:"검증 통과 시 저장 정렬 적용",fields:sortRuleFields},
-                  ].map(section=><div key={section.key} style={{gridColumn:"1 / -1",display:"grid",gap:8,padding:10,border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)"}}>
-                    <div style={{display:"flex",alignItems:"baseline",gap:8,flexWrap:"wrap"}}>
-                      <span style={{fontSize:14,fontWeight:900,color:"var(--text-primary)"}}>{section.label}</span>
-                      <span style={{fontSize:12,color:"var(--text-secondary)"}}>{section.caption}</span>
-                    </div>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))",gap:10}}>
-                      {section.fields.map(([key,label,ph])=><label key={key} style={{display:"flex",flexDirection:"column",gap:4,color:"var(--text-secondary)",fontWeight:700}}>
-                        {label}
-                        <textarea value={fbRuleForm[key]||""} onChange={e=>setFbRuleForm(f=>({...f,[key]:e.target.value}))} placeholder={ph} rows={key==="conditions"||key==="ordered_by"||key==="sort"?3:2} spellCheck={false}
-                          style={{width:"100%",boxSizing:"border-box",resize:"vertical",padding:"7px 9px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace",lineHeight:1.45}}/>
-                      </label>)}
-                    </div>
-                  </div>)}
-                  {fbValidation&&<div style={{gridColumn:"1 / -1",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-secondary)",overflow:"hidden"}}>
-                    <div style={{padding:"8px 10px",borderBottom:"1px solid var(--border)",fontWeight:800,color:fbValidation.ok?"#16a34a":FB_BAD.fg}}>{fbValidation.ok?"검증 통과":"검증 오류"} · {fbValidation.error_count||0}건</div>
-                    {fbValidation.errors?.length?<div style={{maxHeight:170,overflow:"auto"}}>
-                      {fbValidation.errors.slice(0,50).map((err,i)=><div key={i} style={{display:"grid",gridTemplateColumns:"54px 100px 1fr",gap:8,padding:"6px 10px",borderBottom:"1px solid var(--border)",fontSize:12}}>
-                        <span style={{fontFamily:"monospace",color:"var(--text-secondary)"}}>{err.row?`row ${err.row}`:"-"}</span>
-                        <span style={{fontFamily:"monospace",color:"var(--accent)"}}>{err.column||err.rule}</span>
-                        <span>{err.message}</span>
-                      </div>)}
-                    </div>:<div style={{padding:"8px 10px",fontSize:12,color:"var(--text-secondary)"}}>검증 통과 시 저장 정렬 적용</div>}
-                  </div>}
+                  <div className="fb-settings__col">
+                    <section className="fb-card">
+                      <div className="fb-card__head"><span className="fb-card__title">LLM으로 규칙 초안</span><span className="fb-card__caption">초안 적용 후 저장해야 반영</span></div>
+                      <div className="fb-card__body">
+                        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6}}>
+                          {[["all","검증+정렬"],["sort","정렬로직만"]].map(([key,label])=><button key={key} type="button" className="fb-btn fb-btn--sm" data-active={fbSettingsLlmScope===key?"1":"0"} onClick={()=>setFbSettingsLlmScope(key)}
+                            title={key==="sort"?"검증로직은 건드리지 않고 저장 정렬만 만들거나 고칩니다.":"검증로직과 정렬로직을 함께 초안합니다."}>{label}</button>)}
+                        </div>
+                        {fbSettingsLlmScope==="sort"&&<div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                          {[
+                            "product 오름차순, 그다음 rule_order 내림차순으로 저장 정렬",
+                            "rule_order 만 내림차순으로 바꿔줘",
+                            "step_id 자연 정렬 기준 추가 (ST9 다음 ST10)",
+                            "status 는 RUN, HOLD, DONE 순서로 정렬",
+                            "value 숫자 기준 내림차순, 빈 값은 맨 뒤",
+                            "정렬에서 rule_order 빼줘",
+                          ].map(example=><button key={example} type="button" className="fb-chip" onClick={()=>setFbSettingsLlmPrompt(example)} disabled={fbSettingsLlmBusy}
+                            style={{cursor:"pointer",height:"auto",minHeight:24,padding:"3px 9px",whiteSpace:"normal",textAlign:"left",lineHeight:1.35}}>{example}</button>)}
+                        </div>}
+                        <textarea className="fb-textarea" value={fbSettingsLlmPrompt} onChange={e=>setFbSettingsLlmPrompt(e.target.value)} rows={3} spellCheck={false} disabled={!fbSelectedFile||fbSettingsLlmBusy}
+                          placeholder={fbSelectedFile?"예: product, lot_id, wafer_id 는 중복 금지, status 는 OK|NG|HOLD 만":"먼저 CSV 파일을 고르세요."}/>
+                        <div style={{display:"flex",gap:6}}>
+                          <button type="button" className="fb-btn fb-btn--accent" onClick={draftFileRuleByLlm} disabled={!fbSelectedFile||fbSettingsLlmBusy}><Icon name="sparkle" size={16}/>{fbSettingsLlmBusy?"작성 중":"초안 생성"}</button>
+                          <button type="button" className="fb-btn" onClick={applyFileRuleDraft} disabled={!fbDraftRule}>초안 적용</button>
+                        </div>
+                        {fbSettingsLlmDraft&&<div style={{display:"grid",gap:6,fontSize:12,color:fbSettingsLlmDraft.ok===false?"var(--danger)":"var(--text-muted)",lineHeight:1.45}}>
+                          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                            <span className="fb-chip">{fbSettingsLlmDraft.llm?.used?"LLM 사용":(fbSettingsLlmDraft.llm?.available?"LLM 대기":"LLM 없음 · 규칙 기반")}</span>
+                            <span className="fb-chip">근거 {({llm:"LLM",keyword:"키워드 규칙",fallback:"기본 규칙"})[fbSettingsLlmDraft.llm?.source]||"-"}</span>
+                            {fbSettingsLlmDraft.sort_cleared&&<span className="fb-chip fb-chip--warn">적용 시 저장 정렬 해제</span>}
+                          </div>
+                          {(fbSettingsLlmDraft.warnings||[]).slice(0,4).map((w,i)=><span key={i}>{w}</span>)}
+                          {fbSettingsLlmDraft.error&&<span>{fbSettingsLlmDraft.error}</span>}
+                          {fbDraftRule&&<div className="fb-card" style={{background:"var(--surface-page)"}}>
+                            <div className="fb-card__head"><span className="fb-card__title" style={{fontSize:13}}>초안 미리보기</span><span className="fb-card__caption">{fbDraftRuleSections.reduce((sum,s)=>sum+s.groups.length,0)}개 항목</span></div>
+                            <div className="fb-card__body" style={{gap:8}}>
+                              {fbDraftRuleSections.some(section=>section.groups.length)?fbDraftRuleSections.map(section=>section.groups.length?<div key={section.key} style={{display:"grid",gap:5}}>
+                                <span style={{fontWeight:700,color:"var(--text-strong)"}}>{section.label}</span>
+                                {section.groups.map(group=><div key={group.key} style={{display:"grid",gap:3,paddingLeft:8,borderLeft:"2px solid var(--border)"}}>
+                                  <span style={{fontWeight:700,color:"var(--accent)"}}>{group.label}</span>
+                                  {group.items.slice(0,8).map((item,i)=><span key={i} className="fb-mono" style={{color:"var(--text-strong)",overflowWrap:"anywhere"}}>{item}</span>)}
+                                  {group.items.length>8&&<span>+{group.items.length-8}</span>}
+                                </div>)}
+                              </div>:null):<span>적용할 규칙이 없습니다.</span>}
+                              <details>
+                                <summary style={{cursor:"pointer",fontWeight:700}}>JSON</summary>
+                                <pre style={{margin:"6px 0 0",maxHeight:220,overflow:"auto",whiteSpace:"pre-wrap",fontSize:12,lineHeight:1.45,color:"var(--text-strong)"}}>{JSON.stringify(fbDraftRule,null,2)}</pre>
+                              </details>
+                            </div>
+                          </div>}
+                        </div>}
+                      </div>
+                    </section>
+                    <section className="fb-card">
+                      <div className="fb-card__head"><span className="fb-card__title">지금 적용될 규칙</span></div>
+                      {fbActiveRuleSections.some(section=>section.groups.length)?<div className="fb-card__body">
+                        {fbActiveRuleSections.map(section=>section.groups.length?<div key={section.key} style={{display:"grid",gap:6}}>
+                          <span className="fb-card__caption" style={{fontWeight:700}}>{section.label}</span>
+                          {section.groups.map(group=><div key={group.key} style={{display:"flex",gap:5,flexWrap:"wrap",alignItems:"center",minWidth:0}}>
+                            <span style={{fontSize:12,fontWeight:700,color:"var(--text-strong)",marginRight:2}}>{group.label}</span>
+                            {group.items.slice(0,8).map((item,i)=><span key={i} className="fb-chip fb-chip--mono" title={item} style={{maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis"}}>{item}</span>)}
+                            {group.items.length>8&&<span className="fb-chip">+{group.items.length-8}</span>}
+                          </div>)}
+                        </div>:null)}
+                      </div>:<div className="fb-card__body fb-note">{fbSelectedFile?"아직 규칙이 없습니다. 왼쪽에 입력하거나 LLM 초안을 적용하세요.":"CSV 파일을 고르면 규칙이 표시됩니다."}</div>}
+                    </section>
+                    <section className="fb-card">
+                      <div className="fb-card__head"><span className="fb-card__title">표시·다운로드 한도</span><span className="fb-card__caption">위 저장 버튼으로 함께 저장</span></div>
+                      <div className="fb-card__body">
+                        <label className="fb-field-row"><span>전체 표시 기준</span>
+                          <span style={{display:"flex",alignItems:"center",gap:6,padding:0,fontWeight:400}}><input className="fb-input" type="number" min={0} step={0.5} value={fbThresholdMb} onChange={e=>setFbThresholdMb(e.target.value)}/>MB</span></label>
+                        <label className="fb-field-row"><span>다운로드 최대 크기</span>
+                          <span style={{display:"flex",alignItems:"center",gap:6,padding:0,fontWeight:400}}><input className="fb-input" type="number" min={1} max={Math.round((fbSettings.max_csv_download_max_bytes||100000000)/1048576)} step={1} value={fbDownloadMb} onChange={e=>setFbDownloadMb(e.target.value)}/>MB</span></label>
+                        <label className="fb-field-row"><span>다운로드 최대 행</span>
+                          <span style={{display:"flex",alignItems:"center",gap:6,padding:0,fontWeight:400}}><input className="fb-input" type="number" min={1} max={fbSettings.max_csv_download_max_rows||500000} step={1000} value={fbDownloadRows} onChange={e=>setFbDownloadRows(e.target.value)}/>행</span></label>
+                        <div className="fb-note">CSV 가 전체 표시 기준보다 작으면 미리보기 대신 전체 행을 보여 줍니다. 다운로드 최대 행은 1~{Number(fbSettings.max_csv_download_max_rows||500000).toLocaleString()}.</div>
+                      </div>
+                    </section>
+                    <section className="fb-card">
+                      <div className="fb-card__head"><span className="fb-card__title">Files 표시 이름 · 설명</span><span className="fb-card__caption">목록에서 커서를 올리면 표시</span></div>
+                      <div className="fb-card__body">
+                        <label className="fb-field">파일
+                          <select className="fb-select fb-mono" value={fbDescriptionFile} onChange={e=>selectDescriptionFile(e.target.value)}>
+                            <option value="">파일 선택</option>
+                            {settingsBaseFiles.map(f=>{const key=fileAliasKey(f);return <option key={key} value={key}>{f.display_name&&f.display_name!==key?`${f.display_name} (${key})`:key}</option>;})}
+                          </select>
+                        </label>
+                        <label className="fb-field">표시 이름
+                          <input className="fb-input" value={fbFileNameText} onChange={e=>setFbFileNameText(e.target.value.slice(0,80))} maxLength={80} disabled={!fbDescriptionFile} placeholder="사람에게 보여줄 파일 이름"/>
+                          <span className="fb-field__help">비워 두고 저장하면 원래 파일명이 표시됩니다.</span>
+                        </label>
+                        <label className="fb-field">설명 <span className="fb-field__help" style={{justifySelf:"end",marginTop:-18}}>{fbDescriptionText.length}/500</span>
+                          <textarea className="fb-textarea" value={fbDescriptionText} onChange={e=>setFbDescriptionText(e.target.value.slice(0,500))} rows={3} maxLength={500} disabled={!fbDescriptionFile} placeholder="파일의 용도, 원천, 갱신 주기 등"/>
+                        </label>
+                        <button type="button" className="fb-btn fb-btn--primary" style={{justifySelf:"start"}} onClick={()=>saveFilebrowserSettings("description")} disabled={!fbDescriptionFile||fbSettingsLoading}>이름·설명 저장</button>
+                      </div>
+                    </section>
+                  </div>
                 </div>
               </div>}
               {/* ITEMS tab */}
@@ -3906,7 +4053,7 @@ export default function My_FileBrowser({
                   <span style={{fontWeight:700,color:"var(--text-secondary)"}}>주기 동기화</span>
                   {s3AutoSync.disabled_by_env?<span style={{color:FB_AMBER,fontWeight:700}}>환경변수(FLOW_DISABLE_S3_INGEST)로 이 서버의 주기 실행이 꺼져 있습니다 — 수동 실행만 가능</span>
                   :<>
-                    {[{k:"auto_download_enabled",l:"⬇ 다운로드"},{k:"auto_upload_enabled",l:"⬆ 업로드"}].map(t=>{
+                    {[{k:"auto_download_enabled",l:<IconLabel icon="download">다운로드</IconLabel>},{k:"auto_upload_enabled",l:<IconLabel icon="upload">업로드</IconLabel>}].map(t=>{
                       const on=!!s3AutoSync[t.k];
                       return(<span key={t.k} onClick={()=>canManageS3Ingest&&s3SaveAutoSync({auto_download_enabled:!!s3AutoSync.auto_download_enabled,auto_upload_enabled:!!s3AutoSync.auto_upload_enabled,[t.k]:!on})}
                         title={canManageS3Ingest?"클릭하여 전환":"Admin 전용"}
@@ -3936,7 +4083,7 @@ export default function My_FileBrowser({
                         <td style={{padding:"6px 8px"}}><span style={{fontSize:14,padding:"2px 6px",borderRadius:3,background:badge.bg,color:badge.c,fontWeight:700,fontFamily:"monospace"}}>{badge.t}</span></td>
                         <td style={{padding:"6px 8px",fontFamily:"monospace",fontWeight:600}}>{it.target}</td>
                         <td style={{padding:"6px 8px",fontSize:14,color:"var(--text-secondary)"}}>{it.kind}</td>
-                        <td style={{padding:"6px 8px",fontSize:14,fontWeight:700,color:(it.direction||"download")==="upload"?FB_AMBER:FB_INFO.fg}}>{(it.direction||"download")==="upload"?"⬆ 업":"⬇ 다"}</td>
+                        <td style={{padding:"6px 8px",fontSize:14,fontWeight:700,color:(it.direction||"download")==="upload"?FB_AMBER:FB_INFO.fg}}>{(it.direction||"download")==="upload"?<IconLabel icon="upload">업</IconLabel>:<IconLabel icon="download">다</IconLabel>}</td>
                         <td style={{padding:"6px 8px",fontFamily:"monospace",fontSize:14,maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={it.s3_url}>{it.s3_url}</td>
                         <td style={{padding:"6px 8px",fontSize:14}}>{it.command}</td>
                         <td style={{padding:"6px 8px",fontSize:14}}>{Number(it.interval_min)>0?it.interval_min+"분":"수동"}</td>
@@ -3949,9 +4096,9 @@ export default function My_FileBrowser({
                           {isBusy
                             ?<button onClick={()=>s3Stop(it.id)} style={{padding:"3px 8px",borderRadius:3,border:"none",background:FB_BAD.fg,color:"#fff",fontSize:14,cursor:"pointer",marginRight:3}} title="실행 중/대기 중인 전송을 즉시 중지">■ 중지</button>
                             :<button onClick={()=>s3Run(it.id)} style={{padding:"3px 8px",borderRadius:3,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer",marginRight:3}}>▶ 실행</button>}
-                          {canManageS3Ingest&&<button onClick={()=>s3SetEnabled(it.id,isPaused)} style={{padding:"3px 8px",borderRadius:3,border:"1px solid "+(isPaused?FB_OK.fg:FB_AMBER),background:"transparent",color:isPaused?FB_OK.fg:FB_AMBER,fontSize:14,cursor:"pointer",marginRight:3}} title={isPaused?"주기 동기화 재개":"항목 삭제 없이 주기 동기화만 일시정지"}>{isPaused?"재개":"⏸ 정지"}</button>}
+                          {canManageS3Ingest&&<button onClick={()=>s3SetEnabled(it.id,isPaused)} style={{padding:"3px 8px",borderRadius:3,border:"1px solid "+(isPaused?FB_OK.fg:FB_AMBER),background:"transparent",color:isPaused?FB_OK.fg:FB_AMBER,fontSize:14,cursor:"pointer",marginRight:3}} title={isPaused?"주기 동기화 재개":"항목 삭제 없이 주기 동기화만 일시정지"}>{isPaused?"재개":"정지"}</button>}
                           {canManageS3Ingest&&<button onClick={()=>{setS3Form({...it});setS3Tab("add");}} style={{padding:"3px 8px",borderRadius:3,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:14,cursor:"pointer",marginRight:3}}>수정</button>}
-                          {canManageS3Ingest&&<button onClick={()=>s3Delete(it.id)} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:FB_BAD.fg,fontSize:14,cursor:"pointer"}}>✕</button>}
+                          {canManageS3Ingest&&<button onClick={()=>s3Delete(it.id)} style={{padding:"3px 8px",borderRadius:3,border:`1px solid ${FB_BAD.fg}`,background:"transparent",color:FB_BAD.fg,fontSize:14,cursor:"pointer",lineHeight:1}} title="삭제"><Icon name="trash" /></button>}
                         </td>
                       </tr>);
                     })}
@@ -3987,7 +4134,7 @@ export default function My_FileBrowser({
                   <label>방향</label>
                   <div style={{display:"flex",flexDirection:"column",gap:4}}>
                     <div style={{display:"flex",gap:6}}>
-                      {[{k:"download",l:"⬇ 다운로드 (S3 → 로컬)"},{k:"upload",l:"⬆ 업로드 (로컬 → S3)"}].map(d=>(
+                      {[{k:"download",l:<IconLabel icon="download">다운로드 (S3 → 로컬)</IconLabel>},{k:"upload",l:<IconLabel icon="upload">업로드 (로컬 → S3)</IconLabel>}].map(d=>(
                         <span key={d.k} onClick={()=>setS3Form(f=>({...f,direction:d.k}))} style={{padding:"4px 10px",borderRadius:4,fontSize:14,cursor:"pointer",fontWeight:(s3Form.direction||"download")===d.k?700:500,background:(s3Form.direction||"download")===d.k?"var(--accent-glow)":"var(--bg-hover)",color:(s3Form.direction||"download")===d.k?"var(--accent)":"var(--text-secondary)",border:"1px solid "+((s3Form.direction||"download")===d.k?"var(--accent)":"var(--border)")}}>{d.l}</span>
                       ))}
                     </div>
@@ -4014,7 +4161,7 @@ export default function My_FileBrowser({
                   <label style={{display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}><input type="checkbox" checked={s3Form.enabled!==false} onChange={e=>setS3Form(f=>({...f,enabled:e.target.checked}))} style={{width:14,height:14,accentColor:"var(--accent)"}}/><span style={{fontSize:14}}>예약 + 수동 실행</span></label>
                 </div>
                 <div style={{marginTop:14,padding:10,background:"var(--bg-secondary)",borderRadius:6,fontSize:14,fontFamily:"monospace",color:"var(--text-secondary)",lineHeight:1.5}}>
-                  <div style={{color:"var(--accent)",fontWeight:700,marginBottom:4}}># 미리보기 (dry · 방향: {(s3Form.direction||"download")==="upload"?"⬆ 업로드":"⬇ 다운로드"}):</div>
+                  <div style={{color:"var(--accent)",fontWeight:700,marginBottom:4}}># 미리보기 (dry · 방향: {(s3Form.direction||"download")==="upload"?"업로드":"다운로드"}):</div>
                   {(s3Form.direction||"download")==="upload"
                     ? <>aws s3 {s3Form.command} {"{DB_BASE}/"+(s3Form.target||"TARGET")} {s3Form.s3_url||"s3://..."} {s3Form.endpoint_url?"--endpoint-url "+s3Form.endpoint_url+" ":""}{s3Form.profile?"--profile "+s3Form.profile+" ":""}{s3Form.extra_args}</>
                     : <>aws s3 {s3Form.command} {s3Form.s3_url||"s3://..."} {"{DB_BASE}/"+(s3Form.target||"TARGET")} {s3Form.endpoint_url?"--endpoint-url "+s3Form.endpoint_url+" ":""}{s3Form.profile?"--profile "+s3Form.profile+" ":""}{s3Form.extra_args}</>}
@@ -4069,7 +4216,7 @@ export default function My_FileBrowser({
             <div style={{display:"flex",flexDirection:"column",maxHeight:"70vh"}}>
               <div style={{padding:"10px 14px",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center"}}>
                 <span style={{flex:1,fontSize:14,fontWeight:700,color:"var(--accent)",fontFamily:"monospace"}}>{s3Detail.id} — {s3Detail.action||"실행"} · exit={s3Detail.exit??"-"}</span>
-                <span onClick={()=>setS3Detail(null)} style={{cursor:"pointer",fontSize:16,color:"var(--text-secondary)"}}>✕</span>
+                <button type="button" className="flow-icon-button" onClick={()=>setS3Detail(null)} title="닫기" style={{fontSize:16,color:"var(--text-secondary)"}}><Icon name="close" /></button>
               </div>
               <div style={{padding:"12px 14px",display:"grid",gap:8,borderBottom:"1px solid var(--border)",fontSize:14,lineHeight:1.55}}>
                 {s3Detail.reason&&<div><b style={{color:"var(--text-primary)"}}>사유</b><div style={{marginTop:3,color:"var(--text-secondary)",whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{s3Detail.reason}</div></div>}

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any, Callable, Iterable
 
 from fastapi import HTTPException
@@ -349,7 +349,11 @@ def format_split_cell_value(value: Any, param: Any, precision: Any = None) -> st
         if 0 <= digits <= 10:
             # JS toFixed 는 정확히 반값일 때 올림한다 — 파이썬 기본(half-even)과 갈라지지 않게 맞춘다.
             quant = Decimal(1).scaleb(-int(digits))
-            return str(Decimal(num).quantize(quant, rounding=ROUND_HALF_UP))
+            try:
+                return str(Decimal(num).quantize(quant, rounding=ROUND_HALF_UP))
+            except (InvalidOperation, ValueError):
+                # 유효자리(28)를 넘는 큰 값은 quantize 가 예외를 낸다 — 반올림 없이 그대로 보인다.
+                return text
     return text
 
 
@@ -535,6 +539,11 @@ def _embed_from_view(
 def _load_view(**kwargs) -> dict[str, Any]:
     from routers.splittable import view_split
 
+    # view_split_core 의 기본값은 FastAPI Query 객체다. 직접 호출에서 빼먹으면
+    # Query(False) 가 참으로 읽혀 관련 이슈 조회·캐시 우선 경로가 켜진다.
+    kwargs.setdefault("include_related", False)
+    kwargs.setdefault("cache_first", False)
+    kwargs.setdefault("request", None)
     return view_split(**kwargs)
 
 

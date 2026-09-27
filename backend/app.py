@@ -108,17 +108,34 @@ def _no_store_file_response(path: Path, media_type: str | None = None) -> FileRe
     return response
 
 
-class FlowStaticFiles(StaticFiles):
-    """Serve built assets without sticky browser caching.
+try:
+    from app_v2.runtime import http_compression as _http_compression
+except Exception as _compression_error:  # 새 모듈 생성이 막힌 배포에서도 기동은 유지
+    _http_compression = None
+    logging.getLogger("flow").warning("http compression unavailable: %s", _compression_error)
 
-    Vite file names are hash-based, but this internal app is frequently rebuilt
-    in-place while a browser tab stays open. Revalidation prevents a stale main
-    bundle from asking for page chunks that no longer exist after a rebuild.
+
+class FlowStaticFiles(StaticFiles):
+    """Serve built assets with content-hash caching and gzip.
+
+    Vite chunk names carry a content hash, so a given URL never changes
+    content: those are cached as immutable and a page switch no longer
+    revalidates dozens of chunks. index.html stays no-store (see the SPA
+    route), so a rebuild is picked up on the next reload, and an open tab
+    keeps loading its own older chunks from cache. Unhashed files keep the
+    revalidation policy.
     """
 
     def file_response(self, full_path, stat_result, scope, status_code=200):
+        hashed = bool(_http_compression and _http_compression.is_hashed_asset(full_path))
+        cache_control = ("public, max-age=31536000, immutable" if hashed
+                         else "no-cache, max-age=0, must-revalidate")
+        if status_code == 200 and _http_compression is not None:
+            compressed = _http_compression.static_gzip_response(full_path, stat_result, scope, cache_control)
+            if compressed is not None:
+                return compressed
         response = super().file_response(full_path, stat_result, scope, status_code)
-        response.headers["Cache-Control"] = "no-cache, max-age=0, must-revalidate"
+        response.headers["Cache-Control"] = cache_control
         return response
 
 # v8.4.6: /docs, /redoc, /openapi.json disabled — API 스펙 무인증 노출 차단
@@ -133,6 +150,9 @@ app = FastAPI(
 
 app.add_middleware(AuthMiddleware)
 app.add_middleware(ResourceGuardMiddleware)
+# 가장 바깥: 인증 거절·503 JSON 까지 포함해 완성된 응답만 압축한다.
+if _http_compression is not None:
+    app.add_middleware(_http_compression.GzipJsonMiddleware)
 
 # ── backend 소스 자가복구 ──
 # 운영 Docker 서버에서 "덮어쓰기는 되는데 **새 파일 생성만** 막히는" 환경이
@@ -183,6 +203,23 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/core/mapfile_traffic.py",
     "backend/core/mapfile_alerts.py",
     "backend/core/mapfile_traffic_scheduler.py",
+    "backend/app_v2/runtime/http_compression.py",
+    "backend/core/home_agent_offload.py",
+    "backend/core/json_fast.py",
+    "backend/core/et_run_service.py",
+    "backend/core/et_run_child.py",
+    "backend/core/chat_table.py",
+    "backend/core/data_chat_semantic_admin.py",
+    "backend/core/product_wiki_knowledge.py",
+    "backend/core/data_chat_wiki.py",
+    "backend/core/file_knowledge.py",
+    "backend/core/data_chat_file_chart.py",
+    "backend/core/analysis_requests.py",
+    "backend/routers/analysis_requests.py",
+    "backend/routers/dc_layers.py",
+    "backend/core/chat_feedback.py",
+    "backend/core/llm_prompt_budget.py",
+    "backend/core/structure_topology.py",
 )
 
 
@@ -254,6 +291,7 @@ if _missing_at_boot:
         _repair_backend_sources_from_bundle()
     except Exception as exc:                 # 복구는 어떤 경우에도 기동을 막지 않는다
         logger.error("Required backend source repair failed: %s: %s", type(exc).__name__, exc)
+_ROUTERS_LOADED_AT = datetime.datetime.now().timestamp()
 loaded, failed = include_router_modules(app, ROUTERS_DIR, logger)
 
 if failed:
@@ -400,6 +438,29 @@ def _router_failure_body(router_key: str, full_path: str, detail: str) -> dict:
     }
 
 
+def _stale_router_body(router_key: str, full_path: str) -> dict | None:
+    """라우터 파일이 이 프로세스 기동 뒤에 생기거나 바뀌었으면 재시작 안내를 돌려준다.
+
+    새 기능을 설치하고 서버를 재시작하지 않으면 화면은 새 탭을 보여 주는데
+    API 는 옛 코드라 "API not found" 만 나와 원인을 찾기 어렵다(분석의뢰 탭 사례).
+    """
+    if not router_key or "/" in router_key or "\\" in router_key or router_key.startswith("."):
+        return None
+    try:
+        mtime = (ROUTERS_DIR / f"{router_key}.py").stat().st_mtime
+    except OSError:
+        return None
+    if mtime <= _ROUTERS_LOADED_AT:
+        return None
+    return {
+        "detail": (f"API not found — 서버가 '{router_key}' 기능 설치(변경) 전에 기동되었습니다. "
+                   "flow 서버를 재시작하면 반영됩니다."),
+        "path": full_path,
+        "error_code": "server_restart_required",
+        "router": router_key,
+    }
+
+
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
 def api_not_found(path: str, request: Request):
     """JSON fallback for unmatched API calls.
@@ -428,6 +489,8 @@ def api_not_found(path: str, request: Request):
     body = {"detail": "API not found", "path": full_path}
     if router_key in failed_map:
         body = _router_failure_body(router_key, full_path, failed_map[router_key])
+    else:
+        body = _stale_router_body(router_key, full_path) or body
     return JSONResponse(body, status_code=404)
 
 

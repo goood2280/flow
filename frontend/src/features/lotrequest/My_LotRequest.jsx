@@ -4,6 +4,7 @@ import Modal from "../../components/Modal";
 import PageGear from "../../components/PageGear";
 import RichBoardEditor, { RichBoardContent, richTextHasContent } from "../../components/RichBoardEditor";
 import { toast } from "../../components/Toast";
+import { IconLabel } from "../../components/ui/Icon";
 import {
   Avatar, Button, EmptyState, Filter, Input, Pill, Select, Textarea,
 } from "../../components/UXKit";
@@ -85,21 +86,21 @@ function RequestForm({ initial, busy, products, requestTypes, requestTeams, onCa
   return (
     <div className="lotreq-form">
       <div className="lotreq-grid2">
-        <label>요청 유형<Select value={form.request_type} onChange={change("request_type")}>
+        <label><span className="lotreq-label">요청 유형</span><Select value={form.request_type} onChange={change("request_type")}>
           {Array.from(new Set([form.request_type, ...requestTypes].filter(Boolean))).map((value) => <option key={value} value={value}>{LEGACY_TYPES[value]?.label || value}</option>)}
         </Select></label>
-        <label>우선순위<Select value={form.priority} onChange={change("priority")}>
+        <label><span className="lotreq-label">우선순위</span><Select value={form.priority} onChange={change("priority")}>
           {Object.entries(PRIORITIES).map(([key, item]) => <option key={key} value={key}>{item.label}</option>)}
         </Select></label>
-        <label>제품 <span className="lotreq-required">*</span><Select value={form.product} onChange={change("product")} autoFocus>
+        <label><span className="lotreq-label">제품 <span className="lotreq-required">*</span></span><Select value={form.product} onChange={change("product")} autoFocus>
           <option value="">제품 선택</option>{products.map((product) => <option key={product} value={product}>{product}</option>)}
         </Select></label>
-        <label>요청한 팀 <span className="lotreq-required">*</span><Select value={form.requester_team} onChange={change("requester_team")}>
-          <option value="">{requestTeams.length ? "요청한 팀 선택" : "등록된 팀 없음 · 설정(⚙)에서 추가하세요"}</option>{Array.from(new Set([form.requester_team, ...requestTeams].filter(Boolean))).map((team) => <option key={team} value={team}>{team}</option>)}
+        <label><span className="lotreq-label">요청한 팀 <span className="lotreq-required">*</span></span><Select value={form.requester_team} onChange={change("requester_team")}>
+          <option value="">{requestTeams.length ? "요청한 팀 선택" : "등록된 팀 없음 · 톱니 설정에서 추가하세요"}</option>{Array.from(new Set([form.requester_team, ...requestTeams].filter(Boolean))).map((team) => <option key={team} value={team}>{team}</option>)}
         </Select></label>
       </div>
-      <label>제목 <span className="lotreq-required">*</span><Input value={form.title} onChange={change("title")} placeholder="요청 내용을 한 줄로 요약" /></label>
-      <label>상세 요청 <span className="lotreq-required">*</span>
+      <label><span className="lotreq-label">제목 <span className="lotreq-required">*</span></span><Input value={form.title} onChange={change("title")} placeholder="요청 내용을 한 줄로 요약" /></label>
+      <label><span className="lotreq-label">상세 요청 <span className="lotreq-required">*</span></span>
         <RichBoardEditor value={form.details} onChange={(details) => setForm((prev) => ({ ...prev, details }))}
           uploadUrl={`${API}/upload`} minHeight={220} showCommands={false}
           placeholder="요청 배경·조건·대상 랏과 수량을 입력하세요. 이미지 또는 Excel 표는 Ctrl+V로 본문에 붙여넣을 수 있습니다."
@@ -242,7 +243,7 @@ function RequestMailDialog({ item, onClose, onSent }) {
       </div>
     </div>
     {error && <div className="lotreq-mail-error">{error}</div>}
-    <div className="lotreq-actions"><Button onClick={onClose}>닫기</Button><Button variant="primary" disabled={sending || previewing || !preview} onClick={send}>{sending ? "발송 중…" : `✉ ${selectedCount}명에게 발송`}</Button></div>
+    <div className="lotreq-actions"><Button onClick={onClose}>닫기</Button><Button variant="primary" disabled={sending || previewing || !preview} onClick={send}>{sending ? "발송 중…" : <IconLabel icon="send">{`${selectedCount}명에게 발송`}</IconLabel>}</Button></div>
   </Modal>;
 }
 
@@ -310,7 +311,7 @@ function IssueDetail({ selected, user, busy, statusDraft, setStatusDraft, saveSt
     <div className="lotreq-detail-main">
       <div className="lotreq-detail-nav">
         <div className="lotreq-detail-heading">요청 내용</div>
-        <div className="lotreq-actions">{selected.permissions?.can_mail && <Button size="sm" variant="primary" onClick={() => setMailOpen(true)}>✉ 메일</Button>}{selected.permissions?.can_edit && <><Button size="sm" onClick={() => setEditOpen(true)}>수정</Button><Button size="sm" variant="danger" onClick={deleteRequest}>삭제</Button></>}</div>
+        <div className="lotreq-actions">{selected.permissions?.can_mail && <Button size="sm" variant="primary" onClick={() => setMailOpen(true)}><IconLabel icon="mail">메일</IconLabel></Button>}{selected.permissions?.can_edit && <><Button size="sm" onClick={() => setEditOpen(true)}>수정</Button><Button size="sm" variant="danger" onClick={deleteRequest}>삭제</Button></>}</div>
       </div>
 
       <div className="lotreq-section lotreq-request-content">
@@ -485,7 +486,9 @@ export default function My_LotRequest({ user }) {
       .lotreq-layout{display:block}.lotreq-list{border:1px solid var(--border);background:var(--bg-secondary);border-radius:8px;overflow:auto}.lotreq-feed-row{min-width:1200px;border-bottom:1px solid var(--border)}.lotreq-feed-row:last-child{border-bottom:0}
       .lotreq-list-header,.lotreq-list-item{display:grid;grid-template-columns:105px minmax(240px,2fr) 120px 110px 110px 85px 80px 145px 60px;gap:10px;align-items:center;min-width:1200px}
       .lotreq-list-header{padding:8px 14px 8px 16px;border-bottom:1px solid var(--border);background:var(--bg-tertiary);color:var(--text-secondary);font-size:11px;font-weight:800}
-      .lotreq-list-item{width:100%;border:0;border-left:4px solid var(--module-color,#6b7280);background:transparent;color:inherit;padding:11px 14px 11px 12px;text-align:left;cursor:pointer}
+      /* 행은 <button> 이라 업무 탭 공통 규칙 .flow-connected-page button(inline-flex·가운데 정렬·5px 10px 패딩, 0,1,1)이
+         .lotreq-list-item(0,1,0)을 이겨 격자가 풀리고 값이 가운데로 몰렸다 — 헤더와 같은 격자를 쓰도록 두 클래스로 지정한다. */
+      .lotreq-page .lotreq-list-item{display:grid;gap:10px;justify-content:stretch;min-height:0;line-height:1.45;font-weight:400;white-space:normal;width:100%;border:0;border-left:4px solid var(--module-color,#6b7280);background:transparent;color:inherit;padding:11px 14px 11px 12px;text-align:left;cursor:pointer}
       .lotreq-list-item:hover{background:var(--bg-hover)}.lotreq-list-item.is-active{background:var(--accent-glow);box-shadow:inset 2px 0 var(--module-color,#6b7280)}
       .lotreq-module-pill{display:inline-flex;align-items:center;border:1px solid;border-radius:999px;padding:2px 7px;font-size:11px;font-weight:800;line-height:1.35}
       .lotreq-list-top,.lotreq-list-meta,.lotreq-detail-head,.lotreq-meta,.lotreq-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
@@ -493,7 +496,7 @@ export default function My_LotRequest({ user }) {
       .lotreq-detail{border-top:1px solid var(--border);border-left:4px solid var(--module-color,#6b7280);background:var(--bg-primary);overflow:hidden;box-shadow:inset 0 8px 18px rgba(0,0,0,.035)}
       .lotreq-detail-main{padding:0 22px 20px}.lotreq-detail-head{justify-content:space-between;align-items:flex-start;border-bottom:1px solid var(--border);padding-bottom:14px}
       .lotreq-detail-nav{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0 9px;border-bottom:1px solid var(--border)}.lotreq-detail-heading{font-size:13px;font-weight:800;color:var(--accent)}.lotreq-request-content{min-height:90px}
-      .lotreq-history-toggle{border:0;background:transparent;color:var(--text-secondary);font-size:13px;font-weight:800;padding:0;cursor:pointer}.lotreq-history-toggle:hover{color:var(--text-primary)}
+      .lotreq-page .lotreq-history-toggle{justify-content:flex-start;min-height:0;border:0;background:transparent;color:var(--text-secondary);font-size:13px;font-weight:800;padding:0;cursor:pointer}.lotreq-history-toggle:hover{color:var(--text-primary)}
       .lotreq-title{font-size:20px;font-weight:800;margin:8px 0 5px}.lotreq-meta{font-size:12px;color:var(--text-secondary)}
       .lotreq-section{padding:16px 0;border-bottom:1px solid var(--border)}.lotreq-section:last-child{border-bottom:0}.lotreq-section-title{font-size:13px;font-weight:800;margin-bottom:9px;color:var(--text-secondary)}
       .lotreq-body{font-size:14px;white-space:pre-wrap;line-height:1.65}.lotreq-lots{font:13px/1.6 var(--font-mono);white-space:pre-wrap;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:5px;padding:9px 11px;margin-top:10px}
@@ -504,7 +507,7 @@ export default function My_LotRequest({ user }) {
       .lotreq-process-title{font-size:13px;font-weight:800;color:var(--text-secondary);white-space:nowrap}.lotreq-process select{width:130px;flex:none}.lotreq-process .input{flex:1;min-width:140px}
       .lotreq-form label,.lotreq-response-editor label{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:650;color:var(--text-secondary)}
       .lotreq-history{padding-left:5px}.lotreq-history-row{display:grid;grid-template-columns:12px 1fr;gap:9px;position:relative;padding:0 0 14px;font-size:12px}.lotreq-history-row:before{content:'';position:absolute;left:4px;top:9px;bottom:-2px;border-left:1px solid var(--border)}.lotreq-history-row:last-child:before{display:none}
-      .lotreq-history-dot{width:9px;height:9px;border:2px solid var(--accent);background:var(--bg-secondary);border-radius:50%;z-index:1;margin-top:3px}.lotreq-history-note{white-space:pre-wrap}.lotreq-form,.lotreq-response-editor{display:flex;flex-direction:column;gap:8px}.lotreq-grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px}.lotreq-actions{justify-content:flex-end}.lotreq-required{color:var(--danger)}
+      .lotreq-history-dot{width:9px;height:9px;border:2px solid var(--accent);background:var(--bg-secondary);border-radius:50%;z-index:1;margin-top:3px}.lotreq-history-note{white-space:pre-wrap}.lotreq-form,.lotreq-response-editor{display:flex;flex-direction:column;gap:8px}.lotreq-grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px}.lotreq-actions{justify-content:flex-end}.lotreq-required{color:var(--danger)}.lotreq-label{display:inline-flex;align-items:baseline;gap:3px;white-space:nowrap;line-height:1.3}
       .lotreq-compose{max-width:1040px;margin:0 auto;border:1px solid var(--border);background:var(--bg-secondary);border-radius:8px;overflow:hidden}.lotreq-compose-head{display:flex;align-items:center;gap:12px;padding:11px 16px;border-bottom:1px solid var(--border)}.lotreq-compose-title{font-size:16px;font-weight:850}.lotreq-compose-body{padding:12px 18px}
       .lotreq-mail-grid{display:grid;grid-template-columns:minmax(360px,440px) minmax(0,1fr);gap:14px;min-height:560px}.lotreq-mail-targets{display:flex;flex-direction:column;gap:9px;min-height:0}.lotreq-mail-groups{display:flex;gap:6px;flex-wrap:wrap}.lotreq-mail-groups button{border:1px solid var(--border);background:var(--bg-card);color:var(--text-primary);border-radius:999px;padding:5px 10px;cursor:pointer}.lotreq-mail-groups button.is-active{border-color:var(--accent);background:var(--accent);color:#fff}.lotreq-mail-user-head{display:flex;align-items:center;gap:8px}.lotreq-mail-user-head .lotreq-section-title{margin:0;flex:1}.lotreq-mail-user-head .input{width:190px}.lotreq-mail-users{height:210px;overflow:auto;border:1px solid var(--border);border-radius:6px;background:var(--bg-card)}.lotreq-mail-users label{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:8px;align-items:center;padding:6px 9px;border-bottom:1px solid var(--border);cursor:pointer;font-size:12px}.lotreq-mail-users label.is-active{background:var(--accent-glow)}.lotreq-mail-users span{display:flex;gap:6px;align-items:baseline}.lotreq-mail-users small{color:var(--text-secondary)}.lotreq-mail-field{display:flex;flex-direction:column;gap:4px;font-size:12px;font-weight:700;color:var(--text-secondary)}.lotreq-mail-preview{border:1px solid var(--border);border-radius:7px;overflow:hidden;display:flex;flex-direction:column;min-height:0}.lotreq-mail-preview-head{display:flex;justify-content:space-between;padding:9px 11px;border-bottom:1px solid var(--border);font-size:12px}.lotreq-mail-preview-head span{color:var(--text-secondary)}.lotreq-mail-preview iframe{border:0;width:100%;flex:1;background:#fff}.lotreq-mail-error{padding:8px 10px;margin:10px 0;background:var(--danger-50);color:var(--danger);border:1px solid var(--danger);border-radius:5px;font-size:12px}
       .lotreq-settings{display:flex;flex-direction:column;gap:14px}.lotreq-settings p{margin:0;color:var(--text-secondary);font-size:12px;line-height:1.6}.lotreq-settings-group{display:flex;flex-direction:column;gap:7px}.lotreq-settings-label{font-size:13px;font-weight:800}.lotreq-settings-add{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:center}.lotreq-settings-items{display:flex;gap:6px;flex-wrap:wrap;min-height:30px;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg-primary)}.lotreq-settings-item{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);border-radius:999px;padding:4px 5px 4px 10px;background:var(--bg-card);font-size:12px;font-weight:700}.lotreq-settings-item button{width:20px;height:20px;border:0;border-radius:50%;background:transparent;color:var(--text-secondary);font-size:16px;line-height:18px;cursor:pointer}.lotreq-settings-item button:hover{background:var(--danger-50);color:var(--danger)}
@@ -534,7 +537,7 @@ export default function My_LotRequest({ user }) {
       <div className="lotreq-list">
         <div className="lotreq-list-header"><span>제품</span><span>이슈</span><span>등록자</span><span>요청 팀</span><span>요청 유형</span><span>상태</span><span>우선순위</span><span>등록일</span><span>답글</span></div>
         {loading && <div className="lotreq-muted" style={{ padding: 24 }}>불러오는 중…</div>}
-        {!loading && items.length === 0 && <EmptyState icon="📨" title="조건에 맞는 요청이 없습니다" hint="새 요청을 등록하거나 검색 조건을 바꿔보세요." />}
+        {!loading && items.length === 0 && <EmptyState icon="send" title="조건에 맞는 요청이 없습니다" hint="새 요청을 등록하거나 검색 조건을 바꿔보세요." />}
         {items.map((item) => <div className="lotreq-feed-row" key={item.id}>
           <RequestListItem item={item} active={selectedId === item.id} onClick={() => setSelectedId((current) => current === item.id ? "" : item.id)} />
           {selectedId === item.id && selected?.id === item.id && <IssueDetail selected={selected} user={user} busy={busy} statusDraft={statusDraft} setStatusDraft={setStatusDraft} saveStatus={saveStatus} setMailOpen={setMailOpen} setEditOpen={setEditOpen} deleteRequest={deleteRequest} editingResponse={editingResponse} setEditingResponse={setEditingResponse} saveResponse={saveResponse} deleteResponse={deleteResponse} />}

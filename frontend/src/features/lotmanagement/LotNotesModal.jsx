@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Modal from "../../components/Modal";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import { authSrc, sf } from "../../lib/api";
 
 const API = "/api/splittable";
@@ -192,7 +193,7 @@ export default function LotNotesModal({
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
             <div style={{ fontSize: 15, fontWeight: 700, fontFamily: "monospace", color: "var(--accent)" }}>
-              📝 LOT {cleanLot} 노트
+              <IconLabel icon="note">LOT {cleanLot} 노트</IconLabel>
             </div>
             {prodLabel && (
               <span
@@ -222,7 +223,7 @@ export default function LotNotesModal({
                 fontSize: 13,
               }}
             >
-              🔄
+              <Icon name="refresh" />
             </button>
             <span
               onClick={onClose}
@@ -232,7 +233,7 @@ export default function LotNotesModal({
               style={{ cursor: "pointer", fontSize: 18, color: "var(--text-secondary)", lineHeight: 1 }}
               aria-label="닫기"
             >
-              ✕
+              <Icon name="close" />
             </span>
           </div>
         </div>
@@ -251,9 +252,9 @@ export default function LotNotesModal({
         >
           {[
             { k: "all", l: `전체 ${base.length}` },
-            { k: "wafer", l: `🏷 wafer ${base.filter(n => n.scope === "wafer").length}` },
-            { k: "param", l: `💬 param ${base.filter(n => n.scope === "param").length}` },
-            { k: "lot", l: `📦 lot ${base.filter(n => n.scope === "lot").length}` },
+            { k: "wafer", l: <IconLabel icon="tag">{`wafer ${base.filter(n => n.scope === "wafer").length}`}</IconLabel> },
+            { k: "param", l: <IconLabel icon="chat">{`param ${base.filter(n => n.scope === "param").length}`}</IconLabel> },
+            { k: "lot", l: <IconLabel icon="package">{`lot ${base.filter(n => n.scope === "lot").length}`}</IconLabel> },
           ].map(b => {
             const active = noteFilter === b.k;
             return (
@@ -281,7 +282,7 @@ export default function LotNotesModal({
           <input
             value={noteSearch}
             onChange={e => setNoteSearch(e.target.value)}
-            placeholder="🔍 wafer id · param 이름 · 본문 검색"
+            placeholder="wafer id · param 이름 · 본문 검색"
             style={{
               width: "100%",
               padding: "5px 8px",
@@ -327,11 +328,11 @@ export default function LotNotesModal({
                 const isMine = (n.username || "") === me;
                 const badge =
                   n.scope === "wafer"
-                    ? { bg: "rgba(59,130,246,0.95)", txt: `🏷 W${wid}` }
+                    ? { bg: "rgba(59,130,246,0.95)", icon: "tag", txt: `W${wid}` }
                     : n.scope === "param"
-                    ? { bg: "rgba(139,92,246,0.95)", txt: `💬 W${wid}·${param}` }
+                    ? { bg: "rgba(139,92,246,0.95)", icon: "chat", txt: `W${wid}·${param}` }
                     : n.scope === "lot"
-                    ? { bg: "rgba(22,163,74,0.95)", txt: `📦 ${lotOf || cleanLot}` }
+                    ? { bg: "rgba(22,163,74,0.95)", icon: "package", txt: lotOf || cleanLot }
                     : { bg: "rgba(107,114,128,0.95)", txt: n.scope };
                 const time = (n.created_at || "").replace("T", " ").slice(5, 16);
                 const expanded = expandedNoteId === n.id;
@@ -369,7 +370,7 @@ export default function LotNotesModal({
                           whiteSpace: "nowrap",
                         }}
                       >
-                        {badge.txt}
+                        {badge.icon ? <IconLabel icon={badge.icon}>{badge.txt}</IconLabel> : badge.txt}
                       </span>
                       <span
                         style={{
@@ -526,7 +527,7 @@ export default function LotNotesModal({
           <div style={{ fontSize: 13, color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: 6 }}>
             <span>대상:</span>
             <span style={{ color: "rgba(22,163,74,0.95)", fontWeight: 700 }}>
-              📦 LOT {cleanLot}
+              <IconLabel icon="package">LOT {cleanLot}</IconLabel>
             </span>
             {noteDraft && (
               <span style={{ marginLeft: "auto" }}>
@@ -534,7 +535,7 @@ export default function LotNotesModal({
                   onClick={clearNoteDraft}
                   style={{ cursor: "pointer", color: "var(--text-secondary)", fontSize: 12 }}
                 >
-                  ✕ 취소
+                  <IconLabel icon="close">취소</IconLabel>
                 </span>
               </span>
             )}
@@ -570,7 +571,7 @@ export default function LotNotesModal({
                 cursor: noteUploading ? "wait" : "pointer",
               }}
             >
-              📷 이미지 첨부
+              <Icon name="image" style={{ marginRight: 4 }} />이미지 첨부
               <input
                 type="file"
                 accept="image/*"

@@ -160,12 +160,32 @@ def test_polars_threads_auto_scales_and_explicit_value_is_preserved(monkeypatch,
     assert runtime_limits._polars_threads_for_role() == min(4, int(expected))
 
 
-def test_polars_threads_dev_is_fixed_one(monkeypatch, tmp_path):
+@pytest.mark.parametrize(("cores", "expected"), [(5, 2), (12, 2), (3, 1)])
+def test_polars_threads_worker_uses_spare_dev_cores(monkeypatch, tmp_path, cores, expected):
+    from core import runtime_limits
+    from core.paths import PATHS
+
+    from core import worker_dispatch
+
+    monkeypatch.setattr(PATHS, "data_root", tmp_path)
+    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "worker")
+    monkeypatch.delenv("FLOW_WORKER_POLARS_THREADS", raising=False)
+    monkeypatch.setattr(runtime_limits, "effective_cpu_count", lambda: float(cores))
+    assert runtime_limits._polars_threads_for_role() == expected
+
+    monkeypatch.setenv("FLOW_WORKER_POLARS_THREADS", "3")
+    assert runtime_limits._polars_threads_for_role() == min(3, cores)
+
+
+def test_polars_threads_roleless_dev_api_is_fixed_one(monkeypatch, tmp_path):
     from core import runtime_limits
     from core.paths import PATHS
 
     monkeypatch.setattr(PATHS, "data_root", tmp_path)
-    monkeypatch.setenv("FLOW_SERVER_ROLE", "worker")
+    from core import worker_dispatch
+
+    monkeypatch.setattr(PATHS, "is_prod", False)
+    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "api")
     monkeypatch.setattr(runtime_limits, "effective_cpu_count", lambda: 12.0)
     assert runtime_limits._polars_threads_for_role() == 1
 

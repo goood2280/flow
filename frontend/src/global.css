@@ -190,6 +190,7 @@ samp,
 
 .flow-nav-caret {
   color: var(--text-secondary);
+  display: inline-flex;
   font-size: 14px;
   line-height: 1;
 }
@@ -2066,10 +2067,10 @@ table.tbl tbody tr:hover {
   font-family: inherit;
 }
 
-.flow-connected-page button,
-.flow-connected-page input,
-.flow-connected-page select,
-.flow-connected-page textarea {
+.flow-connected-page button:not(.flow-fixed *),
+.flow-connected-page input:not(.flow-fixed *),
+.flow-connected-page select:not(.flow-fixed *),
+.flow-connected-page textarea:not(.flow-fixed *) {
   font-size: 14px !important;
   letter-spacing: 0 !important;
 }
@@ -2086,8 +2087,8 @@ table.tbl tbody tr:hover {
   white-space: nowrap;
 }
 
-.flow-connected-page input:not([type="checkbox"]):not([type="radio"]),
-.flow-connected-page select {
+.flow-connected-page input:not([type="checkbox"]):not([type="radio"]):not(.flow-fixed *),
+.flow-connected-page select:not(.flow-fixed *) {
   min-height: 32px;
   padding: 6px 10px !important;
   border: 1px solid var(--border);
@@ -2096,7 +2097,7 @@ table.tbl tbody tr:hover {
   line-height: 1.25;
 }
 
-.flow-connected-page textarea {
+.flow-connected-page textarea:not(.flow-fixed *) {
   padding: 8px 10px !important;
   border: 1px solid var(--border);
   background: var(--bg-primary);
@@ -2190,7 +2191,7 @@ table.tbl tbody tr:hover {
   border-radius: var(--surface-radius);
 }
 
-.flow-connected-page [style*="border-radius"] {
+.flow-connected-page [style*="border-radius"]:not(.flow-fixed *) {
   border-radius: var(--control-radius) !important;
 }
 
@@ -2204,7 +2205,7 @@ table.tbl tbody tr:hover {
   border-radius: 999px !important;
 }
 
-.flow-connected-page [style*="box-shadow"] {
+.flow-connected-page [style*="box-shadow"]:not(.flow-fixed *) {
   box-shadow: none !important;
 }
 
@@ -2214,10 +2215,10 @@ table.tbl tbody tr:hover {
   margin-bottom: -1px !important;
 }
 
-.flow-connected-page button,
-.flow-connected-page input,
-.flow-connected-page select,
-.flow-connected-page textarea {
+.flow-connected-page button:not(.flow-fixed *),
+.flow-connected-page input:not(.flow-fixed *),
+.flow-connected-page select:not(.flow-fixed *),
+.flow-connected-page textarea:not(.flow-fixed *) {
   border-radius: var(--control-radius) !important;
 }
 

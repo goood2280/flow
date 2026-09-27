@@ -3,15 +3,20 @@ import { FlowPlotlyChart, WipStackedBar } from "../../components/PlotlyChart";
 import TegValueWaferMap from "../../components/TegValueWaferMap";
 import SplitTableSnapshotView from "../../components/SplitTableSnapshotView";
 import { sf } from "../../lib/api";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import "./HomeDataChat.css";
 import TegChatMaps from "./TegChatMaps";
 import InterpretationPanel from "./InterpretationPanel";
 import HomeDownloadJob from "./HomeDownloadJob";
+import ResponseFeedback, { isFeedbackUuid } from "./ResponseFeedback";
 import { reportChartChoices, toggleReportChart } from "./reportCharts";
+import { setVisibleInterval } from "../../lib/visibleInterval";
+import { MAX_PROMPT_CHARS, MAX_TABLE_PROMPT_CHARS, parsePastedTable } from "./pastedTable";
 
 const PAGE_SIZE = 50;
 const API_HISTORY_MESSAGES = 20;
-const API_HISTORY_CHARS = 4000;
+const API_HISTORY_CHARS = MAX_PROMPT_CHARS;
+const PASTED_TABLE_PREVIEW_ROWS = 12;
 
 function asText(value) {
   if (value == null) return "";
@@ -164,7 +169,7 @@ function DataTable({ table, downloadName = "dataset", maxPreviewRows = 0, filter
           onClick={() => downloadTableAsCsv(table, `${downloadName}_${Date.now()}.csv`)}
           title="전체 데이터셋을 CSV(Excel 호환)로 다운로드합니다"
         >
-          📥 CSV 다운로드
+          <IconLabel icon="download">CSV 다운로드</IconLabel>
         </button>
       </div>
       <div className="home-data-chat__table-scroll">
@@ -264,6 +269,9 @@ function isHumanInLoopTool(tool) {
   if (!tool || typeof tool !== "object") return false;
   // A report proposal already has a reviewable layout, even before approval.
   if (tool.feature === "report.template" && tool.report_template) return false;
+  // So does a change preview ("아래와 같이 인식되었습니다"): its table is what
+  // the user approves, so it opens in the result pane beside the approve button.
+  if (tool.approval?.status === "pending" && !tool.missing?.length && resultRows(tableFromTool(tool)).length) return false;
   const hasCandidates = (groups) => Array.isArray(groups)
     && groups.some((group) => Array.isArray(group?.candidates) && group.candidates.length > 0);
   return isProductRequest(tool)
@@ -275,10 +283,39 @@ function isHumanInLoopTool(tool) {
     || (Array.isArray(tool.missing) && tool.missing.length > 0);
 }
 
+function PastedTableContent({ table }) {
+  const width = table.rows[0]?.length || 0;
+  const shown = table.rows.slice(0, PASTED_TABLE_PREVIEW_ROWS);
+  const hidden = table.rows.length - shown.length;
+  return (
+    <div className="home-data-chat__bubble-inner">
+      {table.intro && <div className="home-data-chat__guided-body">{table.intro}</div>}
+      <div className="home-data-chat__pasted-table" aria-label={`붙여 넣은 표 ${table.rows.length}행 ${width}열`}>
+        <div className="home-data-chat__pasted-table-meta">붙여 넣은 표 · {table.rows.length}행 × {width}열</div>
+        <div className="home-data-chat__table-scroll">
+          <table className="home-data-chat__table">
+            <tbody>
+              {shown.map((cells, rowIndex) => (
+                <tr key={rowIndex}>{cells.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        {hidden > 0 && <div className="home-data-chat__pasted-table-meta">… {hidden}행 더 있음</div>}
+      </div>
+      {table.outro && <div className="home-data-chat__guided-body">{table.outro}</div>}
+    </div>
+  );
+}
+
 function BubbleContent({ message }) {
   // 왼쪽 대화 기록은 답변 텍스트만 남긴다. 해석·원천·쿼리·선택지는
   // InterpretationPanel(왼쪽 상단)이, 데이터는 오른쪽 결과창이 담당한다.
   const content = message.content || "";
+  if (message.role === "user") {
+    const table = parsePastedTable(content);
+    if (table) return <PastedTableContent table={table} />;
+  }
   let displayBody = content;
   if (typeof content === "string") {
     if (content.includes("────────────────────────────────────────")) {
@@ -317,41 +354,45 @@ function BatchContent({ response }) {
   );
 }
 
-function featureInfo(feature, tool) {
+export function featureInfo(feature, tool) {
   const icons = {
-    splittable: "📋",
-    "splittable.plan": "✏️",
-    location: "📍",
-    lot_progress: "📍",
-    yield_map: "🗺️",
-    "yield_map.map": "🗺️",
-    tracker: "🎯",
-    "tracker.issues": "🎯",
-    "tracker.issue": "🎯",
-    watchlist: "⭐",
-    "watchlist.lots": "⭐",
-    informs: "📢",
-    "informs.recent": "📢",
-    "informs.by_lot": "📢",
-    lot_management: "📊",
-    "lot_management.table": "📊",
-    "lot_management.my_lots": "📊",
-    dashboard: "📈",
-    "dashboard.summary": "📈",
-    "dashboard.stuck_lots": "📈",
-    "dashboard.charts": "📈",
-    inline: "🧪",
-    "inline.values": "🧪",
-    "inline.radius_plot": "🧪",
-    eta: "⏰",
-    reformatize: "📥",
-    ettime: "⏱️",
-    chart: "📉",
-    "report.template": "📝",
-    teg: "📍",
-    "teg.locations": "📍",
-    "teg.coordinates": "📍",
-    "teg.mapfiles": "🗺️",
+    // 값은 components/ui/Icon 의 아이콘 이름.
+    splittable: "table",
+    "splittable.plan": "edit",
+    location: "location",
+    lot_progress: "location",
+    yield_map: "map",
+    "yield_map.map": "map",
+    tracker: "target",
+    "tracker.issues": "target",
+    "tracker.issue": "target",
+    watchlist: "star",
+    "watchlist.lots": "star",
+    informs: "megaphone",
+    "informs.recent": "megaphone",
+    "informs.by_lot": "megaphone",
+    lot_management: "chart-bar",
+    "lot_management.table": "chart-bar",
+    "lot_management.my_lots": "chart-bar",
+    dashboard: "chart-line",
+    "dashboard.summary": "chart-line",
+    "dashboard.stuck_lots": "chart-line",
+    "dashboard.charts": "chart-line",
+    inline: "flask",
+    "inline.values": "flask",
+    "inline.radius_plot": "flask",
+    eta: "alarm",
+    reformatize: "download",
+    ettime: "timer",
+    chart: "chart-line",
+    "report.template": "note",
+    teg: "ruler",
+    "teg.locations": "ruler",
+    "teg.coordinates": "ruler",
+    "teg.mapfiles": "map",
+    "semantic.alias_update": "tag",
+    "product.wiki": "book",
+    "product.knowledge": "book",
   };
   const titles = {
     eta: "Lot 도착·완료 예상 시각",
@@ -389,6 +430,9 @@ function featureInfo(feature, tool) {
     "teg.locations": "TEG 위치 조회",
     "teg.coordinates": "TEG 좌표 조회",
     "teg.mapfiles": "Mapfile 검증 현황",
+    "semantic.alias_update": tool?.approval?.status === "pending" ? "시맨틱 별칭 변경 미리보기" : "시맨틱 별칭 변경 결과",
+    "product.wiki": tool?.action === "product_wiki.changes" ? "제품 위키 변경 기록" : "제품 위키 기록",
+    "product.knowledge": "제품 지식·용어 연결",
   };
   const ctx = tool?.context || {};
   const subtitleParts = [
@@ -400,7 +444,7 @@ function featureInfo(feature, tool) {
     ctx.status ? `상태: ${ctx.status}` : "",
   ].filter(Boolean);
   return {
-    icon: icons[feature] || "📊",
+    icon: icons[feature] || "chart-bar",
     title: tool?.query_scope?.family === "VM" && feature === "inline" ? "VM 가상계측" : titles[feature] || titles[tool?.action] || feature || "데이터 뷰",
     subtitle: subtitleParts.join(" · "),
   };
@@ -434,8 +478,8 @@ function ModelStatus({ refreshKey = 0, probeKey = 0, turnUsage = null }) {
     } else {
       refresh();
     }
-    const timer = setInterval(() => refresh(), 30000);
-    return () => { active.current = false; clearInterval(timer); };
+    const stopRefresh = setVisibleInterval(() => refresh(), 30000, { refreshOnVisible: false });
+    return () => { active.current = false; stopRefresh(); };
   }, [probeKey, refreshKey]);
   const labels = { connected: "연결됨", disconnected: "연결 끊김", disabled: "사용 안 함", unconfigured: "미설정" };
   const status = checking ? "checking" : (model.status || "unknown");
@@ -742,7 +786,7 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized }) {
     <aside className={`home-data-chat__workspace-pane${isMaximized ? " is-maximized" : ""}`} aria-label="결과">
       <div className="home-workspace__header">
         <div className="home-workspace__header-left">
-          <span className="home-workspace__icon">{info.icon}</span>
+          <span className="home-workspace__icon"><Icon name={info.icon} /></span>
           <div className="home-workspace__titles">
             <div className="home-workspace__title">{info.title}</div>
             {!isTegView && info.subtitle && <div className="home-workspace__subtitle">{info.subtitle}</div>}
@@ -754,7 +798,7 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized }) {
             {isMaximized ? "⤡ 축소" : "⤢ 전체"}
           </button>
           <button type="button" className="home-workspace__tool-btn" onClick={onClose} title="결과창 접기" aria-label="결과창 접기">
-            ✕
+            <Icon name="close" />
           </button>
         </div>
       </div>
@@ -790,6 +834,11 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized }) {
           )
         ))}
 
+        {tool.wiki_link && <div className="home-workspace__saved-chart" role="note">
+          <span>{tool.answer_mode === "ai" ? "연결된 AI가 아래 기록만으로 답했습니다." : "아래 제품 위키 기록을 근거로 답했습니다."} 기록 ID로 원문을 확인하세요.</span>
+          <a href={tool.cited_records?.length === 1 && /^[0-9a-f]{8}$/.test(tool.cited_records[0])
+            ? `${tool.wiki_link}#entry-${tool.cited_records[0]}` : tool.wiki_link} target="_blank" rel="noreferrer">제품 위키에서 보기 ↗</a>
+        </div>}
         {tool.saved_chart?.id && <div className="home-workspace__saved-chart" role="status">
           <span>차트생성 이력에 저장됨 · Template report에서 재사용할 수 있습니다.</span>
           <a href={`/chartbuilder?history_id=${encodeURIComponent(tool.saved_chart.id)}`} target="_blank" rel="noreferrer">저장된 차트 열기 ↗</a>
@@ -818,7 +867,7 @@ function LiveFeatureWorkspace({ workspace, onClose, onMaximize, isMaximized }) {
   );
 }
 
-export default function HomeDataChat({ user, onNavigate, enabled = false, probeKey = 0, onClose }) {
+export default function HomeDataChat({ user, onNavigate, enabled = false, probeKey = 0, onClose, initialConversation = null }) {
   const username = user?.username || "guest";
   const [prompt, setPrompt] = useState("");
   const [chatState, setChatState] = useState(() => loadChatState(username));
@@ -833,6 +882,9 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
   const [samplePrompts, setSamplePrompts] = useState({ pinned: [], successful: [] });
   const [turnUsage, setTurnUsage] = useState(null);
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
+
+  const pastedTable = useMemo(() => parsePastedTable(prompt), [prompt]);
+  const promptTooLong = (value) => value.length > (parsePastedTable(value) ? MAX_TABLE_PROMPT_CHARS : MAX_PROMPT_CHARS);
 
   const scrollRef = useRef(null);
   const requestVersionRef = useRef(0);
@@ -909,16 +961,22 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
     }
   };
 
-  const restoreWorkspace = (messages) => {
-    const lastToolMsg = [...messages].reverse().find((m) => m.response?.tool);
+  const restoreWorkspace = (messages, focusMessageId = "") => {
+    // 홈의 "최근 작업 결과"에서 열면 그 결과를, 아니면 마지막 결과를 보여 준다.
+    const focused = focusMessageId ? messages.find((m) => m.id === focusMessageId && m.response?.tool) : null;
+    const lastToolMsg = focused || [...messages].reverse().find((m) => m.response?.tool);
     const tool = lastToolMsg?.response?.tool;
     const feature = !tool || isHumanInLoopTool(tool) ? null : (tool.feature || (tool.chart_result ? "chart" : (tool.table ? "table" : null)));
     setActiveWorkspace(feature ? { feature, tool, lastUpdated: new Date().toLocaleTimeString(), isMutated: false } : null);
     setWorkspaceOpen(Boolean(feature));
   };
 
-  const selectConversation = async (conversationId) => {
-    if (!conversationId || conversationId === chatState.conversationId || conversationLoading || loading) return;
+  const selectConversation = async (conversationId, focusMessageId = "") => {
+    if (!conversationId || conversationLoading || loading) return;
+    if (conversationId === chatState.conversationId) {
+      if (focusMessageId) restoreWorkspace(chatState.messages, focusMessageId);
+      return;
+    }
     const generation = conversationGenerationRef.current + 1;
     conversationGenerationRef.current = generation;
     conversationAbortRef.current?.abort();
@@ -933,7 +991,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
       const loadedMessages = normalizeMessages(Array.isArray(payload?.messages) ? payload.messages : []);
       setChatState({ username, conversationId: payload?.id || conversationId, messages: loadedMessages, context: payload?.context && typeof payload.context === "object" ? payload.context : {}, updatedAt: Date.now() });
 
-      restoreWorkspace(loadedMessages);
+      restoreWorkspace(loadedMessages, focusMessageId);
     } catch (error) {
       if (generation === conversationGenerationRef.current && error?.name !== "AbortError") setConversationError("대화를 불러오지 못했습니다.");
     } finally {
@@ -943,6 +1001,14 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
       }
     }
   };
+
+  useEffect(() => {
+    if (!enabled || !initialConversation?.conversationId) return;
+    // 대화를 고르면 목록 요청 세대가 바뀌므로 목록은 끝난 뒤 다시 받는다.
+    // 같은 결과를 다시 눌러도(openedAt) 결과창을 다시 연다.
+    selectConversation(initialConversation.conversationId, initialConversation.messageId || "")
+      .then(() => refreshConversations());
+  }, [enabled, initialConversation?.conversationId, initialConversation?.messageId, initialConversation?.openedAt]);
 
   useEffect(() => {
     if (chatState.username === username) persistChatState(chatState);
@@ -984,6 +1050,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
     event?.preventDefault();
     const value = (decision || prompt).trim();
     if (!enabled || !value || loading || conversationLoading || submitLockRef.current) return;
+    if (promptTooLong(value)) return;
     submitLockRef.current = true;
 
     const requestVersion = requestVersionRef.current + 1;
@@ -1091,7 +1158,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
           <ModelStatus key={username} refreshKey={modelRefreshKey} probeKey={probeKey} turnUsage={turnUsage} />
           {activeWorkspace && !workspaceOpen && (
             <button type="button" className="home-data-chat__reopen-btn" onClick={() => setWorkspaceOpen(true)}>
-              🖥️ 결과창 열기 ({featureInfo(activeWorkspace.feature, activeWorkspace.tool).title})
+              <Icon name="monitor" style={{ marginRight: 4 }} />결과창 열기 ({featureInfo(activeWorkspace.feature, activeWorkspace.tool).title})
             </button>
           )}
           {conversationLoading && <span className="home-data-chat__conversation-status">불러오는 중…</span>}
@@ -1129,7 +1196,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                 {samplePrompts.successful?.length > 0 && (
                   <div className="home-data-chat__success-prompts-section">
                     <div className="home-data-chat__prompts-header">
-                      <span className="home-data-chat__prompts-title">⚡ 최근 실제 성공한 질문</span>
+                      <span className="home-data-chat__prompts-title"><IconLabel icon="bolt">최근 실제 성공한 질문</IconLabel></span>
                     </div>
                     <div className="home-data-chat__sample-chips">
                       {samplePrompts.successful
@@ -1142,7 +1209,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                             onClick={() => setPrompt(item.prompt)}
                             title={`실제 ${item.count || 1}회 성공한 질의 (클릭하여 질문 입력)`}
                           >
-                            ⚡ {item.prompt}
+                            <Icon name="bolt" style={{ marginRight: 4 }} />{item.prompt}
                             {item.count > 1 && <span className="home-data-chat__chip-count">({item.count}회)</span>}
                           </button>
                         ))}
@@ -1165,6 +1232,9 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                   </div>
 
                   {message.response?.usage && <div className="home-data-chat__usage">이번 요청 LLM {message.response.usage.llm_calls_used}회 차감 / 최대 {message.response.usage.llm_call_limit}회 · 당시 분당 잔여 {message.response.usage.minute_calls_remaining}회</div>}
+                  {message.role === "assistant" && !message.error && isFeedbackUuid(chatState.conversationId) && isFeedbackUuid(message.id) && (
+                    <ResponseFeedback key={`${chatState.conversationId}:${message.id}`} conversationId={chatState.conversationId} messageId={message.id} />
+                  )}
                 </article>
               );
               });
@@ -1187,14 +1257,27 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                 }
               }}
               placeholder="실제 DB의 제품명과 Lot·공정 조건으로 질문하세요"
-              rows={1}
-              maxLength={API_HISTORY_CHARS}
+              rows={pastedTable ? 4 : 1}
+              maxLength={MAX_TABLE_PROMPT_CHARS}
               disabled={loading || conversationLoading}
               aria-label="데이터 질문"
             />
-            <button type="submit" disabled={loading || conversationLoading || !prompt.trim()} aria-label="메시지 보내기">↑</button>
+            <button type="submit" disabled={loading || conversationLoading || !prompt.trim() || promptTooLong(prompt.trim())} aria-label="메시지 보내기">↑</button>
           </form>
-          <div className="home-data-chat__composer-help">여러 질문은 줄바꿈 또는 물음표(?)로 나누세요 · 한 번에 최대 4개</div>
+          {promptTooLong(prompt.trim()) ? (
+            <div className="home-data-chat__composer-help is-warn" role="status">
+              {pastedTable
+                ? `표가 너무 깁니다 (${prompt.length.toLocaleString()}자 / 최대 ${MAX_TABLE_PROMPT_CHARS.toLocaleString()}자). 나누어 붙여 주세요.`
+                : `질문은 ${MAX_PROMPT_CHARS.toLocaleString()}자까지 보낼 수 있습니다 (현재 ${prompt.length.toLocaleString()}자).`}
+            </div>
+          ) : pastedTable ? (
+            <div className="home-data-chat__composer-help is-table" role="status">
+              <Icon name="table" style={{ marginRight: 4 }} />엑셀 표 {pastedTable.rows.length}행 × {pastedTable.rows[0]?.length || 0}열 인식 · 한 요청으로 보냅니다
+              {pastedTable.truncated ? " (500행까지만 읽습니다)" : ""}
+            </div>
+          ) : (
+            <div className="home-data-chat__composer-help">여러 질문은 줄바꿈 또는 물음표(?)로 나누세요 · 한 번에 최대 4개 · 엑셀 표는 그대로 붙여 넣으세요</div>
+          )}
         </div>
 
         {hasActiveWorkspace ? (

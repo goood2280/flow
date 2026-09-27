@@ -9,6 +9,7 @@ LABELS = {
     "por.current": "공정별 전산 POR·PPID 카테고리 조회", "ml_table.trend": "ML_TABLE 측정값·시간축·색상 열 선택 및 산점도 생성",
     "et.index_trend": "ET 항목 추출·추이 또는 Inline 상관분석", "inline.wafer_map": "현재 Lot의 Wafer별 Inline map 조회",
     "vm.trend": "VM 가상계측 저장값 추이 조회", "vm.values": "VM 가상계측 저장값 조회",
+    "semantic.alias_update": "시맨틱 별칭(제품·Inline/ET) 추가",
 }
 FIELDS = {"product": "제품", "root_lot_id": "Root Lot", "lot_id": "Lot", "step_id": "공정", "item_id": "측정 항목",
           "column": "측정 열", "tkout_time": "시간축", "months": "기간(개월)", "days": "기간(일)", "item": "추출 항목",

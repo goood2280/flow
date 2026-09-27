@@ -133,8 +133,23 @@ function BrandReveal() {
 }
 
 /* ═══ Login ═══ */
+// 아이디 저장: 비밀번호는 저장하지 않고 아이디만 이 브라우저에 남긴다.
+const SAVED_USERNAME_KEY = "flow_saved_username";
+
+function readSavedUsername() {
+  try { return String(localStorage.getItem(SAVED_USERNAME_KEY) || ""); } catch { return ""; }
+}
+
+function writeSavedUsername(value) {
+  try {
+    if (value) localStorage.setItem(SAVED_USERNAME_KEY, value);
+    else localStorage.removeItem(SAVED_USERNAME_KEY);
+  } catch { /* 저장소가 막힌 브라우저에서는 저장 없이 로그인만 한다 */ }
+}
+
 export default function My_Login({ onLogin }) {
-  const [u, setU] = useState("");
+  const [u, setU] = useState(readSavedUsername);
+  const [rememberId, setRememberId] = useState(() => !!readSavedUsername());
   const [p, setP] = useState("");
   const [releaseVersion, setReleaseVersion] = useState("");
   // v8.8.27: 회원가입 시 실명(name) 수집 — 동명이인 대비 + 이름 검색 지원.
@@ -187,6 +202,7 @@ export default function My_Login({ onLogin }) {
         const r = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: uid, password: p }) });
         const d = await r.json();
         if (!r.ok) { setMsg(d.detail || "Login failed"); setLoading(false); return; }
+        writeSavedUsername(rememberId ? uid : "");
         onLogin(d);
       } else if (mode === "register") {
         // v8.8.27: name 필드도 함께 전송. BE 는 비어있어도 수락.
@@ -291,8 +307,25 @@ export default function My_Login({ onLogin }) {
 
           {(mode === "login" || mode === "register") && <>
             <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>PASSWORD</div>
-            <input value={p} onChange={e => setP(e.target.value)} type="password" style={inputStyle} onFocus={onF} onBlur={onB} onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}} autoComplete="current-password" />
+            <input value={p} onChange={e => setP(e.target.value)} type="password" autoFocus={mode === "login" && rememberId && !!uid} style={inputStyle} onFocus={onF} onBlur={onB} onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}} autoComplete="current-password" />
           </>}
+
+          {mode === "login" && (
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: -4, marginBottom: 14, cursor: "pointer", userSelect: "none", fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: rememberId ? "#a3a3a3" : "#555" }}>
+              <input
+                type="checkbox"
+                checked={rememberId}
+                onChange={e => {
+                  const next = e.target.checked;
+                  setRememberId(next);
+                  // 해제하면 바로 지운다 — 로그인하지 않아도 저장된 아이디가 남지 않게.
+                  if (!next) writeSavedUsername("");
+                }}
+                style={{ width: 14, height: 14, margin: 0, accentColor: "#f97316", cursor: "pointer" }}
+              />
+              아이디 저장
+            </label>
+          )}
 
           <button onClick={submit} disabled={loading}
             onMouseEnter={e => { if (!loading) { e.target.style.background = "#ea580c"; e.target.style.boxShadow = "0 0 20px rgba(249,115,22,0.3)"; } }}

@@ -32,7 +32,7 @@ from core.runtime_limits import (
     process_memory_snapshot,
     system_memory_snapshot,
 )
-from core.utils import jsonl_append, jsonl_read, jsonl_trim, load_json, save_json
+from core.utils import jsonl_append, jsonl_iter_reverse, jsonl_read, load_json, save_json
 
 logger = logging.getLogger("flow.sysmon")
 
@@ -376,8 +376,9 @@ def collect_once() -> dict:
     global _last_sample
     s = _collect_stats()
     try:
-        jsonl_append(RESOURCE_LOG, s)
-        jsonl_trim(RESOURCE_LOG, 8640)   # ≈ 1 month @ 5min
+        # ≈ 1 month @ 5min. jsonl_append 이 N회마다 한 번만 자른다 — 매 샘플마다
+        # 10MB 파일 전체를 읽던 jsonl_trim 호출을 없앴다.
+        jsonl_append(RESOURCE_LOG, s, max_lines=8640)
     except Exception as e:
         logger.warning(f"resource_log append failed: {e}")
     with _lock:
@@ -396,7 +397,12 @@ def history(limit: int = 288) -> List[dict]:
 def _window_peaked_above(threshold: float) -> bool:
     """최근 HISTORY_WINDOW_HOURS 창 안에서 cpu or memory 가 threshold% 이상이었는지."""
     cutoff = _iso(_now() - HISTORY_WINDOW_HOURS * 3600)
-    entries = jsonl_read(RESOURCE_LOG, 0, lambda e: e.get("timestamp", "") >= cutoff)
+    # 로그는 시간순 append 라 끝에서부터 읽다가 창 밖에 닿으면 멈춘다.
+    entries = []
+    for entry in jsonl_iter_reverse(RESOURCE_LOG):
+        if entry.get("timestamp", "") < cutoff:
+            break
+        entries.append(entry)
     # 데이터가 충분치 않으면 False — 유휴 체크 skip (너무 이른 판단 방지).
     if len(entries) < max(3, HISTORY_WINDOW_HOURS // 2):
         return True

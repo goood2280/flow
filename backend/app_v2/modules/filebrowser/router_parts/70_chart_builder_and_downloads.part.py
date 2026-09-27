@@ -147,10 +147,15 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
         hidden_runtime_columns: list[str] = []
         hidden_inline_columns: list[str] = []
         source_root = str(source.root or "").strip()
+        wafer_filter_active = bool(
+            source.wafer_filter_mode or source.wafer_filter_threshold is not None
+            or source.wafer_filter_low is not None or source.wafer_filter_high is not None
+        )
+        source_limit = min(100_000, max(10_000, max_rows * 10)) if wafer_filter_active else max_rows
         if source_root.upper() == YIELD_SHOT_ROOT:
             try:
                 df, display_sql, yield_warnings, source_meta = _chart_builder_yield_shot_frame(
-                    source, max_rows=max_rows,
+                    source, max_rows=source_limit,
                 )
                 warnings.extend(f"{source_id}: {message}" for message in yield_warnings)
             except HTTPException:
@@ -161,7 +166,7 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
             try:
                 df, display_sql, reformatter_warnings, source_meta = _chart_builder_reformatter_frame(
                     source,
-                    max_rows=max_rows,
+                    max_rows=source_limit,
                     user=me,
                 )
                 warnings.extend(f"{source_id}: {message}" for message in reformatter_warnings)
@@ -207,7 +212,9 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
                     if len(all_columns) > 120:
                         warnings.append(f"{source_id}: 전체 {len(all_columns)}열 중 앞 120열만 조회했습니다. SELECT 열을 지정해 주세요.")
                 visible_selected = list(selected)
-                for requested_column in _chart_builder_runtime_required_columns(source):
+                for requested_column in _chart_builder_runtime_required_columns(
+                    source, req.chart if isinstance(req.chart, dict) else {},
+                ):
                     actual_column = _chart_builder_runtime_column(all_columns, requested_column)
                     if actual_column and actual_column not in selected:
                         selected.append(actual_column)
@@ -228,9 +235,8 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
                     files,
                     where=where,
                     select_cols=selected,
-                    limit=max_rows + 1,
-                    order_by=active_sort.get("column") or "",
-                    descending=_sort_descending(active_sort),
+                    limit=source_limit + 1,
+                    **_duckdb_sort_kwargs(active_sort),
                 )
                 display_sql = _build_ai_sql_display_sql(visible_selected, normalized, active_sort)
                 if _chart_builder_is_inline_root(source_root):
@@ -250,6 +256,18 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
             except Exception as exc:
                 raise HTTPException(400, f"{source_id} SQL 실행 실패: {exc}") from exc
         df = _chart_builder_apply_derived_filters(df, source, source_id, warnings)
+        if wafer_filter_active:
+            known_total = int(source_meta.get("total_rows") or df.height)
+            if df.height > source_limit or known_total > df.height:
+                raise HTTPException(
+                    400,
+                    f"{source_id}: wafer 필터 대상이 안전 조회 한도 {source_limit:,}행을 넘습니다. "
+                    "DATE_FROM/DATE_TO 또는 Query 조건으로 범위를 좁혀 주세요.",
+                )
+            df, wafer_filter_meta = _chart_builder_apply_wafer_filter(
+                df, source, req.chart if isinstance(req.chart, dict) else {}, source_id,
+            )
+            source_meta.update(wafer_filter_meta)
         removable = [
             column for column in dict.fromkeys([*hidden_runtime_columns, *hidden_inline_columns])
             if column in df.columns
@@ -258,6 +276,12 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
             df = df.drop(removable)
         truncated = df.height > max_rows
         if truncated:
+            if wafer_filter_active:
+                raise HTTPException(
+                    400,
+                    f"{source_id}: 선택된 wafer의 원본 point가 결과 한도 {max_rows:,}행을 넘습니다. "
+                    "MAX_ROWS를 늘리거나 날짜·wafer 범위를 좁혀 주세요.",
+                )
             if source_root.upper() == "ML_TABLE" and any(j.right == source_id for j in req.joins):
                 raise HTTPException(400, "ML_TABLE 결합 대상이 조회 한도를 넘습니다. Root Lot 범위를 좁혀 주세요. 일부 Split 값만 결합하지 않았습니다.")
             df = df.head(max_rows)
@@ -277,6 +301,8 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
             "apply_reformatter": bool(source.apply_reformatter),
             "runtime_recent_days": max(0, int(source.runtime_recent_days or 0)),
             "runtime_date_column": str(source.runtime_date_column or ""),
+            "runtime_date_from": str(source.runtime_date_from or ""),
+            "runtime_date_to": str(source.runtime_date_to or ""),
             "runtime_root_lot_ids": _chart_builder_runtime_values(source.runtime_root_lot_ids),
             "runtime_wafer_ids": _chart_builder_runtime_values(source.runtime_wafer_ids),
             "runtime_lot_wafer_pairs": _chart_builder_runtime_pairs(source.runtime_lot_wafer_pairs),
@@ -317,13 +343,15 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
         right_source = next((s for s in sources if s.id == right_id), None)
         if right_source and right_source.root.upper() == "ML_TABLE":
             # Wafer dimension: repeated measurements must not multiply left points.
-            def normalized_key(key):
+            # 왼쪽 wafer 열 이름이 달라도(WF 등) 짝이 되는 ML_TABLE 키가 wafer_id 면 같은
+            # 규칙("01"→"1")으로 맞춘다. 이름으로만 판단하면 01~09 wafer 가 결합되지 않았다.
+            def normalized_key(key, paired):
                 value = pl.col(key).str.strip_chars().str.to_uppercase()
-                if key.casefold() == "wafer_id":
+                if paired.casefold() == "wafer_id":
                     value = value.str.replace(r"^(?:WAFER|WF|W|#)\s*", "").str.replace(r"^0*([1-9][0-9]*|0)(?:\.0+)?$", "${1}")
                 return value.alias(key)
-            joined = joined.with_columns([normalized_key(k) for k in left_keys])
-            right = right.with_columns([normalized_key(k) for k in right_keys]).unique()
+            joined = joined.with_columns([normalized_key(lk, rk) for lk, rk in zip(left_keys, right_keys)])
+            right = right.with_columns([normalized_key(k, k) for k in right_keys]).unique()
             if right.select(right_keys).is_duplicated().any():
                 metric = str((req.chart or {}).get("x") or "")
                 metric_only = set(right.columns) == set([*right_keys, metric])
@@ -336,6 +364,16 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
                     warnings.append(f"{right_id}: 동일 Root Lot·Wafer의 ML_TABLE {metric} 수치 행을 평균해 결합했습니다.")
                 else:
                     raise HTTPException(400, "ML_TABLE의 동일 Root Lot·Wafer에 서로 다른 Split 값이 있습니다. 결합을 중단했으니 원본 값을 확인해 주세요.")
+        else:
+            # 한쪽이라도 wafer_id 로 결합하면 "01"/"W1"/"1" 표기를 같은 wafer 로 본다.
+            wafer_pairs = [(lk, rk) for lk, rk in zip(left_keys, right_keys)
+                           if "wafer_id" in {lk.casefold(), rk.casefold()}]
+            if wafer_pairs:
+                def wafer_key(key):
+                    return (pl.col(key).str.strip_chars().str.to_uppercase()
+                            .str.replace(r"^(?:WAFER|WF|W|#)\s*", "").str.replace(r"^0*([1-9][0-9]*|0)(?:\.0+)?$", "${1}").alias(key))
+                joined = joined.with_columns([wafer_key(lk) for lk, _ in wafer_pairs])
+                right = right.with_columns([wafer_key(rk) for _, rk in wafer_pairs])
         rename = {
             col: f"{right_id}__{col}"
             for col in right.columns
@@ -352,6 +390,16 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
         except Exception as exc:
             raise HTTPException(400, f"JOIN 실패({left_id}.{','.join(left_keys)}={right_id}.{','.join(right_keys)}): {exc}") from exc
         if joined.height > max_rows:
+            if any(
+                source.wafer_filter_mode or source.wafer_filter_threshold is not None
+                or source.wafer_filter_low is not None or source.wafer_filter_high is not None
+                for source in sources
+            ):
+                raise HTTPException(
+                    400,
+                    f"JOIN 결과가 {max_rows:,}행을 넘어 선택된 wafer map point를 완전하게 유지할 수 없습니다. "
+                    "MAX_ROWS를 늘리거나 Query 범위를 좁혀 주세요.",
+                )
             joined = joined.head(max_rows)
             warnings.append(f"JOIN 결과가 안전 한도 {max_rows:,}행에서 잘렸습니다.")
         joined_ids.add(right_id)
@@ -447,9 +495,74 @@ def _chart_builder_cache_put(key: str, result: dict) -> None:
         _CHART_BUILDER_RESULT_CACHE[key] = (time.monotonic(), payload)
 
 
+def _chart_builder_request_payload(req: ChartBuilderRunReq) -> dict:
+    if hasattr(req, "model_dump"):
+        return req.model_dump(mode="json")
+    return json.loads(req.json())
+
+
+def _chart_builder_run_data_offloaded(req: ChartBuilderRunReq, request: Request, me: dict):
+    """Prefer the development worker for the raw-data phase; run locally otherwise.
+
+    ChartBuilder, Template Report (one run per chart) and home-agent charts all
+    land here. The data phase reads only the request definition, so the worker
+    rebuilds the same request and returns the JSON result. Worker offline,
+    overloaded, on another code version, or failing all fall back to the same
+    local computation, so production alone keeps full functionality."""
+    def _local():
+        return {"ok": True, "result": _chart_builder_run_data(req, request, me)}
+
+    disabled = str(os.environ.get("FLOW_CHART_BUILDER_OFFLOAD", "1")).strip().lower() in {"0", "false", "no", "off"}
+    try:
+        from core import worker_dispatch as _wd
+        from core.home_agent_offload import code_version as _code_version
+        role = _wd.server_role()
+    except Exception:
+        return _chart_builder_run_data(req, request, me)
+    if disabled or role != "api":
+        return _chart_builder_run_data(req, request, me)
+    envelope = _wd.run_heavy(
+        "chart_builder_run",
+        {
+            "req": _chart_builder_request_payload(req),
+            "user": {key: value for key, value in (me or {}).items()
+                     if key in {"username", "role", "tabs", "groups", "auth_method"}},
+            "code_version": _code_version(),
+        },
+        _local,
+        timeout_sec=max(60.0, min(1800.0, float(os.environ.get("FLOW_CHART_BUILDER_OFFLOAD_TIMEOUT_SEC", "") or 600.0))),
+        label="ChartBuilder data",
+        priority="interactive",
+    ) or {}
+    http_error = envelope.get("http_error") if isinstance(envelope, dict) else None
+    if isinstance(http_error, dict) and http_error.get("status"):
+        raise HTTPException(int(http_error["status"]), http_error.get("detail"))
+    result = envelope.get("result") if isinstance(envelope, dict) else None
+    if isinstance(result, dict):
+        return result
+    return _chart_builder_run_data(req, request, me)
+
+
+def chart_builder_run_data_for_worker(payload: dict) -> dict:
+    """Worker-side entry for `chart_builder_run` tasks."""
+    from core.home_agent_offload import code_version as _code_version
+
+    if str(payload.get("code_version") or "") != _code_version():
+        return {"ok": False, "error": "version_mismatch"}
+    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+    try:
+        req = ChartBuilderRunReq(**(payload.get("req") or {}))
+        result = _chart_builder_run_data(req, None, user)
+    except HTTPException as exc:
+        return {"ok": True, "http_error": {"status": int(exc.status_code), "detail": exc.detail}}
+    result = json.loads(json.dumps(result, ensure_ascii=False, default=str))
+    result["execution_server"] = "development_worker"
+    return {"ok": True, "result": result}
+
+
 @router.post("/chart-builder/run")
 def chart_builder_run(req: ChartBuilderRunReq, request: Request):
-    """Run ChartBuilder with a small shared cache and 5-core/10GB admission control."""
+    """Run ChartBuilder with a small shared cache, admission control and worker offload."""
     started = time.monotonic()
     me = current_user(request)
     for source in req.sources or []:
@@ -467,7 +580,7 @@ def chart_builder_run(req: ChartBuilderRunReq, request: Request):
             result = _chart_builder_cache_get(cache_key)
             cache_hit = result is not None
             if result is None:
-                result = _chart_builder_run_data(req, request, me)
+                result = _chart_builder_run_data_offloaded(req, request, me)
                 _chart_builder_cache_put(cache_key, result)
         finally:
             _CHART_BUILDER_QUERY_GATE.release()
@@ -482,7 +595,8 @@ def chart_builder_run(req: ChartBuilderRunReq, request: Request):
         tab="chartbuilder",
     )
     result["performance"] = {
-        "profile": "5-core / 10GB",
+        "profile": "5-core API + development worker",
+        "execution_server": result.get("execution_server") or "production_api",
         "cache_hit": bool(cache_hit),
         "wait_ms": wait_ms,
         "elapsed_ms": round((time.monotonic() - started) * 1000),
@@ -523,6 +637,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                  sort_column: str = Query(""),
                  sort_direction: str = Query("asc"),
                  sort_nulls: str = Query("last"),
+                 sort_cast: str = Query(""),
                  apply_reformatter: bool = Query(True),
                  max_rows: int = Query(DEFAULT_CSV_DOWNLOAD_MAX_ROWS, ge=1, le=MAX_CSV_DOWNLOAD_MAX_ROWS),
                  max_bytes: int = Query(0, ge=0, le=MAX_CSV_DOWNLOAD_BYTES),
@@ -553,7 +668,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
     try:
         settings = _load_filebrowser_settings()
         aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
-        sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
+        sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls, sort_cast)
         max_rows = _csv_download_max_rows(max_rows)
         max_bytes = _csv_download_max_bytes(max_bytes, settings)
         lazy_lf = None
@@ -838,6 +953,8 @@ class FileBrowserSettingsLlmDraftReq(BaseModel):
     columns: list[str] = []
     sample_rows: list[dict] = []
     current_rule: dict = {}
+    # "all" = 검증+정렬 초안, "sort" = 정렬로직만 수정(검증로직은 건드리지 않음)
+    scope: str = "all"
 
 
 class FileBrowserSqlLlmDraftReq(BaseModel):

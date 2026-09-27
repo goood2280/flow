@@ -3,6 +3,7 @@ import SpreadsheetPasteGrid, {
   normalizeSpreadsheetRows,
 } from "../../components/SpreadsheetPasteGrid";
 import { toast } from "../../components/Toast";
+import { IconLabel } from "../../components/ui/Icon";
 import {
   Button,
   Card,
@@ -315,7 +316,7 @@ export default function My_LotLocation() {
               disabled={loading || !parsedLots.length}
               style={{ width: "100%", borderRadius: 0, height: 36, fontSize: 13, fontWeight: 600 }}
             >
-              {loading ? "WIP 조회 중…" : `🔍 현위치 확인 (${parsedLots.length}건)`}
+              {loading ? "WIP 조회 중…" : <IconLabel icon="search">{`현위치 확인 (${parsedLots.length}건)`}</IconLabel>}
             </Button>
           </div>
         </Card>
@@ -354,7 +355,7 @@ export default function My_LotLocation() {
                 disabled={!items.length}
                 style={{ borderRadius: 0, height: 32, fontSize: 12 }}
               >
-                📋 표 복사
+                <IconLabel icon="copy">표 복사</IconLabel>
               </Button>
               <Button
                 variant="secondary"
@@ -363,7 +364,7 @@ export default function My_LotLocation() {
                 disabled={downloading || !items.length}
                 style={{ borderRadius: 0, height: 32, fontSize: 12 }}
               >
-                {downloading ? "다운로드 중…" : "📥 CSV 다운로드"}
+                {downloading ? "다운로드 중…" : <IconLabel icon="download">CSV 다운로드</IconLabel>}
               </Button>
             </div>
           </Toolbar>
@@ -382,7 +383,7 @@ export default function My_LotLocation() {
                 flexWrap: "wrap",
               }}
             >
-              <span style={{ fontWeight: 600, color: "var(--warn)" }}>⚠ WIP 미확인 LOT ({stats.unmatched_lots.length}건):</span>
+              <span style={{ fontWeight: 600, color: "var(--warn)" }}><IconLabel icon="warning">{`WIP 미확인 LOT (${stats.unmatched_lots.length}건):`}</IconLabel></span>
               {stats.unmatched_lots.map((lot) => (
                 <Pill key={lot} tone="neutral" size="sm">
                   {lot}

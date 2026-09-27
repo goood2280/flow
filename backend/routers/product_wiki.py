@@ -35,6 +35,13 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name)[:160] or "image.png"
 
 
+class Condition(BaseModel):
+    condition: str = Field(..., min_length=1, max_length=300)
+    purpose: str = Field("", max_length=300)
+    lot_ids: list[str] = Field(default_factory=list, max_length=20)
+    result: str = Field("", max_length=300)
+
+
 class Entry(BaseModel):
     id: str = Field("", max_length=64)
     kind: Literal["structure", "split", "issue", "fact", "opinion", "decision"] = "issue"
@@ -51,6 +58,10 @@ class Entry(BaseModel):
     occurred_on: str = Field("", max_length=10)
     related_ids: list[str] = Field(default_factory=list, max_length=100)
     source_text: str | None = Field(None, max_length=50000)
+    # None = not sent: the saved intake digest is kept (see _PRESERVED_WHEN_OMITTED).
+    summary: str | None = Field(None, max_length=600)
+    tags: list[str] | None = Field(None, max_length=20)
+    conditions: list[Condition] | None = Field(None, max_length=50)
 
 
 class SaveRequest(BaseModel):
@@ -209,6 +220,8 @@ def save(req: SaveRequest, user=Depends(require_access)):
             raise ValueError("사실 기록에는 측정·문서 등 근거를 입력하세요.")
         if any(not s.strip() or len(s) > 200 for s in (entry.get("lot_ids") or []) + (entry.get("related_ids") or [])):
             raise ValueError("연결 ID는 1~200자여야 합니다.")
+        if any(not tag.strip() or len(tag) > 40 for tag in entry.get("tags") or []):
+            raise ValueError("태그는 1~40자여야 합니다.")
         return wiki.save_entry(req.product, req.expected_revision, entry,
                                user["username"], is_page_manager(user, "productwiki"))
     except wiki.Conflict as exc:

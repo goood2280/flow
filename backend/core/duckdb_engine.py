@@ -292,6 +292,16 @@ def _fetch_polars(cursor) -> pl.DataFrame:
 
 
 def _schema_for_view(con, view_name: str) -> tuple[list[str], dict[str, str]]:
+    # DESCRIBE returns SQL type names (DOUBLE, BIGINT, VARCHAR) on every DuckDB
+    # release. cursor.description reports DB-API codes on 1.1.x ("NUMBER",
+    # "STRING"), which made numeric-column detection silently find nothing.
+    try:
+        rows = con.execute(f"DESCRIBE SELECT * FROM {quote_ident(view_name)}").fetchall()
+        if rows:
+            names = [str(row[0]) for row in rows]
+            return names, {str(row[0]): str(row[1]) for row in rows}
+    except Exception:
+        pass
     cursor = con.execute(f"SELECT * FROM {quote_ident(view_name)} LIMIT 0")
     desc = cursor.description or []
     names = [str(item[0]) for item in desc]
@@ -321,6 +331,9 @@ def open_source(files: list[Path], *, query_key: str = ""):
         raise
 
 
+_ORDER_CAST_TYPES = {"DOUBLE", "BIGINT", "DATE", "TIMESTAMP", "VARCHAR"}
+
+
 def run_source_query(
     con,
     all_columns: list[str],
@@ -331,8 +344,15 @@ def run_source_query(
     offset: int = 0,
     order_by: str = "",
     descending: bool = False,
+    order_cast: str = "",
+    nulls_first: bool = False,
 ) -> pl.DataFrame:
-    """Run the preview SELECT against a connection prepared by open_source."""
+    """Run the preview SELECT against a connection prepared by open_source.
+
+    order_cast (DOUBLE/BIGINT/DATE/TIMESTAMP/VARCHAR) sorts by
+    TRY_CAST(col AS type), so string-stored numbers and times sort by value;
+    values that fail to convert become NULL.
+    """
     selected = [c for c in (select_cols or []) if c in all_columns]
     select_sql = ", ".join(quote_ident(c) for c in selected) if selected else "*"
     parts = [f"SELECT {select_sql} FROM {quote_ident('_source')}"]
@@ -340,7 +360,11 @@ def run_source_query(
         parts.append(f"WHERE ({normalize_filter_expr(where)})")
     if order_by and order_by in all_columns:
         direction = "DESC" if descending else "ASC"
-        parts.append(f"ORDER BY {quote_ident(order_by)} {direction} NULLS LAST")
+        key = quote_ident(order_by)
+        cast = str(order_cast or "").strip().upper()
+        if cast in _ORDER_CAST_TYPES:
+            key = f"TRY_CAST({key} AS {cast})"
+        parts.append(f"ORDER BY {key} {direction} NULLS {'FIRST' if nulls_first else 'LAST'}")
     parts.append(f"LIMIT {max(0, int(limit))}")
     parts.append(f"OFFSET {max(0, int(offset))}")
     return _fetch_polars(con.execute(" ".join(parts)))
@@ -355,6 +379,8 @@ def query_files(
     offset: int = 0,
     order_by: str = "",
     descending: bool = False,
+    order_cast: str = "",
+    nulls_first: bool = False,
 ) -> tuple[pl.DataFrame, list[str], dict[str, str]]:
     con, all_columns, schema = open_source(files)
     try:
@@ -363,6 +389,7 @@ def query_files(
             where=where, select_cols=select_cols,
             limit=limit, offset=offset,
             order_by=order_by, descending=descending,
+            order_cast=order_cast, nulls_first=nulls_first,
         )
         return df, all_columns, schema
     finally:

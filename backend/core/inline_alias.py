@@ -75,7 +75,7 @@ def list_desc_aliases(product: str = "") -> list[dict[str, Any]]:
     return [dict(r) for r in rows if isinstance(r, dict)]
 
 
-def save_desc_alias(product: str, desc: str, step_id: str, item_id: str, actor: str = "") -> dict[str, Any]:
+def save_desc_alias(product: str, desc: str, step_id: str, item_id: str, actor: str = "", via: str = "admin") -> dict[str, Any]:
     """별칭(desc) → (step_id, item_id) 연결 1건 등록. 같은 desc 의 복수 연결 허용."""
     product = str(product or "").strip()
     desc = str(desc or "").strip()
@@ -97,8 +97,10 @@ def save_desc_alias(product: str, desc: str, step_id: str, item_id: str, actor: 
     doc = _load()
     rows = [r for r in (doc.get("aliases") or []) if isinstance(r, dict)]
     key = (_norm(product), _norm(desc), step_id.strip(), item_id.strip())
+    existed = len(rows)
     rows = [r for r in rows
             if (_norm(r.get("product")), _norm(r.get("desc")), str(r.get("step_id") or "").strip(), str(r.get("item_id") or "").strip()) != key]
+    existed = existed != len(rows)
     same_desc = [r for r in rows if _norm(r.get("product")) == key[0] and _norm(r.get("desc")) == key[1]]
     if len(same_desc) >= MAX_ALIASES_PER_DESC:
         raise ValueError("하나의 별칭에는 최대 50개 연결까지 가능합니다.")
@@ -113,21 +115,38 @@ def save_desc_alias(product: str, desc: str, step_id: str, item_id: str, actor: 
     except Exception:
         pass
     _save(doc)
+    if not existed:
+        _log_desc_change(entry["product"], desc, step_id, item_id, [], [desc], actor, via)
     return entry
 
 
-def delete_desc_alias(product: str, desc: str, step_id: str = "", item_id: str = "") -> int:
+def _log_desc_change(product, desc, step_id, item_id, before, after, actor, via):
+    try:
+        from core import product_semantics
+        product_semantics.record_alias_change(kind="desc", product=product, before=before, after=after,
+                                              actor=actor, via=via, step_id=step_id, item_id=item_id, desc=desc)
+    except Exception:
+        logger.debug("desc alias log failed", exc_info=True)
+
+
+def delete_desc_alias(product: str, desc: str, step_id: str = "", item_id: str = "", actor: str = "", via: str = "admin") -> int:
     doc = _load()
     rows = [r for r in (doc.get("aliases") or []) if isinstance(r, dict)]
     before = len(rows)
     step_id, item_id = str(step_id or "").strip(), str(item_id or "").strip()
-    rows = [r for r in rows if not (
+    matches = lambda r: (
         _norm(r.get("product")) == _norm(product) and _norm(r.get("desc")) == _norm(desc)
         and (not step_id or str(r.get("step_id") or "").strip() == step_id)
-        and (not item_id or str(r.get("item_id") or "").strip() == item_id))]
+        and (not item_id or str(r.get("item_id") or "").strip() == item_id))
+    removed = [r for r in rows if matches(r)]
+    rows = [r for r in rows if not matches(r)]
     if len(rows) != before:
         doc["aliases"] = rows
         _save(doc)
+        for row in removed:
+            _log_desc_change(str(row.get("product") or product), str(row.get("desc") or desc),
+                             str(row.get("step_id") or ""), str(row.get("item_id") or ""),
+                             [str(row.get("desc") or desc)], [], actor, via)
     return before - len(rows)
 
 

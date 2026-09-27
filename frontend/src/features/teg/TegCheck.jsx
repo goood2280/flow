@@ -9,6 +9,7 @@
 import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { putJson, sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
+import { Icon, StatusDot } from "../../components/ui/Icon";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows } from "../../components/SpreadsheetPasteGrid";
 import { Button, Card, DataTable, EmptyState, LinkBtn, Pill, Select, TabStrip, Textarea } from "../../components/UXKit";
 import ZoomPanSvg from "../../components/ZoomPanSvg";
@@ -28,11 +29,12 @@ const SUMMARY_PAGE_SIZE = 100;
 const ISSUE_PAGE_SIZE = 200;
 const MAIN_GROUP_PAGE_SIZE = 50;
 
-const STATUS_ICON = { match: "🟢", warning: "🟡", mismatch: "🔴", extended: "🟣", missing: "⚪", noref: "—" };
+// 신호등은 이모지 대신 StatusDot 톤으로 그린다(components/ui/Icon).
+const STATUS_TONE = { match: "ok", warning: "warn", mismatch: "danger", extended: "violet", missing: "neutral" };
 // Backend의 `orange`는 기존 저장 snapshot/집계 호환용 상태명으로 유지하되,
 // 사용자에게는 다른 확인필요 상태와 같은 노란색으로 표시한다.
 const REVIEW_YELLOW = "#d99a1a";
-const LIGHT_ICON = { red: "🔴", orange: "🟡", yellow: "🟡", purple: "🟣", green: "🟢", gray: "⚪" };
+const LIGHT_TONE = { red: "danger", orange: "warn", yellow: "warn", purple: "violet", green: "ok", gray: "neutral" };
 const FLAT_LABELS = { h: "Horizontal", v_R: "Vertical(R)", v_L: "Vertical(L)" };
 
 // 조회되어야 할 TEG 목록 신호등 — 색상 차순 정렬 기준(작을수록 위): 빨강 → 미등록 → 노랑 → 초록.
@@ -1077,7 +1079,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const fullCols = [
     { key: "st", label: "", width: 30,
       render: r => <span title={r.light_reason || ""}>
-        {LIGHT_ICON[r.light] || STATUS_ICON[r.status] || ""}
+        {LIGHT_TONE[r.light] || STATUS_TONE[r.status] ? <StatusDot tone={LIGHT_TONE[r.light] || STATUS_TONE[r.status]} /> : (r.status === "noref" ? "—" : "")}
       </span> },
     { key: "name", label: "module_name",
       render: r => <NameCell r={r} ov={nameOv[r.idx]} onPick={onPickName} /> },
@@ -1152,22 +1154,22 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const slTrafficRow = () => seeTarget && targets.total > 0 ? (
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
           <Pill tone={lightCounts.red ? "danger" : "neutral"}>
-            <span style={{ color: "var(--text-primary)" }}>🔴 이상 </span>
+            <span style={{ color: "var(--text-primary)" }}><StatusDot tone="danger" style={{ marginRight: 5 }} />이상 </span>
             <strong style={{ color: "var(--danger)", fontWeight: 900 }}>{lightCounts.red || 0}개</strong>
           </Pill>
           <Pill tone={lightCounts.yellow ? "warn" : "neutral"}
             title={`ΔX·ΔY가 각각 ${slCoordinateTolerance} 이내 — 양호로 예상되는 작은 차이`}>
-            🟡 확인필요 {lightCounts.yellow || 0}개
+            <StatusDot tone="warn" style={{ marginRight: 5 }} />확인필요 {lightCounts.yellow || 0}개
           </Pill>
-          <Pill tone={lightCounts.green ? "ok" : "neutral"}>🟢 정상 {lightCounts.green || 0}개</Pill>
+          <Pill tone={lightCounts.green ? "ok" : "neutral"}><StatusDot tone="ok" style={{ marginRight: 5 }} />정상 {lightCounts.green || 0}개</Pill>
           {lightCounts.purple > 0 && (
             <Pill tone="warn" title="이름 변환 규칙으로 매칭한 것 — 위치가 아닌 이름 검증">
-              🟣 확장 {lightCounts.purple}개
+              <StatusDot tone="violet" style={{ marginRight: 5 }} />확장 {lightCounts.purple}개
             </Pill>
           )}
           {lightCounts.gray > 0 && (
             <Pill tone="danger" title="대상인데 이 Mapfile의 module name에 없음 — 세팅 누락 후보">
-              ⚪ 미설정 {lightCounts.gray}개
+              <StatusDot tone="neutral" style={{ marginRight: 5 }} />미설정 {lightCounts.gray}개
             </Pill>
           )}
         </div>
@@ -1175,15 +1177,15 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
   const mainTrafficRow = () => seeMain && (mainChecklist.length > 0 || mainOrangeCount > 0) ? (
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
           <Pill tone={mainRedCount ? "danger" : "neutral"}>
-            <span style={{ color: "var(--text-primary)" }}>🔴 이상 </span>
+            <span style={{ color: "var(--text-primary)" }}><StatusDot tone="danger" style={{ marginRight: 5 }} />이상 </span>
             <strong style={{ color: "var(--danger)", fontWeight: 900 }}>{mainRedCount}개</strong>
           </Pill>
           <Pill tone={mainYellowCount ? "warn" : "neutral"}
             title="해당 행의 MAIN~~ 내부에 있고 Main_chip_info의 Main chip 허용범위를 만족">
-            🟡 확인필요 {mainYellowCount}개
+            <StatusDot tone="warn" style={{ marginRight: 5 }} />확인필요 {mainYellowCount}개
           </Pill>
-          <Pill tone={mainOrangeCount ? "warn" : "neutral"}>🟡 MAIN 정보없음 {mainOrangeCount}개</Pill>
-          {mainGrayCount > 0 && <Pill tone="neutral">⚪ 판정 불가 {mainGrayCount}개</Pill>}
+          <Pill tone={mainOrangeCount ? "warn" : "neutral"}><StatusDot tone="warn" style={{ marginRight: 5 }} />MAIN 정보없음 {mainOrangeCount}개</Pill>
+          {mainGrayCount > 0 && <Pill tone="neutral"><StatusDot tone="neutral" style={{ marginRight: 5 }} />판정 불가 {mainGrayCount}개</Pill>}
         </div>
       ) : null;
   const aggregateTrafficRows = () => <>{slTrafficRow()}{mainTrafficRow()}</>;
@@ -1192,7 +1194,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
     <div key={item.key} role="alert"
       style={{ fontSize: 12, fontWeight: 600, color: item.light === "red"
         ? "var(--text-primary)" : LIGHT_COLORS[item.light || "orange"], lineHeight: 1.55 }}>
-      {item.light === "orange" ? "🟡" : "🔴"}{" "}
+      <StatusDot tone={item.light === "orange" ? "warn" : "danger"} />{" "}
       {item.light === "red" ? <RedCountText text={item.text} /> : item.text}
     </div>
   ));
@@ -1260,7 +1262,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               <div role={coordinateIssueNames.length ? "alert" : undefined}
                 style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.55,
                          color: coordinateIssueNames.length ? "var(--text-primary)" : "var(--ok)" }}>
-                {coordinateIssueNames.length ? "🔴" : "🟢"}{" "}
+                <StatusDot tone={coordinateIssueNames.length ? "danger" : "ok"} />{" "}
                 S/L TEG 좌표에 이상이 보이는 TEG가{" "}
                 {coordinateIssueNames.length
                   ? <strong style={{ color: "var(--danger)", fontWeight: 900 }}>{coordinateIssueNames.length}건</strong>
@@ -1291,7 +1293,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
         <div style={{ fontSize: 12, color: "var(--warn)", fontWeight: 800, lineHeight: 1.55,
                       padding: "7px 9px", marginTop: 12, borderRadius: 6,
                       background: "rgba(245, 158, 11, 0.12)", border: "1px solid var(--warn)" }}>
-          ⚠ 주의: Mapfile 형식 차이와 파싱 과정에서 이상 판정이 생길 수 있습니다.
+          <Icon name="warning" style={{ marginRight: 4 }} />주의: Mapfile 형식 차이와 파싱 과정에서 이상 판정이 생길 수 있습니다.
           이상으로 표시된 항목은 원문과 실제 배치를 눈으로 확인하고, 이 결과는 크로스체크 용도로 사용해 주세요.
         </div>
 
@@ -1396,9 +1398,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
           <div style={{ padding: "9px 11px", border: "1px solid var(--line)", borderRadius: 8,
                         background: "var(--surface-2)", fontSize: 11, lineHeight: 1.6,
                         color: "var(--muted)" }}>
-            <div><b style={{ color: "var(--text-primary)" }}>🟡 S/L TEG 확인필요</b> — 정답지에 설정된 좌표와 Mapfile 환산 좌표의
+            <div><b style={{ color: "var(--text-primary)" }}><StatusDot tone="warn" style={{ marginRight: 5 }} />S/L TEG 확인필요</b> — 정답지에 설정된 좌표와 Mapfile 환산 좌표의
               ΔX·ΔY가 각각 {slCoordinateTolerance} 이내인 작은 차이로, 양호로 예상되는 항목입니다.</div>
-            <div><b style={{ color: "var(--text-primary)" }}>🟡 MAIN TEG 확인필요</b> — 해당 Mapfile 행에 <code>MAIN~~</code>로 적힌
+            <div><b style={{ color: "var(--text-primary)" }}><StatusDot tone="warn" style={{ marginRight: 5 }} />MAIN TEG 확인필요</b> — 해당 Mapfile 행에 <code>MAIN~~</code>로 적힌
               MAIN 내부에 TEG 전체가 존재하며, Main_chip_info의 Main chip 영역과 경계 오차가 설정된 허용범위 이내인 항목입니다.</div>
           </div>
           <div style={{ display: "grid", gap: 8, padding: "11px 12px",
@@ -1640,7 +1642,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                                 background: "rgba(245, 158, 11, 0.08)" }}>
                 <summary style={{ fontSize: 11, color: "var(--warn)", fontWeight: 800,
                                   cursor: "pointer", userSelect: "none" }}>
-                  🟡 MAIN 정보누락 TEG {mainInfoIssues.length}개
+                  <StatusDot tone="warn" style={{ marginRight: 5 }} />MAIN 정보누락 TEG {mainInfoIssues.length}개
                   {mainInfoIssues.length > ISSUE_PAGE_SIZE ? ` · 상위 ${ISSUE_PAGE_SIZE}개 표시` : ""}
                 </summary>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
@@ -1677,26 +1679,26 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                       </Pill>
                     )}
                     {g.main_info_missing && (
-                      <Pill tone="warn" size="sm">🟡 MAIN 정보없음</Pill>
+                      <Pill tone="warn" size="sm"><StatusDot tone="warn" style={{ marginRight: 5 }} />MAIN 정보없음</Pill>
                     )}
                     {g.red > 0 && (
                       <Pill tone="danger" size="sm"
                         title={g.tegs.filter(t => t.light === "red")
                           .slice(0, 100).map(t => `${t.teg} — ${t.light_reason}`).join("\n")
                           + (g.red > 100 ? `\n… 외 ${g.red - 100}건` : "")}>
-                        🔴 {g.red}
+                        <StatusDot tone="danger" style={{ marginRight: 5 }} />{g.red}
                       </Pill>
                     )}
                     {g.yellow > 0 && (
                       <Pill tone="warn" size="sm"
                         title={`${g.group} die 안 — 정답지에 없어 좌표 정밀 대조는 못 합니다`}>
-                        🟡 {g.yellow}
+                        <StatusDot tone="warn" style={{ marginRight: 5 }} />{g.yellow}
                       </Pill>
                     )}
                     {g.orange > 0 && (
                       <Pill tone="warn" size="sm"
                         title={`${g.group}의 MAIN 크기·위치 정보가 없어 판정할 수 없습니다`}>
-                        🟡 {g.orange}
+                        <StatusDot tone="warn" style={{ marginRight: 5 }} />{g.orange}
                       </Pill>
                     )}
                   </div>
@@ -1751,20 +1753,20 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
       {showTechnical && teg.ref_ok && (combinedIssues.length ? (
         <div>
           <div style={{ fontSize: 13, fontWeight: 700, color: "var(--danger)", marginBottom: 6 }}>
-            🔴 바로 확인할 이상 {combinedIssues.length}건
+            <StatusDot tone="danger" style={{ marginRight: 5 }} />바로 확인할 이상 {combinedIssues.length}건
           </div>
           <DataTable columns={issueCols} rows={visibleIssues} maxHeight={240} rowStyle={overlapRowStyle} />
           <PageControls page={safeIssuePage} total={combinedIssues.length}
             pageSize={ISSUE_PAGE_SIZE} onChange={setIssuePage} />
         </div>
       ) : (
-        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ok)" }}>🟢 불일치 없음</div>
+        <div style={{ fontSize: 13, fontWeight: 700, color: "var(--ok)" }}><StatusDot tone="ok" style={{ marginRight: 5 }} />불일치 없음</div>
       ))}
 
       {showTechnical && teg.ref_ok && warningIssues.length > 0 && (
         <div>
           <LinkBtn onClick={() => setShowWarn(v => !v)} style={{ color: "var(--warn)" }}>
-            {showWarn ? "▾" : "▸"} 🟡 확인 필요 {warningIssues.length}건
+            {showWarn ? "▾" : "▸"} <StatusDot tone="warn" style={{ marginRight: 5 }} />확인 필요 {warningIssues.length}건
           </LinkBtn>
           {showWarn && (
             <>
@@ -1787,7 +1789,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
             {extended.length > 0 && (
               <div style={{ margin: "6px 0" }}>
                 <div style={{ fontSize: 12, fontWeight: 700, color: "var(--violet)", marginBottom: 4 }}>
-                  🟣 확장체크 {extended.length}건 — 이름 변환 규칙으로 재매칭
+                  <StatusDot tone="violet" style={{ marginRight: 5 }} />확장체크 {extended.length}건 — 이름 변환 규칙으로 재매칭
                 </div>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                   {extended.map((r, i) => (
@@ -1878,7 +1880,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               대표 박스로 집약하여 표시하며(오류 우선), 마우스 호버 시 총 건수와 포함된 TEG 목록을 확인할 수 있습니다.
               상태색은 사각형과 이름에 같이 적용하고, 이름은 사각형 가운데에 넣으므로 확대하면 읽힙니다.
               정답지에 있는 TEG 는 ΔX·ΔY 가 2 를 넘거나 die 안에 깊이 들어가면 빨간불이고,
-              둘 다면 사유에 둘 다 적습니다. <b>die 경계에서 허용오차 안쪽/바깥쪽</b>(⚙️ 설정
+              둘 다면 사유에 둘 다 적습니다. <b>die 경계에서 허용오차 안쪽/바깥쪽</b>(<Icon name="gear" /> 설정
               die_tol, ebeam raw 단위)은 노란불 '경계 근처' 입니다.
               정답지 정보가 없는 <b>MAINxx</b> TEG 는 Purpose가 비어 있거나 TEG이고 자기 MAIN 안에
               전부 들어오면 노란불, 자기 MAIN 경계를 넘거나 다른 MAIN을 침범하면 빨간불입니다.
@@ -1886,9 +1888,9 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
               그 외 purpose의 MAIN 영역과 TEG가 겹치면 빨간불입니다 (기본 TEG 사이즈 기준).
               {res.shot.checked ? (
                 <>
-                  {res.shot.cell_source === "image" && <> die 영역 = ⚙️ 설정에 붙여넣은 <b>그림에서 인식한 사각형</b> ({res.shot.image_count ?? 0}개).</>}
+                  {res.shot.cell_source === "image" && <> die 영역 = <Icon name="gear" /> 설정에 붙여넣은 <b>그림에서 인식한 사각형</b> ({res.shot.image_count ?? 0}개).</>}
                   {res.shot.cell_source === "dev_grid" && <> die 영역 = <b>MAIN TEG 좌표(die 좌하단, └)</b> + MAIN chip 크기 파일의 chip 크기 (MAIN {res.shot.align?.anchors ?? 0}개 중 크기 있는 {res.shot.align?.sized ?? 0}개).</>}
-                  {res.shot.cell_source === "grid" && <> die 영역 = ⚙️ 설정의 칩 개수·크기·간격 격자.</>}
+                  {res.shot.cell_source === "grid" && <> die 영역 = <Icon name="gear" /> 설정의 칩 개수·크기·간격 격자.</>}
                 </>
               ) : res.shot.mode === "image" ? (
                 <> die 겹침 검사는 건너뜁니다 — 그림에서 die 사각형을 찾지 못했습니다.
@@ -1898,21 +1900,21 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                   ? <>MAIN TEG {res.shot.align.anchors}개는 있지만 <b>MAIN chip 크기 파일</b>에 이 제품 크기가 없습니다</>
                   : <>MAIN 으로 이름 붙은 TEG 좌표가 없습니다</>}.</>
               ) : (
-                <> ⚙️ 설정에서 shot 표시 방식을 "칩 격자"·"그림"·"개발 격자" 중 하나로 지정하면
+                <> <Icon name="gear" /> 설정에서 shot 표시 방식을 "칩 격자"·"그림"·"개발 격자" 중 하나로 지정하면
                   die 겹침을 검사합니다.</>
               )}
-              {" "}※ 크기(teg_w/teg_h)가 없는 TEG 와 MAIN 내부 TEG 는 ⚙️ 설정의 <b>기본 TEG 사이즈</b>로 그립니다.
+              {" "}※ 크기(teg_w/teg_h)가 없는 TEG 와 MAIN 내부 TEG 는 <Icon name="gear" /> 설정의 <b>기본 TEG 사이즈</b>로 그립니다.
             </div>
           )}
           {!shotItems.length && (targets.total > 0 || view === VIEW_MAIN) && (
             <div style={{ fontSize: 12, color: "var(--ok)", marginBottom: 6 }}>
-              🟢 배치도에 표시할 TEG가 없습니다
+              <StatusDot tone="ok" style={{ marginRight: 5 }} />배치도에 표시할 TEG가 없습니다
               {view !== VIEW_ALL ? ` (${view === VIEW_MAIN ? "MAIN TEG" : "대상 TEG"}만 보는 중)` : ""}.
             </div>
           )}
           {!shotItems.length && seeTarget && targets.total === 0 && res.vehicle && (
             <div style={{ fontSize: 12, color: "var(--danger)", marginBottom: 6 }}>
-              ⚠ 검증할 TEG가 설정되어 있지 않습니다 — 위치 조회 → TEG 목록 → "Mapfile 검증 대상 TEG" 에서 지정하세요.
+              <Icon name="warning" style={{ marginRight: 4 }} />검증할 TEG가 설정되어 있지 않습니다 — 위치 조회 → TEG 목록 → "Mapfile 검증 대상 TEG" 에서 지정하세요.
             </div>
           )}
           <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-start" }}>
@@ -1927,7 +1929,7 @@ function TegSection({ res, onFlatChange, markerH, setMarkerH, markerV, setMarker
                     <div key={i} style={{ border: "1px solid var(--line)", borderRadius: 6,
                                           padding: "6px 8px" }}>
                       <div style={{ fontWeight: 600 }}>
-                        {LIGHT_ICON[r.light] || ""} {r.name}
+                        {LIGHT_TONE[r.light] ? <StatusDot tone={LIGHT_TONE[r.light]} style={{ marginRight: 5 }} /> : null}{r.name}
                         {r.light_reason ? ` — ${r.light_reason}` : ""}
                       </div>
                       <div style={{ color: "var(--muted)" }}>
@@ -1989,7 +1991,7 @@ function TargetChecklist({ checklist, total, source, shotChecked }) {
               {it.label}
               {it.row && (it.light === "red" || it.light === "yellow") && it.row.dx !== null
                 ? ` (Δ${fmtN(it.row.dx)}, ${fmtN(it.row.dy)})` : ""}
-              {shotChecked && it.row?.die_state === "in" ? " ⚠" : ""}
+              {shotChecked && it.row?.die_state === "in" ? <Icon name="warning" style={{ marginLeft: 4, color: "var(--warn)" }} /> : null}
             </span>
           </div>
         ))}
@@ -2362,7 +2364,7 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false, ini
 
       <TegMapfileVersionComments versionInfo={openedVersion} />
 
-      {!res && <EmptyState icon="🔍" title="원문을 넣고 검사를 눌러주세요"
+      {!res && <EmptyState icon="search" title="원문을 넣고 검사를 눌러주세요"
         hint="전체 Pattern 의 WF MAP 과 TEG 좌표 대조 결과가 표시됩니다" />}
 
       {res && (
@@ -2379,9 +2381,9 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false, ini
                   ? ` Pattern ${res.patterns.length}개는 ${PATTERN_PAGE_SIZE}개씩 나누어 표시합니다.` : ""}
               </div>
             ) : !maps.length ? (
-              <EmptyState icon="⚠" title="#wafer-map 의 ! ~ ! 블록을 찾지 못했습니다" />
+              <EmptyState icon="warning" title="#wafer-map 의 ! ~ ! 블록을 찾지 못했습니다" />
             ) : !res.patterns.length ? (
-              <EmptyState icon="⚠" title="<SITES> 의 Pattern 을 찾지 못했습니다" />
+              <EmptyState icon="warning" title="<SITES> 의 Pattern 을 찾지 못했습니다" />
             ) : (
               <>
                 <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
@@ -2439,7 +2441,7 @@ export default function TegCheck({ vehicle, refreshKey = 0, canEdit = false, ini
             </Pill>
           )}>
             {!res.teg.rows.length && !(res.teg.main_groups || []).length ? (
-              <EmptyState icon="⚠" title="#teg-map 에서 module 행을 찾지 못했습니다" />
+              <EmptyState icon="warning" title="#teg-map 에서 module 행을 찾지 못했습니다" />
             ) : (
               <TegSection res={res} onFlatChange={onFlatChange}
                 markerH={markerH} setMarkerH={setMarkerH}

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 
 const IMPORTANCE_TABS = [
   { key: "all", label: "전체" },
@@ -91,7 +92,7 @@ export default function HomeAlertsSection({ onNavigate, user }) {
     window.addEventListener("hol:notif-refresh", onRefresh);
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onFocus);
-    const timer = window.setInterval(() => fetchAlerts(), 30000);
+    const timer = window.setInterval(() => { if (!document.hidden) fetchAlerts(); }, 30000);
     return () => {
       mountedRef.current = false;
       window.removeEventListener("hol:notif-refresh", onRefresh);
@@ -272,7 +273,7 @@ export default function HomeAlertsSection({ onNavigate, user }) {
               title="모든 알람 및 종 알림 일괄 확인"
               aria-label="모든 알람 일괄 확인"
             >
-              ✓ 모두 확인
+              <IconLabel icon="check">모두 확인</IconLabel>
             </button>
           )}
           <button
@@ -290,7 +291,7 @@ export default function HomeAlertsSection({ onNavigate, user }) {
 
       {error ? (
         <div className="home-alerts-state home-alerts-state--error">
-          <span>⚠️ {error}</span>
+          <IconLabel icon="warning">{error}</IconLabel>
           <button
             type="button"
             className="home-alerts-retry-btn"
@@ -349,7 +350,7 @@ export default function HomeAlertsSection({ onNavigate, user }) {
                   </span>
                   {item.root_lot_id && (
                     <span className="home-alert-row__lot">
-                      {isWatched && <span className="home-alert-row__star" aria-hidden="true">★</span>}
+                      {isWatched && <span className="home-alert-row__star" aria-hidden="true"><Icon name="star-filled" /></span>}
                       {item.root_lot_id}
                     </span>
                   )}
@@ -379,7 +380,7 @@ export default function HomeAlertsSection({ onNavigate, user }) {
                     title="확인(읽음) 처리 - 목록 및 우상단 종 알림에서 제거"
                     aria-label="알람 확인 처리"
                   >
-                    ✓
+                    <Icon name="check" />
                   </button>
                   {/* 딥링크 바로가기 버튼 */}
                   <button

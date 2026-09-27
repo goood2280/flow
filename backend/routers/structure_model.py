@@ -106,17 +106,20 @@ def suggest_shape(req: ShapeSuggestionRequest, user=Depends(require_admin)):
     if req.role not in structure_model.SHAPABLE_ROLES:
         raise HTTPException(400, "이 구조물은 CD 단면 편집을 지원하지 않습니다.")
     current = {key: value for key, value in req.current.items()
-               if key in {"tcd_nm", "mcd_nm", "bcd_nm"} and isinstance(value, (int, float))
-               and not isinstance(value, bool)}
+               if (key in {"tcd_nm", "mcd_nm", "bcd_nm"} and isinstance(value, (int, float))
+                   and not isinstance(value, bool))
+               or (key == "primitive" and value in structure_model.SHAPE_PRIMITIVES)}
     schema = {"type": "object", "required": ["tcd_nm", "mcd_nm", "bcd_nm"],
               "additionalProperties": False,
-              "properties": {key: {"type": "number", "minimum": 2, "maximum": 120}
-                             for key in ("tcd_nm", "mcd_nm", "bcd_nm")}}
+              "properties": {**{key: {"type": "number", "minimum": 2, "maximum": 120}
+                                for key in ("tcd_nm", "mcd_nm", "bcd_nm")},
+                             "primitive": {"type": "string", "enum": sorted(structure_model.SHAPE_PRIMITIVES)}}}
     prompt = (f"구조물 역할: {req.role}\n현재 상·중·하단 CD (nm): {current}\n"
               f"관리자의 형상 변경 요청: {req.instruction}\n"
-              "상단 TCD, 중간 MCD, 하단 BCD의 수치만 JSON으로 제안하세요. "
+              "상단 TCD, 중간 MCD, 하단 BCD의 수치와 요청된 경우 primitive를 JSON으로 제안하세요. "
+              "primitive는 tapered_cylinder, cylinder, profile_box 중 하나입니다. 원기둥이면 세 CD를 같게 설정하세요. "
               "세 값은 모두 2~120 nm입니다. 전기적 성능이나 실제 공정 측정값을 추정하지 마세요.")
-    result = llm_adapter.complete_json(prompt, system="반도체 구조 3D 편집용 수치 제안기. 사용자 요청을 세 가지 CD로 변환한다.",
+    result = llm_adapter.complete_json(prompt, system="반도체 구조 3D 편집 제안기. 요청을 CD와 제한된 기본 형상으로 변환한다.",
                                        schema=schema, timeout=30, max_retries=1)
     if not result.get("ok"):
         raise HTTPException(503, "LLM 형상 제안을 받을 수 없습니다. 모델 연결 상태를 확인하세요.")

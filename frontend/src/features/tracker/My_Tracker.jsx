@@ -3,6 +3,7 @@ import Loading from "../../components/Loading";
 import PageGear from "../../components/PageGear";
 import Modal from "../../components/Modal";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import { Button, Card, EmptyState, Filter, Pill, TabStrip, TableWrap, Tbl } from "../../components/UXKit";
 import { authSrc, sf as apiSf } from "../../lib/api";
 import { sanitizeHtml } from "../../lib/sanitizeHtml";
@@ -168,9 +169,9 @@ function getEtStatus(lot, et){
     };
   }
   if (lot.last_checked_at) {
-    return { icon: "❌", text: "관련 ET 데이터 없음", color: "var(--danger)" };
+    return { icon: "x-circle", text: "관련 ET 데이터 없음", color: "var(--danger)" };
   }
-  return { icon: "⏳", text: "모니터 중, 미측정", color: "var(--warn)" };
+  return { icon: "hourglass", text: "모니터 중, 미측정", color: "var(--warn)" };
 }
 
 /* v9.5.13: ET Tracker 측정이력 — lot 행의 et_history(스캔 누적)를 step_id 별로 묶어 표시. */
@@ -1168,7 +1169,7 @@ function LotTableInner({ lots, setLots, readOnly, issueId, product, category, ro
                             )) : <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>step_seq 상세 없음</span>}
                           </div>
                         ))
-                        : <span>{etStatus.icon ? `${etStatus.icon} ` : ""}{etStatus.text}</span>}
+                        : <span>{etStatus.icon ? <Icon name={etStatus.icon} style={{ marginRight: 4 }} /> : null}{etStatus.text}</span>}
                     </div>
                   </td>}
                   <td style={cellStyle}>
@@ -1357,7 +1358,7 @@ function IssueForm({ onSubmit, onClose, user, roleNames, cats = [] }) {
         {links.map((lnk, i) => (
           <div key={i} style={{ display: "flex", gap: 6, marginBottom: 4 }}>
             <input value={lnk} onChange={e => { const nl = [...links]; nl[i] = e.target.value; setLinks(nl); }} placeholder="https://... 또는 설명" style={{ ...S, fontSize: 14 }} />
-            {links.length > 1 && <span onClick={() => setLinks(links.filter((_, j) => j !== i))} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14, padding: "6px 4px", flexShrink: 0 }}>✕</span>}
+            {links.length > 1 && <span onClick={() => setLinks(links.filter((_, j) => j !== i))} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14, padding: "6px 4px", flexShrink: 0, display: "inline-flex" }} title="삭제"><Icon name="close" /></span>}
           </div>
         ))}
       </div>
@@ -1428,9 +1429,9 @@ const GanttChart = memo(function GanttChart({ issues, onIssueClick, cats = [] })
       <button onClick={nextM} style={{ background: "none", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text-primary)", cursor: "pointer", padding: "2px 8px" }}>▶</button>
       {/* v9.5.13: 제목 / 담당자 / root_lot_id / 본문 내용 부분일치 필터 */}
       <input value={gQuery} onChange={e => setGQuery(e.target.value)}
-        placeholder="🔎 제목 · 담당자 · root_lot_id · 본문 검색"
+        placeholder="제목 · 담당자 · root_lot_id · 본문 검색"
         style={{ flex: 1, minWidth: 220, padding: "4px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14 }} />
-      {gQuery && <span onClick={() => setGQuery("")} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14 }}>✕ 초기화</span>}
+      {gQuery && <span onClick={() => setGQuery("")} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14 }}><IconLabel icon="close">초기화</IconLabel></span>}
       <span style={{ fontSize: 14, color: "var(--text-secondary)" }}>{filtered.length}{gQuery ? ` / ${(issues || []).length}` : ""}건</span>
     </div>
     {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>{gQuery ? "매칭 이슈 없음" : "이슈 없음"}</div>}
@@ -1483,7 +1484,7 @@ const GanttChart = memo(function GanttChart({ issues, onIssueClick, cats = [] })
                     </div>
                   )}
                   {!!iss.closed_at && endInMonth && (
-                    <span style={{ position: "absolute", top: -1, left: span * GANTT_CELL_W - 11, zIndex: 2, fontSize: 13, pointerEvents: "none" }} title={`완료 ${ended.toISOString().slice(0, 10)}`}>🏁</span>
+                    <span style={{ position: "absolute", top: -1, left: span * GANTT_CELL_W - 11, zIndex: 2, fontSize: 13, pointerEvents: "none" }} title={`완료 ${ended.toISOString().slice(0, 10)}`}><Icon name="flag" style={{ color: "var(--ok)" }} /></span>
                   )}
                 </>}
               </td>
@@ -1843,7 +1844,7 @@ export default function My_Tracker({ user }) {
                         fontSize: 14, padding: "2px 8px", borderRadius: 999,
                         background: "var(--bg-primary)", color: "var(--text-primary)",
                         border: "1px solid var(--border)", fontFamily: "monospace",
-                      }}>🕐 {(c.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
+                      }}><Icon name="clock" style={{ marginRight: 4 }} />{(c.timestamp || "").replace("T", " ").slice(0, 16) || "시간 없음"}</span>
                       {canDeleteCommentItem(c) && <button type="button" onClick={() => deleteCommentItem(i)}
                         style={{ padding: "2px 7px", borderRadius: 999, border: "1px solid var(--danger-line)", background: "var(--danger-50)", color: "var(--danger)", fontSize: 14, fontWeight: 700, cursor: "pointer" }}>삭제</button>}
                     </div>

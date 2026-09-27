@@ -309,10 +309,38 @@ def _validate_csv_rule(header: list[str], data_rows: list[list[str]], rule: dict
     }
 
 
-def _sort_cast_value(value: str, typ: str):
+def _sort_key_source_text(value, spec: dict | None) -> str:
+    """Apply the optional `pattern` (regex extract) before type conversion."""
     text = str(value or "").strip()
+    pattern = str((spec or {}).get("pattern") or "")
+    if text and pattern:
+        try:
+            m = re.search(pattern, text)
+        except re.error:
+            return text
+        if not m:
+            return ""
+        text = str((m.group(1) if m.re.groups else m.group(0)) or "").strip()
+    return text
+
+
+def _natural_sort_key(text: str) -> tuple:
+    parts = re.split(r"(\d+)", text.casefold())
+    return tuple((0, int(p), "") if p.isdigit() else (1, 0, p) for p in parts if p != "")
+
+
+def _sort_cast_value(value: str, typ: str, spec: dict | None = None):
+    text = _sort_key_source_text(value, spec)
     if text == "":
         return None
+    insensitive = str((spec or {}).get("case") or "") == "insensitive"
+    if typ == "natural":
+        return _natural_sort_key(text)
+    if typ == "custom":
+        values = [str(v) for v in ((spec or {}).get("values") or [])]
+        ranks = {v.casefold(): i for i, v in reversed(list(enumerate(values)))}
+        rank = ranks.get(text.casefold(), len(values))
+        return (rank, text.casefold() if insensitive else text)
     if typ == "numeric":
         try:
             num = float(text)
@@ -341,7 +369,7 @@ def _sort_cast_value(value: str, typ: str):
             return (0, int(m.group(1)))
         except Exception:
             return None
-    return text
+    return text.casefold() if insensitive else text
 
 
 def _compare_values(left, right) -> int:
@@ -356,25 +384,37 @@ def _compare_values(left, right) -> int:
         return -1 if ls < rs else 1
 
 
-def _compare_rows_by_specs(col_idx: dict[str, int], left_row: list[str], right_row: list[str], specs: list[dict]) -> int:
+def _row_sort_keys(col_idx: dict[str, int], row: list[str], specs: list[dict]) -> list:
+    out = []
     for spec in specs:
-        col = str(spec.get("column") or "")
-        idx = col_idx[col]
-        typ = str(spec.get("type") or "string")
+        idx = col_idx[str(spec.get("column") or "")]
+        out.append(_sort_cast_value(row[idx] if idx < len(row) else "", str(spec.get("type") or "string"), spec))
+    return out
+
+
+def _compare_sort_keys(left_keys: list, right_keys: list, specs: list[dict]) -> int:
+    for lv, rv, spec in zip(left_keys, right_keys, specs):
         nulls = str(spec.get("nulls") or "last")
         direction = str(spec.get("direction") or "asc")
-        lv = _sort_cast_value(left_row[idx] if idx < len(left_row) else "", typ)
-        rv = _sort_cast_value(right_row[idx] if idx < len(right_row) else "", typ)
         lnull, rnull = lv is None, rv is None
         if lnull or rnull:
             if lnull and rnull:
                 continue
             comp = -1 if (lnull and nulls == "first") or (rnull and nulls == "last") else 1
-        else:
-            comp = _compare_values(lv, rv)
+            # nulls placement is absolute: it must not flip with direction.
+            return comp
+        comp = _compare_values(lv, rv)
         if comp:
             return -comp if direction == "desc" else comp
     return 0
+
+
+def _compare_rows_by_specs(col_idx: dict[str, int], left_row: list[str], right_row: list[str], specs: list[dict]) -> int:
+    return _compare_sort_keys(
+        _row_sort_keys(col_idx, left_row, specs),
+        _row_sort_keys(col_idx, right_row, specs),
+        specs,
+    )
 
 
 def _apply_csv_sort_rule(header: list[str], data_rows: list[list[str]], rule: dict) -> list[list[str]]:
@@ -387,16 +427,15 @@ def _apply_csv_sort_rule(header: list[str], data_rows: list[list[str]], rule: di
     missing = [str(item.get("column") or "") for item in sort_rule if str(item.get("column") or "") not in col_idx]
     if missing:
         raise HTTPException(400, f"Sort column not found: {', '.join(missing)}")
+    keyed = [(i, _row_sort_keys(col_idx, row, sort_rule), row) for i, row in enumerate(data_rows)]
 
     def _cmp(left_item, right_item):
-        left_i, left_row = left_item
-        right_i, right_row = right_item
-        comp = _compare_rows_by_specs(col_idx, left_row, right_row, sort_rule)
+        comp = _compare_sort_keys(left_item[1], right_item[1], sort_rule)
         if comp:
             return comp
-        return left_i - right_i
+        return left_item[0] - right_item[0]
 
-    return [row for _, row in sorted(enumerate(data_rows), key=functools.cmp_to_key(_cmp))]
+    return [row for _, _, row in sorted(keyed, key=functools.cmp_to_key(_cmp))]
 
 
 def _validate_and_sort_csv_rows(file: str, header: list[str], data_rows: list[list[str]]) -> tuple[list[list[str]], dict]:
@@ -493,6 +532,34 @@ def _file_sha256(path: Path) -> str:
     return "sha256:" + h.hexdigest()
 
 
+# 버전 메타(vN.meta.json)에는 저장 diff 표(최대 1000행)가 들어 있어 파일 하나가 수백 KB 다.
+# 저장·이력 조회마다 20개를 전부 다시 파싱하던 것이 저장 지연의 큰 몫이었다. 목록/번호
+# 계산에는 diff 표가 필요 없으므로 (mtime, size) 기준으로 가벼운 사본만 캐시한다.
+# 파일을 다시 쓰면 mtime/size 가 바뀌어 자동으로 무효화된다.
+_VERSION_META_LIGHT_CACHE: dict[str, tuple[int, int, dict]] = {}
+_VERSION_META_LIGHT_LOCK = threading.Lock()
+_VERSION_META_LIGHT_MAX = 4000
+
+
+def _version_meta_light(meta_fp: Path) -> dict:
+    """Parsed version meta without `save_diff_table` (raises like json.loads on bad files)."""
+    st = meta_fp.stat()
+    key = str(meta_fp)
+    with _VERSION_META_LIGHT_LOCK:
+        hit = _VERSION_META_LIGHT_CACHE.get(key)
+    if hit and hit[0] == st.st_mtime_ns and hit[1] == st.st_size:
+        return dict(hit[2])
+    meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+    if not isinstance(meta, dict):
+        return meta
+    light = {k: v for k, v in meta.items() if k != "save_diff_table"}
+    with _VERSION_META_LIGHT_LOCK:
+        if len(_VERSION_META_LIGHT_CACHE) >= _VERSION_META_LIGHT_MAX:
+            _VERSION_META_LIGHT_CACHE.clear()
+        _VERSION_META_LIGHT_CACHE[key] = (st.st_mtime_ns, st.st_size, light)
+    return dict(light)
+
+
 def _next_file_version(vdir: Path) -> int:
     try:
         nums = []
@@ -563,7 +630,7 @@ def _next_semver(vdir: Path, *, rows: int | None = None, columns: int | None = N
     try:
         for fp in vdir.glob("v*.meta.json"):
             try:
-                meta = json.loads(fp.read_text(encoding="utf-8"))
+                meta = _version_meta_light(fp)
                 sem = str(meta.get("display_version") or "")
                 m = re.match(r"^v(\d+)\.(\d+)$", sem)
                 if m:
@@ -586,7 +653,7 @@ def _latest_base_version_meta(file: str, *, exclude_version: str = "") -> tuple[
     candidates = []
     for meta_fp in vdir.glob("v*.meta.json"):
         try:
-            meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+            meta = _version_meta_light(meta_fp)
         except Exception:
             continue
         storage_version = str(meta.get("version") or meta_fp.name.split(".", 1)[0])
@@ -681,7 +748,7 @@ def _cap_file_versions(vdir: Path) -> None:
             return
         for meta_fp in metas[:excess]:
             try:
-                meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+                meta = _version_meta_light(meta_fp)
             except Exception:
                 meta = {}
             content = meta.get("content_file") or meta_fp.name.replace(".meta.json", meta_fp.suffix)
@@ -709,7 +776,33 @@ def _scan_one_file_raw(fp: Path):
     return None
 
 
+# 한 번의 저장에서 같은 파일(현재본·직전본)을 diff 표·변경 요약·셀 수 계산이 각각 다시
+# 읽었다. (경로, mtime, size, limit) 기준 작은 캐시로 한 번만 읽는다. polars 프레임은
+# 불변이라 공유해도 안전하다.
+_DIFF_FRAME_CACHE: "OrderedDict[tuple, pl.DataFrame | None]" = OrderedDict()
+_DIFF_FRAME_LOCK = threading.Lock()
+_DIFF_FRAME_CACHE_MAX = 6
+
+
 def _read_table_for_diff_frame(path: Path, limit: int = 20000) -> pl.DataFrame | None:
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size, int(limit))
+    except OSError:
+        return _read_table_for_diff_frame_uncached(path, limit)
+    with _DIFF_FRAME_LOCK:
+        if key in _DIFF_FRAME_CACHE:
+            _DIFF_FRAME_CACHE.move_to_end(key)
+            return _DIFF_FRAME_CACHE[key]
+    df = _read_table_for_diff_frame_uncached(path, limit)
+    with _DIFF_FRAME_LOCK:
+        _DIFF_FRAME_CACHE[key] = df
+        while len(_DIFF_FRAME_CACHE) > _DIFF_FRAME_CACHE_MAX:
+            _DIFF_FRAME_CACHE.popitem(last=False)
+    return df
+
+
+def _read_table_for_diff_frame_uncached(path: Path, limit: int = 20000) -> pl.DataFrame | None:
     lf = _scan_one_file_raw(path)
     if lf is None:
         fallback = _csv_lenient_lazy_frame(path)
@@ -810,7 +903,7 @@ def _latest_version_content(vdir: Path) -> Path | None:
     try:
         for fp in vdir.glob("v*.meta.json"):
             try:
-                meta = json.loads(fp.read_text(encoding="utf-8"))
+                meta = _version_meta_light(fp)
                 m = re.match(r"^v(\d+)$", str(meta.get("version") or fp.name.split(".", 1)[0]))
                 idx = int(m.group(1)) if m else 0
                 content = vdir / str(meta.get("content_file") or "")
@@ -928,7 +1021,7 @@ def _previous_version_content(file: str, storage_version: str) -> Path | None:
     candidates = []
     for meta_fp in vdir.glob("v*.meta.json"):
         try:
-            meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+            meta = _version_meta_light(meta_fp)
         except Exception:
             continue
         version = str(meta.get("version") or meta_fp.name.split(".", 1)[0])
@@ -944,7 +1037,8 @@ def _table_rows_for_diff(path: Path, limit: int = 20000) -> tuple[list[str], lis
     if df is None:
         return [], []
     cols = [str(c) for c in df.columns]
-    rows = [{c: str(row.get(c) or "") for c in cols} for row in df.to_dicts()]
+    # 프레임은 이미 전 열 Utf8 + fill_null("") 이다 → to_dicts()+str() 대신 튜플 zip.
+    rows = [dict(zip(cols, row)) for row in df.rows()]
     return cols, rows
 
 
@@ -1070,7 +1164,150 @@ def _select_diff_key_columns(
     return ["__row_signature", "__occurrence"], "sequence"
 
 
+def _vector_diff_rows(
+    cur_df: pl.DataFrame,
+    prev_df: pl.DataFrame,
+    all_cols: list[str],
+    key_cols: list[str] | None,
+    max_changes: int,
+) -> tuple[list[dict], dict]:
+    """Polars join diff with the same output contract as the row loop below.
+
+    key_cols=None matches rows by position (row_index strategy). Output order is
+    the loop's order: current rows in file order, then rows only in previous.
+    """
+    ci, pi, idx = "\x00ci", "\x00pi", "\x00idx"
+    prev_tag = "\x00prev"
+    cur = cur_df.select(all_cols).with_row_index(ci)
+    prev = prev_df.select(all_cols).with_row_index(pi)
+    if key_cols is None:
+        cur = cur.with_columns(pl.col(ci).alias(idx))
+        prev = prev.with_columns(pl.col(pi).alias(idx))
+        on = [idx]
+        value_cols = list(all_cols)
+    else:
+        on = list(key_cols)
+        value_cols = [c for c in all_cols if c not in set(key_cols)]
+    prev = prev.rename({c: c + prev_tag for c in value_cols})
+    joined = cur.join(prev, on=on, how="full", coalesce=True)
+    both = pl.col(ci).is_not_null() & pl.col(pi).is_not_null()
+    changed_any = (
+        pl.any_horizontal([pl.col(c) != pl.col(c + prev_tag) for c in value_cols]) if value_cols else pl.lit(False)
+    )
+    joined = joined.with_columns(
+        pl.when(pl.col(pi).is_null()).then(pl.lit("추가"))
+        .when(pl.col(ci).is_null()).then(pl.lit("삭제"))
+        .when(changed_any).then(pl.lit("수정"))
+        .otherwise(pl.lit("")).alias("\x00rev"),
+        pl.when(pl.col(ci).is_not_null()).then(pl.col(ci).cast(pl.Int64))
+        .otherwise(pl.lit(cur_df.height, dtype=pl.Int64) + pl.col(pi).cast(pl.Int64)).alias("\x00ord"),
+    )
+    tally = dict(joined.group_by("\x00rev").len().iter_rows())
+    counts = {
+        "added": int(tally.get("추가", 0)),
+        "deleted": int(tally.get("삭제", 0)),
+        "modified": int(tally.get("수정", 0)),
+        "unchanged": int(tally.get("", 0)),
+    }
+    shown = joined.filter(pl.col("\x00rev") != "").sort("\x00ord").head(max_changes)
+    out_rows: list[dict] = []
+    for row in shown.iter_rows(named=True):
+        rev = row["\x00rev"]
+        if rev == "삭제":
+            values = {c: (row.get(c + prev_tag) if c in value_cols else row.get(c)) or "" for c in all_cols}
+            out_rows.append({"rev": rev, "changed_cols": "ALL", **values, "_changed_cols": all_cols})
+            continue
+        values = {c: row.get(c) or "" for c in all_cols}
+        if rev == "추가":
+            out_rows.append({"rev": rev, "changed_cols": "ALL", **values, "_changed_cols": all_cols})
+            continue
+        changed = [c for c in all_cols if c in value_cols and (row.get(c) or "") != (row.get(c + prev_tag) or "")]
+        out_rows.append({"rev": rev, "changed_cols": ", ".join(changed[:12]), **values, "_changed_cols": changed})
+    return out_rows, counts
+
+
+def _is_clear_diff_key_frame(df: pl.DataFrame, key_cols: list[str]) -> bool:
+    if not key_cols:
+        return False
+    if df.height == 0:
+        return True
+    sub = df.select(key_cols)
+    if sub.filter(pl.all_horizontal([pl.col(c) == "" for c in key_cols])).height:
+        return False
+    return not bool(sub.is_duplicated().any())
+
+
 def _diff_table_between(current: Path, previous: Path | None, max_changes: int = 1000, file: str = "") -> dict | None:
+    if previous is None or not previous.exists():
+        return None
+    if current.suffix.lower() not in {".csv", ".parquet"} or previous.suffix.lower() not in {".csv", ".parquet"}:
+        return None
+    try:
+        fast = _diff_table_between_fast(current, previous, max_changes=max_changes, file=file)
+    except Exception as exc:  # 안전망: 느린 기존 경로로 동일 결과를 만든다.
+        logger.warning("fast version diff failed, using row loop file=%s: %s", file or current, exc)
+        fast = None
+    if fast is not None:
+        return fast
+    return _diff_table_between_rows(current, previous, max_changes=max_changes, file=file)
+
+
+def _diff_table_between_fast(current: Path, previous: Path, max_changes: int = 1000, file: str = "") -> dict | None:
+    """Vectorized diff for identical schemas (unique_key / row_index strategies).
+
+    Returns None when the row loop must decide (schema change, small files
+    without a clear key → SequenceMatcher).
+    """
+    cur_df = _read_table_for_diff_frame(current)
+    prev_df = _read_table_for_diff_frame(previous)
+    if cur_df is None or prev_df is None:
+        return None
+    cur_cols = [str(c) for c in cur_df.columns]
+    prev_cols = [str(c) for c in prev_df.columns]
+    if cur_cols != prev_cols or not cur_cols:
+        return None
+    all_cols = list(cur_cols)
+    candidates = [
+        *_csv_rule_unique_key_candidates_for_diff(file, current, all_cols),
+        *_diff_key_candidates(all_cols),
+    ]
+    key_cols: list[str] | None = None
+    seen: set[tuple[str, ...]] = set()
+    for candidate in candidates:
+        cols = [str(c) for c in candidate if str(c).strip()]
+        if not cols or tuple(cols) in seen:
+            continue
+        seen.add(tuple(cols))
+        if not all(c in cur_cols for c in cols):
+            continue
+        if _is_clear_diff_key_frame(cur_df, cols) and _is_clear_diff_key_frame(prev_df, cols):
+            key_cols = cols
+            break
+    if key_cols is not None:
+        match_strategy, out_keys = "unique_key", key_cols
+    elif max(cur_df.height, prev_df.height) > 5000:
+        match_strategy, out_keys = "row_index", ["__row_index"]
+    else:
+        return None
+    out_rows, counts = _vector_diff_rows(cur_df, prev_df, all_cols, key_cols, max_changes)
+    total_changes = counts["added"] + counts["deleted"] + counts["modified"]
+    return {
+        "kind": "version_diff_table",
+        "title": "직전 버전 대비 변경점",
+        "columns": ["rev", "changed_cols", *all_cols],
+        "key_columns": out_keys,
+        "match_strategy": match_strategy,
+        "added_columns": [],
+        "removed_columns": [],
+        "added_columns_count": 0,
+        "removed_columns_count": 0,
+        "rows": out_rows,
+        "counts": counts,
+        "truncated": total_changes > max_changes,
+    }
+
+
+def _diff_table_between_rows(current: Path, previous: Path | None, max_changes: int = 1000, file: str = "") -> dict | None:
     if previous is None or not previous.exists():
         return None
     if current.suffix.lower() not in {".csv", ".parquet"} or previous.suffix.lower() not in {".csv", ".parquet"}:
@@ -1250,7 +1487,8 @@ def _snapshot_base_file_version(
         "change_summary": change_summary,
         "save_diff_table": save_diff_table,
     }
-    (vdir / f"{version}.meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    # indent 를 주면 json 이 순수 파이썬 인코더로 떨어져 1000행 diff 표에서 100ms 넘게 든다.
+    (vdir / f"{version}.meta.json").write_text(json.dumps(meta, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
     _cap_file_versions(vdir)
     return meta
 
@@ -1290,7 +1528,7 @@ def _list_base_file_versions(file: str) -> list[dict]:
         latest_storage = ""
     for meta_fp in sorted(vdir.glob("v*.meta.json"), key=lambda p: (p.stat().st_mtime, p.name), reverse=True):
         try:
-            meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+            meta = _version_meta_light(meta_fp)
         except Exception:
             continue
         storage_version = meta.get("version") or meta_fp.name.split(".", 1)[0]
@@ -1400,7 +1638,7 @@ def _resolve_base_version_content(file: str, version: str, target: Path) -> tupl
         vdir = _version_dir(file)
         for meta_fp in vdir.glob("v*.meta.json"):
             try:
-                meta = json.loads(meta_fp.read_text(encoding="utf-8"))
+                meta = _version_meta_light(meta_fp)
             except Exception:
                 continue
             if str(meta.get("display_version") or "") == clean_version:

@@ -9,10 +9,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { sf, postJson, putJson } from "../../lib/api";
 import { toast } from "../../components/Toast";
-import { Button, Card, EmptyState, Filter, LinkBtn, Pill } from "../../components/UXKit";
+import { Banner, Button, Card, EmptyState, Filter, LinkBtn, PageHeader, PageShell, Pill, Toolbar } from "../../components/UXKit";
 import PageGear from "../../components/PageGear";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows, spreadsheetTextFromRows } from "../../components/SpreadsheetPasteGrid";
 import { canManagePage } from "../../lib/permissions";
+import { setVisibleInterval } from "../../lib/visibleInterval";
 
 const API = "/api/valve-alerts";
 
@@ -542,8 +543,7 @@ export default function My_ValveAlerts({ user }) {
   // 개발 worker의 제품별 검사 상태를 주기적으로 갱신한다. 입력값은 별도 state라 유지된다.
   useEffect(() => {
     load();
-    const t = setInterval(load, 60000);
-    return () => clearInterval(t);
+    return setVisibleInterval(load, 60000);
   }, []);
 
   const alerts = data?.alerts || [];
@@ -787,8 +787,44 @@ export default function My_ValveAlerts({ user }) {
       toast(status === "active" ? "불필요 처리가 취소되어 판정 대기로 돌아갔습니다" : `상태 기록: ${status}`);
     });
 
+  const scannerPill = !data?.ok || data.scanner?.scanner_alive === undefined ? null
+    : data.scanner.scanner_alive
+      ? (data.scanner?.scanning?.product
+        ? <Pill tone="warn">{data.scanner.scanning.product} 검사 중</Pill>
+        : <Pill tone="ok">검사기 대기</Pill>)
+      : <Pill tone="danger">검사기 미기동</Pill>;
+  // 각 판정 구역의 대기 건수 — 위 요약 줄에서 한눈에 보고 해당 구역으로 이동한다.
+  const sectionStats = [
+    { id: "valve-batch", label: "반영대기", count: queuedAlerts.length, tone: "warn" },
+    { id: "valve-ppid", label: "RO PPID", count: editableRoAlerts.length, tone: "danger" },
+    { id: "valve-step", label: "미매칭 step", count: editableStepAlerts.length, tone: "danger" },
+    { id: "valve-mask", label: "미등록 reticle", count: editableMaskAlerts.length, tone: "danger" },
+    { id: "valve-plan", label: "plan 불일치", count: visiblePlanAnomalies.length, tone: "danger" },
+    { id: "valve-history", label: "판정 이력", count: visibleDecisions.length, tone: "neutral" },
+  ];
+
   return (
-    <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 14 }}>
+    <PageShell layout="workboard" className="valve-alerts-page">
+      <PageHeader
+        title="매칭알람"
+        subtitle="FAB DB에서 처음 발견된 step · PPID · reticle을 판정해 룰북 CSV에 반영합니다"
+        status={data?.ok ? <>
+          <Pill tone={visibleActive ? "danger" : "ok"}>판정 대기 {visibleActive}건</Pill>
+          {scannerPill}
+        </> : null}
+        right={data?.ok && data.scanner?.scanner_alive !== undefined ? (
+          <Button
+            variant="secondary"
+            disabled={!canManage || !!busy || !!data.scanner?.scanning?.product}
+            onClick={forceScan}
+            title={data.scanner?.scanning?.product
+              ? "현재 제품 검사가 끝난 뒤 실행할 수 있습니다"
+              : "자동 검사 대기 시간을 건너뛰고 다음 제품을 즉시 검사합니다"}
+          >
+            {busy === "__force_scan__" ? "실행 요청 중…" : "강제 실행"}
+          </Button>
+        ) : null}
+      />
       <PageGear title="매칭알람 설정" canEdit={canManage} position="bottom-left">
         <div style={{ display: "grid", gap: 20 }}>
           <div>
@@ -801,21 +837,12 @@ export default function My_ValveAlerts({ user }) {
           </div>
         </div>
       </PageGear>
-      {data && !data.ok && (
-        <Card title="검사 오류">
-          <div style={{ color: "var(--danger, #d66)", fontSize: 13 }}>{data.error}</div>
-          <div style={{ color: "var(--muted)", fontSize: 12, marginTop: 6 }}>
-            개발 서버의 FAB 경로와 worker 역할 설정을 확인하세요.
-          </div>
-        </Card>
-      )}
       {data?.ok && (
-        <div style={{
-          display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
-          padding: "10px 12px", border: "1px solid var(--line)", borderRadius: 6,
-          background: "var(--bg-secondary)",
-        }}>
-          <label htmlFor="matching-alert-product" style={{ fontSize: 13, fontWeight: 700 }}>제품</label>
+        <Toolbar right={<span className="valve-alerts-meta">
+          <span>최근 검사 {data.scanner?.last_product || "-"} · {fmtTs(data.scanner?.last_scan_ts)}</span>
+          <span>FAB DB {(data.scanner?.source_roots || []).join(", ") || "폴더설정 확인 필요"}</span>
+        </span>}>
+          <label htmlFor="matching-alert-product" className="valve-alerts-label">제품</label>
           <Filter
             id="matching-alert-product"
             aria-label="매칭알람 제품 선택"
@@ -825,55 +852,44 @@ export default function My_ValveAlerts({ user }) {
             options={products.map(product => ({ value: product, label: `${product} (${productCounts[product] || 0})` }))}
             style={{ width: "18ch", minWidth: "18ch", maxWidth: "100%", flex: "0 1 18ch" }}
           />
-          <Pill tone={visibleActive ? "danger" : "ok"}>판정 대기 {visibleActive}건</Pill>
-          <span style={{ color: "var(--muted)", fontSize: 12 }}>
-            {selectedProduct ? `${selectedProduct} 알람만 표시 중` : `${products.length}개 제품의 알람을 표시 중`}
+          <span className="valve-alerts-meta">
+            {selectedProduct ? `${selectedProduct} 알람 ${visibleAlerts.length}건 표시 중` : `${products.length}개 제품 · 알람 ${visibleAlerts.length}건 표시 중`}
           </span>
-        </div>
-      )}
-      {data?.ok && (
-        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <Pill tone="neutral">{selectedProduct || "전체 제품"} · {visibleAlerts.length}건</Pill>
-          <span style={{ color: "var(--muted)", fontSize: 12 }}>
-            최근 검사: {data.scanner?.last_product || "-"} · {fmtTs(data.scanner?.last_scan_ts)}
-          </span>
-          <span style={{ color: "var(--muted)", fontSize: 12 }}>
-            FAB DB: {(data.scanner?.source_roots || []).join(", ") || "폴더설정 확인 필요"}
-          </span>
-          {/* 검사기가 실제로 도는지는 설정 기어를 열지 않아도 보여야 한다.
-              필드가 아예 없는 구버전 응답에서는 아무것도 단정하지 않는다. */}
-          {data.scanner?.scanner_alive === undefined ? null
-            : data.scanner.scanner_alive
-              ? (data.scanner?.scanning?.product
-                ? <Pill tone="warn">{data.scanner.scanning.product} 검사 중</Pill>
-                : <Pill tone="ok">검사기 대기</Pill>)
-              : <Pill tone="danger">검사기 미기동</Pill>}
-          {data.scanner?.scanner_alive !== undefined && (
-            <Button
-              style={compactButtonStyle}
-              disabled={!canManage || !!busy || !!data.scanner?.scanning?.product}
-              onClick={forceScan}
-              title={data.scanner?.scanning?.product
-                ? "현재 제품 검사가 끝난 뒤 실행할 수 있습니다"
-                : "자동 검사 대기 시간을 건너뛰고 다음 제품을 즉시 검사합니다"}
-            >
-              {busy === "__force_scan__" ? "실행 요청 중…" : "강제 실행"}
-            </Button>
-          )}
           {!!data.scanner?.scan_request_hint && (
-            <span style={{ color: "var(--muted)", fontSize: 12 }}>{data.scanner.scan_request_hint}</span>
+            <span className="valve-alerts-meta">{data.scanner.scan_request_hint}</span>
           )}
-        </div>
+        </Toolbar>
       )}
 
+      <div className="valve-alerts-body">
+      {data && !data.ok && (
+        <Banner tone="danger">
+          <b>검사 오류</b> {data.error} — 개발 서버의 FAB 경로와 worker 역할 설정을 확인하세요.
+        </Banner>
+      )}
+      {data?.ok && (
+        <nav className="ds-stat-strip" aria-label="판정 구역 요약">
+          {sectionStats.map(stat => (
+            <a key={stat.id} href={`#${stat.id}`}
+              className={`ds-stat${stat.count && stat.tone !== "neutral" ? ` ds-stat--${stat.tone}` : ""}`}>
+              <span className="ds-stat__label">{stat.label}</span>
+              <span className="ds-stat__value">{stat.count.toLocaleString()}</span>
+            </a>
+          ))}
+        </nav>
+      )}
+
+      <div className="ds-section-stack">
       <Card
+        id="valve-batch"
+        className="ds-card--section"
         title="매칭 변경 일괄 반영"
         right={<Pill tone={queuedAlerts.length ? "warn" : "neutral"}>반영대기 {queuedAlerts.length}건</Pill>}
       >
+        <p className="ds-section-desc">
+          분류 값을 입력하거나 Excel 열을 붙여넣으면 자동으로 반영대기가 됩니다. 일괄반영 시 같은 CSV는 버전 1개로, 여러 CSV는 같은 배치 ID로 기록됩니다.
+        </p>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <span style={{ color: "var(--muted)", fontSize: 12 }}>
-            분류 값을 입력하거나 Excel 열을 붙여넣으면 자동으로 반영대기가 됩니다. 일괄반영 시 같은 CSV는 버전 1개로, 여러 CSV는 같은 배치 ID로 기록됩니다.
-          </span>
           <input style={{ ...inputStyle, minWidth: 260, flex: 1 }} placeholder="배치 메모(선택)"
             value={batchNote} onChange={e => setBatchNote(e.target.value)} />
           <Button variant="primary" disabled={!queuedAlerts.length || busy === "__batch__"} onClick={applyBatch}>
@@ -884,6 +900,8 @@ export default function My_ValveAlerts({ user }) {
       </Card>
 
       <Card
+        id="valve-ppid"
+        className="ds-card--section"
         title="PPID 룰북 (ppid_knob.csv)"
         right={<Pill tone={editableRoAlerts.length ? "danger" : "neutral"}>RO PPID · {editableRoAlerts.length}건</Pill>}
       >
@@ -904,12 +922,14 @@ export default function My_ValveAlerts({ user }) {
       </Card>
 
       <Card
+        id="valve-step"
+        className="ds-card--section"
         title="매칭테이블 (Vehicle_matching.csv)"
         right={<Pill tone={editableStepAlerts.length ? "danger" : "neutral"}>미매칭 step · {editableStepAlerts.length}건</Pill>}
       >
-        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+        <p className="ds-section-desc">
           FAB DB에서 발견된 신규 step_id입니다. 판정 function step 열에 입력하거나 Excel에서 복사해 붙여넣으면 반영대기에 들어갑니다.
-        </div>
+        </p>
         {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : editableStepAlerts.length === 0 ? (
           <EmptyState title="판정 대기 미매칭 step 없음" hint="vehicle_matching에 없는 step이 발견되면 여기에 표시됩니다" />
         ) : (
@@ -927,15 +947,17 @@ export default function My_ValveAlerts({ user }) {
       </Card>
 
       <Card
+        id="valve-mask"
+        className="ds-card--section"
         title="마스크 룰북 (mask_info.csv)"
         right={<Pill tone={editableMaskAlerts.length ? "danger" : "neutral"}>미등록 reticle · {editableMaskAlerts.length}건</Pill>}
       >
-        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
+        <p className="ds-section-desc">
           FAB DB의 reticle_id 중 mask_info.csv의 reticle_id 열에 없는 값입니다.
           mask_info.csv는 제품 구분 없이 reticle_id·category로 관리하며, mask 이름은 category 열에 저장합니다.
           product 열에는 해당 FAB 제품과 매칭된 vehicle 이름을 저장합니다.
           같은 reticle이 여러 제품에서 발견돼도 한 줄로 묶입니다.
-        </div>
+        </p>
         {loading ? <div style={{ color: "var(--muted)" }}>불러오는 중…</div> : editableMaskAlerts.length === 0 ? (
           <EmptyState title="판정 대기 미등록 reticle 없음" hint="mask_info.csv에 없는 reticle_id가 발견되면 여기에 표시됩니다" />
         ) : (
@@ -953,15 +975,17 @@ export default function My_ValveAlerts({ user }) {
       </Card>
 
       <Card
+        id="valve-plan"
+        className="ds-card--section"
         title="SplitTable plan 이상항목들"
         right={<Pill tone={visiblePlanAnomalies.length ? "danger" : "neutral"}>
           plan 불일치 · {visiblePlanAnomalies.length}건
         </Pill>}
       >
-        <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 10, lineHeight: 1.5 }}>
+        <p className="ds-section-desc">
           KNOB plan과 실제 PPID가 다른 항목입니다. 같은 제품·KNOB·plan·PPID는 여러 lot/wafer에서 발견돼도 한 줄로 묶입니다.
           선택해 반영하면 실제 PPID를 plan 이름으로 <b>ppid_knob.csv</b>에 추가하거나 기존 분류를 수정합니다.
-        </div>
+        </p>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
           <Button style={compactButtonStyle} disabled={!canManage || !readyPlanAnomalies.length || !!busy}
             onClick={toggleAllPlanAnomalies}>
@@ -1031,7 +1055,7 @@ export default function My_ValveAlerts({ user }) {
           )}
       </Card>
 
-      <Card title="판정 이력">
+      <Card id="valve-history" className="ds-card--section" title="판정 이력">
         {visibleDecisions.length === 0 ? (
           <EmptyState title="판정 이력 없음" hint="룰 반영/매칭 추가/보류 처리 내역이 여기에 남습니다" />
         ) : (
@@ -1092,10 +1116,12 @@ export default function My_ValveAlerts({ user }) {
             }}
           />
         )}
-        <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 8 }}>
+        <p className="ds-section-desc ds-section-desc--foot">
           파일 단위 버전 이력(스냅샷/롤백)은 파일탐색기 › 해당 csv 의 버전 기록에서 확인할 수 있습니다.
-        </div>
+        </p>
       </Card>
-    </div>
+      </div>
+      </div>
+    </PageShell>
   );
 }

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { toast } from "../../components/Toast";
+import { Icon, StatusDot } from "../../components/ui/Icon";
 import usePolling from "../../hooks/usePolling";
 import { postJson, qs, sf } from "../../lib/api";
 import { createLatestRequests } from "../../lib/latestRequests";
@@ -61,6 +62,8 @@ const JOB_STATUS_KO = {
   running: "진행 중", queued: "대기", done: "완료", failed: "실패", skipped: "건너뜀",
 };
 const STAGE_MARK = { done: "✓", running: "●", failed: "✕", skipped: "—", queued: "○" };
+// 완료·실패는 글리프 대신 공용 아이콘으로 그린다.
+const STAGE_ICON = { done: "check", failed: "close" };
 // 단계별 시간 배분 막대의 색. 의미가 있는 순서가 아니라 인접 구간을 구분하기 위한
 // 것이라 토큰 팔레트를 순환해 쓴다 ('미계측'만 회색으로 따로 칠한다).
 const PHASE_COLORS = [
@@ -184,13 +187,13 @@ function WarmupBanner({ w, isDev }) {
       <span>동시 로드 {w.load_workers}</span>
       {w.last_refresh_at && <span style={{ color: "var(--text-secondary)" }}>마지막 {w.last_refresh_at.replace("T", " ")}</span>}
     </div>
-    {w.disabled_reason && <div style={{ color: "var(--danger)" }}>✕ 랏 RAM 캐시 꺼짐 — {w.disabled_reason}</div>}
+    {w.disabled_reason && <div style={{ color: "var(--danger)" }}><Icon name="x-circle" style={{ marginRight: 4 }} />랏 RAM 캐시 꺼짐 — {w.disabled_reason}</div>}
     {w.budget_capped && <div style={{ color: "var(--warn)" }}>
-      ⚠ 설정({w.budget_setting_gb}GB)보다 실제 예산({w.budget_gb}GB)이 작습니다 — 전 캐시 합계 상한(호스트 × 캐시 풀 비율)의
+      <Icon name="warning" style={{ marginRight: 4 }} />설정({w.budget_setting_gb}GB)보다 실제 예산({w.budget_gb}GB)이 작습니다 — 전 캐시 합계 상한(호스트 × 캐시 풀 비율)의
       서버의 자동 메모리 안전 상한에 맞춰 적용되었습니다. 캐시 작업은 이 범위 안에서 오래된 항목을 자동 정리합니다.
     </div>}
     {w.last_resource_guard_reason && <div style={{ color: "var(--warn)" }}>
-      ⚠ 자원 가드: {WARM_SKIP_KO[w.last_resource_guard_reason] || w.last_resource_guard_reason} — 이 상태에서는 새 랏을 적재하지 않습니다.
+      <Icon name="warning" style={{ marginRight: 4 }} />자원 가드: {WARM_SKIP_KO[w.last_resource_guard_reason] || w.last_resource_guard_reason} — 이 상태에서는 새 랏을 적재하지 않습니다.
     </div>}
   </div>;
 }
@@ -310,8 +313,8 @@ function JobsStatusLine({ jobs, scanQueue }) {
 // 두되 큰 단위(제품 × lookup/Pivot/FAB 매칭/…)만 남긴다.
 const MILESTONE_PHASE = {
   start: { mark: "▶", label: "시작", color: "var(--info)" },
-  done: { mark: "✓", label: "완료", color: "var(--ok)" },
-  fail: { mark: "✕", label: "실패", color: "var(--danger)" },
+  done: { mark: "✓", icon: "check", label: "완료", color: "var(--ok)" },
+  fail: { mark: "✕", icon: "close", label: "실패", color: "var(--danger)" },
   skip: { mark: "–", label: "건너뜀", color: "var(--text-secondary)" },
 };
 
@@ -335,7 +338,7 @@ function MilestoneLog({ milestones }) {
           <b style={{ color: "var(--accent)", minWidth: 180 }}>{m.product || "-"}</b>
           <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 11, fontWeight: 700,
             background: "var(--bg-tertiary)" }}>{m.label}</span>
-          <b style={{ color: ph.color, whiteSpace: "nowrap" }}>{ph.mark} {ph.label}</b>
+          <b style={{ color: ph.color, whiteSpace: "nowrap" }}>{ph.icon ? <Icon name={ph.icon} /> : ph.mark} {ph.label}</b>
           <span style={{ color: "var(--text-secondary)", wordBreak: "break-word" }}>{m.event}</span>
         </div>;
       })}
@@ -375,13 +378,13 @@ function CacheJobPanel({ jobs, queues, canManage, onStopProduct, milestones }) {
         padding: "6px 8px", borderRadius: 6, border: "1px solid var(--danger-line)",
         background: "rgba(239,68,68,0.05)" }}>
         <b>{job.label}</b>
-        {failedStages.map(s => <div key={s.id}>✕ {s.label} 실패{s.detail?.error ? ` — ${s.detail.error}` : ""}</div>)}
+        {failedStages.map(s => <div key={s.id}><Icon name="close" style={{ marginRight: 4 }} />{s.label} 실패{s.detail?.error ? ` — ${s.detail.error}` : ""}</div>)}
       </div>;
     })}
     {visible.some(j => j.status === "running" && Number(j.idle_sec || 0) > 120) &&
       visible.filter(j => j.status === "running" && Number(j.idle_sec || 0) > 120).map(job =>
         <div key={`idle-${job.id}`} style={{ fontSize: 11, color: "var(--warn)" }}>
-          ⚠ {job.label} — {fmtDur(job.idle_sec)} 동안 새 진행 로그가 없습니다
+          <Icon name="warning" style={{ marginRight: 4 }} />{job.label} — {fmtDur(job.idle_sec)} 동안 새 진행 로그가 없습니다
           {job.stale_after_sec ? ` (${fmtDur(job.stale_after_sec)}까지 없으면 자동 실패 처리)` : ""}
         </div>)}
     {visible.length > 0 && <details>
@@ -404,7 +407,7 @@ function CacheJobPanel({ jobs, queues, canManage, onStopProduct, milestones }) {
               style={{ fontSize: 11, padding: "2px 7px", borderRadius: 999,
                 border: `1px solid ${JOB_TONE[stage.status] || "var(--border)"}`,
                 color: JOB_TONE[stage.status] || "var(--text-secondary)" }}>
-              {STAGE_MARK[stage.status] || "○"} {stage.label} · {JOB_STATUS_KO[stage.status] || stage.status}
+              {STAGE_ICON[stage.status] ? <Icon name={STAGE_ICON[stage.status]} /> : (STAGE_MARK[stage.status] || "○")} {stage.label} · {JOB_STATUS_KO[stage.status] || stage.status}
               {stage.peak_effective_gb > 0 && <> · Peak {Number(stage.peak_effective_gb).toFixed(2)}GB
                 {` (+${Number(stage.peak_delta_gb || 0).toFixed(2)})`}</>}
             </span>)}
@@ -548,7 +551,7 @@ function CachingScheduleBoard({ jobs, queues, scanQueue, canManage, onCancelTask
             border: `1px solid ${running ? "var(--info)" : done ? "var(--ok-line)" : "var(--border)"}`,
             background: running ? "var(--info-50)" : done ? "var(--ok-50)" : "transparent",
             color: running ? "var(--info)" : done ? "var(--ok)" : "var(--text-secondary)" }}>
-            {done ? "✓" : running ? "●" : i + 1} {s.label}
+            {done ? <Icon name="check" /> : running ? <StatusDot tone="info" /> : i + 1} {s.label}
           </span>
           {i < flowStages.length - 1 && <span style={{ width: 20, height: 1, background: "var(--border)" }} />}
         </div>;
@@ -567,7 +570,7 @@ function CachingScheduleBoard({ jobs, queues, scanQueue, canManage, onCancelTask
             background: isCurrent ? "var(--info-50)" : isNext ? "var(--warn-50)" : "transparent",
             color: isCurrent ? "var(--info)" : isDone ? "var(--ok)" : isNext ? "var(--warn)" : "var(--text-secondary)",
             fontWeight: isCurrent || isNext ? 800 : 500 }}>
-            {isDone ? "✓ " : isCurrent ? "● " : isNext ? "다음 " : `${i + 1}. `}{product}
+            {isDone ? <Icon name="check" style={{ marginRight: 4 }} /> : isCurrent ? <StatusDot tone="info" style={{ marginRight: 5 }} /> : isNext ? "다음 " : `${i + 1}. `}{product}
           </span>;
         })}
       </div>
@@ -882,8 +885,21 @@ export default function My_RamCache({ user }) {
     // exists. Recheck that transition promptly; established jobs keep the
     // normal cadence and idle pages stay quiet.
     const intervalMs = activeJob ? 2500 : artifactPending ? 750 : 15000;
-    const timer = setTimeout(() => loadCacheEventLog(cacheEventLogFilter), intervalMs);
-    return () => clearTimeout(timer);
+    // 숨겨진 탭은 서버를 두드리지 않는다. 다시 보일 때 한 번 불러오면 그
+    // 완료(pollTick)가 다음 주기를 다시 건다.
+    let stopWaitingVisible = null;
+    const timer = setTimeout(() => {
+      if (!document.hidden) { loadCacheEventLog(cacheEventLogFilter); return; }
+      const onVisible = () => {
+        if (document.hidden) return;
+        document.removeEventListener("visibilitychange", onVisible);
+        stopWaitingVisible = null;
+        loadCacheEventLog(cacheEventLogFilter);
+      };
+      document.addEventListener("visibilitychange", onVisible);
+      stopWaitingVisible = () => document.removeEventListener("visibilitychange", onVisible);
+    }, intervalMs);
+    return () => { clearTimeout(timer); stopWaitingVisible?.(); };
   }, [canManage, unifiedScanBusy, cacheJobs, productStatus?.artifact_status_pending, cacheEventLogFilter, loadCacheEventLog, pollTick]);
   useEffect(() => {
     // Product-detail endpoints can scan/cache root metadata.  The jobs and
@@ -1171,8 +1187,8 @@ export default function My_RamCache({ user }) {
             style={{ width: "min(560px, 100%)", background: "var(--bg-card)", border: "1px solid var(--border)",
               borderRadius: 12, padding: 18, display: "grid", gap: 14 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 16, fontWeight: 800 }}>⚙️ 캐시 설정</span>
-              <button onClick={() => setBudgetModalOpen(false)} style={{ ...S_BTN, padding: "2px 8px" }}>✕</button>
+              <span style={{ fontSize: 16, fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="gear" />캐시 설정</span>
+              <button onClick={() => setBudgetModalOpen(false)} style={{ ...S_BTN, padding: "2px 8px" }} title="닫기"><Icon name="close" /></button>
             </div>
             {budgetCfg && <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.6 }}>
               현재 서버: <b>{budgetCfg.is_dev ? "개발" : "운영"}</b> · 복잡한 RAM 예산은 서버가 자동으로 안전하게 관리합니다.
@@ -1510,7 +1526,7 @@ export default function My_RamCache({ user }) {
                       <td style={{ padding: "0 6px", textAlign: "center" }}>
                         {canManage && <button onClick={() => { const v = [...priorityLots]; v.splice(i, 1); setPriorityLots(v); }}
                           style={{ padding: "2px 6px", borderRadius: 4, border: "none", background: "transparent",
-                            color: "var(--danger)", fontSize: 12, cursor: "pointer" }}>✕</button>}
+                            color: "var(--danger)", fontSize: 12, cursor: "pointer" }} title="삭제"><Icon name="close" /></button>}
                       </td>
                     </tr>
                   );
@@ -1586,7 +1602,7 @@ export default function My_RamCache({ user }) {
               <tbody>
                 {(contents.entries || []).map((e, i) => (
                   <tr key={i} style={{ borderBottom: "1px solid var(--border)", background: e.is_priority ? "var(--accent-glow)" : "transparent" }}>
-                    <td style={{ padding: "3px 6px" }}>{e.is_priority && <span style={{ color: "var(--accent)", marginRight: 4 }}>★</span>}{e.root_lot_id}</td>
+                    <td style={{ padding: "3px 6px" }}>{e.is_priority && <span style={{ color: "var(--accent)", marginRight: 4 }}><Icon name="star-filled" /></span>}{e.root_lot_id}</td>
                     <td style={{ padding: "3px 6px", textAlign: "right" }}>{e.row_count?.toLocaleString()}</td>
                     <td style={{ padding: "3px 6px", textAlign: "right" }}>{e.estimated_mb}</td>
                     <td style={{ padding: "3px 6px", textAlign: "right" }}>{e.access_count}</td>
@@ -1635,7 +1651,7 @@ export default function My_RamCache({ user }) {
       {canManage && cacheLoadError && <div style={{ display: "flex", gap: 8, alignItems: "center",
         flexWrap: "wrap", padding: "8px 12px", borderRadius: 8, fontSize: 12,
         border: "1px solid var(--warn-line)", background: "var(--warn-50)", color: "var(--warn)" }}>
-        <b>⚠ 캐시 상태 갱신 실패</b>
+        <b><Icon name="warning" style={{ marginRight: 4 }} />캐시 상태 갱신 실패</b>
         <span>{cacheLoadError}</span>
         <span style={{ color: "var(--text-secondary)" }}>
           — 아래 값은 마지막으로 받은 것입니다. 다음 주기에 자동으로 다시 시도합니다.

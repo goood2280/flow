@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ProductSemanticPanel from "./ProductSemanticPanel";
-import RichBoardEditor from "../../components/RichBoardEditor";
+import RichBoardEditor, { RichBoardContent } from "../../components/RichBoardEditor";
 import { Banner, Button, Input, PageShell, Select } from "../../components/ui";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import { authSrc, sf } from "../../lib/api";
 import { canManagePage } from "../../lib/permissions";
 import { sanitizeHtml } from "../../lib/sanitizeHtml";
@@ -33,11 +34,10 @@ function formatInline(str) {
   s = s.replace(/<\/?(?:b|strong)>/gi, "");
   // Italic: *text* -> plain text as well
   s = s.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "$1");
-  // Links: [text](url)
-  s = s.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer" class="pw-wiki-link">$1</a>'
-  );
+  // Links: [text](url) — in-page anchors (#entry-…) stay in this tab.
+  s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, text, href) => (href.startsWith("#")
+    ? `<a href="${href}" class="pw-wiki-link">${text}</a>`
+    : `<a href="${href}" target="_blank" rel="noopener noreferrer" class="pw-wiki-link">${text}</a>`));
   // Code: `code`
   s = s.replace(/`([^`]+)`/g, '<code class="pw-wiki-code">$1</code>');
   return s;
@@ -103,13 +103,13 @@ function markdownToHtml(md) {
       const title = line.slice(4).trim();
       const tag = title.match(/\[([0-9a-fA-F]{8})\]\s*$/);
       const id = tag ? `entry-${tag[1].toLowerCase()}` : `sec-${secIdx}`;
-      html += `<h3 id="${id}" class="pw-wiki-h3">${formatInline(title)}</h3>`;
+      html += `<h3 class="pw-wiki-h3 ${ANCHOR_PREFIX}${id}">${formatInline(title)}</h3>`;
       continue;
     }
     if (line.startsWith("## ")) {
       secIdx++;
       const title = line.slice(3).trim();
-      html += `<h2 id="sec-${secIdx}" class="pw-wiki-h2"><span class="pw-heading-anchor">§</span> ${formatInline(title)}</h2>`;
+      html += `<h2 class="pw-wiki-h2 ${ANCHOR_PREFIX}sec-${secIdx}"><span class="pw-heading-anchor">§</span> ${formatInline(title)}</h2>`;
       continue;
     }
     if (line.startsWith("# ")) {
@@ -130,7 +130,66 @@ function markdownToHtml(md) {
 
   if (inTable) html += flushTable();
 
-  return sanitizeHtml(html);
+  // sanitizeHtml drops every id (DOM clobbering), which silently broke the
+  // TOC links and the per-section 수정/이력/원문 chips. Headings carry their
+  // anchor as a class instead; only our own heading pattern gets it back.
+  return sanitizeHtml(html).replace(ANCHOR_CLASS, '<$1 id="$3" class="$2"');
+}
+
+const ANCHOR_PREFIX = "pw-anchor--";
+const ANCHOR_CLASS = /<(h[23]) class="(pw-wiki-h[23]) pw-anchor--(entry-[0-9a-f]{8}|sec-\d+)"/g;
+
+function rawImageUrl(value) {
+  return String(value || "").replace(/([?&])t=[^&#]*/g, "").replace(/[?&]$/, "");
+}
+
+function htmlToText(value) {
+  const raw = String(value || "");
+  if (!/[<&]/.test(raw)) return raw;
+  try {
+    const body = new DOMParser().parseFromString(raw, "text/html").body;
+    body.querySelectorAll("style,script").forEach((node) => node.remove());
+    body.querySelectorAll("td,th").forEach((cell) => cell.append(" "));
+    body.querySelectorAll("p,div,br,tr,li").forEach((node) => node.append("\n"));
+    return body.textContent || "";
+  } catch {
+    return raw.replace(/<[^>]*>/g, " ");
+  }
+}
+
+// Everything an engineer may type into the search box for one record.
+function entrySearchText(entry) {
+  const conditions = (entry.conditions || []).map((row) =>
+    [row.condition, row.purpose, row.result, ...(row.lot_ids || [])].filter(Boolean).join(" "));
+  return [
+    entry.title, entry.summary, ...(entry.tags || []), entry.structure, entry.split, ...(entry.lot_ids || []),
+    entry.purpose, entry.expected_effect, entry.observed_effect, entry.evidence, entry.occurred_on,
+    entry.author, entry.updated_by, STATUS_LABELS[entry.status] || entry.status, ...conditions,
+    htmlToText(entry.body), entry.source_text && entry.source_text !== entry.body ? htmlToText(entry.source_text) : "",
+  ].filter(Boolean).join("\n");
+}
+
+const STATUS_LABELS = { open: "열림", investigating: "조사 중", validated: "검증됨", closed: "종료" };
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function snippetAround(text, terms, radius = 70) {
+  const flat = String(text || "").replace(/\s+/g, " ").trim();
+  const lower = flat.toLowerCase();
+  const at = terms.map((term) => lower.indexOf(term)).filter((i) => i >= 0).sort((a, b) => a - b)[0] ?? 0;
+  const start = Math.max(0, at - radius);
+  const end = Math.min(flat.length, at + radius * 2);
+  return `${start > 0 ? "…" : ""}${flat.slice(start, end)}${end < flat.length ? "…" : ""}`;
+}
+
+function Highlighted({ text, terms }) {
+  if (!terms.length) return text;
+  const pattern = new RegExp(`(${terms.map(escapeRegExp).join("|")})`, "gi");
+  return String(text).split(pattern).map((part, index) => (
+    index % 2 ? <mark key={index} className="pw-search-mark">{part}</mark> : part
+  ));
 }
 
 export default function My_ProductWiki({ user }) {
@@ -159,6 +218,11 @@ export default function My_ProductWiki({ user }) {
 
   // TOC collapsible state
   const [tocOpen, setTocOpen] = useState(true);
+
+  // Wiki search (records + highlighted document text)
+  const [query, setQuery] = useState("");
+  const [bodyHits, setBodyHits] = useState(0);
+  const hitCursor = useRef(-1);
 
   const mounted = useRef(true);
   const loadGeneration = useRef(0);
@@ -365,8 +429,49 @@ export default function My_ProductWiki({ user }) {
   }, [doc?.wiki_document]);
 
   const tocList = doc?.wiki_toc || [];
-  const activeEntries = (doc?.entries || []).filter((e) => !e.deleted);
+  const activeEntries = useMemo(() => (doc?.entries || []).filter((e) => !e.deleted), [doc?.entries]);
   const wikiBodyRef = useRef(null);
+
+  const searchIndex = useMemo(() => activeEntries.map((entry) => {
+    const text = entrySearchText(entry);
+    return { entry, text, lower: text.toLowerCase(), title: String(entry.title || "").toLowerCase() };
+  }), [activeEntries]);
+  const searchTerms = useMemo(
+    () => Array.from(new Set(query.trim().toLowerCase().split(/\s+/).filter(Boolean))).slice(0, 8),
+    [query],
+  );
+  const searchResults = useMemo(() => {
+    if (!searchTerms.length) return [];
+    return searchIndex
+      .filter((item) => searchTerms.every((term) => item.lower.includes(term)))
+      .map((item) => ({
+        ...item,
+        score: searchTerms.filter((term) => item.title.includes(term)).length,
+        snippet: snippetAround(item.entry.summary && searchTerms.some((t) => item.entry.summary.toLowerCase().includes(t))
+          ? item.entry.summary : item.text, searchTerms),
+      }))
+      .sort((a, b) => b.score - a.score || String(b.entry.updated_at || "").localeCompare(String(a.entry.updated_at || "")));
+  }, [searchIndex, searchTerms]);
+
+  const openEntry = (entry) => {
+    const target = wikiBodyRef.current?.querySelector(`#entry-${String(entry.id || "").slice(0, 8).toLowerCase()}`);
+    if (target) {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+    setExpandedIds((prev) => new Set(prev).add(entry.id));
+    setRawModalOpen(true);
+  };
+
+  const jumpToHit = (step) => {
+    const marks = wikiBodyRef.current?.querySelectorAll("mark.pw-search-hit") || [];
+    if (!marks.length) return;
+    marks.forEach((mark) => mark.classList.remove("is-current"));
+    hitCursor.current = (hitCursor.current + step + marks.length) % marks.length;
+    const mark = marks[hitCursor.current];
+    mark.classList.add("is-current");
+    mark.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
 
   // Section chips: each entry-owned h3 (id="entry-xxxxxxxx") gets
   // 수정/이력/원문 shortcuts. Injected as real DOM nodes (not HTML strings)
@@ -403,6 +508,11 @@ export default function My_ProductWiki({ user }) {
     root.querySelectorAll("tr[data-folded]").forEach((tr) => {
       tr.removeAttribute("data-folded");
       tr.style.display = "";
+    });
+    // Images pasted into an issue are served by the authenticated wiki API.
+    root.querySelectorAll("img").forEach((img) => {
+      const raw = rawImageUrl(img.getAttribute("src"));
+      if (raw.startsWith("/api/")) img.setAttribute("src", authSrc(raw));
     });
     root.querySelectorAll('h3[id^="entry-"]').forEach((h) => {
       const short = String(h.id || "").replace(/^entry-/, "").toLowerCase();
@@ -566,6 +676,66 @@ export default function My_ProductWiki({ user }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [compiledHtml, doc]);
 
+  // Search highlight inside the rendered document (after the chips above,
+  // which are skipped so their labels never count as matches).
+  useEffect(() => {
+    const root = wikiBodyRef.current;
+    if (!root) return undefined;
+    const unwrap = () => {
+      root.querySelectorAll("mark.pw-search-hit").forEach((mark) => {
+        const parent = mark.parentNode;
+        mark.replaceWith(document.createTextNode(mark.textContent || ""));
+        parent?.normalize();
+      });
+    };
+    unwrap();
+    hitCursor.current = -1;
+    if (!searchTerms.length) {
+      setBodyHits(0);
+      return unwrap;
+    }
+    const pattern = new RegExp(searchTerms.map(escapeRegExp).join("|"), "gi");
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode: (node) => (node.parentElement?.closest(".pw-sec-chips, .pw-module-records, .pw-table-source, mark")
+        ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT),
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    let count = 0;
+    nodes.forEach((node) => {
+      const text = node.nodeValue || "";
+      const matches = Array.from(text.matchAll(pattern));
+      if (!matches.length) return;
+      const fragment = document.createDocumentFragment();
+      let last = 0;
+      matches.forEach((match) => {
+        fragment.append(text.slice(last, match.index));
+        const mark = document.createElement("mark");
+        mark.className = "pw-search-hit";
+        mark.textContent = match[0];
+        fragment.append(mark);
+        last = match.index + match[0].length;
+      });
+      fragment.append(text.slice(last));
+      count += matches.length;
+      node.replaceWith(fragment);
+    });
+    setBodyHits(count);
+    return unwrap;
+  }, [compiledHtml, doc, searchTerms]);
+
+  // Links from the home chat open "/productwiki?product=X#entry-xxxxxxxx".
+  const scrolledHash = useRef("");
+  useEffect(() => {
+    const id = decodeURIComponent(window.location.hash.replace(/^#/, ""));
+    if (!id || !compiledHtml || scrolledHash.current === `${product}#${id}`) return;
+    const target = /^(entry-[0-9a-f]{8}|sec-\d+)$/.test(id) ? wikiBodyRef.current?.querySelector(`#${id}`) : null;
+    if (target) {
+      scrolledHash.current = `${product}#${id}`;
+      target.scrollIntoView({ block: "start" });
+    }
+  }, [compiledHtml, product]);
+
   return (
     <PageShell className="product-wiki full-screen-mode">
       {/* ── Top Bar: Product Selector & Action Buttons ── */}
@@ -591,6 +761,34 @@ export default function My_ProductWiki({ user }) {
               ))}
             </Select>
           </label>
+          {product && (
+            <div className="pw-search" role="search">
+              <span className="pw-search-icon" aria-hidden="true"><Icon name="search" /></span>
+              <Input
+                type="search"
+                className="pw-search-input"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); jumpToHit(e.shiftKey ? -1 : 1); }
+                  if (e.key === "Escape") setQuery("");
+                }}
+                placeholder="위키 검색 · 제목, 내용, LOT, 태그, 작성자"
+                aria-label="제품 위키 검색"
+              />
+              {searchTerms.length > 0 && (
+                <span className="pw-search-count" aria-live="polite">
+                  기록 {searchResults.length}건 · 본문 {bodyHits}곳
+                  <button type="button" className="pw-search-step" onClick={() => jumpToHit(-1)} disabled={!bodyHits} title="이전 일치 (Shift+Enter)" aria-label="이전 일치">
+                    <Icon name="chevron-up" />
+                  </button>
+                  <button type="button" className="pw-search-step" onClick={() => jumpToHit(1)} disabled={!bodyHits} title="다음 일치 (Enter)" aria-label="다음 일치">
+                    <Icon name="chevron-down" />
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="pw-top-actions">
@@ -599,12 +797,12 @@ export default function My_ProductWiki({ user }) {
             onClick={() => setRawModalOpen(true)}
             title="등록된 원본 이슈 목록을 열어보고 수정하거나 삭제합니다."
           >
-            📄 원본 이슈 목록 ({activeEntries.length}건)
+            <IconLabel icon="files">원본 이슈 목록 ({activeEntries.length}건)</IconLabel>
           </Button>
 
           {doc?.wiki_document && (
             <Button variant="ghost" onClick={downloadMarkdown} title="Markdown 형식으로 다운로드">
-              📥 다운로드
+              <IconLabel icon="download">다운로드</IconLabel>
             </Button>
           )}
         </div>
@@ -621,6 +819,34 @@ export default function My_ProductWiki({ user }) {
         </Banner>
       )}
 
+      {product && searchTerms.length > 0 && (
+        <section className="pw-search-results" aria-label="위키 검색 결과">
+          <div className="pw-search-results-head">
+            <span>검색 결과 {searchResults.length}건</span>
+            <button type="button" className="pw-cancel-link" onClick={() => setQuery("")}>검색 지우기</button>
+          </div>
+          {searchResults.length === 0 ? (
+            <p className="pw-search-empty">‘{query.trim()}’와 일치하는 기록이 없습니다. 다른 단어나 LOT·Step ID로 검색해 보세요.</p>
+          ) : (
+            <ul className="pw-search-list">
+              {searchResults.slice(0, 50).map(({ entry, snippet }) => (
+                <li key={entry.id} className="pw-search-item">
+                  <button type="button" className="pw-search-title" onClick={() => openEntry(entry)} title="위키 본문의 해당 섹션으로 이동">
+                    <Highlighted text={entry.title || entry.id} terms={searchTerms} />
+                  </button>
+                  <span className={`pw-search-status is-${entry.status || "open"}`}>{STATUS_LABELS[entry.status] || entry.status || "열림"}</span>
+                  <span className="pw-search-meta">
+                    {[entry.structure, formatDateTime(entry.updated_at).slice(0, 10), entry.updated_by || entry.author].filter(Boolean).join(" · ")}
+                  </span>
+                  <p className="pw-search-snippet"><Highlighted text={snippet} terms={searchTerms} /></p>
+                </li>
+              ))}
+              {searchResults.length > 50 && <li className="pw-search-more">외 {searchResults.length - 50}건 — 검색어를 더 구체적으로 입력하세요.</li>}
+            </ul>
+          )}
+        </section>
+      )}
+
       {product && <details className="pw-structure-model" onToggle={(event) => setModelOpen(event.currentTarget.open)}>
         <summary>{product} · GAA 구조 3D</summary>
         {modelOpen && <StructureModelWorkspace fixedProduct={product} admin={user?.role === "admin"}/>}
@@ -631,7 +857,7 @@ export default function My_ProductWiki({ user }) {
         <section className="pw-issue-card">
           <div className="pw-issue-card-header">
             <div className="pw-issue-card-title">
-              <span className="pw-icon">📝</span>
+              <span className="pw-icon"><Icon name="note" /></span>
               <h3>{editingEntry ? "이슈 수정" : "이슈 등록"}</h3>
               {editingEntry && (
                 <span className="pw-editing-indicator">
@@ -673,15 +899,17 @@ export default function My_ProductWiki({ user }) {
                     value={issueBody}
                     onChange={setIssueBody}
                     uploadUrl="/api/product-wiki/upload"
-                    placeholder="이슈 내용을 입력하세요"
+                    placeholder="이슈 내용을 입력하세요 · 표와 이미지는 붙여 넣을 수 있습니다"
                     disabled={busy}
+                    showCommands={false}
+                    showHint={false}
                   />
                 </div>
               </div>
 
               <div className="pw-form-footer">
                 <div className="pw-hint">
-                  원문을 보존하고 연결된 AI가 제품 별칭·Step·Item 참고표로 내용을 정리합니다. 불확실한 연결은 아래에서 확인하세요.
+                  원문을 보존하고, 연결된 AI가 이 이슈를 요약·태그·조건표로 정리해 위키에 넣습니다. 홈 화면 AI에게 “{product} 위키 요약해줘”처럼 물어볼 수 있습니다.
                 </div>
                 <div className="pw-form-buttons">
                   {editingEntry && (
@@ -788,8 +1016,9 @@ export default function My_ProductWiki({ user }) {
                 type="button"
                 className="pw-drawer-close"
                 onClick={() => setRawModalOpen(false)}
+                title="닫기"
               >
-                ✕
+                <Icon name="close" />
               </button>
             </div>
 
@@ -841,15 +1070,12 @@ export default function My_ProductWiki({ user }) {
                             )}
                           </div>
 
-                          <div
-                            className="pw-raw-content"
-                            dangerouslySetInnerHTML={{
-                              __html: sanitizeHtml(entry.source_text ?? entry.body ?? "—"),
-                            }}
-                          />
+                          {/* RichBoardContent adds the session token to pasted images. */}
+                          <RichBoardContent className="pw-raw-content" html={entry.source_text ?? entry.body ?? "—"} />
+                          {entry.summary && <p className="pw-raw-summary">요약: {entry.summary}</p>}
                           {entry.source_text && entry.body && entry.body !== entry.source_text && <details>
                             <summary>AI가 정리한 내용</summary>
-                            <div className="pw-raw-content" dangerouslySetInnerHTML={{ __html: sanitizeHtml(entry.body) }} />
+                            <RichBoardContent className="pw-raw-content" html={entry.body} />
                           </details>}
 
                           <div className="pw-raw-footer">
@@ -861,7 +1087,7 @@ export default function My_ProductWiki({ user }) {
                                 disabled={busy}
                                 title="이 이슈를 수정합니다."
                               >
-                                ✏️ 수정
+                                <IconLabel icon="edit">수정</IconLabel>
                               </Button>
                               <Button
                                 size="sm"
@@ -870,7 +1096,7 @@ export default function My_ProductWiki({ user }) {
                                 onClick={() => handleResyncEntry(entry)}
                                 title="원문을 최신 제품 연결표로 다시 해석하고 위키를 정리합니다."
                               >
-                                🔄 위키에 재반영
+                                <IconLabel icon="refresh">위키에 재반영</IconLabel>
                               </Button>
                               <Button
                                 size="sm"
@@ -879,7 +1105,7 @@ export default function My_ProductWiki({ user }) {
                                 disabled={busy}
                                 title="이 이슈를 삭제합니다."
                               >
-                                🗑️ 삭제
+                                <IconLabel icon="trash">삭제</IconLabel>
                               </Button>
                             </div>
                             <button
@@ -887,7 +1113,7 @@ export default function My_ProductWiki({ user }) {
                               className="pw-history-btn"
                               onClick={() => viewHistory(entry)}
                             >
-                              📜 변경 감사 이력 보기
+                              <IconLabel icon="history">변경 감사 이력 보기</IconLabel>
                             </button>
                           </div>
                         </div>
@@ -914,8 +1140,9 @@ export default function My_ProductWiki({ user }) {
                 type="button"
                 className="pw-drawer-close"
                 onClick={() => setSelectedHistory(null)}
+                title="닫기"
               >
-                ✕
+                <Icon name="close" />
               </button>
             </div>
 

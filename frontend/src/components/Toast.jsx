@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { statusPalette } from "./UXKit";
+import { Icon } from "./ui/Icon";
 
 let items = [];
 let listeners = [];
@@ -81,7 +82,7 @@ export function ToastHost() {
     >
       {visible.map((item) => {
         const tone = statusPalette[item.tone] || statusPalette.info;
-        const icon = item.tone === "ok" ? "✓" : item.tone === "warn" ? "!" : item.tone === "bad" ? "✕" : "ⓘ";
+        const icon = item.tone === "ok" ? "check-circle" : item.tone === "warn" ? "warning" : item.tone === "bad" ? "x-circle" : "info";
         return (
           <div
             key={item.id}
@@ -105,7 +106,7 @@ export function ToastHost() {
               animation: "flow-toast-in 0.15s ease-out",
             }}
           >
-            <span style={{ color: tone.fg, fontWeight: 700, flexShrink: 0 }}>{icon}</span>
+            <span style={{ color: tone.fg, flexShrink: 0, fontSize: 16, lineHeight: "20px", display: "inline-flex", alignItems: "center", height: 20 }}><Icon name={icon} /></span>
             <span style={{ flex: 1, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{item.message}</span>
           </div>
         );

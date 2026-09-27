@@ -13,6 +13,7 @@
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
+import { Icon } from "../../components/ui/Icon";
 import ZoomPanSvg from "../../components/ZoomPanSvg";
 import { Banner, Button, Card, DataTable, EmptyState, Field, Input, Panel, Pill } from "../../components/UXKit";
 import "./TegGenerate.css";
@@ -201,7 +202,7 @@ function FlatBlock({ block, vehicle, scale, imgUrl }) {
         ? <span style={{ color: "var(--muted)" }}>기준점</span>
         : r.offset_applied
           ? <span style={{ color: "var(--warn)", fontWeight: 700 }}
-              title={r.offset_note || "TEG(module)별 오프셋 — ⚙️ 설정에서 편집"}>
+              title={r.offset_note || "TEG(module)별 오프셋 — 톱니 설정에서 편집"}>
               적용 ({fmtN(r.offset_dx)}, {fmtN(r.offset_dy)})
             </span>
           : <span style={{ color: "var(--muted)" }}>-</span> },
@@ -255,7 +256,7 @@ function FlatBlock({ block, vehicle, scale, imgUrl }) {
         {" · "}
         {block.base.source === "db"
           ? <span style={{ color: "var(--ok)" }}>정답지 PCHK 기준</span>
-          : <span style={{ color: "var(--warn)" }}>⚙️ 설정 기본 오프셋 기준</span>}
+          : <span style={{ color: "var(--warn)" }}><Icon name="gear" /> 설정 기본 오프셋 기준</span>}
         {vertical && <> · 미리보기는 <b>실제 배치 방향</b>(회전 전)이고 V TEG 는 서 있는 모양,
           표의 좌표는 회전된 설비값입니다</>}
       </div>
@@ -265,11 +266,11 @@ function FlatBlock({ block, vehicle, scale, imgUrl }) {
         Obase={JSON.stringify(block.coordinate_terms.global_base)} · Cproduct={JSON.stringify(block.coordinate_terms.product_flat)}
       </div>}
       {block.warning && (
-        <div style={{ fontSize: 12, color: "var(--warn)", marginBottom: 8 }}>⚠ {block.warning}</div>
+        <div style={{ fontSize: 12, color: "var(--warn)", marginBottom: 8 }}><Icon name="warning" style={{ marginRight: 4 }} />{block.warning}</div>
       )}
       {block.pchk_in_shot === false && (
         <div style={{ fontSize: 12, color: "var(--danger)", marginBottom: 8, fontWeight: 600 }}>
-          ⚠ 기준 {block.pchk?.teg} 이(가) shot 밖입니다 — 설비가 찍는 점이라 shot 안에 있어야 정상입니다.
+          <Icon name="warning" style={{ marginRight: 4 }} />기준 {block.pchk?.teg} 이(가) shot 밖입니다 — 설비가 찍는 점이라 shot 안에 있어야 정상입니다.
           정답지의 ebeam 좌표나 shot 크기(제품 입력값 또는 Chip_Radius fallback)를 확인하세요.
           이 값이 틀리면 아래 좌표가 통째로 밀립니다.
         </div>
@@ -281,7 +282,7 @@ function FlatBlock({ block, vehicle, scale, imgUrl }) {
             <span style={{ color: PCHK_COLOR, fontWeight: 700 }}>＋</span> 기준 PCHK (0,0) ·
             <span style={{ color: TEG_COLOR, fontWeight: 700 }}> ▪</span> TEG (검은 테두리,
             이름은 사각형 가운데 — 확대하면 읽힙니다) ·
-            {imgUrl && <> <span style={{ fontWeight: 700 }}>🖼</span> 그림 ·</>}
+            {imgUrl && <> <Icon name="image" /> 그림 ·</>}
             <span style={{ color: DIE_COLOR, fontWeight: 700 }}> ▢</span>
             {" "}{CELL_SOURCE_LABEL[block.cell_source] || "die"} {(block.cells || []).length} ·
             <span style={{ color: SHOT_COLOR, fontWeight: 700 }}> ▭</span> shot
@@ -612,12 +613,12 @@ function MainGridCard({ vehicle, refreshKey = 0 }) {
         <div>
           <b>MAIN die를 TEG 크기의 격자로 나눠 내부 좌표를 만듭니다.</b>
           <span>
-            기본 TEG {data ? `${fmtN(data.teg.w, 3)}×${fmtN(data.teg.h, 3)} mm` : "⚙️ 설정"} ·
+            기본 TEG {data ? `${fmtN(data.teg.w, 3)}×${fmtN(data.teg.h, 3)} mm` : "톱니 설정"} ·
             칸에 이름을 입력하면 Horizontal 기준 Mapfile 상대좌표가 계산됩니다.
           </span>
         </div>
         <span className="teg-main-card__notice">
-          TEG 이름을 나중에 붙이는 방식이므로 ⚙️ 설정의 module별 오프셋은 적용되지 않습니다.
+          TEG 이름을 나중에 붙이는 방식이므로 <Icon name="gear" /> 설정의 module별 오프셋은 적용되지 않습니다.
         </span>
       </Banner>
 
@@ -690,10 +691,10 @@ function MainGridCard({ vehicle, refreshKey = 0 }) {
         </section>
       </div>
 
-      {err && <Banner tone="danger">⚠ {err}</Banner>}
+      {err && <Banner tone="danger"><Icon name="warning" style={{ marginRight: 4 }} />{err}</Banner>}
       {data && !data.ref_ok && (
         <Banner tone="warn">
-          ⚠ 정답지를 읽지 못해 기준 PCHK 대신 ⚙️ 설정 오프셋을 씁니다 — {data.ref_error}
+          <Icon name="warning" style={{ marginRight: 4 }} />정답지를 읽지 못해 기준 PCHK 대신 <Icon name="gear" /> 설정 오프셋을 씁니다 — {data.ref_error}
         </Banner>
       )}
 
@@ -801,14 +802,14 @@ export default function TegGenerate({ vehicle, refreshKey = 0 }) {
         </div>
       </Card>
 
-      {!vehicle && <EmptyState icon="📐" title="vehicle 을 선택하세요"
+      {!vehicle && <EmptyState icon="ruler" title="vehicle 을 선택하세요"
         hint="상단 제품 선택에서 vehicle 을 고르면 그 제품의 Mapfile 좌표표를 만듭니다" />}
-      {err && <EmptyState icon="⚠" title="생성하지 못했습니다" hint={err} />}
+      {err && <EmptyState icon="warning" title="생성하지 못했습니다" hint={err} />}
       {res && !res.ref_ok && (
-        <EmptyState icon="⚠" title="정답지를 읽지 못했습니다" hint={res.ref_error} />
+        <EmptyState icon="warning" title="정답지를 읽지 못했습니다" hint={res.ref_error} />
       )}
       {res && res.ref_ok && res.targets.total === 0 && (
-        <EmptyState icon="⚠" title="체크 대상 TEG 가 없습니다"
+        <EmptyState icon="warning" title="체크 대상 TEG 가 없습니다"
           hint="위치 조회 → TEG 목록 → 'Mapfile 검증 대상 TEG' 에서 지정하세요" />
       )}
       {res && res.ref_ok && (res.flats || []).map(b => (

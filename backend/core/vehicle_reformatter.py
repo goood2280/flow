@@ -393,6 +393,22 @@ def _find_base_addp(name: str, by_alias: dict[str, dict]) -> str | None:
     return None
 
 
+_NEW_SUFFIX = "_new"
+
+
+def new_suffix_base(name: str) -> str | None:
+    """`X_new` → `X` (대소문자 무시). `_new` 로 끝나지 않으면 None.
+
+    ET 에는 보정값 `WINDOW_new` 와 원값 `WINDOW` 가 짝으로 있는데, ADDP 는
+    주로 `rmax({WINDOW_new})` 처럼 `_new` 쪽만 참조한다. 그대로 두면 원값
+    `WINDOW` 가 출력에서 빠지므로 `_new` 참조는 짝 이름도 함께 싣는다.
+    """
+    text = str(name or "")
+    if len(text) > len(_NEW_SUFFIX) and text.lower().endswith(_NEW_SUFFIX):
+        return text[: -len(_NEW_SUFFIX)]
+    return None
+
+
 def resolve_needed_items(table: List[Dict[str, Any]], selected_aliases: List[str],
                          ) -> tuple[List[Dict[str, Any]], set[str]]:
     """선택된 alias 에서 ADDP 의존성을 재귀 해소해 필요한 테이블 행과 ITEMID 집합을 반환.
@@ -400,11 +416,24 @@ def resolve_needed_items(table: List[Dict[str, Any]], selected_aliases: List[str
     ADDP 수식이 {이름} 으로 다른 alias 를 참조할 때 해당 alias 의 REAL ITEMID 까지
     추적하여 raw 데이터 필터링에 사용할 ITEMID 세트를 만든다.
     파생 컬럼(예: WINDOW_new)도 원본 ADDP 까지 재귀 추적한다.
+    `_new` 로 끝나는 이름(alias·직접 참조 ITEMID·REAL ITEMID)은 `_new` 를 뗀
+    짝 이름도 함께 필요 항목으로 넣는다 — alias 면 alias 로, 아니면 raw ITEMID 로.
     """
     by_alias: dict[str, dict] = {r["alias"]: r for r in table}
     needed_aliases: set[str] = set()
     extra_itemids: set[str] = set()           # 테이블에 없는 직접 참조 ITEMID
     queue = list(selected_aliases)
+
+    def _pair_of_new(name: str) -> None:
+        base = new_suffix_base(name)
+        if not base:
+            return
+        if base in by_alias:
+            if base not in needed_aliases:
+                queue.append(base)
+        else:
+            extra_itemids.add(base)
+
     while queue:
         name = queue.pop()
         if name in needed_aliases:
@@ -412,6 +441,9 @@ def resolve_needed_items(table: List[Dict[str, Any]], selected_aliases: List[str
         row = by_alias.get(name)
         if row:
             needed_aliases.add(name)
+            _pair_of_new(name)
+            if row["category"] == "real" and row.get("itemid"):
+                _pair_of_new(row["itemid"])
             if row["category"] == "addp":
                 refs = formula_refs(row.get("addp_form") or "")
                 for ref in refs:
@@ -426,6 +458,7 @@ def resolve_needed_items(table: List[Dict[str, Any]], selected_aliases: List[str
             else:
                 # 테이블에 없으면 raw ITEMID 직접 참조로 간주
                 extra_itemids.add(name)
+                _pair_of_new(name)
     needed_rows = [r for r in table if r["alias"] in needed_aliases]
     needed_itemids = {r["itemid"] for r in needed_rows
                       if r["category"] == "real" and r["itemid"]}

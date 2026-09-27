@@ -21,6 +21,10 @@ def split_questions(prompt):
     # SQL, chart definitions and pasted plans have meaningful line boundaries.
     if re.search(r"```|\bSELECT\b|^Q\d+\s*$|^SQL\s*=|^CHART\s*$", text, re.I | re.M):
         return [text]
+    # A range pasted from Excel/Sheets is one request, not one question per row.
+    from core import chat_table
+    if chat_table.parse(text):
+        return [text]
     pieces = re.split(r"(?<=[?？])(?![?？])\s*|\n+|\s+(?:그리고|또한|그다음|그\s*다음|and\s+then)\s+", text, flags=re.I)
     return [re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", part).strip() for part in pieces if part.strip()]
 

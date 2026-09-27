@@ -292,7 +292,8 @@ def register(req: RegisterReq):
         "permission_source": "",
     })
     write_users(users)
-    send_to_admins("New Registration", f"User '{name}' requests approval.", "approval")
+    who = f"{human_name} ({name})" if human_name else name
+    send_to_admins("가입 승인 요청", f"{who} 님이 가입 승인을 기다리고 있습니다.", "approval")
     return {"ok": True, "message": "Registered. Wait for admin approval."}
 
 

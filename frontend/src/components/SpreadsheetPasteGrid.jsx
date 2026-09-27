@@ -114,7 +114,8 @@ export default function SpreadsheetPasteGrid({
   const visibleRows = isVirtualized ? rows.slice(safeStartIndex, safeEndIndex) : (rows || []);
   const colSpan = (showRowNumbers ? 1 : 0) + names.length;
 
-  return <div ref={containerRef} onScroll={onScroll} style={{overflow:"auto",maxHeight,border:"1px solid var(--border)",borderRadius,background:"var(--bg-primary)"}}>
+  // 셀 높이(VIRTUAL_ROW_HEIGHT)에 맞춘 고정 격자 — 업무 탭 공통 컨트롤 규칙(flow-connected-page)에서 뺀다.
+  return <div ref={containerRef} className="flow-fixed" onScroll={onScroll} style={{overflow:"auto",maxHeight,border:"1px solid var(--border)",borderRadius,background:"var(--bg-primary)"}}>
     <table aria-label={ariaLabel} style={{width:"100%",minWidth:minTableWidth,tableLayout:"fixed",borderCollapse:"separate",borderSpacing:0,fontSize:12}}>
       <colgroup>{showRowNumbers&&<col style={{width:42}}/>}{names.map(name=><col key={name} style={name===colorColumn?{width:"34%"}:undefined}/>)}</colgroup>
       <thead><tr>

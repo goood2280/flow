@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { sf, postJson, dl, qs, responseDownloadFilename } from "../../lib/api";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import Loading from "../../components/Loading";
 import PageGear from "../../components/PageGear";
 import usePolling from "../../hooks/usePolling";
@@ -224,7 +225,7 @@ function RuleInfoBar({ alias, rule, onSelect, onClose }) {
           {rule.unit ? `[${rule.unit}] ` : ""}spec {rule.speclow ?? "-"} ~ {rule.spechigh ?? "-"}{rule.target != null ? ` (target ${rule.target})` : ""}
         </span>
       )}
-      <span onClick={onClose} style={{ marginLeft: "auto", cursor: "pointer", color: "var(--text-secondary)", padding: "0 4px" }}>✕</span>
+      <button type="button" className="flow-icon-button" onClick={onClose} title="닫기" style={{ marginLeft: "auto", color: "var(--text-secondary)" }}><Icon name="close" /></button>
     </div>
   );
 }
@@ -265,7 +266,7 @@ function DepTreePanel({ tree }) {
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "8px 12px", marginBottom: 8, background: "var(--bg-secondary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13 }} onClick={() => setOpen(o => !o)}>
-        <span style={{ fontWeight: 700 }}>🌳 의존성 트리</span>
+        <span style={{ fontWeight: 700 }}><IconLabel icon="tree">의존성 트리</IconLabel></span>
         <span style={{ color: "var(--text-secondary)", fontSize: 12 }}>ADDP 재귀 참조 · raw data 의존 관계</span>
         <span style={{ marginLeft: "auto", color: "var(--text-secondary)" }}>{open ? "▲" : "▼"}</span>
       </div>
@@ -476,7 +477,7 @@ function ItemSelectPanel({ items, selected, onToggle, isAdmin, hidden, onToggleH
   return (
     <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, background: "var(--bg-secondary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 14, fontWeight: 800 }}>📋 Index 항목 선택</span>
+        <span style={{ fontSize: 14, fontWeight: 800 }}><IconLabel icon="clipboard">Index 항목 선택</IconLabel></span>
         <Pill tone={nSel === 0 ? "warn" : "accent"}>{nSel} / {items.length}</Pill>
         <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
           {nSel === 0 ? "뽑을 항목을 선택하세요" : `전체 reformatter alias 중 ${nSel}개 선택됨`}
@@ -485,18 +486,18 @@ function ItemSelectPanel({ items, selected, onToggle, isAdmin, hidden, onToggleH
         <div style={{ marginTop: 10 }}>
           <div style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center", flexWrap: "wrap" }}>
             {/* AUTO REPORT 항목전체·전체 선택·전체 해제 버튼 제거됨 — 표시 항목 선택/해제로 대체 */}
-            {isAdmin && <Button onClick={onHideAll} title="일반 사용자에게 전체 Index를 숨긴 뒤 필요한 항목만 공개">🚫 전체 비공개</Button>}
-            {isAdmin && hidden.size > 0 && <Button onClick={onShowAll} title="모든 Index를 일반 사용자에게 공개">👁 전체 공개</Button>}
+            {isAdmin && <Button onClick={onHideAll} title="일반 사용자에게 전체 Index를 숨긴 뒤 필요한 항목만 공개"><IconLabel icon="eye-off">전체 비공개</IconLabel></Button>}
+            {isAdmin && hidden.size > 0 && <Button onClick={onShowAll} title="모든 Index를 일반 사용자에게 공개"><IconLabel icon="eye">전체 공개</IconLabel></Button>}
             <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
               R.ORD 빈 항목은 리포트 제외(판정용) — 필요하면 개별 선택
-              {isAdmin ? " · 공개 컬럼(👁/🚫)으로 유저 비공개 항목 지정 (기본 전부 공개)" : ""}
+              {isAdmin ? " · 공개 컬럼(눈 아이콘)으로 유저 비공개 항목 지정 (기본 전부 공개)" : ""}
             </span>
           </div>
 
           {/* 열 필터 — 값으로 좁혀 보고, 좁힌 결과를 그대로 선택/해제한다 */}
           <div style={{ display: "flex", gap: 6, marginBottom: 8, alignItems: "center", flexWrap: "wrap",
                         padding: "7px 9px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--bg-primary)" }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}>🔎 열 필터</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "var(--text-secondary)" }}><IconLabel icon="search">열 필터</IconLabel></span>
             <input value={filters.q} onChange={e => setF({ q: e.target.value })}
               placeholder="검색 (ALIAS·ITEMID·수식·UNIT)"
               style={{ ...inputStyle, minWidth: 220, padding: "5px 9px", fontSize: 12 }} />
@@ -581,7 +582,7 @@ function ItemSelectPanel({ items, selected, onToggle, isAdmin, hidden, onToggleH
                         onClick={(e) => { e.stopPropagation(); onToggleHidden(it.alias); }}
                         title={hiddenKeys.has(it.__alias) ? "비공개 — 일반 유저 목록에서 숨김 (클릭하여 공개)" : "공개 (클릭하여 비공개)"}>
                         <span style={{ fontSize: 14, cursor: "pointer", opacity: hiddenKeys.has(it.__alias) ? 1 : 0.7 }}>
-                          {hiddenKeys.has(it.__alias) ? "🚫" : "👁"}
+                          <Icon name={hiddenKeys.has(it.__alias) ? "eye-off" : "eye"} />
                         </span>
                       </td>
                     )}
@@ -671,18 +672,18 @@ function PythonLabPanel({ product, filters, pageRows, agg }) {
     <div>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
         <Button variant="primary" disabled={busy || !product} onClick={() => run(0)}>{busy ? "계산 중…" : "Python 테스트 실행"}</Button>
-        <Button disabled={dlBusy || !product} onClick={download}>{dlBusy ? "다운로드 중…" : "⬇ Python CSV"}</Button>
-        <Button disabled={!product} onClick={loadRef}>📖 window/max 원문 + 템플릿 불러오기</Button>
+        <Button disabled={dlBusy || !product} onClick={download}>{dlBusy ? "다운로드 중…" : <IconLabel icon="download">Python CSV</IconLabel>}</Button>
+        <Button disabled={!product} onClick={loadRef}><IconLabel icon="book">window/max 원문 + 템플릿 불러오기</IconLabel></Button>
         <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>필터·행 수·집계는 상단 조회 조건을 따릅니다 · 계약: def run(wide) -&gt; wide</span>
       </div>
       <textarea value={code} onChange={e => setCode(e.target.value)}
-        placeholder={"def run(wide) -> wide: 새 index 컬럼을 추가해 반환 — '📖 원문 불러오기'로 템플릿·참고코드를 가져오세요"}
+        placeholder={"def run(wide) -> wide: 새 index 컬럼을 추가해 반환 — '원문 불러오기'로 템플릿·참고코드를 가져오세요"}
         spellCheck={false}
         style={{ ...inputStyle, width: "100%", minHeight: 220, fontFamily: "monospace", fontSize: 12, lineHeight: 1.5, whiteSpace: "pre" }} />
       <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 6, flexWrap: "wrap" }}>
         <input value={snipName} onChange={e => setSnipName(e.target.value)} placeholder="스니펫 이름 — 예: my_window_v2"
           style={{ ...inputStyle, width: 220, fontFamily: "monospace" }} />
-        <Button onClick={saveSnip}>💾 스니펫 저장</Button>
+        <Button onClick={saveSnip}><IconLabel icon="save">스니펫 저장</IconLabel></Button>
         {(snips || []).length > 0 && (
           <select value="" onChange={e => {
             const hit = (snips || []).find(s => s.name === e.target.value);
@@ -703,7 +704,7 @@ function PythonLabPanel({ product, filters, pageRows, agg }) {
             )}
           </div>
           <details open>
-            <summary style={{ cursor: "pointer" }}>📋 AI용 프롬프트 — 계약 + 템플릿 (클릭해 복사)</summary>
+            <summary style={{ cursor: "pointer" }}><Icon name="clipboard" style={{ marginRight: 4 }} />AI용 프롬프트 — 계약 + 템플릿 (클릭해 복사)</summary>
             <pre style={{ background: "var(--bg-primary)", padding: 8, borderRadius: 6, overflow: "auto", maxHeight: 220 }}>{ref.reference?.contract || ""}{"\n"}{ref.reference?.template || ""}</pre>
             <Button onClick={() => copyText((ref.reference?.contract || "") + "\n" + (ref.reference?.template || ""))}>⧉ 계약+템플릿 복사</Button>
           </details>
@@ -790,7 +791,7 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
   return (
     <div style={{ border: "1px dashed var(--accent)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, background: "var(--bg-secondary)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={() => setOpen(o => !o)}>
-        <span style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)" }}>🧪 ADDP 수식 테스트 · Python Lab</span>
+        <span style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)" }}><IconLabel icon="flask">ADDP 수식 테스트 · Python Lab</IconLabel></span>
         <Pill tone="warn">관리자 전용</Pill>
         <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
           새 ADDP 수식 또는 Python reformatize 코드를 실제 ET 데이터로 검증
@@ -801,7 +802,7 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
         <div style={{ marginTop: 10 }}>
           <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
             <Button variant={mode === "addp" ? "primary" : undefined} onClick={() => setMode("addp")}>ADDP 수식</Button>
-            <Button variant={mode === "python" ? "primary" : undefined} onClick={() => setMode("python")}>🐍 Python 코드</Button>
+            <Button variant={mode === "python" ? "primary" : undefined} onClick={() => setMode("python")}><IconLabel icon="code">Python 코드</IconLabel></Button>
           </div>
           {mode === "python" ? (
             <PythonLabPanel product={product} filters={filters} pageRows={pageRows} agg={agg} />
@@ -815,13 +816,13 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
               <input value={it.addp_form} onChange={e => setItem(i, { addp_form: e.target.value })}
                 placeholder="ADDP Form — 예: ({VTH_IDX} - avg({VTH_IDX})) / std({VTH_IDX})"
                 style={{ ...inputStyle, flex: 1, fontFamily: "monospace" }} />
-              <Button onClick={() => setItems(list => list.length > 1 ? list.filter((_, j) => j !== i) : [{ alias: "", addp_form: "" }])}>✕</Button>
+              <Button onClick={() => setItems(list => list.length > 1 ? list.filter((_, j) => j !== i) : [{ alias: "", addp_form: "" }])} title="삭제"><Icon name="close" /></Button>
             </div>
           ))}
           <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
             <Button onClick={() => setItems(list => [...list, { alias: "", addp_form: "" }])}>＋ 항목 추가</Button>
             <Button variant="primary" disabled={busy || !product} onClick={() => run(0)}>{busy ? "계산 중…" : "테스트 실행"}</Button>
-            <Button disabled={dlBusy || !product} onClick={download}>{dlBusy ? "다운로드 중…" : "⬇ 테스트 CSV"}</Button>
+            <Button disabled={dlBusy || !product} onClick={download}>{dlBusy ? "다운로드 중…" : <IconLabel icon="download">테스트 CSV</IconLabel>}</Button>
             <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>필터(기간·lot·step 등)·행 수 설정은 상단 조회 조건을 따릅니다</span>
           </div>
 
@@ -843,7 +844,7 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
               </details>
               <details style={{ marginTop: 4 }}>
                 <summary style={{ cursor: "pointer" }}>
-                  🔧 매뉴얼 함수 — MA_Window 등 row 단위 ({(help.manual_functions || []).length})
+                  <Icon name="wrench" style={{ marginRight: 4 }} />매뉴얼 함수 — MA_Window 등 row 단위 ({(help.manual_functions || []).length})
                 </summary>
                 <div style={{ margin: "4px 0" }}>
                   auto report 의 MA_Window 계열은 내장, 새 함수는{" "}
@@ -855,7 +856,7 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
                     {(help.manual_functions || []).map(f => (
                       <tr key={f.name}>
                         <td style={{ padding: "2px 10px 2px 0", fontFamily: "monospace", whiteSpace: "nowrap" }}>
-                          {f.kind === "manual" ? "📄 " : ""}{f.name}
+                          {f.kind === "manual" ? <Icon name="file" style={{ marginRight: 4 }} /> : null}{f.name}
                         </td>
                         <td style={{ padding: "2px 0" }}>{f.desc}</td>
                       </tr>
@@ -1078,7 +1079,7 @@ function ReformatizeHistoryPanel({
           <input
             value={historySearch}
             onChange={e => setHistorySearch(e.target.value)}
-            placeholder="🔍 고유키(RH-), 제품, Index, 작성자 검색…"
+            placeholder="고유키(RH-), 제품, Index, 작성자 검색…"
             style={{ ...inputStyle, width: 230, padding: "2px 8px", fontSize: 11, height: 25 }}
           />
           <Button
@@ -1087,7 +1088,7 @@ function ReformatizeHistoryPanel({
             style={{ padding: "2px 7px", fontSize: 11, height: 25 }}
             title="이력 새로고침"
           >
-            {historyBusy ? "조회 중…" : "🔄"}
+            {historyBusy ? "조회 중…" : <Icon name="refresh" />}
           </Button>
         </div>
       </div>
@@ -1140,7 +1141,7 @@ function ReformatizeHistoryPanel({
                     }}
                     title={isPinned ? `관리자 고정 식 (검색 #${searchNo})` : `검색 #${searchNo}`}
                   >
-                    {isPinned ? `📌 #${searchNo}` : `#${searchNo}`}
+                    {isPinned ? <IconLabel icon="pin">{`#${searchNo}`}</IconLabel> : `#${searchNo}`}
                   </span>
                   <b
                     style={{
@@ -1175,9 +1176,9 @@ function ReformatizeHistoryPanel({
                       type="button"
                       onClick={e => { e.preventDefault(); e.stopPropagation(); copyKey(entry); }}
                       title="고유키 복사"
-                      style={{ border: "none", background: "none", cursor: "pointer", padding: 0, fontSize: 10 }}
+                      style={{ border: "none", background: "none", cursor: "pointer", padding: 0, fontSize: 12, color: "var(--text-secondary)" }}
                     >
-                      📋
+                      <Icon name="copy" />
                     </button>
                   </code>
                   <span
@@ -1192,7 +1193,7 @@ function ReformatizeHistoryPanel({
                     }}
                     title={`실제 조회/검색 횟수: ${Number(entry.reuse_count || 0).toLocaleString()}회`}
                   >
-                    <span style={{ color: "#ef4444", fontSize: 11 }}>❤️</span>
+                    <span style={{ color: "#ef4444", fontSize: 11, display: "inline-flex" }}><Icon name="heart-filled" /></span>
                     <span>{Number(entry.reuse_count || 0).toLocaleString()}회</span>
                   </span>
                   {entry.status === "error" ? (
@@ -1212,7 +1213,7 @@ function ReformatizeHistoryPanel({
                       }}
                       title={`실패 사유: ${entry.error_message || "오류"}`}
                     >
-                      ❌ 실패
+                      <IconLabel icon="x-circle">실패</IconLabel>
                     </span>
                   ) : (
                     <span
@@ -1231,7 +1232,7 @@ function ReformatizeHistoryPanel({
                       }}
                       title="성공"
                     >
-                      ✓ 성공
+                      <IconLabel icon="check">성공</IconLabel>
                     </span>
                   )}
                   {entry.status === "error" && entry.error_message && (
@@ -1346,7 +1347,7 @@ function ReformatizeHistoryPanel({
                     alignItems: "flex-start",
                     gap: 6,
                   }}>
-                    <span style={{ fontWeight: 800, whiteSpace: "nowrap" }}>⚠️ 실패 사유:</span>
+                    <span style={{ fontWeight: 800, whiteSpace: "nowrap" }}><IconLabel icon="warning">실패 사유:</IconLabel></span>
                     <span style={{ fontFamily: "monospace", wordBreak: "break-word" }}>{entry.error_message}</span>
                   </div>
                 )}
@@ -1368,7 +1369,7 @@ function ReformatizeHistoryPanel({
                           fontWeight: 700,
                         }}
                       >
-                        식복사 📋
+                        <IconLabel icon="copy">식복사</IconLabel>
                       </button>
                     </div>
                     <pre
@@ -1782,7 +1783,7 @@ export default function My_Reformatize({ user }) {
     saveVisibility(next, nowHidden ? `'${alias}' 를 유저에게 비공개로 설정했습니다` : `'${alias}' 를 공개로 되돌렸습니다`);
   };
   const hideAllItems = () => {
-    if (!confirm("이 제품의 Index 항목 전체를 일반 사용자에게 숨길까요? 이후 필요한 항목만 👁 버튼으로 공개할 수 있습니다.")) return;
+    if (!confirm("이 제품의 Index 항목 전체를 일반 사용자에게 숨길까요? 이후 필요한 항목만 눈 아이콘 버튼으로 공개할 수 있습니다.")) return;
     saveVisibility(new Set(itemList.map(it => it.alias)), `전체 ${itemList.length}개 항목을 비공개로 설정했습니다`);
   };
   const showAllItems = () => {
@@ -2000,32 +2001,32 @@ export default function My_Reformatize({ user }) {
         <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 10 }}>
           <div style={{ padding: "10px 12px", background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 6 }}>
             <div style={{ fontSize: 12.5, fontWeight: 800, color: "var(--accent)", marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
-              <span>📌</span>
+              <Icon name="pin" />
               <span>방법 1. 아래 필터 폼을 이용하는 방법 (일반 사용자 권장)</span>
             </div>
             <ol style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, lineHeight: 1.65, color: "var(--text-secondary)" }}>
               <li><b style={{ color: "var(--text-primary)" }}>제품 및 기간 지정</b>: 제품을 선택하고 최근 N일 또는 시작~종료일을 설정합니다.</li>
               <li><b style={{ color: "var(--text-primary)" }}>세부 필터 입력</b>: root_lot_id, step_id, step_seq, wafer_id 등을 원하는 만큼 입력합니다. (필터 변경 시 상단 검색식 텍스트도 실시간으로 함께 만들어집니다.)</li>
               <li><b style={{ color: "var(--text-primary)" }}>Index 및 집계 선택</b>: 필요한 REAL/ADDP 항목을 선택하고 집계 방식(shot raw 또는 요약 집계)을 선택합니다.</li>
-              <li><b style={{ color: "var(--text-primary)" }}>조회 또는 다운로드</b>: <b style={{ color: "var(--text-primary)" }}>[조회]</b> 버튼을 누르면 화면에 표가 나타나며, <b style={{ color: "var(--text-primary)" }}>[⬇ CSV 다운로드]</b>로 전체 결과를 저장할 수 있습니다.</li>
+              <li><b style={{ color: "var(--text-primary)" }}>조회 또는 다운로드</b>: <b style={{ color: "var(--text-primary)" }}>[조회]</b> 버튼을 누르면 화면에 표가 나타나며, <b style={{ color: "var(--text-primary)" }}>[CSV 다운로드]</b>로 전체 결과를 저장할 수 있습니다.</li>
             </ol>
           </div>
           <div style={{ padding: "10px 12px", background: "var(--bg-primary)", border: "1px solid var(--border)", borderRadius: 6 }}>
             <div style={{ fontSize: 12.5, fontWeight: 800, color: "#2563eb", marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
-              <span>⚡</span>
+              <Icon name="bolt" />
               <span>방법 2. 상단 검색식·고유키를 입력/수정하여 진행하는 방법 (공유/고급)</span>
             </div>
             <ol style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, lineHeight: 1.65, color: "var(--text-secondary)" }}>
               <li><b style={{ color: "var(--text-primary)" }}>검색식 직접 편집</b>: 상단 검색식 창에 조건문(예: PRODUCT, days, root_lot_id 등)을 직접 타이핑하여 수정합니다.</li>
               <li><b style={{ color: "var(--text-primary)" }}>고유키(이력 ID) 입력 지원</b>: 복사한 검색식 전문뿐만 아니라, 이력 고유키(예: <code style={{ fontFamily: "monospace", color: "var(--accent)" }}>RH-B570659B</code> 또는 순번 <code style={{ fontFamily: "monospace" }}>#1</code>)를 검색식 창에 입력해도 됩니다.</li>
-              <li><b style={{ color: "var(--text-primary)" }}>[✓ 적용] 클릭</b>: <b style={{ color: "var(--text-primary)" }}>[✓ 적용]</b> 버튼(또는 Ctrl+Enter)을 누르면 검색식/고유키의 조건이 아래 필터 폼에 채워지고 정돈된 검색식으로 변환됩니다. (이때는 조회가 바로 시작되지 않습니다.)</li>
+              <li><b style={{ color: "var(--text-primary)" }}>[<Icon name="check" /> 적용] 클릭</b>: <b style={{ color: "var(--text-primary)" }}>[<Icon name="check" /> 적용]</b> 버튼(또는 Ctrl+Enter)을 누르면 검색식/고유키의 조건이 아래 필터 폼에 채워지고 정돈된 검색식으로 변환됩니다. (이때는 조회가 바로 시작되지 않습니다.)</li>
               <li><b style={{ color: "var(--text-primary)" }}>[조회] 클릭</b>: 아래 필터에 반영된 내용을 검토한 후 <b style={{ color: "var(--text-primary)" }}>[조회]</b> 버튼을 눌러 검색을 시작합니다.</li>
             </ol>
           </div>
         </div>
         {isAdmin && (
           <div style={{ marginTop: 8, fontSize: 11.5, color: "var(--text-secondary)", borderTop: "1px dashed var(--border)", paddingTop: 6 }}>
-            🛠 <b style={{ color: "var(--text-primary)" }}>관리자 전용 수식 테스트</b>: [새 ADDP 수식 테스트] 섹션에서 신규 alias와 수식을 작성해 vehicle CSV 반영 전 미리 검증할 수 있습니다.
+            <Icon name="wrench" style={{ marginRight: 4 }} /><b style={{ color: "var(--text-primary)" }}>관리자 전용 수식 테스트</b>: [새 ADDP 수식 테스트] 섹션에서 신규 alias와 수식을 작성해 vehicle CSV 반영 전 미리 검증할 수 있습니다.
           </div>
         )}
       </details>
@@ -2049,7 +2050,7 @@ export default function My_Reformatize({ user }) {
       {/* 조회 조건 */}
       {sharedLink && <Banner tone="info" style={{ marginBottom: 8 }}>
         <label>공유 링크 <input aria-label="생성된 공유 링크" readOnly value={sharedLink} onFocus={e => e.target.select()} style={{ ...inputStyle, width: "100%" }} /></label>
-        <div>공유 기본 주소는 우측 아래 ⚙ ET 다운로드 설정에서 변경할 수 있습니다.</div>
+        <div>공유 기본 주소는 우측 아래 <Icon name="gear" /> ET 다운로드 설정에서 변경할 수 있습니다.</div>
       </Banner>}
       <div id="reformatize-form-anchor" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 8 }}>
         <span style={{ fontSize: 13, color: "var(--text-secondary)" }}>제품</span>
@@ -2063,7 +2064,7 @@ export default function My_Reformatize({ user }) {
         <Button variant="primary" disabled={busy || !product} onClick={() => run(0)}>{busy ? "계산 중…" : "조회"}</Button>
         <Button disabled={dlBusy || !product || !selected?.vehicle_csv} onClick={download}
           title="필터 적용 결과를 CSV 로 다운로드 (여러 명이 동시에 걸면 순서대로 처리됩니다)">
-          {dlBusy ? (dlJob?.state === "queued" ? "대기 중…" : "다운로드 준비 중…") : "⬇ CSV 다운로드"}
+          {dlBusy ? (dlJob?.state === "queued" ? "대기 중…" : "다운로드 준비 중…") : <IconLabel icon="download">CSV 다운로드</IconLabel>}
         </Button>
       </div>
 
@@ -2096,14 +2097,14 @@ export default function My_Reformatize({ user }) {
               style={{ padding: "2px 10px", fontSize: 11, fontWeight: 700 }}
               title="검색식의 내용을 아래 필터에 반영합니다 (Ctrl+Enter). 실제 검색은 [조회] 버튼을 눌러야 실행됩니다."
             >
-              ✓ 적용
+              <IconLabel icon="check">적용</IconLabel>
             </Button>
             <Button
               onClick={handleCopyExpression}
               style={{ padding: "2px 8px", fontSize: 11 }}
               title="검색식 복사"
             >
-              📋 복사
+              <IconLabel icon="copy">복사</IconLabel>
             </Button>
           </div>
         </div>
@@ -2323,7 +2324,7 @@ export default function My_Reformatize({ user }) {
 
       {/* 결과 테이블 */}
       {!result && !busy && (
-        <EmptyState icon="🧮" title="제품을 선택하고 조회를 누르세요"
+        <EmptyState icon="calculator" title="제품을 선택하고 조회를 누르세요"
           hint={settings.scale_applied
             ? "설정: 원본 값에 scale 이 이미 곱해진 것으로 간주 — REAL 은 scale 없이, ADDP(수식)만 계산합니다."
             : "reformatter 규칙 CSV 의 REAL(abs/scale) → ADDP(수식) 순서로 index 컬럼이 계산됩니다."} />

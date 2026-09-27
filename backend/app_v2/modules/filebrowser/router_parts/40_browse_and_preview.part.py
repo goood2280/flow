@@ -6,6 +6,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                    sort_column: str = Query(""),
                    sort_direction: str = Query("asc"),
                    sort_nulls: str = Query("last"),
+                   sort_cast: str = Query(""),
                    agg_func: str = Query(""),
                    agg_column: str = Query(""),
                    agg_group_by: str = Query(""),
@@ -41,7 +42,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
     fp = None
     rel = Path(file)
     settings = _load_filebrowser_settings()
-    sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
+    sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls, sort_cast)
     aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
     cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
     single_file_folders = _single_file_folder_names(
@@ -381,6 +382,7 @@ def base_file_view(file: str = Query(...), sql: str = Query(""),
                     "sort_column": _cache_safe_text(sort_column, 120).casefold(),
                     "sort_direction": _cache_safe_text(sort_direction, 20).casefold(),
                     "sort_nulls": _cache_safe_text(sort_nulls, 20).casefold(),
+                    "sort_cast": _cache_safe_text(sort_cast if isinstance(sort_cast, str) else "", 20).casefold(),
                     "agg_func": _cache_safe_text(agg_func, 40).casefold(),
                     "agg_column": _cache_safe_text(agg_column, 120).casefold(),
                     "agg_group_by": ",".join(sorted(c.casefold() for c in _clean_string_list(agg_group_by))),
@@ -419,6 +421,21 @@ def list_products(root: str = Query(...), fast: bool = Query(False)):
         names = sorted({re.sub(r"^ML_TABLE_", "", fp.stem, flags=re.I) for fp in discover_ml_table_files()})
         return {"products": [{"name": name, "structure": "ml-table", "parquet_count": 1,
                               "date_count": 0, "latest_date": ""} for name in names], "metadata_deferred": False}
+    if str(root or "").strip().upper() == "DB_FILE":
+        # ChartBuilder 가상 루트: DB 루트(와 바로 아래 보이는 폴더)의 단일 데이터 파일.
+        from core.utils import resolve_db_single_file
+        names = []
+        base = _db_root()
+        for child in sorted(base.iterdir(), key=lambda p: p.name.casefold()) if base.is_dir() else []:
+            if child.is_file() and resolve_db_single_file(child.name):
+                names.append(child.name)
+            elif child.is_dir() and not _is_filebrowser_hidden_dir_name(child.name):
+                names.extend(f"{child.name}/{fp.name}" for fp in sorted(child.iterdir(), key=lambda p: p.name.casefold())
+                             if fp.is_file() and resolve_db_single_file(f"{child.name}/{fp.name}"))
+            if len(names) >= 2000:
+                break
+        return {"products": [{"name": name, "structure": "single-file", "parquet_count": 1,
+                              "date_count": 0, "latest_date": ""} for name in names[:2000]], "metadata_deferred": False}
     if str(root or "").strip().upper() == YIELD_SHOT_ROOT:
         from core import yield_map as _yield_map
         products = []

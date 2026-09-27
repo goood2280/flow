@@ -31,6 +31,7 @@
   --radius-1: 2px;
   --radius-2: 4px;
   --radius-3: 8px;
+  --radius-app-icon: 16px;
   --radius-xs: var(--radius-1);
   --radius-sm: var(--radius-1);
   --radius-md: var(--radius-2);
@@ -91,8 +92,22 @@
 
   --shadow-flyout: 0 8px 24px rgb(15 23 42 / 14%);
   --shadow-modal: 0 20px 54px rgb(15 23 42 / 20%);
-  --shadow-app-icon: 0 5px 12px rgb(15 23 42 / 10%);
-  --shadow-app-icon-hover: 0 8px 18px rgb(15 23 42 / 16%);
+
+  /* Isometric home pictograms: light and shade mixers plus neutral solids. */
+  --iso-light: #ffffff;
+  --iso-steel: #3f6390;
+  --iso-steel-wash: #eef3f9;
+  --iso-steel-line: #c9d6e7;
+  --iso-graphite: #5c5c5c;
+  --iso-graphite-wash: #f2f2f2;
+  --iso-graphite-line: #d4d4d4;
+  --iso-dark: #161616;
+  --iso-paper-top: #ffffff;
+  --iso-paper-left: #e0e0e0;
+  --iso-paper-right: #c6c6c6;
+  --iso-ink-top: #6f6f6f;
+  --iso-ink-left: #525252;
+  --iso-ink-right: #393939;
 
   /* Backwards-compatible aliases while legacy pages migrate. */
   --bg-primary: var(--surface-page);
@@ -135,6 +150,11 @@
   --data-grid-line: #d1d5db;
   --data-grid-ink: #111827;
   --data-grid-muted: #6b7280;
+
+  /* SegmentedSwitch: 회색 트랙 위에 떠 보이는 선택 버튼. */
+  --seg-track: var(--surface-hover);
+  --seg-thumb: var(--surface-panel);
+  --seg-thumb-line: var(--border-subtle);
 }
 
 :root[data-theme="dark"] {
@@ -180,6 +200,23 @@
 
   --shadow-flyout: 0 8px 24px rgb(0 0 0 / 32%);
   --shadow-modal: 0 20px 54px rgb(0 0 0 / 42%);
-  --shadow-app-icon: 0 5px 12px rgb(0 0 0 / 24%);
-  --shadow-app-icon-hover: 0 8px 18px rgb(0 0 0 / 34%);
+
+  --iso-light: #f4f4f4;
+  --iso-steel: #86a9d3;
+  --iso-steel-wash: rgb(134 169 211 / 14%);
+  --iso-steel-line: rgb(134 169 211 / 40%);
+  --iso-graphite: #a8a8a8;
+  --iso-graphite-wash: rgb(255 255 255 / 6%);
+  --iso-graphite-line: rgb(255 255 255 / 22%);
+  --iso-dark: #000000;
+  --iso-paper-top: #e0e0e0;
+  --iso-paper-left: #a8a8a8;
+  --iso-paper-right: #8d8d8d;
+  --iso-ink-top: #6f6f6f;
+  --iso-ink-left: #525252;
+  --iso-ink-right: #393939;
+
+  --seg-track: var(--surface-page);
+  --seg-thumb: var(--surface-hover);
+  --seg-thumb-line: var(--border-strong);
 }

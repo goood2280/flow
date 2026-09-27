@@ -72,6 +72,7 @@ from app_v2.modules.informs.splittable_embed import (
     build_splittable_embed,
     build_splittable_embed_from_view,
     format_split_cell_value,
+    ml_product_name,
     split_param_display_name,
     NotReachedLookup,
     SPLIT_CHECK_PREFIX_PX,
@@ -3208,30 +3209,191 @@ def _convert_splittable_embed_to_split_check(embed: dict[str, Any]) -> dict[str,
     return out
 
 
-def _build_splittable_snapshot_embed(req: SplitTableSnapshotReq) -> dict:
+def _json_safe_snapshot(value: Any) -> Any:
+    """응답 직렬화에서 터지는 값(NaN/inf float, set/tuple)을 JSON 안전 값으로 바꾼다.
+
+    FastAPI 응답은 allow_nan=False 로 직렬화한다. 저장된 plan 이나 DB 값에 NaN 이
+    하나라도 섞이면 스냅샷이 통째로 500 이 됐다. 값이 없는 칸과 같게 None 으로 둔다.
+    """
+    if isinstance(value, float):
+        return value if value == value and value not in (float("inf"), float("-inf")) else None
+    if isinstance(value, dict):
+        return {str(k): _json_safe_snapshot(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe_snapshot(v) for v in value]
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    return str(value)
+
+
+def _build_splittable_snapshot_base(req: SplitTableSnapshotReq) -> dict:
     if req.current_view:
-        embed = build_splittable_embed_from_view(
+        return build_splittable_embed_from_view(
             product=req.product,
             lot_id=req.lot_id,
             view=req.current_view,
             custom_cols=req.custom_cols,
             is_fab_lot=req.is_fab_lot,
         )
-    else:
-        embed = build_splittable_embed(
-            product=req.product,
-            lot_id=req.lot_id,
-            custom_cols=req.custom_cols,
-            is_fab_lot=req.is_fab_lot,
-        )
+    return build_splittable_embed(
+        product=req.product,
+        lot_id=req.lot_id,
+        custom_cols=req.custom_cols,
+        is_fab_lot=req.is_fab_lot,
+    )
+
+
+def _snapshot_stage(label: str, fn, embed: dict, warnings: list[str]) -> dict:
+    """표시용 부가 단계(적용 공정·Split 체크·병합)는 실패해도 스냅샷 자체는 살린다.
+
+    이 단계들은 매칭 메타·표시 규약에 기대므로 운영 데이터 한 칸의 예외로
+    인폼 작성 전체가 500 으로 막히면 안 된다. 원본 표로 돌아가고 경고만 남긴다.
+    """
+    try:
+        return fn(embed)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("SplitTable snapshot stage failed: %s", label)
+        warnings.append(f"{label} 표시를 적용하지 못해 기본 표로 첨부했습니다 ({type(exc).__name__}: {exc})"[:300])
+        return embed
+
+
+def _build_splittable_snapshot_embed(req: SplitTableSnapshotReq, warnings: Optional[list[str]] = None) -> dict:
+    warnings = warnings if warnings is not None else []
+    embed = _build_splittable_snapshot_base(req)
     if req.show_step_ids:
-        embed = _apply_step_labels_to_embed(embed, req.product)
+        embed = _snapshot_stage("적용 공정", lambda e: _apply_step_labels_to_embed(e, req.product), embed, warnings)
     mode = _splittable_snapshot_display_mode(req.display_mode)
     if mode == "split_check":
-        return _convert_splittable_embed_to_split_check(embed)
-    if mode == "merged":
-        return _convert_splittable_embed_to_merged(embed)
-    return embed
+        embed = _snapshot_stage("Split 체크", _convert_splittable_embed_to_split_check, embed, warnings)
+    elif mode == "merged":
+        embed = _snapshot_stage("병합", _convert_splittable_embed_to_merged, embed, warnings)
+    return _json_safe_snapshot(embed)
+
+
+# ── plan 항목 → 담당 모듈(팀) ──────────────────────────────────────────────
+# SplitTable 에서 plan 을 세운 항목은 그 공정을 맡은 모듈에 인폼돼야 한다.
+# 담당 모듈 근거 우선순위:
+#   1) 화면이 보낸 적용 공정 module (SplitTable 매칭 메타에서 확정한 값)
+#   2) 제품 KNOB/INLINE/VM 매칭 메타의 module/modules 열
+#   3) 인폼 설정의 모듈 ↔ KNOB 맵 (inform_module_knob_map.json)
+#   4) 항목명·function step 첫 토큰이 인폼 모듈 이름과 정확히 같을 때 (이름 추정)
+def _snapshot_plan_rows(req: SplitTableSnapshotReq) -> list[dict]:
+    view = req.current_view if isinstance(req.current_view, dict) else {}
+    rows = view.get("rows") if isinstance(view.get("rows"), list) else []
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        cells = row.get("_cells") if isinstance(row.get("_cells"), dict) else {}
+        if any(isinstance(c, dict) and _snapshot_has_value(c.get("plan")) for c in cells.values()):
+            out.append(row)
+    return out
+
+
+def _canonical_module(name: Any, modules: list[str]) -> str:
+    text = str(name or "").strip()
+    if not text:
+        return ""
+    for mod in modules:
+        if mod.casefold() == text.casefold():
+            return mod
+    return ""
+
+
+def _meta_modules(meta: dict) -> list[str]:
+    if not isinstance(meta, dict):
+        return []
+    raw = list(meta.get("modules") or []) if isinstance(meta.get("modules"), list) else []
+    if meta.get("module"):
+        raw.insert(0, meta.get("module"))
+    for group in meta.get("groups") or []:
+        if isinstance(group, dict):
+            raw.append(group.get("module"))
+            raw.extend(group.get("modules") or [] if isinstance(group.get("modules"), list) else [])
+    return [str(v or "").strip() for v in raw if str(v or "").strip()]
+
+
+def _plan_param_modules(param: str, row: dict, metas: dict, knob_map: dict, modules: list[str]) -> tuple[list[str], str]:
+    def pick(values) -> list[str]:
+        out: list[str] = []
+        for value in values:
+            mod = _canonical_module(value, modules)
+            if mod and mod not in out:
+                out.append(mod)
+        return out
+
+    process = row.get("_process_columns") if isinstance(row.get("_process_columns"), dict) else {}
+    applied = row.get("_applied_process") if isinstance(row.get("_applied_process"), dict) else {}
+    found = pick([process.get("module"), applied.get("module")])
+    if found:
+        return found, "screen"
+    kind = _step_match_kind(param)
+    meta: dict = {}
+    if kind == "knob_ppid":
+        meta = _step_meta_lookup(metas.get("knob") or {}, param, "KNOB")
+    elif kind == "inline_matching":
+        meta = _step_meta_lookup(metas.get("inline") or {}, param, "INLINE")
+    elif kind == "vm_matching":
+        meta = _step_meta_lookup(metas.get("vm") or {}, param, "VM")
+    found = pick(_meta_modules(meta))
+    if found:
+        return found, "matching"
+    upper = param.upper()
+    tail = re.sub(r"^[A-Za-z]+_", "", param, count=1).upper()
+    found = pick(
+        mod for mod, knobs in (knob_map or {}).items()
+        if any(str(k or "").strip().upper() in {upper, tail} for k in (knobs or []))
+    )
+    if found:
+        return found, "knob_map"
+    tokens = [tail.split("_", 1)[0]]
+    for key in ("step_desc", "function_step"):
+        text = str((meta or {}).get(key) or process.get(key) or "").strip()
+        if text:
+            tokens.append(re.split(r"[_\s]+", text, maxsplit=1)[0])
+    found = pick(tokens)
+    return found, ("name" if found else "")
+
+
+def _snapshot_plan_targets(req: SplitTableSnapshotReq) -> dict:
+    """plan 이 있는 항목과 그 담당 모듈·수신자. 인폼 위저드가 모듈/수신자를 미리 채운다."""
+    rows = _snapshot_plan_rows(req)
+    if not rows:
+        return {"modules": [], "unmapped_params": [], "plan_params": []}
+    cfg = _load_config()
+    modules = [str(m or "").strip() for m in (cfg.get("modules") or []) if str(m or "").strip()]
+    metas = _load_step_metas(ml_product_name(req.product))
+    try:
+        knob_map = _load_module_knob_map()
+    except Exception:
+        knob_map = {}
+    by_module: dict[str, dict] = {}
+    unmapped: list[str] = []
+    plan_params: list[str] = []
+    for row in rows:
+        param = str(row.get("_param") or "").strip()
+        if not param or param in plan_params:
+            continue
+        plan_params.append(param)
+        found, source = _plan_param_modules(param, row, metas, knob_map, modules)
+        if not found:
+            unmapped.append(param)
+            continue
+        for mod in found:
+            bucket = by_module.setdefault(mod, {"module": mod, "params": [], "sources": []})
+            bucket["params"].append(param)
+            if source not in bucket["sources"]:
+                bucket["sources"].append(source)
+    out_modules = []
+    for bucket in sorted(by_module.values(), key=lambda b: (-len(b["params"]), modules.index(b["module"]) if b["module"] in modules else 999)):
+        try:
+            recipients = _module_recipient_rows(bucket["module"])
+        except Exception:
+            recipients = []
+        out_modules.append({**bucket, "recipients": recipients})
+    return {"modules": out_modules, "unmapped_params": unmapped, "plan_params": plan_params}
 
 
 @router.post("/splittable-snapshot")
@@ -3243,7 +3405,7 @@ def splittable_snapshot(req: SplitTableSnapshotReq, request: Request):
     with _SPLITTABLE_SNAPSHOT_LOCK:
         cached = _SPLITTABLE_SNAPSHOT_CACHE.get(key)
         if cached and now - cached[0] <= SPLITTABLE_SNAPSHOT_CACHE_TTL_SEC:
-            return {"ok": True, "embed": cached[1], "cached": True}
+            return {"ok": True, **cached[1], "cached": True}
         inflight = _SPLITTABLE_SNAPSHOT_INFLIGHT.get(key)
         if inflight is None:
             event = threading.Event()
@@ -3257,16 +3419,31 @@ def splittable_snapshot(req: SplitTableSnapshotReq, request: Request):
         with _SPLITTABLE_SNAPSHOT_LOCK:
             cached = _SPLITTABLE_SNAPSHOT_CACHE.get(key)
             if cached and time.time() - cached[0] <= SPLITTABLE_SNAPSHOT_CACHE_TTL_SEC:
-                return {"ok": True, "embed": cached[1], "cached": True, "coalesced": True}
+                return {"ok": True, **cached[1], "cached": True, "coalesced": True}
         raise HTTPException(503, "SplitTable snapshot is still building")
     try:
-        embed = _build_splittable_snapshot_embed(req)
+        warnings: list[str] = []
+        try:
+            embed = _build_splittable_snapshot_embed(req, warnings)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            # 예전엔 여기서 원인 없이 500 만 떨어져 사용자가 무엇이 문제인지 알 수 없었다.
+            logger.exception("SplitTable snapshot failed product=%s lot=%s", req.product, req.lot_id)
+            raise HTTPException(500, f"SplitTable 스냅샷 생성 실패 ({type(exc).__name__}: {exc})"[:500])
+        try:
+            plan_targets = _snapshot_plan_targets(req)
+        except Exception:
+            # 담당 모듈 추천은 보조 정보라 실패해도 스냅샷은 돌려준다.
+            logger.exception("SplitTable snapshot plan targets failed product=%s", req.product)
+            plan_targets = {"modules": [], "unmapped_params": [], "plan_params": []}
+        result = {"embed": embed, "plan_targets": _json_safe_snapshot(plan_targets), "warnings": warnings}
         with _SPLITTABLE_SNAPSHOT_LOCK:
-            _SPLITTABLE_SNAPSHOT_CACHE[key] = (time.time(), embed)
+            _SPLITTABLE_SNAPSHOT_CACHE[key] = (time.time(), result)
             for old_key, (ts, _embed) in list(_SPLITTABLE_SNAPSHOT_CACHE.items()):
                 if time.time() - ts > SPLITTABLE_SNAPSHOT_CACHE_TTL_SEC:
                     _SPLITTABLE_SNAPSHOT_CACHE.pop(old_key, None)
-        return {"ok": True, "embed": embed, "cached": False}
+        return {"ok": True, **result, "cached": False}
     finally:
         with _SPLITTABLE_SNAPSHOT_LOCK:
             inflight = _SPLITTABLE_SNAPSHOT_INFLIGHT.pop(key, None)

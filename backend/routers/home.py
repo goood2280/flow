@@ -259,6 +259,10 @@ def home_alerts(request: Request, limit: int = 50):
                     elif prod:
                         target_search = f"?product={prod}"
                 action_label = "스플릿테이블에서 확인" if target_tab == "splittable" and root_lot else "확인하기"
+                if ntype == "approval" and target_tab == "admin":
+                    # 가입 신청 알람 → 관리자 콘솔 사용자 탭(승인 대기자가 맨 위)으로 바로 연다.
+                    target_search = "?tab=users"
+                    action_label = "가입 승인하기"
 
             alerts.append({
                 "id": f"notif-{n.get('id')}",

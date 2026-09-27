@@ -111,13 +111,66 @@ def _needs_input(response):
     return (response.get("routing_trace") or {}).get("status") == "needs_input" or _status(response) == "needs_input"
 
 
-def completed_origin(messages, result):
-    """Resolve the first user question in a completed clarification chain."""
+def _approval_only(response):
+    """A fully specified change waiting for the user's approval — not a
+    question back to the user (product, lot, value, candidate choice …)."""
+    tool = response.get("tool") or {}
+    return ((tool.get("approval") or {}).get("status") == "pending" and not tool.get("missing")
+            and not (tool.get("clarification") or {}).get("kind") and not tool.get("needs_input")
+            and not response.get("questions"))
+
+
+def _chain_start(messages, index):
+    """Index of the user message that opened the clarification chain ending at index."""
+    while (index >= 2 and messages[index - 1].get("role") == "assistant"
+           and _needs_input(messages[index - 1].get("response") or {})
+           and messages[index - 2].get("role") == "user"):
+        index -= 2
+    return index
+
+
+def _product_names():
+    try:
+        from core import data_chat
+        return data_chat.available_product_names()
+    except Exception:
+        logger.debug("product names unavailable for success-question check", exc_info=True)
+        return None
+
+
+def _is_followup(messages, index, prompt, products):
+    """A question that leaned on an earlier answer in the same chat ("다시
+    보여줘", "대시보드 보여줘" after a product was chosen) is not a reusable
+    example: it names no product while an earlier turn already produced one."""
+    from core.flowi_turn import _status
+    earlier = any(m.get("role") == "assistant" and (m.get("response") or {}).get("tool")
+                  and _status(m.get("response") or {}) == "completed" for m in messages[:index])
+    if not earlier:
+        return False
+    if products is None:
+        products = _product_names()
+        if products is None:
+            return False
+    from core import data_chat
+    return not data_chat.product_candidates(prompt, products)
+
+
+def completed_origin(messages, result, products=None):
+    """The user question to show as a "recent successful question", or None.
+
+    Only a question that the agent answered by itself counts. A request that
+    first asked the user back (which product, which lot, which value) is a
+    human-in-the-loop exchange, not an example to reuse, and neither is a
+    follow-up that relied on the earlier chat or an administrator change. A
+    fully specified change that only waited for approval still counts.
+    ``products`` defaults to the current product catalog."""
     from core.flowi_turn import _status
     tool = result.get("tool") or {}
     if _status(result) != "completed" or not tool or result.get("error"):
         return None
     if result.get("batch") and result["batch"].get("completed") != result["batch"].get("total"):
+        return None
+    if str(tool.get("feature") or "").startswith("semantic."):
         return None
     index = len(messages) - 1
     if index < 0 or messages[index].get("role") != "user":
@@ -133,68 +186,65 @@ def completed_origin(messages, result):
         previous = messages[index - 1].get("response") or {}
         if not _needs_input(previous):
             break
-        # Deferred batch questions have not been executed by a single answer.
-        if any(q.get("status") == "deferred" for q in previous.get("questions", [])):
+        if not _approval_only(previous):
             return None
         if messages[index - 2].get("role") != "user":
             break
         answers.append(messages[index].get("content", ""))
         index -= 2
     prompt = str(messages[index].get("content") or "").strip()
-    return {"prompt": prompt, "answers": answers, "message_id": messages[index].get("id", "")} if prompt else None
+    if not prompt or "\t" in prompt:
+        return None
+    if _is_followup(messages, index, prompt, products):
+        return None
+    return {"prompt": prompt, "answers": answers, "message_id": messages[index].get("id", "")}
 
 
-def _repair_success_origins(data, owner):
-    """Once per owner, repair old answer-fragment records using their saved chats."""
-    if not owner or owner in data.get("origin_migrated_owners", []):
+SUCCESS_POLICY_MARKER = "success_policy_v2_owners"
+
+
+def _revalidate_success(data, owner):
+    """Once per owner: drop recorded questions that the saved chats show were
+    clarification answers, clarification-chain starts or follow-ups.
+
+    A question that also completed on its own in any chat is kept. Records
+    with no trace in the saved chats are kept as they are."""
+    if not owner or owner in data.get(SUCCESS_POLICY_MARKER, []):
         return
+    import sqlite3
     from core import chat_conversations
-    replacements, independent, incomplete, origin_counts = {}, set(), set(), {}
+    from core.flowi_turn import _status
+    products = _product_names()
+    qualified, disqualified = set(), set()
     for conversation in chat_conversations.list_conversations(owner):
         try:
             messages = chat_conversations.read(owner, conversation["id"])["messages"]
-        except (OSError, ValueError):
+        except (OSError, ValueError, sqlite3.Error):
             continue
         for index, message in enumerate(messages):
-            if message.get("role") != "assistant":
+            if message.get("role") != "assistant" or not index or messages[index - 1].get("role") != "user":
                 continue
-            if index and messages[index - 1].get("role") == "user" and _needs_input(message.get("response") or {}):
-                incomplete.add(str(messages[index - 1].get("content") or "").strip().casefold())
-            origin = completed_origin(messages[:index], message.get("response") or {})
-            if not origin:
+            response = message.get("response") or {}
+            asked = str(messages[index - 1].get("content") or "").strip().casefold()
+            if _needs_input(response):
+                disqualified.add(asked)
                 continue
-            key = origin["prompt"].casefold()
-            independent.add(key)
-            origin_counts[key] = origin_counts.get(key, 0) + 1
-            for answer in origin["answers"]:
-                replacements.setdefault(answer.strip().casefold(), set()).add(origin["prompt"])
-    merged, retained, repaired = {}, [], {}
+            if _status(response) != "completed":
+                continue
+            origin = completed_origin(messages[:index], response, products=products)
+            if origin:
+                qualified.add(origin["prompt"].casefold())
+                continue
+            disqualified.add(asked)
+            disqualified.add(str(messages[_chain_start(messages, index - 1)].get("content") or "").strip().casefold())
+    retained = []
     for item in data.get("successful", []):
-        if item.get("owner") != owner:
-            retained.append(item)
+        key = str(item.get("prompt") or item.get("text") or "").strip().casefold()
+        if item.get("owner") == owner and key in disqualified and key not in qualified:
             continue
-        item = dict(item)
-        text = str(item.get("prompt") or item.get("text") or "").strip()
-        if text.casefold() in incomplete and text.casefold() not in independent and text.casefold() not in replacements:
-            continue
-        if text.casefold() in replacements and text.casefold() not in independent:
-            for original in sorted(replacements[text.casefold()]):
-                repaired[original.casefold()] = {**item, "id": f"succ-{uuid4()}", "prompt": original,
-                                                "text": original, "count": origin_counts[original.casefold()]}
-            continue
-        key = text.casefold()
-        if key in merged:
-            merged[key]["count"] = int(merged[key].get("count", 1)) + int(item.get("count", 1))
-        else:
-            merged[key] = item
-            retained.append(item)
-    for key, item in repaired.items():
-        if key not in merged:
-            retained.append(item)
-        else:
-            merged[key]["count"] = origin_counts[key]
+        retained.append(item)
     data["successful"] = retained
-    data.setdefault("origin_migrated_owners", []).append(owner)
+    data.setdefault(SUCCESS_POLICY_MARKER, []).append(owner)
     _write_data(data)
 
 
@@ -203,8 +253,8 @@ def get_sample_prompts(user: str = "") -> dict[str, Any]:
     owner = str(user or "").strip()
     with _LOCK:
         data = _read_data()
-        _repair_success_origins(data, owner)
-        pinned = [_enrich_item(x) for x in data.get("pinned", [])]
+        _revalidate_success(data, owner)
+        pinned =[_enrich_item(x) for x in data.get("pinned", [])]
         successful = [
             _enrich_item(x) for x in data.get("successful", [])
             if owner and str(x.get("owner") or "").strip() == owner

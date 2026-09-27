@@ -240,7 +240,7 @@ _AI_SQL_CAST_GUIDE = {
     "syntax": "CAST(column AS DOUBLE|FLOAT|BIGINT|INTEGER|INT|DATE|TIMESTAMP|DATETIME|TIME)",
     "try_cast": "TRY_CAST(column AS same_types)",
     "execution": "CAST and TRY_CAST are normalized to TRY_CAST; conversion failures are excluded by comparisons.",
-    "scope": "WHERE/filter expression only. Do not use CAST in ORDER BY, SELECT, arithmetic, nested functions, joins, or DDL/DML.",
+    "scope": "Use CAST in the sql WHERE/filter expression. Never put ORDER BY in sql; to sort a string-stored number/time by value, return sort.cast (DOUBLE|BIGINT|TIMESTAMP|DATE|VARCHAR) instead. No CAST in SELECT, arithmetic, nested functions, joins, or DDL/DML.",
     "examples": [
         "CAST(value AS DOUBLE) >= 10",
         "CAST(tkout_time AS TIMESTAMP) >= '2024-04-21'",
@@ -1016,11 +1016,32 @@ def _normalize_polars_view_sql_filter(
 _AI_SQL_ORDER_BY_SPLIT_RE = re.compile(r"\bORDER\s+BY\b", re.IGNORECASE)
 _AI_SQL_DISPLAY_IDENTIFIER_RE = r"(?:`(?:``|[^`])+`|\"(?:\"\"|[^\"])+\"|[A-Za-z_][A-Za-z0-9_]*)"
 _AI_SQL_ORDER_BY_RE = re.compile(
-    rf"^\s*(?P<col>{_AI_SQL_DISPLAY_IDENTIFIER_RE})"
+    rf"^\s*(?:(?:TRY_CAST|CAST)\s*\(\s*(?P<cast_col>{_AI_SQL_DISPLAY_IDENTIFIER_RE})\s+AS\s+(?P<cast>[A-Za-z0-9_]+)\s*\)"
+    rf"|(?P<col>{_AI_SQL_DISPLAY_IDENTIFIER_RE}))"
     r"(?:\s+(?P<direction>ASC|DESC))?"
     r"(?:\s+NULLS\s+(?P<nulls>FIRST|LAST))?\s*$",
     re.IGNORECASE,
 )
+# 조회 정렬 전용 변환(cast). 정렬 키만 바꾸고 표시 값은 원본 그대로 둔다.
+_VIEW_SORT_CAST_ALIASES = {
+    "double": "DOUBLE", "float": "DOUBLE", "numeric": "DOUBLE", "number": "DOUBLE",
+    "decimal": "DOUBLE", "real": "DOUBLE", "숫자": "DOUBLE", "실수": "DOUBLE",
+    "bigint": "BIGINT", "integer": "BIGINT", "int": "BIGINT", "int64": "BIGINT", "정수": "BIGINT",
+    "timestamp": "TIMESTAMP", "datetime": "TIMESTAMP", "time": "TIMESTAMP", "시간": "TIMESTAMP", "날짜시간": "TIMESTAMP",
+    "date": "DATE", "날짜": "DATE",
+    "varchar": "VARCHAR", "string": "VARCHAR", "text": "VARCHAR", "str": "VARCHAR", "문자": "VARCHAR", "문자열": "VARCHAR",
+}
+
+
+def _normalize_view_sort_cast(value) -> str:
+    """Return a canonical sort cast type or "" (= sort by the stored value)."""
+    text = str(value or "").strip()
+    if not text or text.casefold() in {"none", "raw", "원본", "auto"}:
+        return ""
+    hit = _VIEW_SORT_CAST_ALIASES.get(text.casefold())
+    if not hit:
+        raise ValueError(f"unsupported sort cast type: {text} (DOUBLE, BIGINT, TIMESTAMP, DATE, VARCHAR)")
+    return hit
 
 
 def _split_ai_sql_order_by(sql: str) -> tuple[str, str]:
@@ -1047,17 +1068,21 @@ def _parse_ai_sql_order_by(order_sql: str, columns: list[str] | tuple[str, ...] 
         raise ValueError("ORDER BY must contain only one column, direction, and optional NULLS order")
     match = _AI_SQL_ORDER_BY_RE.match(text)
     if not match:
-        raise ValueError("ORDER BY must use: column [ASC|DESC] [NULLS FIRST|LAST]")
-    column = _unquote_ai_sql_display_identifier(match.group("col"))
+        raise ValueError("ORDER BY must use: column|CAST(column AS type) [ASC|DESC] [NULLS FIRST|LAST]")
+    column = _unquote_ai_sql_display_identifier(match.group("cast_col") or match.group("col"))
     lookup = _column_lookup(list(columns or []))
     hit = lookup.get(column.casefold()) if lookup else column
     if columns and not hit:
         raise ValueError(f"ORDER BY referenced unknown column: {column}")
-    return {
+    spec = {
         "column": hit,
         "direction": (match.group("direction") or "asc").casefold(),
         "nulls": (match.group("nulls") or "last").casefold(),
     }
+    cast = _normalize_view_sort_cast(match.group("cast")) if match.group("cast") else ""
+    if cast:
+        spec["cast"] = cast
+    return spec
 
 
 def _quote_ai_sql_display_identifier(name: str) -> str:
@@ -1255,7 +1280,10 @@ def _build_ai_sql_display_sql(
         base = where
     if not sort:
         return base
-    order = f"ORDER BY {_quote_ai_sql_display_identifier(sort['column'])} {str(sort.get('direction') or 'asc').upper()}"
+    sort_key = _quote_ai_sql_display_identifier(sort["column"])
+    if sort.get("cast"):
+        sort_key = f"CAST({sort_key} AS {sort['cast']})"
+    order = f"ORDER BY {sort_key} {str(sort.get('direction') or 'asc').upper()}"
     if str(sort.get("nulls") or "last").casefold() == "first":
         order += " NULLS FIRST"
     return f"{base} {order}".strip()
@@ -2052,6 +2080,7 @@ def _normalize_ai_sql_sort(value, columns: list[str], warnings: list[str] | None
         column = ""
         direction = ""
         nulls = ""
+        cast_raw = ""
         if isinstance(raw, str):
             parts = re.split(r"[\s,]+", raw.strip())
             if parts:
@@ -2060,6 +2089,8 @@ def _normalize_ai_sql_sort(value, columns: list[str], warnings: list[str] | None
                 direction = parts[1]
             if len(parts) >= 3:
                 nulls = parts[2]
+            if len(parts) >= 4:
+                cast_raw = parts[3]
         elif isinstance(raw, dict):
             column = str(
                 raw.get("column") or raw.get("col") or raw.get("name")
@@ -2067,6 +2098,7 @@ def _normalize_ai_sql_sort(value, columns: list[str], warnings: list[str] | None
             )
             direction = str(raw.get("direction") or raw.get("dir") or raw.get("order") or "")
             nulls = str(raw.get("nulls") or raw.get("null_order") or "")
+            cast_raw = str(raw.get("cast") or raw.get("as_type") or raw.get("cast_type") or "")
         if not column:
             continue
         hit = lookup.get(column.casefold())
@@ -2088,7 +2120,15 @@ def _normalize_ai_sql_sort(value, columns: list[str], warnings: list[str] | None
             nulls = "first"
         else:
             nulls = "last"
-        return {"column": hit, "direction": direction, "nulls": nulls}
+        out = {"column": hit, "direction": direction, "nulls": nulls}
+        try:
+            cast = _normalize_view_sort_cast(cast_raw)
+        except ValueError as exc:
+            _draft_warning(warnings, f"{context}: {exc}; sorted by stored value")
+            cast = ""
+        if cast:
+            out["cast"] = cast
+        return out
     return {}
 
 
@@ -2316,20 +2356,26 @@ def _aggregate_sort_alias(sort_spec: dict, aggregate_spec: dict | None, output_c
     return spec
 
 
-def _view_sort_query(sort_column: str = "", sort_direction: str = "", sort_nulls: str = "") -> dict:
+def _view_sort_query(sort_column: str = "", sort_direction: str = "", sort_nulls: str = "",
+                     sort_cast: str = "") -> dict:
     if not isinstance(sort_column, str):
         sort_column = ""
     if not isinstance(sort_direction, str):
         sort_direction = "asc"
     if not isinstance(sort_nulls, str):
         sort_nulls = "last"
+    if not isinstance(sort_cast, str):
+        sort_cast = ""
     if not str(sort_column or "").strip():
         return {}
-    return {
+    spec = {
         "column": str(sort_column or "").strip(),
         "direction": str(sort_direction or "asc").strip() or "asc",
         "nulls": str(sort_nulls or "last").strip() or "last",
     }
+    if sort_cast.strip():
+        spec["cast"] = sort_cast.strip()
+    return spec
 
 
 def _resolve_view_sort_spec(sort_spec: dict | None, all_columns: list[str], *,
@@ -2357,16 +2403,47 @@ def _sort_nulls_last(spec: dict) -> bool:
 def _sort_response_payload(spec: dict, latest_order_col: str | None) -> dict:
     if not spec or latest_order_col:
         return {}
-    return {
+    out = {
         "column": spec.get("column") or "",
         "direction": spec.get("direction") or "asc",
         "nulls": spec.get("nulls") or "last",
     }
+    if spec.get("cast"):
+        out["cast"] = spec["cast"]
+    return out
+
+
+def _sort_cast_polars_expr(expr, cast: str):
+    """Polars twin of DuckDB TRY_CAST for sort keys: failures become null."""
+    if cast == "VARCHAR":
+        return expr.cast(_SORT_STR, strict=False)
+    text = expr.cast(_SORT_STR, strict=False).str.strip_chars()
+    if cast == "DOUBLE":
+        return text.cast(pl.Float64, strict=False)
+    if cast == "BIGINT":
+        return text.cast(pl.Int64, strict=False)
+    if cast == "TIMESTAMP":
+        return text.str.to_datetime(strict=False)
+    if cast == "DATE":
+        return text.str.to_datetime(strict=False).dt.date()
+    return expr
 
 
 def _sort_expr(spec: dict, latest_order_col: str | None):
     expr = pl.col(spec["column"])
-    return expr.cast(_SORT_STR, strict=False) if latest_order_col else expr
+    if latest_order_col:
+        return expr.cast(_SORT_STR, strict=False)
+    cast = str(spec.get("cast") or "")
+    return _sort_cast_polars_expr(expr, cast) if cast else expr
+
+
+def _duckdb_sort_kwargs(spec: dict) -> dict:
+    return {
+        "order_by": (spec or {}).get("column") or "",
+        "descending": _sort_descending(spec),
+        "order_cast": str((spec or {}).get("cast") or ""),
+        "nulls_first": not _sort_nulls_last(spec) if spec else False,
+    }
 
 
 def _fallback_ai_sql_sort(prompt: str, columns: list[str]) -> dict:
@@ -2392,7 +2469,15 @@ def _fallback_ai_sql_sort(prompt: str, columns: list[str]) -> dict:
         "큰순서", "큰 순서", "높은순", "높은 순", "내림차순", "desc", "descending", "최신순",
     )):
         direction = "desc"
-    return {"column": hits[-1], "direction": direction, "nulls": "last"}
+    spec = {"column": hits[-1], "direction": direction, "nulls": "last"}
+    cast_match = re.search(r"\bCAST\s*\(?\s*(?:AS\s+)?(DOUBLE|FLOAT|BIGINT|INTEGER|INT|TIMESTAMP|DATETIME|DATE|VARCHAR)\b", text, flags=re.I)
+    if cast_match:
+        spec["cast"] = _normalize_view_sort_cast(cast_match.group(1))
+    elif any(token in low for token in ("숫자로", "숫자 기준", "숫자 크기", "수치로", "as number", "numeric")):
+        spec["cast"] = "DOUBLE"
+    elif any(token in low for token in ("시간으로", "시간 기준", "날짜로", "날짜 기준", "as time", "as date")):
+        spec["cast"] = "TIMESTAMP"
+    return spec
 
 
 def _filebrowser_ai_sql_feedback_path() -> Path:
@@ -3504,7 +3589,7 @@ def _draft_filebrowser_ai_sql(*, natural_language: str, columns: list[str],
                 "context": context,
                 "response_schema": {
                     "sql": "column = 'value' AND CAST(value AS DOUBLE) >= 10",
-                    "sort": {"column": "value", "direction": "desc", "nulls": "last"},
+                    "sort": {"column": "value", "direction": "desc", "nulls": "last", "cast": "DOUBLE"},
                     "aggregate": {"function": "avg", "column": "value", "group_by": ["item_id"]},
                     "selected_columns": ["column", "other_col"],
                     "resolved_columns": ["column"],
@@ -3814,8 +3899,7 @@ def _run_view_duckdb(files: list[Path], sql: str, select_cols: str, rows: int,
             select_cols=sel,
             limit=page_size + 1,
             offset=offset,
-            order_by=active_sort.get("column") or "",
-            descending=_sort_descending(active_sort),
+            **_duckdb_sort_kwargs(active_sort),
         )
     finally:
         duckdb_engine.release_query(query_key, con)
@@ -4426,8 +4510,7 @@ def _download_duckdb_csv(
         where=where,
         select_cols=selected,
         limit=max_rows,
-        order_by=active_sort.get("column") or "",
-        descending=_sort_descending(active_sort),
+        **_duckdb_sort_kwargs(active_sort),
     )
     csv_bytes = _csv_bytes_checked(df, _csv_download_max_bytes(max_bytes, settings))
     return df, csv_bytes
@@ -4442,6 +4525,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
                  sort_column: str = Query(""),
                  sort_direction: str = Query("asc"),
                  sort_nulls: str = Query("last"),
+                 sort_cast: str = Query(""),
                  agg_func: str = Query(""),
                  agg_column: str = Query(""),
                  agg_group_by: str = Query(""),
@@ -4477,7 +4561,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
         query_key = "filebrowser:" + str(me.get("username") or "") + ":" + str(root) + ":" + str(product)
         query_session = str(query_session or "").strip()[:120] or str(uuid.uuid4())
         query_id = str(query_id or "").strip()[:120] or str(uuid.uuid4())
-        sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls)
+        sort_spec = _view_sort_query(sort_column, sort_direction, sort_nulls, sort_cast)
         aggregate_spec = _view_aggregate_query(agg_func, agg_column, agg_group_by)
         cols = _preview_cols_limit(cols or _settings_preview_max_columns(settings))
         full_scan = (
@@ -4608,6 +4692,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
                         "sort_column": _cache_safe_text(sort_column, 120).casefold(),
                         "sort_direction": _cache_safe_text(sort_direction, 20).casefold(),
                         "sort_nulls": _cache_safe_text(sort_nulls, 20).casefold(),
+                        "sort_cast": _cache_safe_text(sort_cast if isinstance(sort_cast, str) else "", 20).casefold(),
                         "agg_func": _cache_safe_text(agg_func, 40).casefold(),
                         "agg_column": _cache_safe_text(agg_column, 120).casefold(),
                         "agg_group_by": ",".join(sorted(c.casefold() for c in _clean_string_list(agg_group_by))),
@@ -4654,7 +4739,9 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 "root": str(root), "product": str(product), "sql": str(sql or ""),
                 "rows": int(rows), "cols": int(cols), "select_cols": str(select_cols or ""),
                 "sort_column": str(sort_column or ""), "sort_direction": str(sort_direction or "asc"),
-                "sort_nulls": str(sort_nulls or "last"), "agg_func": str(agg_func or ""),
+                "sort_nulls": str(sort_nulls or "last"),
+                "sort_cast": sort_cast if isinstance(sort_cast, str) else "",
+                "agg_func": str(agg_func or ""),
                 "agg_column": str(agg_column or ""), "agg_group_by": str(agg_group_by or ""),
                 "all_partitions": bool(all_partitions), "engine": str(engine or "auto"),
                 "page": int(page), "page_size": int(page_size), "source_file_count": len(files),

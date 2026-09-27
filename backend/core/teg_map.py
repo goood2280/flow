@@ -42,6 +42,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -248,6 +249,46 @@ def _bounded_cache_put(cache: dict, key: tuple, value: Any, limit: int) -> None:
     cache[key] = value
     while len(cache) > limit:
         cache.pop(next(iter(cache)))
+
+
+# 기준 파일 로더 캐시 — 화면이 열릴 때마다(/config 의 layout 상태, /check-targets 의
+# TEG 목록) 공유 드라이브의 Chip_Radius·Teg_location·MAIN·Product Info 를 pandas 로
+# 다시 읽고 전 제품 geometry 를 펼치고 있었다(지도 payload 만 캐시돼 있었음). 로더마다
+# 최신 1건을 (입력 파일 지문[, 설정]) 키로 보관하고, 호출자에게는 복사본을 준다.
+# 이 모듈이 파일을 쓰면 _invalidate_loader_cache() 로 즉시 비운다(mtime 해상도가
+# 거친 네트워크 드라이브에서 같은 초·같은 크기로 덮어쓴 경우 대비).
+_TEG_LOADER_CACHE: dict[str, tuple[Any, Any]] = {}
+_TEG_CANDIDATE_FILES_CACHE: dict[str, tuple[float, list[str]]] = {}
+_TEG_CANDIDATE_FILES_TTL_SEC = 30.0
+
+
+def _invalidate_loader_cache() -> None:
+    with _TEG_CACHE_LOCK:
+        _TEG_LOADER_CACHE.clear()
+        _TEG_CANDIDATE_FILES_CACHE.clear()
+
+
+def _copy_loaded(value: Any) -> Any:
+    """로더 결과 (표, 경로) 의 방어 복사 — 호출자가 표를 고쳐도 캐시는 그대로."""
+    if isinstance(value, tuple):
+        return tuple(_copy_loaded(v) for v in value)
+    copier = getattr(value, "copy", None)
+    if value is not None and callable(copier) and hasattr(value, "columns"):
+        return copier()            # pandas DataFrame — C 수준 복사
+    if isinstance(value, (dict, list)):
+        return copy.deepcopy(value)
+    return value
+
+
+def _loader_memo(name: str, key: Any, build):
+    with _TEG_CACHE_LOCK:
+        hit = _TEG_LOADER_CACHE.get(name)
+    if hit is not None and hit[0] == key:
+        return _copy_loaded(hit[1])
+    value = build()
+    with _TEG_CACHE_LOCK:
+        _TEG_LOADER_CACHE[name] = (key, value)
+    return _copy_loaded(value)
 
 
 def _file_fingerprint(path: Path) -> tuple[str, int, int]:
@@ -1766,8 +1807,13 @@ def _product_shots(info: dict[str, Any], wafer_edge_mm: float) -> list[dict[str,
 
 def load_product_info():
     """제품 추가 원본 CSV → 정규화 DataFrame. 잘못된 행은 제품 단위로 제외한다."""
-    import pandas as pd
     path = product_info_path()
+    return _loader_memo("product_info", _file_fingerprint(path),
+                        lambda: _load_product_info_uncached(path))
+
+
+def _load_product_info_uncached(path: Path):
+    import pandas as pd
     if not path.is_file():
         return pd.DataFrame(columns=PRODUCT_INFO_COLUMNS), path
     try:
@@ -1944,9 +1990,26 @@ def _generated_product_layout(cfg: dict):
 
 
 def load_layout():
-    """제품 정의를 primary로, Chip_Radius 계열 파일을 fallback으로 합친 layout."""
-    import pandas as pd
+    """제품 정의를 primary로, Chip_Radius 계열 파일을 fallback으로 합친 layout.
+
+    입력 전체(설정 + layout/Teg/MAIN/Product Info 지문)가 같으면 캐시를 쓴다. 설정한
+    layout 이 깨져 DB root 의 다른 Chip_Radius 로 폴백했던 경우에 대비해, 실제로
+    쓴 파일의 지문도 적중 조건에 넣는다.
+    """
     cfg = load_cfg()
+    sig = _teg_source_signature(cfg)
+    with _TEG_CACHE_LOCK:
+        hit = _TEG_LOADER_CACHE.get("layout")
+    if hit is not None and hit[0][0] == sig and _file_fingerprint(hit[1][1]) == hit[0][1]:
+        return _copy_loaded(hit[1])
+    value = _load_layout_uncached(cfg)
+    with _TEG_CACHE_LOCK:
+        _TEG_LOADER_CACHE["layout"] = ((sig, _file_fingerprint(value[1])), value)
+    return _copy_loaded(value)
+
+
+def _load_layout_uncached(cfg: dict):
+    import pandas as pd
     configured = resolve_path(cfg["layout_file"])
     candidates: list[Path] = []
 
@@ -2019,6 +2082,11 @@ def load_main_chips():
     """
     cfg = load_cfg()
     path = resolve_path(cfg["main_chip_file"])
+    return _loader_memo("main_chips", _file_fingerprint(path),
+                        lambda: _load_main_chips_uncached(path))
+
+
+def _load_main_chips_uncached(path: Path):
     if not path.is_file():
         return {}, path
     try:
@@ -2150,9 +2218,13 @@ def teg_size(raw_w: Any, raw_h: Any, scale: float, cfg: dict,
 
 def load_tegs():
     """Teg_location 파일 → (DataFrame[vehicle,teg,ebeam_x,ebeam_y,(teg_w,teg_h)], 경로)."""
-    import pandas as pd
     cfg = load_cfg()
     path = resolve_path(cfg["teg_file"])
+    return _loader_memo("tegs", _file_fingerprint(path), lambda: _load_tegs_uncached(path))
+
+
+def _load_tegs_uncached(path: Path):
+    import pandas as pd
     if not path.is_file():
         return None, path
     try:
@@ -2891,6 +2963,42 @@ def map_payload(vehicle: str) -> dict:
         return built
 
 
+# /map HTTP 응답 bytes 캐시 — payload 캐시 적중이어도 요청마다 deepcopy + FastAPI
+# 인코딩(순수 파이썬, TEG 수에 비례)이 붙었다. 키 = (payload 키, max_selection).
+_TEG_MAP_JSON_CACHE: dict[tuple, bytes] = {}
+_TEG_MAP_JSON_CACHE_MAX = 64
+
+
+def map_payload_json(vehicle: str, max_selection: int | None) -> bytes | None:
+    """`map_payload(vehicle)` + ``max_selection`` 을 JSON bytes 로. 직렬화 불가면 None.
+
+    None 이면 호출측은 예전처럼 dict 를 돌려준다(FastAPI 기본 인코딩).
+    """
+    try:
+        from core import json_fast
+    except ImportError:            # 부분 배포 대비 — 예전 경로(dict 반환)로
+        return None
+
+    veh = str(vehicle or "").strip()
+    if not veh:
+        raise LookupError("vehicle 이 비어 있습니다")
+    key = ((veh.casefold(), _teg_source_signature(load_cfg())), max_selection)
+    with _TEG_CACHE_LOCK:
+        body = _TEG_MAP_JSON_CACHE.get(key)
+    if body is not None:
+        return body
+    payload = map_payload(veh)
+    payload["max_selection"] = max_selection
+    try:
+        body = json_fast.dumps_bytes(payload)
+    except (TypeError, ValueError):
+        logger.warning("TEG map payload 직렬화 폴백 vehicle=%s", veh, exc_info=True)
+        return None
+    with _TEG_CACHE_LOCK:
+        _bounded_cache_put(_TEG_MAP_JSON_CACHE, key, body, _TEG_MAP_JSON_CACHE_MAX)
+    return body
+
+
 def teg_radius_table(vehicle: str, teg: str) -> dict:
     """특정 TEG 의 shot 별 좌하단 실좌표(mm)·원점 radius 표."""
     payload = map_payload(vehicle)
@@ -3155,6 +3263,7 @@ def save_reference_file(kind: str, columns: list[str], rows: list[list[Any]], us
         else:
             frame.to_csv(temp, index=False, encoding="utf-8-sig", lineterminator="\n")
         os.replace(temp, path)
+        _invalidate_loader_cache()
     finally:
         try:
             if temp.exists():
@@ -3309,6 +3418,7 @@ def _save_product_info_row(vehicle: str, info: dict[str, Any], node_path: str,
     try:
         frame.to_csv(temp, index=False, encoding="utf-8-sig", lineterminator="\n")
         os.replace(temp, path)
+        _invalidate_loader_cache()
     finally:
         try:
             if temp.exists():
@@ -3327,6 +3437,7 @@ def _casefold_mapping_key(mapping: dict, vehicle: str) -> str | None:
 
 def _restore_file_bytes(path: Path, content: bytes | None) -> None:
     """제품 식별자 다중 파일 갱신 실패 시 호출하는 원본 복구 경로."""
+    _invalidate_loader_cache()
     if content is None:
         try:
             path.unlink(missing_ok=True)
@@ -3342,6 +3453,7 @@ def _restore_file_bytes(path: Path, content: bytes | None) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp, path)
+        _invalidate_loader_cache()
     finally:
         try:
             if temp.exists():
@@ -3733,13 +3845,26 @@ update_legacy_product_from_table = update_product_from_table
 
 
 def candidate_files() -> list[str]:
-    """설정 드롭다운용 — DB root 최상위의 표 형식 파일 목록."""
+    """설정 드롭다운용 — DB root 최상위의 표 형식 파일 목록.
+
+    위치 조회 화면을 열 때마다(/config) 네트워크 DB root 전체를 열거하지 않도록
+    30초 동안 재사용한다. 이 모듈이 기준 파일을 저장하면 즉시 비운다.
+    """
     try:
         root = roots.get_db_root()
+        key = str(root)
+        now = time.monotonic()
+        with _TEG_CACHE_LOCK:
+            hit = _TEG_CANDIDATE_FILES_CACHE.get(key)
+        if hit is not None and now - hit[0] < _TEG_CANDIDATE_FILES_TTL_SEC:
+            return list(hit[1])
         out = []
         for p in sorted(root.iterdir()):
             if p.is_file() and p.suffix.lower() in (".csv", ".parquet", ".xlsx"):
                 out.append(p.name)
+        with _TEG_CACHE_LOCK:
+            _TEG_CANDIDATE_FILES_CACHE.clear()
+            _TEG_CANDIDATE_FILES_CACHE[key] = (now, list(out))
         return out
     except Exception:
         return []

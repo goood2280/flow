@@ -75,11 +75,17 @@ _EXECUTION_PATH = contextvars.ContextVar("flow_llm_execution_path", default="")
 _DATA_TASK_PATHS = (
     "/api/home-agent/orchestrate", "/api/llm/flowi/chat",
     "/api/filebrowser/chart-builder/assistant", "/api/filebrowser/sql/llm/draft",
+    # 파일설정 검증/정렬 규칙 초안(관리자 전용). 빠져 있으면 LLM 이 항상 거부되고 키워드 초안만 나온다.
+    "/api/filebrowser/settings/llm/draft",
+    # DCOP 검사 규칙 초안(관리자 전용). 여기 없으면 호출이 늘 거부된다.
+    "/api/dcop/rules/llm/draft",
     "/api/filebrowser/chart-builder/run", "/api/filebrowser/view",
     "/api/filebrowser/root-parquet-view", "/api/filebrowser/download",
     "/api/llm/test", "/api/llm/flowi/verify",
     "/api/home-agent/probe",
     "/api/template-report/assistant",
+    # 분석의뢰 → 연결된 Template 을 의뢰 랏·slot·split 에 맞게 고친 초안(저장 안 함).
+    "/api/analysis-requests/report-draft",
     "/api/flowi-learning/db-reference/generate",
     "/api/product-wiki/intake", "/api/product-wiki/compile",
     "/api/product-semantics/bootstrap", "/api/product-semantics/propose",
@@ -90,6 +96,11 @@ ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
 _DOTENV_FILE = PATHS.app_root / ".env"
 _DOTENV_LOCK = threading.RLock()
 _DOTENV_CACHE: Dict[str, Any] = {"path": "", "mtime": None, "values": {}}
+
+GEMMA4_MIN_TIMEOUT_S = 60
+# JSON 계획·추출 호출의 샘플링 온도. 사내 Gemma4/Playground 는 대화용 기본값
+# 0.5 가 걸려 있어 같은 질문에 다른 도구를 고르거나 JSON 을 깨뜨리는 일이 잦았다.
+STRUCTURED_TEMPERATURE = 0.1
 
 _DEFAULT: Dict[str, Any] = {
     "enabled": False,
@@ -478,6 +489,11 @@ def _normalize_runtime_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         merged["timeout_s"] = int(merged.get("timeout_s") or 20)
     except Exception:
         merged["timeout_s"] = 20
+    if provider == "gemma4":
+        # 사내 Gemma4 는 공유 GPU 대기열 뒤에서 수천 토큰 참고자료를 프리필한다.
+        # 기본 20초로는 한 번의 지연이 곧 타임아웃 → 차단기 개방 → 이어지는 턴까지
+        # 전부 실패로 번졌다. 느린 응답이 실패보다 낫다.
+        merged["timeout_s"] = max(merged["timeout_s"], GEMMA4_MIN_TIMEOUT_S)
     if not isinstance(merged.get("headers"), dict):
         merged["headers"] = {}
     if not isinstance(merged.get("extra_body"), dict):
@@ -1317,6 +1333,9 @@ def _complete_impl(prompt: str, *, system: Optional[str] = None,
         body = _build_request_body(cfg, prompt, system, request_overrides=request_overrides)
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         to = int(timeout or cfg.get("timeout_s") or 20)
+        if cfg.get("provider") == "gemma4" and not probe:
+            # 호출부의 30~45초 상한은 범용 엔드포인트 기준이다(연결 검사 probe 는 제외).
+            to = max(to, GEMMA4_MIN_TIMEOUT_S)
         hdrs = _build_request_headers(cfg, auth_token=auth_token, timeout_s=to)
     except Exception as prep_exc:
         prep_error = _redact_error_text(prep_exc)
@@ -1606,7 +1625,12 @@ def _complete_structured(
             _set_capability_state(cfg, "json_object", False)
             reset_llm_health()
             downgraded = True
-    return complete(prompt, system=system, timeout=timeout, probe=downgraded), "prompt_json"
+    overrides = None
+    if (str(cfg.get("provider") or "").lower() in {"gemma4", "playground"}
+            and "temperature" not in (cfg.get("extra_body") or {})):
+        overrides = {"temperature": STRUCTURED_TEMPERATURE}
+    return complete(prompt, system=system, timeout=timeout, probe=downgraded,
+                    request_overrides=overrides), "prompt_json"
 
 
 def complete_json(prompt: str, *, system: Optional[str] = None,

@@ -8,6 +8,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { sf, qs } from "../../lib/api";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import Loading from "../../components/Loading";
 import { Banner, Button, Card, EmptyState, Input, PageShell, Pill, Select } from "../../components/UXKit";
 
@@ -261,7 +262,7 @@ export default function My_EtTime() {
         <Card><div style={{ color: "var(--danger)", fontSize: 14, whiteSpace: "pre-wrap" }}>{error}</div></Card>
       )}
       {!loading && !error && data && rows.length === 0 && (
-        <EmptyState icon="⏱" title="측정 데이터 없음"
+        <EmptyState icon="timer" title="측정 데이터 없음"
           hint={`${data.product} / ${data.root_lot_id} 에 해당하는 ET 측정 이력이 없습니다.`} />
       )}
       {!loading && rows.length > 0 && (
@@ -301,7 +302,7 @@ export default function My_EtTime() {
                     <td style={tdStyle}>{r.pgm}</td>
                     <td style={{ ...tdStyle, textAlign: "right", fontWeight: 700, color: "var(--accent)" }}
                       title={r.duration_uniform === false ? "wafer 간 측정시간 편차 있음" : undefined}>
-                      {r.duration_text || "-"}{r.duration_uniform === false && " ⚠"}
+                      {r.duration_text || "-"}{r.duration_uniform === false && <Icon name="warning" style={{ marginLeft: 4, color: "var(--warn)" }} />}
                     </td>
                     <td style={tdStyle}>{fmtTime(r.tkin_min)}</td>
                     <td style={tdStyle}>{fmtTime(r.tkout_max)}</td>
@@ -314,12 +315,12 @@ export default function My_EtTime() {
           </div>
           <div style={{ padding: "8px 12px", fontSize: 13, color: "var(--text-secondary)", borderTop: "1px solid var(--border)" }}>
             측정시간 = tkout_time − tkin_time. 같은 step_id 의 PGM(pt) 는 동일한 측정시간을 갖는 것이 정상이며,
-            wafer 간 편차가 1초 이상이면 ⚠ 와 함께 min ~ max 범위로 표시됩니다.
+            wafer 간 편차가 1초 이상이면 <Icon name="warning" /> 와 함께 min ~ max 범위로 표시됩니다.
           </div>
         </Card>
       )}
       {!loading && !error && !data && (
-        <EmptyState icon="⏱" title="Product 와 Root Lot ID 를 입력해 조회하세요"
+        <EmptyState icon="timer" title="Product 와 Root Lot ID 를 입력해 조회하세요"
           hint="ET DB(1.RAWDATA_DB_ET)에서 auto report 의 PGM(pt) 단위로 측정 소요시간을 집계합니다." />
       )}
 
@@ -327,7 +328,7 @@ export default function My_EtTime() {
           step 평균 측정시간이 수개월에 걸쳐 어떻게 줄어드는지 확인. */}
       <Card style={{ marginTop: 14 }}>
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: trend ? 10 : 0 }}>
-          <span style={{ fontSize: 14, fontWeight: 800 }}>📈 측정시간 추이</span>
+          <span style={{ fontSize: 14, fontWeight: 800 }}><IconLabel icon="chart-line">측정시간 추이</IconLabel></span>
           <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
             product 전체를 가볍게 스캔해 step 별 월 평균 측정시간(wafer 당 합)을 봅니다 — root lot 불필요
           </span>

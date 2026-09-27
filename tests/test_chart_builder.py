@@ -894,6 +894,145 @@ CHART | TYPE=wafer_map | X=shot_x | MAP_Y=shot_y | Y=value | WAFER_MODE=spec_out
 """)
 
 
+def test_chart_builder_definition_round_trips_fixed_dates_wafer_filter_and_highlight():
+    parsed = parse_chart_builder_definition("""
+Q1 | TABLE=ET | PRODUCT=PRODA | SQL=SELECT root_lot_id, wafer_id, shot_x, shot_y, value
+DATE_COLUMN = measured_at
+DATE_FROM = 2026-08-01
+DATE_TO = 2026-08-31
+WAFER_FILTER_MODE = aggregate
+WAFER_FILTER_COLUMN = value
+WAFER_FILTER_AGG = p90
+WAFER_FILTER_OP = gt
+WAFER_FILTER_THRESHOLD = 1.5
+
+CHART | TYPE=wafer_map | X=shot_x | MAP_Y=shot_y | Y=value | WAFER_INTERPOLATION=idw
+HIGHLIGHT_START = 2026-08-10
+HIGHLIGHT_END = 2026-08-17
+HIGHLIGHT_LABEL = DOE hold
+""")
+
+    source = parsed["sources"][0]
+    assert source["runtime_date_column"] == "measured_at"
+    assert source["runtime_date_from"] == "2026-08-01"
+    assert source["runtime_date_to"] == "2026-08-31"
+    assert source["wafer_filter_agg"] == "p90"
+    assert source["wafer_filter_threshold"] == 1.5
+    assert parsed["chart"]["wafer_interpolation"] == "idw"
+    assert parsed["chart"]["highlight_label"] == "DOE hold"
+    assert parse_chart_builder_definition(parsed["canonical_code"])["chart"] == parsed["chart"]
+
+
+def test_chart_builder_spec_out_wafer_filter_retains_all_points_from_selected_pairs():
+    frame = pl.DataFrame({
+        "root_lot_id": ["A", "A", "A", "A", "B", "B"],
+        "wafer_id": ["01", "01", "02", "02", "1", "1"],
+        "shot_x": [0, 1, 0, 1, 0, 1],
+        "value": [0.5, 1.2, 0.4, 0.8, -0.1, 0.5],
+    })
+    source = filebrowser.ChartBuilderSourceReq(
+        id="et", root="ET", product="PRODA", wafer_filter_mode="spec_out",
+        wafer_filter_column="value", wafer_filter_low=0.0, wafer_filter_high=1.0,
+    )
+
+    filtered, meta = filebrowser._chart_builder_apply_wafer_filter(frame, source, {"y": "value"}, "et")
+
+    assert filtered.select("root_lot_id", "wafer_id").unique().sort("root_lot_id", "wafer_id").to_dicts() == [
+        {"root_lot_id": "A", "wafer_id": "01"},
+        {"root_lot_id": "B", "wafer_id": "1"},
+    ]
+    assert filtered["value"].to_list() == [0.5, 1.2, -0.1, 0.5]
+    assert meta["wafer_filter"]["total_wafer_count"] == 3
+    assert meta["wafer_filter"]["selected_wafer_count"] == 2
+    assert meta["wafer_filter"]["selected_row_count"] == 4
+
+
+def test_chart_builder_aggregate_wafer_filter_uses_linear_percentile_and_retains_points():
+    frame = pl.DataFrame({
+        "root_lot_id": ["A", "A", "A", "A"],
+        "wafer_id": ["1", "1", "2", "2"],
+        "value": [1.0, 3.0, 1.0, 2.0],
+    })
+    source = filebrowser.ChartBuilderSourceReq(
+        id="et", root="ET", product="PRODA", wafer_filter_mode="aggregate",
+        wafer_filter_column="value", wafer_filter_agg="p90", wafer_filter_op="gt",
+        wafer_filter_threshold=2.5,
+    )
+
+    filtered, meta = filebrowser._chart_builder_apply_wafer_filter(frame, source, {"y": "value"}, "et")
+
+    assert filtered["wafer_id"].to_list() == ["1", "1"]
+    assert filtered["value"].to_list() == [1.0, 3.0]
+    assert meta["wafer_filter"]["selected_wafer_count"] == 1
+    assert meta["wafer_filter"]["aggregation"] == "p90"
+
+
+def test_chart_builder_fixed_date_filter_is_inclusive_and_uses_configured_column():
+    frame = pl.DataFrame({
+        "measured_at": ["2026-07-31 23:59:59", "2026-08-01 00:00:00", "2026-08-31 23:59:59", "2026-09-01 00:00:00"],
+        "tkout_time": ["2026-08-15"] * 4,
+        "value": [0, 1, 2, 3],
+    })
+    source = filebrowser.ChartBuilderSourceReq(
+        id="et", root="ET", product="PRODA", runtime_date_column="measured_at",
+        runtime_date_from="2026-08-01", runtime_date_to="2026-08-31",
+    )
+
+    filtered = filebrowser._chart_builder_filter_frame(frame, source, "et", [])
+
+    assert filtered["value"].to_list() == [1, 2]
+
+
+def test_chart_builder_fixed_period_requires_existing_date_column():
+    source = filebrowser.ChartBuilderSourceReq(
+        id="et", root="ET", product="PRODA", runtime_date_column="measured_at",
+        runtime_date_from="2026-08-01", runtime_date_to="2026-08-31",
+    )
+    with pytest.raises(HTTPException, match="고정 기간 필터 열"):
+        filebrowser._chart_builder_runtime_where(["tkout_time", "value"], source, "et", [])
+    with pytest.raises(HTTPException, match="고정 기간 필터 열"):
+        filebrowser._chart_builder_filter_frame(pl.DataFrame({"value": [1]}), source, "et", [])
+
+
+def test_chart_builder_run_returns_complete_selected_wafer_rows_and_counts(tmp_path, monkeypatch):
+    source_file = tmp_path / "et.parquet"
+    pl.DataFrame({
+        "root_lot_id": ["A", "A", "A", "A", "B", "B", "C"],
+        "wafer_id": ["1", "1", "2", "2", "1", "1", "1"],
+        "measured_at": [
+            "2026-08-01", "2026-08-02", "2026-08-03", "2026-08-04",
+            "2026-08-30", "2026-08-31 23:59:59", "2026-09-01",
+        ],
+        "shot_x": [0, 1, 0, 1, 0, 1, 0],
+        "shot_y": [0, 0, 1, 1, 2, 2, 3],
+        "value": [0.5, 1.2, 0.4, 0.8, -0.1, 0.5, 5.0],
+    }).write_parquet(source_file)
+    monkeypatch.setattr(filebrowser, "source_data_files", lambda **_kwargs: [source_file])
+    monkeypatch.setattr(filebrowser, "current_user", lambda _request: {"username": "engineer", "role": "user"})
+    monkeypatch.setattr(audit, "record", lambda *args, **kwargs: None)
+
+    result = filebrowser.chart_builder_run(filebrowser.ChartBuilderRunReq(
+        sources=[filebrowser.ChartBuilderSourceReq(
+            id="et", root="ET", product="PRODA",
+            sql="SELECT root_lot_id, wafer_id, measured_at, shot_x, shot_y, value",
+            runtime_date_column="measured_at", runtime_date_from="2026-08-01", runtime_date_to="2026-08-31",
+            wafer_filter_mode="spec_out", wafer_filter_column="value",
+        )],
+        chart={
+            "type": "wafer_map", "x": "shot_x", "map_y": "shot_y", "y": "value",
+            "wafer_mode": "spec_out", "wafer_spec_low": 0.0, "wafer_spec_high": 1.0,
+        },
+        max_rows=20,
+        save_history=False,
+    ), object())
+
+    assert result["joined"]["row_count"] == 4
+    assert [row["value"] for row in result["joined"]["rows"]] == [0.5, 1.2, -0.1, 0.5]
+    assert result["sources"][0]["wafer_filter"]["total_wafer_count"] == 3
+    assert result["sources"][0]["wafer_filter"]["selected_wafer_count"] == 2
+    assert result["sources"][0]["runtime_date_to"] == "2026-08-31"
+
+
 def test_chart_builder_et_reformatter_uses_download_engine(tmp_path, monkeypatch):
     from routers import reformatize
 

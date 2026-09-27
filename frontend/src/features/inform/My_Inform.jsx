@@ -11,10 +11,12 @@ import PageGear from "../../components/PageGear";
 import Modal from "../../components/Modal";
 import Loading from "../../components/Loading";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import { Btn, Card, Chip, EmptyState, Input, Pill, Select, TabStrip, TableWrap, Tbl, Textarea, statusPalette, chartPalette } from "../../components/UXKit";
 import SplitTableSnapshotView from "../../components/SplitTableSnapshotView";
 import RichBoardEditor, { RichBoardContent, richTextHasContent } from "../../components/RichBoardEditor";
 import { moduleColor } from "../../lib/moduleColors";
+import { columnSearchMatcher } from "../../lib/columnSearch";
 
 const API = "/api/informs";
 export const WIZARD_STEPS = ["lot_module", "splittable", "mail_preview"];
@@ -528,7 +530,7 @@ function LotCombobox({ value, onChange, options, productSelected, manualMode, on
         onClick={onToggleManual}
         title={manualMode ? "검색 드롭다운으로 전환" : "직접 입력 (필터 off)"}
         style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-card)", color: "var(--text-secondary)", fontSize: 14, cursor: "pointer", whiteSpace: "nowrap" }}>
-        {manualMode ? "🔎 검색" : "✏ 직접"}
+        {manualMode ? <IconLabel icon="search">검색</IconLabel> : <IconLabel icon="edit">직접</IconLabel>}
       </button>
       {showDropdown && (
         <div style={{
@@ -590,13 +592,13 @@ function CheckPill({ node }) {
     ? `확인 완료 · by ${node.checked_by||"?"} · ${(node.checked_at||"").replace("T"," ").slice(0,16)}`
     : "확인중 (미확인)";
   return (
-    <Pill tone={checked ? "ok" : "warn"} size="md" title={title}>{checked ? "✓ 확인완료" : "○ 확인중"}</Pill>
+    <Pill tone={checked ? "ok" : "warn"} size="md" title={title}>{checked ? <IconLabel icon="check">확인완료</IconLabel> : <IconLabel icon="hourglass">확인중</IconLabel>}</Pill>
   );
 }
 
 function AutoGenPill({ node }) {
   if (!node.auto_generated) return null;
-  return <Pill tone="info" size="md">⚙️ 자동</Pill>;
+  return <Pill tone="info" size="md"><IconLabel icon="gear">자동</IconLabel></Pill>;
 }
 
 function ImageGallery({ images }) {
@@ -654,7 +656,7 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet, showTitl
   const attachedSets = Array.isArray(embed.attached_sets) ? embed.attached_sets : [];
   const renderAttachedSets = () => attachedSets.length > 0 && (
     <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
-      <div style={{ fontSize: 14, fontWeight: 900, color: "var(--accent)" }}>📋 첨부된 세트</div>
+      <div style={{ fontSize: 14, fontWeight: 900, color: "var(--accent)" }}><IconLabel icon="clipboard">첨부된 세트</IconLabel></div>
       {attachedSets.map((set, idx) => {
         const cols = Array.isArray(set.columns) ? set.columns : [];
         const rows = Array.isArray(set.rows) ? set.rows : [];
@@ -737,7 +739,7 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet, showTitl
       <div style={shellStyle}>
         {showTitle && (
           <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 4 }}>
-            🔗 SplitTable {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
+            <Icon name="link" style={{ marginRight: 4 }} />SplitTable {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
           </div>
         )}
         {showMeta && embed.note && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
@@ -778,7 +780,7 @@ function EmbedTableView({ embed, product, canEdit = false, onRemoveSet, showTitl
     <div style={shellStyle}>
       {showTitle && (
         <div style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", marginBottom: 4 }}>
-          🔗 Embed {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
+          <Icon name="link" style={{ marginRight: 4 }} />Embed {embed.source && <span style={{ color: "var(--text-secondary)", fontWeight: 500 }}>· {embed.source}</span>}
         </div>
       )}
       {showMeta && embed.note && <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 4 }}>{embed.note}</div>}
@@ -868,7 +870,7 @@ function ThreadNode({
             background: "var(--bg-primary)", color: "var(--text-primary)",
             border: "1px solid var(--border)", fontFamily: "monospace",
             display: "inline-flex", alignItems: "center", gap: 4,
-          }}>🕐 {(node.created_at || "").replace("T", " ").slice(0, 16)}</span>
+          }}><Icon name="clock" style={{ marginRight: 4 }} />{(node.created_at || "").replace("T", " ").slice(0, 16)}</span>
           <div style={{ flex: 1 }} />
           {/* v8.8.13: 우측 액션은 확인 · 답글 · 재인폼 · 삭제. 상태 라벨은 CheckPill 로 좌측에 표시. */}
           <button onClick={() => onToggleCheck(node)} title={node.checked ? "미확인으로 되돌리기" : "확인 완료 처리"}
@@ -876,7 +878,7 @@ function ThreadNode({
               border: "1px solid " + (node.checked ? BAD.fg : OK.fg),
               background: node.checked ? "transparent" : OK.fg,
               color: node.checked ? BAD.fg : "#fff", fontWeight: 700 }}>
-            {node.checked ? "↺ 미확인" : "✓ 확인"}
+            {node.checked ? <IconLabel icon="refresh">미확인</IconLabel> : <IconLabel icon="check">확인</IconLabel>}
           </button>
           <button onClick={() => setReplyOpen(!replyOpen)} title="답글 달기 (module 은 부모 자동 상속)"
             style={{ fontSize: 14, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
@@ -895,7 +897,7 @@ function ThreadNode({
             <button onClick={() => onDelete(node.id)} title="이 글 삭제 (자식이 없을 때만)"
               style={{ fontSize: 14, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
                 border: `1px solid ${BAD.fg}`, background: "transparent", color: BAD.fg, fontWeight: 700 }}>
-              🗑 삭제
+              <IconLabel icon="trash">삭제</IconLabel>
             </button>
           )}
         </div>
@@ -938,7 +940,7 @@ function ThreadNode({
               style={{ width: "100%", padding: 6, borderRadius: 4, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, resize: "vertical" }} />
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
               <label style={{ fontSize: 14, color: "var(--text-secondary)", cursor: "pointer" }}>
-                📎 이미지
+                <Icon name="paperclip" style={{ marginRight: 4 }} />이미지
                 <input type="file" accept="image/*" multiple
                   style={{ display: "none" }}
                   onChange={e => { handleFile(e.target.files); e.target.value = ""; }} />
@@ -1029,7 +1031,7 @@ function DeadlineBadge({ deadline, onChange, canEdit }) {
   }
   if (!deadline) {
     if (!canEdit) return null;
-    return <span onClick={() => setEditing(true)} style={{ fontSize: 14, color: "var(--text-secondary)", cursor: "pointer", padding: "2px 8px", borderRadius: 999, border: "1px dashed var(--border)" }}>🗓 데드라인 설정</span>;
+    return <span onClick={() => setEditing(true)} style={{ fontSize: 14, color: "var(--text-secondary)", cursor: "pointer", padding: "2px 8px", borderRadius: 999, border: "1px dashed var(--border)" }}><IconLabel icon="calendar">데드라인 설정</IconLabel></span>;
   }
   return (
     <span onClick={() => canEdit && setEditing(true)}
@@ -1040,7 +1042,7 @@ function DeadlineBadge({ deadline, onChange, canEdit }) {
         background: color + "22", color, border: "1px solid " + color,
         cursor: canEdit ? "pointer" : "default",
         fontFamily: "monospace",
-      }}>🗓 {deadline}{overdue ? " ⚠" : near ? " ⏳" : ""}</span>
+      }}><Icon name="calendar" style={{ marginRight: 4 }} />{deadline}{overdue ? <Icon name="warning" style={{ marginLeft: 4 }} /> : near ? <Icon name="hourglass" style={{ marginLeft: 4 }} /> : null}</span>
   );
 }
 
@@ -1050,7 +1052,7 @@ function MailDialogPreviewPanel({ preview, subject, effectiveEmailCount, inlineI
       {preview?.html_body && (
         <details style={{ marginBottom: 10, border: "1px solid var(--border)", borderRadius: 5, padding: "4px 10px", background: "var(--bg-card)" }} open>
           <summary style={{ fontSize: 14, fontWeight: 600, cursor: "pointer", color: "var(--accent)" }}>
-            👁️ 메일 미리보기 · 제목 [{subject || preview.subject || "자동"}] · 수신자 {effectiveEmailCount}명
+            <Icon name="eye" style={{ marginRight: 4 }} />메일 미리보기 · 제목 [{subject || preview.subject || "자동"}] · 수신자 {effectiveEmailCount}명
           </summary>
           <div style={{ marginTop: 6, marginBottom: 6, display: "flex", gap: 8, flexWrap: "wrap", fontSize: 14 }}>
             <Pill tone="info" size="md">본문 {formatBytes(preview.html_size_bytes)}</Pill>
@@ -1063,16 +1065,16 @@ function MailDialogPreviewPanel({ preview, subject, effectiveEmailCount, inlineI
       )}
       {(preview?.mail_over_limit || preview?.html_over_limit) && (
         <div style={{ marginBottom: 8, padding: "6px 10px", border: `1px solid ${BAD.line}`, background: BAD.bg, borderRadius: 4, color: BAD.fg, fontSize: 14 }}>
-          ⚠ 메일 총 용량 {preview.mail_total_kb ?? preview.html_size_kb}KB — 한도 {preview.mail_limit_mb ?? 2}MB 초과. 사진/SplitTable 컬럼을 줄여야 발송할 수 있습니다.
+          <Icon name="warning" style={{ marginRight: 4 }} />메일 총 용량 {preview.mail_total_kb ?? preview.html_size_kb}KB — 한도 {preview.mail_limit_mb ?? 2}MB 초과. 사진/SplitTable 컬럼을 줄여야 발송할 수 있습니다.
         </div>
       )}
       {preview && preview.html_size_kb != null && !preview.mail_over_limit && !preview.html_over_limit && (
         <div style={{ marginBottom: 8, fontSize: 14, color: "var(--text-secondary)" }}>
-          📦 메일 용량: {preview.mail_total_kb ?? preview.html_size_kb}KB / {preview.mail_limit_mb ?? 2}MB
+          <Icon name="package" style={{ marginRight: 4 }} />메일 용량: {preview.mail_total_kb ?? preview.html_size_kb}KB / {preview.mail_limit_mb ?? 2}MB
         </div>
       )}
       {inlineImages.length > 0 && <div style={{ marginBottom: 10 }}>
-        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}>📎 첨부 이미지 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(각 파일 10MB 한도 · 총합 제한)</span></div>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 3 }}><Icon name="paperclip" style={{ marginRight: 4 }} />첨부 이미지 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>(각 파일 10MB 한도 · 총합 제한)</span></div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {inlineImages.map(img => {
             const on = attachments.includes(img.url);
@@ -1082,13 +1084,13 @@ function MailDialogPreviewPanel({ preview, subject, effectiveEmailCount, inlineI
               color: on ? OK.fg : "var(--text-primary)",
               border: "1px solid " + (on ? OK.line : "var(--border)"),
               cursor: "pointer",
-            }}>{on ? "✔" : "＋"} {img.filename || img.url.split("/").pop()}</span>;
+            }}><Icon name={on ? "check" : "plus"} /> {img.filename || img.url.split("/").pop()}</span>;
           })}
         </div>
       </div>}
       {preview?.auto_attachments?.length > 0 && (
         <div style={{ marginBottom: 10, padding: 8, borderRadius: 5, background: OK.bg, border: `1px solid ${OK.line}` }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: OK.fg }}>📎 자동 첨부 (SplitTable 스냅샷 xlsx)</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: OK.fg }}><IconLabel icon="paperclip">자동 첨부 (SplitTable 스냅샷 xlsx)</IconLabel></div>
           {preview.auto_attachments.map((a, i) => (
             <div key={i} style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", marginTop: 2 }}>
               · {a.name} ({formatBytes(a.bytes)})
@@ -1248,19 +1250,19 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
   return (
     <Modal open onClose={onClose} width={1180} zIndex={9999}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-          <div style={{ fontSize: 15, fontWeight: 700 }}>✉ 인폼 메일 보내기 <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-secondary)" }}>(최대 199명 · 본문 2MB · 첨부 10MB)</span></div>
-          <span onClick={onClose} style={{ cursor: "pointer", fontSize: 18 }}>✕</span>
+          <div style={{ fontSize: 15, fontWeight: 700 }}><Icon name="mail" style={{ marginRight: 6 }} />인폼 메일 보내기 <span style={{ fontSize: 14, fontWeight: 400, color: "var(--text-secondary)" }}>(최대 199명 · 본문 2MB · 첨부 10MB)</span></div>
+          <button type="button" className="flow-icon-button" onClick={onClose} title="닫기" style={{ fontSize: 18, color: "var(--text-secondary)" }}><Icon name="close" /></button>
         </div>
         <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>Admin 설정의 메일 API 로 multipart POST. 수신자 총 <b style={{ color: "var(--accent)" }}>{effectiveEmailCount}명</b> · Inform <code>{root.id}</code></div>
         {/* v8.8.1: 발송자 ID 자동 명시 제거. 제품 담당자 라인만 본문 상단에 삽입. */}
         <div style={{ fontSize: 14, padding: "6px 10px", marginBottom: 10, borderRadius: 4, background: INFO.bg, border: `1px solid ${INFO.line}`, color: INFO.fg }}>
-          📨 발송계정: 시스템(Admin) · 본문 상단에 <b>제품 담당자</b> 라인 자동 삽입 (해당 제품에 등록된 담당자 있을 때).
+          <Icon name="send" style={{ marginRight: 4 }} />발송계정: 시스템(Admin) · 본문 상단에 <b>제품 담당자</b> 라인 자동 삽입 (해당 제품에 등록된 담당자 있을 때).
         </div>
 
         {/* v8.8.3: Module recipient groups — admin 그룹 + 공용 메일그룹 합집합. 만들어진 그룹도 노출. */}
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-            <span>📮 메일 그룹 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>({pickedGroups.length} 선택 · {allGroupNames.length} 가용)</span></span>
+            <span><Icon name="users" style={{ marginRight: 4 }} />메일 그룹 <span style={{ fontWeight: 400, color: "var(--text-secondary)" }}>({pickedGroups.length} 선택 · {allGroupNames.length} 가용)</span></span>
             <span style={{ flex: 1 }} />
             <Btn size="sm" type="button" onClick={() => setShowMgr(true)}>관리</Btn>
           </div>
@@ -1295,9 +1297,9 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
         {showMgr && (
           <Modal open onClose={() => setShowMgr(false)} width={560} zIndex={10001}>
               <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
-                <div style={{ fontSize: 14, fontWeight: 700 }}>📮 공용 메일 그룹 관리</div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}><IconLabel icon="users">공용 메일 그룹 관리</IconLabel></div>
                 <span style={{ flex: 1 }} />
-                <span onClick={() => setShowMgr(false)} style={{ cursor: "pointer", fontSize: 16 }}>✕</span>
+                <button type="button" className="flow-icon-button" onClick={() => setShowMgr(false)} title="닫기" style={{ fontSize: 16, color: "var(--text-secondary)" }}><Icon name="close" /></button>
               </div>
               <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>
                 모든 로그인 유저가 공용으로 사용하는 메일 그룹 (inform / meeting 공용). 이름 + 이메일 콤마/세미콜론 구분으로 입력하면 바로 생성됩니다.
@@ -1349,7 +1351,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
         <div style={{ marginBottom: 10 }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4, fontSize: 14, fontWeight: 600 }}>
             <span>개별 유저 ({pickedUsers.length} 선택)</span>
-            <Input value={filter} onChange={e => setFilter(e.target.value)} placeholder="🔎 유저/이메일 검색" style={{ width: 200 }} />
+            <Input value={filter} onChange={e => setFilter(e.target.value)} placeholder="유저/이메일 검색" style={{ width: 200 }} />
           </div>
           <div style={{ maxHeight: 140, overflow: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)" }}>
             {visibleList.length === 0 && <div style={{ padding: 14, textAlign: "center", fontSize: 14, color: "var(--text-secondary)" }}>유저가 없습니다.</div>}
@@ -1389,7 +1391,7 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
           <Textarea value={body} onChange={e => setBody(e.target.value)} rows={4} placeholder="비워두면 인폼 note를 그대로 사용합니다." style={{ width: "100%" }} />
           {preview?.owners_line && (
             <div style={{ marginTop: 4, fontSize: 14, color: OK.fg, background: OK.bg, border: `1px solid ${OK.line}`, borderRadius: 4, padding: "4px 8px" }}>
-              📌 자동 삽입: <b>제품담당자</b> : {preview.owners_line}
+              <Icon name="pin" style={{ marginRight: 4 }} />자동 삽입: <b>제품담당자</b> : {preview.owners_line}
             </div>
           )}
           {preview?.auto_module_used && (preview.auto_module_recipients || []).length > 0 && (
@@ -1407,15 +1409,15 @@ function MailDialog({ root, user, reasonTemplates, onClose, initialSelection }) 
           onToggleAttach={toggleAttach}
         />
 
-        {error && <div style={{ padding: "6px 10px", background: BAD.bg, color: BAD.fg, border: `1px solid ${BAD.line}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>⚠ {error}</div>}
+        {error && <div style={{ padding: "6px 10px", background: BAD.bg, color: BAD.fg, border: `1px solid ${BAD.line}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}><Icon name="warning" style={{ marginRight: 4 }} />{error}</div>}
         {sending && <div style={{ padding: "6px 10px", background: INFO.bg, color: INFO.fg, border: `1px solid ${INFO.line}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}><Loading text="메일 전송 중..." size="sm" /></div>}
-        {sent && <div style={{ padding: "6px 10px", background: OK.bg, color: OK.fg, border: `1px solid ${OK.line}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}>✔ 전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
+        {sent && <div style={{ padding: "6px 10px", background: OK.bg, color: OK.fg, border: `1px solid ${OK.line}`, borderRadius: 4, fontSize: 14, marginBottom: 8 }}><Icon name="check-circle" style={{ marginRight: 4 }} />전송됨 ({(sent.to || []).length}명){sent.dry_run && " · DRY RUN (실제 전송 안됨)"}</div>}
 
         <div style={{ display: "flex", gap: 8 }}>
           <Btn variant="primary" disabled={sending || previewLoading || !preview || !!preview?.mail_over_limit} onClick={doSend}
             title={preview?.mail_over_limit ? "메일 전체 용량 한도를 초과해 발송할 수 없습니다" : ""}
             style={{ cursor: sending || previewLoading || !preview || preview?.mail_over_limit ? "not-allowed" : undefined }}>
-            {sending ? "전송 중…" : (previewLoading ? "용량 계산 중…" : `📧 ${effectiveEmailCount}명에게 전송`)}
+            {sending ? "전송 중…" : (previewLoading ? "용량 계산 중…" : <IconLabel icon="send">{`${effectiveEmailCount}명에게 전송`}</IconLabel>)}
           </Btn>
           <Btn variant="ghost" onClick={onClose}>닫기</Btn>
         </div>
@@ -1452,7 +1454,7 @@ function RootHeader({ root, onChangeStatus, user }) {
         style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--brand-line)",
                  background: "var(--brand-50)", color: "var(--brand)",
                  fontSize: 14, fontWeight: 700, cursor: "pointer", userSelect: "none", lineHeight: 1.3 }}>
-        ✉ 메일{mailCount > 0 && ` (${mailCount})`}
+        <IconLabel icon="mail">메일{mailCount > 0 && ` (${mailCount})`}</IconLabel>
       </span>
       <span onClick={() => setOpenHist(!openHist)}
         title="상태 변경 이력 토글"
@@ -1517,14 +1519,15 @@ function SplitNotesCard({ notes, root_lot_id }) {
   const renderRow = (n, kind, color) => {
     const parts = (n.key || "").split("__");
     let label = "";
-    if (n.scope === "wafer") label = `🏷 W${(parts[2] || "").replace(/^W/, "")}`;
-    else if (n.scope === "param") label = `💬 W${(parts[2] || "").replace(/^W/, "")} × ${parts[3] || ""}`;
-    else if (n.scope === "lot") label = `📌 LOT ${parts[2] || ""}`;
-    else if (n.scope === "param_global") label = `🌐 ${parts[2] || ""} (전역)`;
+    const labelIcon = { wafer: "tag", param: "chat", lot: "package", param_global: "globe" }[n.scope];
+    if (n.scope === "wafer") label = `W${(parts[2] || "").replace(/^W/, "")}`;
+    else if (n.scope === "param") label = `W${(parts[2] || "").replace(/^W/, "")} × ${parts[3] || ""}`;
+    else if (n.scope === "lot") label = `LOT ${parts[2] || ""}`;
+    else if (n.scope === "param_global") label = `${parts[2] || ""} (전역)`;
     return (
       <div key={n.id} style={{ padding: "6px 10px", marginBottom: 4, borderRadius: 5, background: "var(--bg-card)", border: "1px solid var(--border)" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3, gap: 6 }}>
-          <span style={{ fontSize: 14, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: color, color: "#fff" }}>{label}</span>
+          <span style={{ fontSize: 14, fontWeight: 700, padding: "1px 6px", borderRadius: 8, background: color, color: "#fff" }}>{labelIcon ? <IconLabel icon={labelIcon}>{label}</IconLabel> : label}</span>
           <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace" }}>
             {n.username} · {(n.created_at || "").replace("T", " ").slice(0, 16)}
           </span>
@@ -1536,7 +1539,7 @@ function SplitNotesCard({ notes, root_lot_id }) {
   return (
     <div style={{ background: INFO.bg, border: `1px solid ${INFO.line}`, borderRadius: 8, padding: 10, marginBottom: 10 }}>
       <div style={{ fontSize: 14, fontWeight: 700, color: INFO.fg, marginBottom: 6 }}>
-        📝 SplitTable 노트 — root_lot_id <span style={{ fontFamily: "monospace" }}>{root_lot_id}</span> ({notes.length}건)
+        <Icon name="note" style={{ marginRight: 4 }} />SplitTable 노트 — root_lot_id <span style={{ fontFamily: "monospace" }}>{root_lot_id}</span> ({notes.length}건)
         <span style={{ fontSize: 14, fontWeight: 500, marginLeft: 8, color: "var(--text-secondary)" }}>
           wafer {wafers.length} · param {params.length} · lot {lots.length} · 전역 {pgs.length}
         </span>
@@ -2602,7 +2605,9 @@ export default function My_Inform({ user }) {
     const mod = (form.module || "").trim();
     const selectedLots = uniqueClean(form.fab_lot_ids || []);
     const lotLabel = selectedLots[0] || form.lot_id || "";
-    setWizardMailMetaSynced({ recipients: [], knobMap: {} });
+    // 수신자 선택은 메일 단계 화면이 소유한다. 여기서 비우면 이전→다음 왕복이나 본문 수정만으로
+    // 고른(또는 SplitTable plan 담당 모듈로 미리 채운) 수신자가 등록 시 조용히 사라졌다.
+    setWizardMailMetaSynced(prev => ({ ...(prev && typeof prev === "object" ? prev : {}), knobMap: {} }));
     const key = [form.product, selectedLots.join(","), lotLabel, mod, form.text].join("|");
     setWizardMailDraft(d => {
       // 사용자가 메일 본문을 직접 고쳤으면 note 로 덮어쓰지 않는다.
@@ -3444,11 +3449,11 @@ function TimelineLog({ thread, onOpen }) {
   return (
     <Card style={{ fontFamily: "monospace" }} padding={10}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6, flexWrap: "wrap" }}>
-        <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}>📜 이력 타임라인 ({filtered.length}{lotQ ? ` / ${events.length}` : ""}건)</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)" }}><Icon name="history" style={{ marginRight: 4 }} />이력 타임라인 ({filtered.length}{lotQ ? ` / ${events.length}` : ""}건)</span>
         <input value={lotQ} onChange={e => setLotQ(e.target.value)}
-          placeholder="🔎 Lot 검색 (root_lot_id 또는 fab_lot_id 부분일치)"
+          placeholder="Lot 검색 (root_lot_id 또는 fab_lot_id 부분일치)"
           style={{ flex: 1, minWidth: 220, padding: "5px 10px", borderRadius: 5, border: "1px solid var(--border)", background: "var(--bg-primary)", color: "var(--text-primary)", fontSize: 14, fontFamily: "monospace" }} />
-        {lotQ && <span onClick={() => setLotQ("")} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14 }}>✕ 초기화</span>}
+        {lotQ && <span onClick={() => setLotQ("")} style={{ cursor: "pointer", color: "var(--danger)", fontSize: 14 }}><IconLabel icon="close">초기화</IconLabel></span>}
       </div>
       <div style={{ fontSize: 14, color: "var(--text-secondary)", marginBottom: 8 }}>작성 / 수정 / 이행(확인·완료) — 누가 언제 무엇을 했는지 시간순. Lot 입력 시 해당 Lot 만 필터링.</div>
       {filtered.length === 0 && <div style={{ padding: 40, textAlign: "center", color: "var(--text-secondary)" }}>{lotQ ? `'${lotQ}' 매칭 이력 없음.` : "이력 없음."}</div>}
@@ -3590,7 +3595,7 @@ function ReasonTemplatesPanel({ reasons, templates, onSave }) {
       <div style={{ marginTop: 14, paddingTop: 10, borderTop: "1px dashed var(--border)" }}>
         <button onClick={() => setOpen(true)}
           style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontSize: 14, cursor: "pointer", fontWeight: 600 }}>
-          ✉ 사유별 메일 템플릿 편집 ({count}/{(reasons || []).length})
+          <Icon name="mail" style={{ marginRight: 4 }} />사유별 메일 템플릿 편집 ({count}/{(reasons || []).length})
         </button>
       </div>
     );
@@ -3758,19 +3763,19 @@ function FilterChip({ label, onRemove }) {
 
 function AuditLogList({ rows, loading, onOpen }) {
   const typeMeta = {
-    status_change: { label: "상태변경", icon: "●", color: WARN.fg },
-    mail: { label: "메일", icon: "✉", color: INFO.fg },
-    comment: { label: "댓글", icon: "💬", color: chartPalette.series[6] },
-    edit: { label: "수정", icon: "✎", color: chartPalette.series[11] },
-    create: { label: "생성", icon: "+", color: OK.fg },
-    delete: { label: "삭제", icon: "x", color: BAD.fg },
+    status_change: { label: "상태변경", icon: "refresh", color: WARN.fg },
+    mail: { label: "메일", icon: "mail", color: INFO.fg },
+    comment: { label: "댓글", icon: "chat", color: chartPalette.series[6] },
+    edit: { label: "수정", icon: "edit", color: chartPalette.series[11] },
+    create: { label: "생성", icon: "plus", color: OK.fg },
+    delete: { label: "삭제", icon: "trash", color: BAD.fg },
   };
   return (
     <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "var(--bg-secondary)" }}>
       {loading && <div style={{ padding: 16, color: "var(--text-secondary)" }}>loading...</div>}
       {!loading && rows.length === 0 && <div style={{ padding: 32, textAlign: "center", color: "var(--text-secondary)" }}>조건에 맞는 활동 로그가 없어요</div>}
       {rows.map((row, i) => {
-        const meta = typeMeta[row.type] || { label: row.type || "이벤트", icon: "·", color: NEUTRAL.fg };
+        const meta = typeMeta[row.type] || { label: row.type || "이벤트", icon: "info", color: NEUTRAL.fg };
         const lot = [stripMlPrefix(row.product || ""), row.root_lot_id || row.lot_id || row.fab_lot_id_at_save || ""].filter(Boolean).join(" · ") || "-";
         const module = String(row.module || "").trim() || "기타";
         return (
@@ -3778,7 +3783,7 @@ function AuditLogList({ rows, loading, onOpen }) {
             style={{ width: "100%", minHeight: 52, padding: "7px 16px", border: "none", borderBottom: "1px solid var(--border)", background: "transparent", color: "var(--text-primary)", display: "grid", gridTemplateColumns: "148px 112px minmax(180px, 1fr) 116px 112px minmax(0, 1.4fr)", gap: 8, alignItems: "center", cursor: "pointer", textAlign: "left", fontSize: 14 }}>
             <span style={{ color: "var(--text-secondary)", fontFamily: "monospace" }}>{String(row.at || "").replace("T", " ").slice(0, 16)}</span>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6, color: meta.color, fontWeight: 900 }}>
-              <span>{meta.icon}</span>{meta.label}
+              <Icon name={meta.icon} />{meta.label}
             </span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "monospace" }}>{lot}</span>
             <ModulePill module={module} solid />
@@ -4277,7 +4282,7 @@ function InformDetailPane({ root, thread, childrenByParent, constants, user, tab
             </button>
             <button type="button" onClick={() => onOpenMail(root)}
               style={{ padding: "7px 12px", borderRadius: 8, border: "1px solid var(--accent)", background: "transparent", color: "var(--accent)", fontWeight: 800, cursor: "pointer", fontSize: 14 }}>
-              ✉ 메일
+              <IconLabel icon="mail">메일</IconLabel>
             </button>
             <button type="button" onClick={() => onReInform?.(root)}
               title="재인폼 작성"
@@ -4629,17 +4634,20 @@ function InformWizard({
     if (step !== 1 || attachMode !== "sets") return;
     loadSetRows();
   }, [step, attachMode, form.product]);
+  // 저장된 초안(SplitTable plan 담당 모듈 수신자 포함)의 선택은 마운트 때 한 번 받아 둔다.
+  // 메일 단계에 들어설 때 받으면 그 전에 아래 setMailMeta 동기화가 빈 선택으로 덮어써 버린다.
+  useEffect(() => {
+    if (!mailMeta || mailMetaHydratedRef.current) return;
+    setPickedMailUsers(Array.isArray(mailMeta.to_users) ? mailMeta.to_users : []);
+    setPickedMailGroups(Array.isArray(mailMeta.groups) ? mailMeta.groups : []);
+    setExtraMailEmails(Array.isArray(mailMeta.extra_emails) ? mailMeta.extra_emails.join(", ") : "");
+    mailMetaHydratedRef.current = true;
+  }, [mailMeta]);
   useEffect(() => {
     if (step !== 2) return;
     sf(API + "/recipients").then(d => setMailRecipients(d.recipients || [])).catch(() => setMailRecipients([]));
     sf(API + "/mail-groups").then(d => setMailGroups(d.groups || {})).catch(() => setMailGroups({}));
     sf("/api/mail-groups/list").then(d => setPublicMailGroups(d.groups || [])).catch(() => setPublicMailGroups([]));
-    if (mailMeta && !mailMetaHydratedRef.current) {
-      setPickedMailUsers(Array.isArray(mailMeta.to_users) ? mailMeta.to_users : []);
-      setPickedMailGroups(Array.isArray(mailMeta.groups) ? mailMeta.groups : []);
-      setExtraMailEmails(Array.isArray(mailMeta.extra_emails) ? mailMeta.extra_emails.join(", ") : "");
-      mailMetaHydratedRef.current = true;
-    }
   }, [step]);
   const selectedSetIdSet = new Set(selectedSetIds || []);
   const selectedSetRowsFromCatalog = (setRows || []).filter(s => selectedSetIdSet.has(s.id));
@@ -4817,8 +4825,9 @@ function InformWizard({
     !colPrefixFilter.length || colPrefixFilter.includes(colPrefixOf(c))
   ));
   // 검색어에 콤마를 넣으면 토큰 여러 개로 친다 — "A,B,C" 로 한 번에 여러 컬럼을 고를 수 있게.
-  const searchTokens = String(embedCustomSearch || "").split(",").map(t => t.trim().toLowerCase()).filter(Boolean);
-  const matchTokens = (c) => !searchTokens.length || searchTokens.some(t => String(c).toLowerCase().includes(t));
+  // `*`·`%` 와일드카드는 SplitTable 커스텀 목록과 같은 규칙 (lib/columnSearch).
+  const embedSearchMatch = columnSearchMatcher(embedCustomSearch);
+  const matchTokens = (c) => !embedSearchMatch || embedSearchMatch(c);
   const filteredCols = attachableCols.filter(matchTokens).slice(0, 240);
   const filteredNewCols = selectableCols.filter(matchTokens).slice(0, 300);
   // Enter = 지금 걸러진 컬럼 전부 체크 (콤마 입력과 짝).
@@ -5197,7 +5206,7 @@ function InformWizard({
             {attachMode === "sets" && (
               <div style={{ border: "1px solid var(--border)", borderRadius: 10, padding: 12, background: "var(--bg-card)", display: "grid", gap: 8 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <div style={{ fontWeight: 900 }}>📋 첨부할 세트 선택</div>
+                  <div style={{ fontWeight: 900 }}><IconLabel icon="clipboard">첨부할 세트 선택</IconLabel></div>
                   <span style={{ color: "var(--text-secondary)" }}>{setsLoading ? "loading..." : `${setRows.length}개`}</span>
                   <Input value={setSearch} onChange={e => setSetSearch(e.target.value)} placeholder="세트 이름 검색"
                     style={{ marginLeft: "auto", width: 220, fontSize: 13 }} />
@@ -5295,7 +5304,7 @@ function InformWizard({
                 <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                   <Input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)}
                     onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); checkAllFiltered(filteredCols, setEmbedCustomCols); } }}
-                    placeholder="컬럼 검색 — 콤마로 여러 개 (예: 1.0 STI, GATE, VM_)"
+                    placeholder="컬럼 검색 — 콤마로 여러 개, * 또는 % 와일드카드 (예: 1.0 STI, QTIME*M3)"
                     style={{ flex: 1, minWidth: 220, fontFamily: "monospace" }} />
                   <Btn size="sm" variant="outline" type="button"
                     onClick={() => checkAllFiltered(filteredCols, setEmbedCustomCols)}>
@@ -5330,7 +5339,7 @@ function InformWizard({
                 <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                   <Input value={embedCustomSearch} onChange={e => setEmbedCustomSearch(e.target.value)}
                     onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); checkAllFiltered(filteredNewCols, setNewSetCols); } }}
-                    placeholder="컬럼 검색 — 콤마로 여러 개 (예: 1.0 STI, GATE, VM_)"
+                    placeholder="컬럼 검색 — 콤마로 여러 개, * 또는 % 와일드카드 (예: 1.0 STI, QTIME*M3)"
                     style={{ flex: 1, minWidth: 220, fontFamily: "monospace" }} />
                   <Btn size="sm" variant="outline" type="button"
                     onClick={() => checkAllFiltered(filteredNewCols, setNewSetCols)}>

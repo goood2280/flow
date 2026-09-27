@@ -5,10 +5,12 @@ import Loading from "./components/Loading";
 import Modal from "./components/Modal";
 import BrandLogo from "./components/BrandLogo";
 import { ToastHost, toast } from "./components/Toast";
+import { Icon, IconLabel } from "./components/ui/Icon";
 import { PAGE_BY_KEY, PAGE_MAP, buildNavGroups, preloadPage } from "./app/pageManifest";
 import { useFlowShell } from "./app/useFlowShell";
 import { sf, postJson } from "./lib/api";
 import { pageAdmins } from "./lib/permissions";
+import { setVisibleInterval } from "./lib/visibleInterval";
 
 class ErrorBoundary extends Component {
   constructor(props) { super(props); this.state = { error: null }; }
@@ -32,7 +34,7 @@ class ErrorBoundary extends Component {
   render() {
     if (this.state.error) {
       return (<div style={{padding:"40px 32px",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif",maxWidth:720}}>
-        <div style={{fontSize:18,fontWeight:800,color:"var(--danger)",marginBottom:8,fontFamily:"'JetBrains Mono',monospace"}}>⚠ 오류가 발생했습니다</div>
+        <div style={{fontSize:18,fontWeight:800,color:"var(--danger)",marginBottom:8,fontFamily:"'JetBrains Mono',monospace"}}><IconLabel icon="warning">오류가 발생했습니다</IconLabel></div>
         <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:6}}>이 페이지에서 JavaScript 에러가 발생했습니다. 아래 재시도 버튼을 눌러 다시 렌더링하거나 다른 탭으로 이동하세요.</div>
         <div style={{fontSize:14,color:"var(--warn)",marginBottom:16,padding:"8px 12px",borderRadius:6,background:"var(--warn-50)",border:"1px solid var(--warn-line)",fontFamily:"monospace",wordBreak:"break-word"}}>{String(this.state.error?.message || this.state.error)}</div>
         <button onClick={()=>this.setState({error:null})} style={{padding:"8px 18px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:14,fontWeight:600,cursor:"pointer",marginRight:8}}>↻ 재시도</button>
@@ -101,7 +103,7 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
       <div onClick={() => setOpen(!open)} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:6,
         padding:"4px 10px",borderRadius:6,background:open?"var(--bg-hover)":"transparent",fontSize:14,
         color:"var(--text-secondary)"}}>
-        <span style={{fontSize:14}}>👤</span>{user.username}
+        <Icon name="user" style={{fontSize:16}} />{user.username}
       </div>
       {open && <div style={{position:"fixed",top:52,right:16,background:"var(--bg-secondary)",border:"1px solid var(--border)",
         borderRadius:8,padding:6,minWidth:150,zIndex:9999,boxShadow:"0 4px 12px rgba(0,0,0,0.3)"}}>
@@ -110,14 +112,14 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
         </div>
         <div onClick={() => { setDark(!dark); localStorage.setItem("hol_dark",String(!dark)); }}
           style={{padding:"8px 12px",fontSize:14,cursor:"pointer",color:"var(--text-primary)"}}>
-          {dark ? "☀ 라이트 모드" : "☾ 다크 모드"}
+          {dark ? <IconLabel icon="sun">라이트 모드</IconLabel> : <IconLabel icon="moon">다크 모드</IconLabel>}
         </div>
         <div onClick={() => { setOpen(false); onChangePw(); }}
           style={{padding:"8px 12px",fontSize:14,cursor:"pointer",color:"var(--text-primary)"}}>
-          🔑 비밀번호 변경
+          <IconLabel icon="key">비밀번호 변경</IconLabel>
         </div>
         <div onClick={onLogout} style={{padding:"8px 12px",fontSize:14,cursor:"pointer",color:"var(--danger)"}}>
-          ⏻ 로그아웃
+          <IconLabel icon="logout">로그아웃</IconLabel>
         </div>
       </div>}
     </div>
@@ -161,7 +163,7 @@ function NavGroup({ group, activeKey, onNavigate }) {
       >
         <span>{group.label}</span>
         {activeItem && <span className="flow-nav-current">{activeItem.label}</span>}
-        <span className="flow-nav-caret">{open ? "▲" : "▼"}</span>
+        <span className="flow-nav-caret"><Icon name={open ? "chevron-up" : "chevron-down"} /></span>
       </button>
       {open && (
         <div className="flow-nav-menu">
@@ -233,8 +235,7 @@ function ContactButton({ user }) {
 
   useEffect(() => {
     loadUnread();
-    const t = setInterval(loadUnread, 45000);
-    return () => clearInterval(t);
+    return setVisibleInterval(loadUnread, 45000);
   }, [user?.username, canAnswer]);
 
   useEffect(() => {
@@ -247,8 +248,7 @@ function ContactButton({ user }) {
 
   useEffect(() => {
     if (!open || tab !== "inbox" || !canAnswer) return;
-    const intervalId = setInterval(loadAdminThreads, 30000);
-    return () => clearInterval(intervalId);
+    return setVisibleInterval(loadAdminThreads, 30000);
   }, [open, tab, canAnswer, user?.username]);
 
   const send = () => {
@@ -283,7 +283,7 @@ function ContactButton({ user }) {
 
   return (<>
     <div onClick={() => setOpen(true)} style={{ cursor: "pointer", position: "relative" }} title="문의">
-      <span style={{ fontSize: 14 }}>✉️</span>
+      <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 4, fontSize: 18, color: "var(--text-secondary)" }}><Icon name="mail" /></span>
       {unread + inboxUnread > 0 && <span style={{
         position: "absolute", top: -4, right: -6, fontSize: 9, fontWeight: 700, lineHeight: 1,
         background: "var(--info)", color: "#fff", borderRadius: 999, minWidth: 14, height: 14,
@@ -301,13 +301,13 @@ function ContactButton({ user }) {
       }}>
         <div style={{ padding: "12px 18px", borderBottom: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)" }}>문의</div>
-          <span onClick={() => setOpen(false)} style={{ cursor: "pointer", fontSize: 18 }}>✕</span>
+          <button type="button" className="flow-icon-button" onClick={() => setOpen(false)} title="닫기" style={{ fontSize: 18, color: "var(--text-secondary)" }}><Icon name="close" /></button>
         </div>
         <div style={{ display: "flex", gap: 4, borderBottom: "1px solid var(--border)", padding: "0 18px" }}>
-          {tabBtn("inquiry", "📨 내 문의")}
-          {tabBtn("notices", "📢 공지")}
-          {canAnswer && tabBtn("inbox", `📥 받은 문의${inboxUnread ? ` (${inboxUnread})` : ""}`)}
-          {isAdmin && tabBtn("compose", "✍ 공지 작성")}
+          {tabBtn("inquiry", <IconLabel icon="send">내 문의</IconLabel>)}
+          {tabBtn("notices", <IconLabel icon="megaphone">공지</IconLabel>)}
+          {canAnswer && tabBtn("inbox", <IconLabel icon="inbox">{`받은 문의${inboxUnread ? ` (${inboxUnread})` : ""}`}</IconLabel>)}
+          {isAdmin && tabBtn("compose", <IconLabel icon="edit">공지 작성</IconLabel>)}
         </div>
         <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
           {tab === "inquiry" && <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -402,8 +402,7 @@ function NoticeBanner({ user }) {
       setNotice(fresh[0] || null);
     }).catch(() => {});
     load();
-    const t = setInterval(load, 60000);
-    return () => clearInterval(t);
+    return setVisibleInterval(load, 60000);
   }, [user?.username, dismissed]);
   const dismiss = () => {
     if (!notice) return;
@@ -421,11 +420,11 @@ function NoticeBanner({ user }) {
     borderBottom: "1px solid var(--brand-line)", display: "flex", alignItems: "center",
     gap: 10, fontSize: 14
   }}>
-        <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", flexShrink: 0 }}>📢 {label}</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: "var(--accent)", flexShrink: 0 }}><IconLabel icon="megaphone">{label}</IconLabel></span>
     {title && <span style={{ fontWeight: 700, flexShrink: 0 }}>{title}</span>}
     <span style={{ color: "var(--text-secondary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{body}</span>
     <span style={{ fontSize: 14, color: "var(--text-secondary)", fontFamily: "monospace", flexShrink: 0 }}>by {notice.author || "admin"}</span>
-    <span onClick={dismiss} title="닫기 (3일간 숨김)" style={{ cursor: "pointer", fontSize: 14, color: "var(--text-secondary)", flexShrink: 0 }}>✕</span>
+    <button type="button" className="flow-icon-button" onClick={dismiss} title="닫기 (3일간 숨김)" style={{ fontSize: 14, color: "var(--text-secondary)" }}><Icon name="close" /></button>
   </div>);
 }
 
@@ -488,7 +487,7 @@ function BellDropdown({ notifs, user, onDismiss, onNavigate }) {
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <div onClick={() => setOpen(!open)} style={{ cursor: "pointer", position: "relative" }}>
-        <span style={{ fontSize: 14 }}>🔔</span>
+        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 30, borderRadius: 4, fontSize: 18, color: "var(--text-secondary)" }}><Icon name="bell" /></span>
         {notifs.length > 0 && <span style={{ position: "absolute", top: -4, right: -6, fontSize: 9, fontWeight: 700, lineHeight: 1,
           background: "var(--danger)", color: "#fff", borderRadius: 999, minWidth: 14, height: 14, display: "flex",
           alignItems: "center", justifyContent: "center", padding: "0 3px" }}>
@@ -604,6 +603,13 @@ const ActivePage = memo(function ActivePage({ tab, user, visibleTabs, nav, label
   ) : <ComingSoon name={label || tab} />;
 });
 
+// 업무 탭 공통 Carbon 톤(모서리 4px·그림자 없음·32px 컨트롤)을 페이지 호스트에서 켠다.
+// 디자인 시스템으로 옮긴 탭(designSystem)과 고정 디자인(홈, 테이블맵 엑셀 격자)은 제외.
+const CONNECTED_PAGE_KEYS = new Set([
+  "dashboard", "ramcache", "matchfill", "chartbuilder", "templatereport", "autoreport",
+  "lotrequest", "valve", "teg", "yieldmap", "ettime", "reformatize", "dcop", "admin", "knowledge",
+]);
+
 export default function App() {
   const {
     user,
@@ -648,7 +654,7 @@ export default function App() {
       </nav>
       <NoticeBanner user={user} />
       <div
-        className={`flow-app__content flow-page-host${pageDefinition?.scrollMode === "locked" ? " flow-page-host--locked" : ""}`}
+        className={`flow-app__content flow-page-host${pageDefinition?.scrollMode === "locked" ? " flow-page-host--locked" : ""}${CONNECTED_PAGE_KEYS.has(tab) ? " flow-connected-page" : ""}`}
         data-page-key={tab}
         data-page-layout={pageDefinition?.layout || "standard"}
       >

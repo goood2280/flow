@@ -3146,11 +3146,42 @@ def _process_meta_snapshot(product: str) -> dict:
     )
 
 
-@router.get("/process-meta")
 def process_meta(product: str = Query(...)):
     """One WIP-prepared snapshot for all applied-process columns."""
     revision = _matching_meta_revision(product)
     return {"product": product, "items": _process_meta_snapshot(product), "revision": revision}
+
+
+# /process-meta HTTP 응답 bytes — 스냅샷 dict 가 같은 객체(=_PROCESS_META_CACHE 적중)이고
+# revision 이 같으면 직렬화 결과도 같다. 화면을 열 때마다 290KB 를 FastAPI 인코더로
+# 다시 돌리던 46ms(GIL 점유)를 없앤다. 제품 8개까지.
+_PROCESS_META_JSON_CACHE: "OrderedDict[str, tuple]" = OrderedDict()
+_PROCESS_META_JSON_LOCK = threading.Lock()
+
+
+@router.get("/process-meta")
+def process_meta_http(product: str = Query(...)):
+    revision = _matching_meta_revision(product)
+    items = _process_meta_snapshot(product)
+    try:
+        from core import json_fast
+    except ImportError:            # 부분 배포 대비 — 예전 경로(dict 반환)로
+        return {"product": product, "items": items, "revision": revision}
+    with _PROCESS_META_JSON_LOCK:
+        hit = _PROCESS_META_JSON_CACHE.get(product)
+    if hit is not None and hit[0] == revision and hit[1] is items:
+        return json_fast.response(hit[2])
+    payload = {"product": product, "items": items, "revision": revision}
+    try:
+        body = json_fast.dumps_bytes(payload)
+    except (TypeError, ValueError):
+        return payload
+    with _PROCESS_META_JSON_LOCK:
+        _PROCESS_META_JSON_CACHE[product] = (revision, items, body)
+        _PROCESS_META_JSON_CACHE.move_to_end(product)
+        while len(_PROCESS_META_JSON_CACHE) > 8:
+            _PROCESS_META_JSON_CACHE.popitem(last=False)
+    return json_fast.response(body)
 
 
 def _step_label_lines_for_param(param: str, metas: dict, exclude_not_null: bool = True) -> tuple[str, list[str]]:

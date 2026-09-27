@@ -22,6 +22,9 @@ def _parse_tab_or_csv(text: str, delimiter: str) -> tuple[list[list[str]], str]:
         return _read(","), "comma"
 
     # auto: 우선 탭 파서, 실패/의미없는 분리면 CSV 파서로 폴백.
+    # 탭 문자가 없으면 탭 파서는 늘 1열짜리라 결과가 쓰이지 않는다 — 전체를 두 번 읽지 않는다.
+    if "\t" not in normalized:
+        return _read(",", strict=False), "comma"
     try:
         tab_rows = _read("\t")
     except Exception:
@@ -464,7 +467,100 @@ def _normalize_conditions(value) -> list[dict]:
     return out
 
 
-_ORDER_SPEC_TYPES = {"string", "text", "numeric", "number", "integer", "date", "datetime", "leading_number", "rule_order"}
+_ORDER_SPEC_TYPES = {
+    "string", "text", "numeric", "number", "integer", "date", "datetime",
+    "leading_number", "rule_order", "natural", "custom",
+}
+_ORDER_SPEC_TYPE_ALIASES = {
+    "number": "numeric", "integer": "numeric", "datetime": "date", "text": "string",
+}
+_ORDER_SPEC_MAX_VALUES = 200
+# LLM 초안 요청 payload 에 그대로 실린다(시스템 프롬프트는 데이터 폴더에서 덮어쓸 수 있어
+# 새 정렬 계약은 여기 둔다). 키 순서 = 정렬 우선순위.
+_SETTINGS_SORT_SPEC_GUIDE = {
+    "shape": {"column": "supplied column", "direction": "asc|desc", "type": "see types", "nulls": "last|first",
+              "case": "optional: insensitive (string/custom only)", "values": "custom only: ordered list",
+              "pattern": "optional regex; first capture group (or whole match) becomes the sort text before type conversion"},
+    "types": {
+        "string": "plain text compare",
+        "numeric": "text parsed as number (1, 2, 10 — not 1, 10, 2)",
+        "date": "date/time text parsed",
+        "leading_number": "number at the start of text, e.g. '3.0 VTN' -> 3.0",
+        "natural": "digits inside text compare as numbers: A2 < A10, STEP_9 < STEP_10",
+        "rule_order": "R1, R2, ... then RO last",
+        "custom": "explicit order from values; unlisted values go after the list",
+    },
+    "examples": [
+        {"prompt": "product 오름차순, 그다음 rule_order 내림차순",
+         "sort": [{"column": "product", "direction": "asc", "type": "string", "nulls": "last"},
+                  {"column": "rule_order", "direction": "desc", "type": "rule_order", "nulls": "last"}]},
+        {"prompt": "status 는 RUN, HOLD, DONE 순서로",
+         "sort": [{"column": "status", "direction": "asc", "type": "custom", "nulls": "last", "values": ["RUN", "HOLD", "DONE"]}]},
+        {"prompt": "step_id 를 숫자 부분 기준으로 (ST10 이 ST9 뒤)",
+         "sort": [{"column": "step_id", "direction": "asc", "type": "natural", "nulls": "last"}]},
+        {"prompt": "lot_id 뒤 네 자리 숫자 기준 내림차순",
+         "sort": [{"column": "lot_id", "direction": "desc", "type": "numeric", "nulls": "last", "pattern": "(\\d{4})$"}]},
+        {"prompt": "name 대소문자 무시, 빈 값은 맨 앞",
+         "sort": [{"column": "name", "direction": "asc", "type": "string", "nulls": "first", "case": "insensitive"}]},
+    ],
+    "edit_rules": [
+        "Change/add/remove requests edit current_sort: keep untouched keys and their order.",
+        "'추가/그다음/2차 기준' appends a key; '바꿔/변경' edits the named key in place; '빼/제거' removes it.",
+        "Infer type from column_profiles when the user does not say it (numbers stored as text -> numeric).",
+    ],
+}
+
+
+def _order_spec_line_to_dict(line: str) -> dict:
+    """`col [dir] [type] [nulls] [case=i] [values=A|B] [pattern=re]` → dict.
+
+    Options are key=value tokens (no spaces inside; use \\s in patterns).
+    """
+    positional: list[str] = []
+    options: dict[str, str] = {}
+    for token in str(line or "").strip().split():
+        key, sep, val = token.partition("=")
+        if sep and key.strip().casefold() in {"case", "values", "order", "pattern", "regex"}:
+            options[key.strip().casefold()] = val
+        else:
+            positional.extend(p for p in token.split(",") if p)
+    spec: dict = {
+        "column": positional[0] if len(positional) >= 1 else "",
+        "direction": positional[1] if len(positional) >= 2 else "asc",
+        "type": positional[2] if len(positional) >= 3 else "string",
+        "nulls": positional[3] if len(positional) >= 4 else "last",
+    }
+    if "case" in options:
+        spec["case"] = options["case"]
+    if "values" in options or "order" in options:
+        spec["values"] = options.get("values") or options.get("order") or ""
+    if "pattern" in options or "regex" in options:
+        spec["pattern"] = options.get("pattern") or options.get("regex") or ""
+    return spec
+
+
+def _normalize_order_case(spec: dict) -> str:
+    if spec.get("case_sensitive") is False or spec.get("ignore_case") is True:
+        return "insensitive"
+    text = str(spec.get("case") or "").strip().casefold()
+    if text in {"i", "ci", "insensitive", "ignore", "ignore_case", "lower", "무시", "false", "no"}:
+        return "insensitive"
+    return ""
+
+
+def _normalize_order_values(raw) -> list[str]:
+    if isinstance(raw, str):
+        raw = [p for p in re.split(r"[|\n]", raw)]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw[:_ORDER_SPEC_MAX_VALUES]:
+        text = str(item if item is not None else "").strip()[:120]
+        if text and text.casefold() not in seen:
+            seen.add(text.casefold())
+            out.append(text)
+    return out
 
 
 def _normalize_order_specs(value, *, label: str) -> list[dict]:
@@ -478,13 +574,7 @@ def _normalize_order_specs(value, *, label: str) -> list[dict]:
     out: list[dict] = []
     for item in raw:
         if isinstance(item, str):
-            parts = [p for p in re.split(r"[\s,]+", item.strip()) if p]
-            spec = {
-                "column": parts[0] if len(parts) >= 1 else "",
-                "direction": parts[1] if len(parts) >= 2 else "asc",
-                "type": parts[2] if len(parts) >= 3 else "string",
-                "nulls": parts[3] if len(parts) >= 4 else "last",
-            }
+            spec = _order_spec_line_to_dict(item)
         elif isinstance(item, dict):
             spec = item
         else:
@@ -497,22 +587,44 @@ def _normalize_order_specs(value, *, label: str) -> list[dict]:
         nulls = str(spec.get("nulls") or "last").strip().lower()
         if direction not in {"asc", "ascending", "desc", "descending"}:
             raise HTTPException(400, f"Invalid {label} direction for {col}: {direction}")
+        if typ in {"natural_sort", "natural_order"}:
+            typ = "natural"
+        elif typ in {"custom_order", "list", "enum_order"}:
+            typ = "custom"
         if typ not in _ORDER_SPEC_TYPES:
             raise HTTPException(400, f"Invalid {label} type for {col}: {typ}")
         if nulls not in {"first", "last", "nulls_first", "nulls_last"}:
             raise HTTPException(400, f"Invalid {label} nulls for {col}: {nulls}")
-        if typ in {"number", "integer"}:
-            typ = "numeric"
-        elif typ == "datetime":
-            typ = "date"
-        elif typ == "text":
-            typ = "string"
-        out.append({
+        typ = _ORDER_SPEC_TYPE_ALIASES.get(typ, typ)
+        values = _normalize_order_values(spec.get("values") or spec.get("order_values") or spec.get("custom_order"))
+        if values and typ == "string":
+            typ = "custom"
+        if typ == "custom" and not values:
+            raise HTTPException(400, f"Invalid {label} custom order for {col}: values are required (values=A|B|C)")
+        pattern = str(spec.get("pattern") or spec.get("regex") or spec.get("extract") or "").strip()
+        if pattern:
+            if len(pattern) > 200:
+                raise HTTPException(400, f"Invalid {label} pattern for {col}: longer than 200 characters")
+            try:
+                compiled = re.compile(pattern)
+            except re.error as exc:
+                raise HTTPException(400, f"Invalid {label} pattern for {col}: {exc}")
+            if compiled.groups > 1:
+                raise HTTPException(400, f"Invalid {label} pattern for {col}: use at most one capture group")
+        clean = {
             "column": col,
             "direction": "desc" if direction.startswith("desc") else "asc",
             "type": typ,
             "nulls": "first" if nulls.endswith("first") else "last",
-        })
+        }
+        case = _normalize_order_case(spec)
+        if case and typ in {"string", "custom"}:
+            clean["case"] = case
+        if typ == "custom":
+            clean["values"] = values
+        if pattern:
+            clean["pattern"] = pattern
+        out.append(clean)
     return out
 
 
@@ -600,12 +712,17 @@ def _normalize_file_descriptions(raw_descriptions) -> dict[str, str]:
 
 
 def _file_description_for(file: str, fallback: str = "", settings: dict | None = None) -> str:
+    return _custom_file_description(file, settings) or str(fallback or "")
+
+
+def _custom_file_description(file: str, settings: dict | None = None) -> str:
+    """관리자가 파일 설정에서 직접 적은 설명(없으면 빈 문자열)."""
     settings = settings or _load_filebrowser_settings()
     needle = str(file or "").strip().replace("\\", "/").casefold()
     for key, description in (settings.get("file_descriptions") or {}).items():
         if str(key or "").replace("\\", "/").casefold() == needle:
-            return str(description or "").strip() or str(fallback or "")
-    return str(fallback or "")
+            return str(description or "").strip()
+    return ""
 
 
 def _normalize_file_name_aliases(raw) -> dict[str, str]:
@@ -1388,23 +1505,30 @@ def _order_intents_from_prompt(prompt: str) -> tuple[bool, bool]:
     return validate_order, save_sort
 
 
-def _sort_rule_from_prompt(prompt: str, columns: list[str], resolved: list[str]) -> dict:
+def _sort_rule_from_prompt(prompt: str, columns: list[str], resolved: list[str],
+                           current_rule: dict | None = None,
+                           sample_rows: list[dict] | None = None) -> dict:
     validate_order, save_sort = _order_intents_from_prompt(prompt)
     if not (validate_order or save_sort):
         return {}
-    specs = _fallback_sort_specs(prompt, resolved or columns, expert=False)
+    specs = _prompt_sort_specs(prompt, columns, sample_rows) or _fallback_sort_specs(
+        prompt, resolved or columns, expert=False, sample_rows=sample_rows,
+    )
     if not specs:
         return {}
+    current_rule = current_rule if isinstance(current_rule, dict) else {}
     out: dict = {}
     if validate_order:
-        out["ordered_by"] = {"keys": specs}
+        current_keys = (current_rule.get("ordered_by") or {}).get("keys") or []
+        out["ordered_by"] = {"keys": _merge_sort_edit(current_keys, specs, prompt)}
     if save_sort:
-        out["sort"] = specs
+        out["sort"] = _merge_sort_edit(current_rule.get("sort") or [], specs, prompt)
     return out
 
 
 def _settings_prompt_explicit_rule(prompt: str, columns: list[str], current_rule: dict,
-                                   warnings: list[str]) -> dict | None:
+                                   warnings: list[str],
+                                   sample_rows: list[dict] | None = None) -> dict | None:
     rule: dict = {}
     explicit_seen = False
     resolved, missing = _resolve_prompt_rule_columns(prompt, columns)
@@ -1441,7 +1565,7 @@ def _settings_prompt_explicit_rule(prompt: str, columns: list[str], current_rule
         explicit_seen = True
         rule["date"] = date_cols
 
-    sort_rule = _sort_rule_from_prompt(prompt, columns, resolved)
+    sort_rule = _sort_rule_from_prompt(prompt, columns, resolved, current_rule, sample_rows)
     regex_rules = {} if sort_rule and not _has_regex_format_intent(prompt) else _regex_rule_from_prompt(prompt, resolved)
     if regex_rules:
         explicit_seen = True
@@ -1466,7 +1590,18 @@ def _settings_prompt_explicit_rule(prompt: str, columns: list[str], current_rule
             else:
                 _draft_warning(warnings, f"enums prompt did not include allowed values for {target}.")
 
+    if sort_rule and not _sort_term_in(prompt, _VALIDATION_REQUEST_TERMS):
+        # "value 숫자 기준 내림차순" 은 정렬 요청이다. 숫자/날짜 같은 단어로
+        # 검증로직(numeric/date/enums)까지 만들면 저장이 엉뚱하게 막힌다.
+        return dict(sort_rule)
     return rule if explicit_seen else None
+
+
+_VALIDATION_REQUEST_TERMS = (
+    "필수", "허용", "중복", "유니크", "빈 값 금지", "비면 안", "비어 있으면 안", "이상", "이하", "초과", "미만",
+    "범위", "정규식", "패턴", "형식", "이어야", "여야", "만 가능", "만 허용",
+    "required", "allowed", "unique", "duplicate", "not empty", "regex", "must",
+)
 
 
 def _fallback_sort_direction(prompt: str) -> str:
@@ -1594,12 +1729,189 @@ def _ppid_knob_not_empty_columns(columns: list[str]) -> list[str]:
     return [col for col in out if col] or _ppid_knob_contract_columns(columns)
 
 
-def _fallback_sort_specs(prompt: str, columns: list[str], *, expert: bool = False, file_key: str = "") -> list[dict]:
+_SORT_DESC_TERMS = (
+    "desc", "descending", "내림차순", "역순", "큰순", "큰 순", "높은순", "높은 순",
+    "많은순", "많은 순", "최신순", "최신 순", "늦은순", "큰 값부터", "큰값부터", "높은 값부터",
+)
+_SORT_ASC_TERMS = (
+    "asc", "ascending", "오름차순", "작은순", "작은 순", "낮은순", "낮은 순", "적은순",
+    "오래된순", "오래된 순", "빠른순", "작은 값부터", "작은값부터", "정순",
+)
+_SORT_TYPE_TERMS = (
+    ("leading_number", ("leading number", "prefix number", "앞 숫자", "앞에 숫자", "선행 숫자", "첫 숫자", "앞자리 숫자")),
+    ("natural", ("natural", "자연 정렬", "자연정렬", "사람이 읽는", "숫자 크기대로 문자열")),
+    ("numeric", ("numeric", "number", "숫자로", "숫자 기준", "숫자 크기", "수치", "값 크기", "숫자처럼")),
+    ("date", ("date", "datetime", "timestamp", "날짜", "시간순", "시간 순", "일시", "시각")),
+    ("rule_order", ("rule order", "r번호", "ro 마지막", "ro는 마지막")),
+    ("string", ("문자열", "string", "text", "사전순", "알파벳순", "가나다순")),
+)
+_SORT_NULLS_FIRST_TERMS = (
+    "nulls first", "null first", "빈 값 먼저", "빈값 먼저", "빈 값을 앞", "빈값을 앞", "공백 먼저", "null 먼저",
+    "빈 값은 맨 앞", "빈값은 맨 앞", "빈 값은 앞", "빈값은 앞", "빈 값 맨 앞", "빈값 맨 앞", "빈 값 앞으로", "빈값 앞으로",
+)
+_SORT_CASE_INSENSITIVE_TERMS = ("case insensitive", "ignore case", "대소문자 무시", "대소문자 구분 없이", "대소문자 구분없이")
+
+
+def _sort_term_in(text: str, terms) -> bool:
+    low = str(text or "").casefold()
+    return any(str(t).casefold() in low for t in terms)
+
+
+def _sort_type_from_samples(values: list[str]) -> str:
+    vals = [v for v in values if str(v or "").strip()][:20]
+    if len(vals) < 2:
+        return ""
+    if all(re.fullmatch(r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?", v.strip()) for v in vals):
+        return "numeric"
+    if all(re.fullmatch(r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?", v.strip()) for v in vals):
+        return "date"
+    if all(re.match(r"^\d+(?:\.\d+)?\s+\S", v.strip()) for v in vals):
+        return "leading_number"
+    return ""
+
+
+def _prompt_column_mentions(text: str, columns: list[str]) -> list[tuple[int, int, str]]:
+    """(start, end, column) for each column first mention, in prompt order.
+
+    Longer names win so `root_lot_id` is not also counted as `lot_id`.
+    """
+    low = str(text or "").casefold()
+    taken: list[tuple[int, int]] = []
+    hits: list[tuple[int, int, str]] = []
+    for col in sorted(columns, key=lambda c: -len(str(c))):
+        for variant in dict.fromkeys((col.casefold(), col.casefold().replace("_", " "))):
+            if not variant:
+                continue
+            for m in re.finditer(r"(?<![a-z0-9_])" + re.escape(variant) + r"(?![a-z0-9_])", low):
+                if any(m.start() < e and s < m.end() for s, e in taken):
+                    continue
+                taken.append((m.start(), m.end()))
+                hits.append((m.start(), m.end(), col))
+                break
+            if hits and hits[-1][2] == col:
+                break
+    return sorted(hits)
+
+
+def _prompt_sort_specs(prompt: str, columns: list[str], sample_rows: list[dict] | None = None) -> list[dict]:
+    """Per-column sort keys from a prompt, in the order the user wrote them.
+
+    Each column reads the direction/type/null words that follow it up to the
+    next mentioned column ("product 오름차순, rule_order 내림차순"); words
+    before the first column apply to every key ("내림차순으로 a, b").
+    """
+    text = _order_prompt_segment(prompt)
+    mentions = _prompt_column_mentions(text, columns)
+    if not mentions:
+        return []
+    head = text[:mentions[0][0]]
+    specs: list[dict] = []
+    seen: set[str] = set()
+    for idx, (start, end, col) in enumerate(mentions):
+        if col.casefold() in seen:
+            continue
+        seen.add(col.casefold())
+        tail_end = mentions[idx + 1][0] if idx + 1 < len(mentions) else len(text)
+        own = text[end:tail_end]
+        direction_explicit = True
+        if _sort_term_in(own, _SORT_DESC_TERMS):
+            direction = "desc"
+        elif _sort_term_in(own, _SORT_ASC_TERMS):
+            direction = "asc"
+        elif _sort_term_in(head, _SORT_DESC_TERMS):
+            direction = "desc"
+        elif _sort_term_in(head, _SORT_ASC_TERMS):
+            direction = "asc"
+        else:
+            direction = _fallback_sort_direction(text)
+            direction_explicit = direction == "desc"
+        typ = ""
+        for candidate, terms in _SORT_TYPE_TERMS:
+            if _sort_term_in(own, terms):
+                typ = candidate
+                break
+        type_explicit = bool(typ)
+        if not typ:
+            typ = _fallback_sort_type(prompt, col)
+            if typ == "string":
+                typ = _sort_type_from_samples(_sample_values_for_column(sample_rows, col)) or "string"
+        nulls_first = _sort_term_in(own, _SORT_NULLS_FIRST_TERMS) or _sort_term_in(head, _SORT_NULLS_FIRST_TERMS)
+        nulls_explicit = nulls_first or _sort_term_in(own, (
+            "nulls last", "빈 값 마지막", "빈값 마지막", "빈 값 뒤", "빈값 뒤", "빈 값은 맨 뒤", "빈값은 맨 뒤", "빈 값은 뒤", "빈값은 뒤",
+        ))
+        spec = {
+            "column": col,
+            "direction": direction,
+            "type": typ,
+            "nulls": "first" if nulls_first else "last",
+            "_direction_explicit": direction_explicit,
+            "_type_explicit": type_explicit,
+            "_nulls_explicit": nulls_explicit,
+        }
+        if typ == "string" and (_sort_term_in(own, _SORT_CASE_INSENSITIVE_TERMS) or _sort_term_in(head, _SORT_CASE_INSENSITIVE_TERMS)):
+            spec["case"] = "insensitive"
+        specs.append(spec)
+    return specs
+
+
+def _sort_edit_intent(prompt: str) -> str:
+    text = str(prompt or "")
+    if _sort_term_in(text, ("정렬 없애", "정렬 제거", "정렬 삭제", "정렬 해제", "정렬 비워", "정렬하지 마", "remove sort", "clear sort", "no sort")):
+        return "clear"
+    if _sort_term_in(text, ("빼줘", "빼고", "제거", "삭제", "remove", "drop", "없애")):
+        return "remove"
+    if _sort_term_in(text, ("추가", "더해", "덧붙", "뒤에", "다음 기준", "2차", "두번째 기준", "두 번째 기준", "add ", "append", "then by")):
+        return "add"
+    if _sort_term_in(text, ("바꿔", "변경", "수정", "만 ", "로 해", "으로 해", "change", "update", "switch")):
+        return "change"
+    return "replace"
+
+
+def _merge_sort_edit(current: list[dict], new_specs: list[dict], prompt: str) -> list[dict]:
+    """Apply a natural-language edit to an existing sort instead of replacing it."""
+    current = [dict(s) for s in (current or []) if isinstance(s, dict) and s.get("column")]
+    intent = _sort_edit_intent(prompt)
+    if intent == "clear":
+        return []
+    if not current:
+        return new_specs
+    new_by_col = {s["column"].casefold(): s for s in new_specs}
+    if intent == "remove":
+        return [s for s in current if s["column"].casefold() not in new_by_col] if new_by_col else current
+    if intent == "add":
+        merged = [new_by_col.pop(s["column"].casefold(), s) for s in current]
+        return merged + [s for s in new_specs if s["column"].casefold() in new_by_col]
+    if intent == "change" and new_by_col and all(k in {s["column"].casefold() for s in current} for k in new_by_col):
+        out = []
+        for s in current:
+            upd = new_by_col.get(s["column"].casefold())
+            if not upd:
+                out.append(s)
+                continue
+            keep = dict(s)
+            if upd.get("_direction_explicit"):
+                keep["direction"] = upd["direction"]
+            if upd.get("_type_explicit"):
+                keep["type"] = upd["type"]
+            if upd.get("_nulls_explicit"):
+                keep["nulls"] = upd["nulls"]
+            if upd.get("case"):
+                keep["case"] = upd["case"]
+            out.append(keep)
+        return out
+    return new_specs
+
+
+def _fallback_sort_specs(prompt: str, columns: list[str], *, expert: bool = False, file_key: str = "",
+                         sample_rows: list[dict] | None = None) -> list[dict]:
     lookup = _column_lookup(columns)
     order_text = _order_prompt_segment(prompt)
     low = order_text.casefold()
     direction = _fallback_sort_direction(prompt)
     is_ppid_knob = _is_ppid_knob_settings_file(file_key)
+    prompt_specs = _prompt_sort_specs(prompt, columns, sample_rows)
+    if prompt_specs:
+        return prompt_specs
     mentioned = [
         col for col in columns
         if col.casefold() in low or col.casefold().replace("_", " ") in low
@@ -1765,8 +2077,16 @@ def _settings_draft_fallback_rule(prompt: str, columns: list[str], current_rule:
     has_order_token = validate_order or save_sort or any(token in low or token in str(prompt or "") for token in (
         "sort", "order", "정렬", "순서", "오름차순", "내림차순", "앞에 숫자", "앞 숫자", "선행 숫자",
     ))
-    if (expert or has_order_token) and not (is_ppid_knob and expert and not has_order_token) and not rule.get("sort") and not rule.get("ordered_by"):
-        specs = _fallback_sort_specs(prompt, columns, expert=expert, file_key=file_key)
+    if has_order_token and (rule.get("sort") or rule.get("ordered_by")):
+        # 기존 정렬이 있는 파일: 프롬프트를 "수정 요청"으로 보고 현재 키에 반영한다.
+        specs = _fallback_sort_specs(prompt, columns, expert=False, file_key=file_key, sample_rows=sample_rows)
+        if specs or _sort_edit_intent(prompt) == "clear":
+            if validate_order:
+                rule["ordered_by"] = {"keys": _merge_sort_edit((rule.get("ordered_by") or {}).get("keys") or [], specs, prompt)}
+            if save_sort or not validate_order:
+                rule["sort"] = _merge_sort_edit(rule.get("sort") or [], specs, prompt)
+    elif (expert or has_order_token) and not (is_ppid_knob and expert and not has_order_token):
+        specs = _fallback_sort_specs(prompt, columns, expert=expert, file_key=file_key, sample_rows=sample_rows)
         if specs:
             if expert or validate_order:
                 rule["ordered_by"] = {"keys": specs}

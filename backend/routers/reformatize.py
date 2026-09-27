@@ -54,7 +54,7 @@ from core.utils import (
 from core.vehicle_reformatter import (
     FORMULA_HELP, PIVOT_KEY_COLS, PIVOT_META_COLS, _MA_WINDOW_SUFFIXES,
     apply_addp_rows, build_dependency_tree, find_vehicle_csv, formula_refs,
-    load_vehicle_table, reformatize, resolve_needed_items,
+    load_vehicle_table, new_suffix_base, reformatize, resolve_needed_items,
     rowwise_function_help,
 )
 
@@ -910,12 +910,27 @@ def _trim_recent(df: pl.DataFrame, max_rows: int) -> pl.DataFrame:
               .drop("__ts"))
 
 
+# 같은 조건의 계산이 이미 돌고 있으면 뒤 요청은 그 결과를 기다려 공유한다.
+# (여러 명이 같은 제품·기간을 동시에 조회하거나, 조회가 끝나기 전에 버튼을 다시
+# 눌러도 raw 읽기·pivot 은 한 번만 한다.) 키 = 결과 캐시 키.
+_INFLIGHT: dict[tuple, threading.Event] = {}
+_INFLIGHT_LOCK = threading.Lock()
+
+
+def _inflight_wait_sec() -> float:
+    try:
+        return max(1.0, float(os.environ.get("FLOW_REFORMATIZE_INFLIGHT_WAIT_SEC", "") or 600.0))
+    except (TypeError, ValueError):
+        return 600.0
+
+
 def _compute(product: str, f: Filters,
              selected_items: list[str] | None = None,
              max_mb: int | None = None,
              auto_trim: bool = False,
              progress=None,
              max_raw_rows: int | None = None,
+             isolate: bool = False,
              ) -> tuple[pl.DataFrame, list[str], list[str], str, list[dict], int, str]:
     """제품의 reformatize 결과 (full wide, 출력 컬럼, 규칙 에러, csv 이름, 규칙 테이블,
     필터된 raw 행수, 안내 문구).
@@ -932,6 +947,10 @@ def _compute(product: str, f: Filters,
 
     ``progress`` 는 다운로드 대기열 작업이 넘기는 진행 보고 콜백(없으면 무시).
     캐시 HIT 이면 아무 단계도 보고되지 않고 곧바로 끝난다.
+
+    ``isolate=True`` 면 캐시 미스 계산(2~5단계)을 상주 계산 프로세스
+    (`core.et_run_service`)에서 돌린다 — 화면 조회처럼 운영 API 가 직접 받는
+    요청용. 결과·캐시·오류 문구는 같고, 자식을 쓸 수 없으면 여기서 계산한다.
     """
     report = progress or _noop_progress
     report("규칙 CSV 확인 중")
@@ -948,15 +967,96 @@ def _compute(product: str, f: Filters,
     sel_key = tuple(sorted(set(selected_items))) if selected_items else ()
     sett = _settings()
     effective_max_mb = max_mb if max_mb is not None else sett.get("max_download_mb", 500)
+    context = "조회" if auto_trim else "조회/다운로드"
     key = (product, _filters_key(f), sel_key, bool(auto_trim), int(effective_max_mb or 0),
            sett.get("value_col", ""), bool(sett.get("scale_applied")))
-    with _CACHE_LOCK:
-        hit = _CACHE.get(key)
+    leader = False
+    event: threading.Event | None = None
+    while True:
+        with _CACHE_LOCK:
+            hit = _CACHE.get(key)
         if hit and hit[0] == full_sig:
             report("캐시된 Index 계산 결과 불러오는 중")
-            _ensure_size_within_limit(hit[1], effective_max_mb, context="조회" if auto_trim else "조회/다운로드")
+            _ensure_size_within_limit(hit[1], effective_max_mb, context=context)
             return hit[1], hit[2], hit[3], hit[4], hit[5], hit[6], hit[7]
+        with _INFLIGHT_LOCK:
+            event = _INFLIGHT.get(key)
+            if event is None:
+                event = threading.Event()
+                _INFLIGHT[key] = event
+                leader = True
+        if leader:
+            break
+        report("같은 조건의 조회를 먼저 계산하고 있습니다 — 그 결과를 함께 씁니다")
+        if not event.wait(timeout=_inflight_wait_sec()):
+            break          # 앞 계산이 너무 길다 — 등록 없이 직접 계산
+        # 앞 계산이 끝났다: 캐시를 다시 본다(실패·캐시 불가였다면 이번엔 직접 계산).
 
+    try:
+        fresh = None
+        if isolate:
+            fresh = _compute_isolated(product, f, selected_items, effective_max_mb,
+                                      auto_trim, report, context)
+        if fresh is None:
+            fresh = _compute_fresh(product, f, csv_fp, product_sig, full_sig, selected_items,
+                                   effective_max_mb, context, sett, report, progress)
+        wide, out_cols, errors, table, raw_rows, notice = fresh
+        est = _df_est_bytes(wide)
+        with _CACHE_LOCK:
+            _CACHE.pop(key, None)
+            if _evict_cache_locked(_CACHE, _CACHE_MAX, _cache_max_bytes(), est):
+                _CACHE[key] = (full_sig, wide, out_cols, errors, csv_fp.name, table, raw_rows, notice, est)
+        return wide, out_cols, errors, csv_fp.name, table, raw_rows, notice
+    finally:
+        if leader and event is not None:
+            with _INFLIGHT_LOCK:
+                if _INFLIGHT.get(key) is event:
+                    _INFLIGHT.pop(key, None)
+            event.set()
+
+
+def _compute_isolated(product: str, f: Filters, selected_items: list[str] | None,
+                      effective_max_mb, auto_trim: bool, report, context: str):
+    """캐시 미스 계산을 상주 계산 프로세스에 맡긴다. 못 쓰면 None(호출측이 직접 계산)."""
+    try:
+        from core import et_run_service as _svc
+    except ImportError:            # 부분 배포(새 파일 생성이 막힌 볼륨) — 예전 경로로
+        logger.warning("core.et_run_service 없음 — ET 조회를 운영 프로세스에서 계산합니다")
+        return None
+
+    if not _svc.enabled():
+        return None
+    job = {
+        "product": product,
+        "filters": _filters_dump(f),
+        "selected_items": list(selected_items) if selected_items else None,
+        "max_mb": effective_max_mb,
+        "auto_trim": bool(auto_trim),
+    }
+    try:
+        meta = _svc.compute(job, progress=report)
+    except _svc.ServiceUnavailable as exc:
+        _svc.note_fallback()
+        logger.warning("ET 조회 계산 프로세스를 쓸 수 없어 운영 프로세스에서 계산합니다: %s", exc)
+        return None
+    except _svc.RunError as exc:
+        raise HTTPException(exc.status, exc.detail)
+    path = meta.get("path")
+    try:
+        report(f"결과 표 받는 중 ({int(meta.get('rows') or 0):,}행)")
+        wide = pl.read_ipc(str(path), memory_map=False, rechunk=False)
+    finally:
+        _svc._unlink(path)
+    _ensure_size_within_limit(wide, effective_max_mb, context=context)
+    return (wide, list(meta.get("out_cols") or []), list(meta.get("errors") or []),
+            list(meta.get("table") or []), int(meta.get("raw_rows") or 0),
+            str(meta.get("notice") or ""))
+
+
+def _compute_fresh(product: str, f: Filters, csv_fp: Path, product_sig: tuple, full_sig: tuple,
+                   selected_items: list[str] | None, effective_max_mb, context: str,
+                   sett: dict, report, progress):
+    """캐시 없이 계산 → (wide, out_cols, errors, table, raw_rows, notice). 2~5단계."""
     # ── 2) vehicle 테이블 → 필요 ITEMID 결정 (raw 로딩 전!) ──
     table = load_vehicle_table(csv_fp)
     if not table:
@@ -1020,13 +1120,8 @@ def _compute(product: str, f: Filters,
     except ValueError as e:
         raise HTTPException(400, str(e))
     report(f"Index 계산 완료 ({wide.height:,}행)")
-    _ensure_size_within_limit(wide, effective_max_mb, context="조회" if auto_trim else "조회/다운로드")
-    est = _df_est_bytes(wide)
-    with _CACHE_LOCK:
-        _CACHE.pop(key, None)
-        if _evict_cache_locked(_CACHE, _CACHE_MAX, _cache_max_bytes(), est):
-            _CACHE[key] = (full_sig, wide, out_cols, errors, csv_fp.name, table, raw_rows, notice, est)
-    return wide, out_cols, errors, csv_fp.name, table, raw_rows, notice
+    _ensure_size_within_limit(wide, effective_max_mb, context=context)
+    return wide, out_cols, errors, table, raw_rows, notice
 
 
 # ── 조회/다운로드 필터 ───────────────────────────────────────────────
@@ -1201,6 +1296,16 @@ def products(_user=Depends(current_user)):
     return {"products": out, "vehicle_dir": str(VEHICLE_DIR)}
 
 
+def _prewarm_run_service() -> None:
+    try:
+        from core import et_run_service as _svc
+
+        if _svc.enabled():
+            threading.Thread(target=_svc.prewarm, name="et-run-prewarm", daemon=True).start()
+    except Exception:
+        logger.debug("ET 조회 계산 프로세스 예열 요청 실패", exc_info=True)
+
+
 @router.get("/items")
 def list_items(product: str = Query(...), user=Depends(current_user)):
     """제품 vehicle CSV 의 REAL/ADDP 항목 목록 — index 선택 UI 용.
@@ -1212,6 +1317,9 @@ def list_items(product: str = Query(...), user=Depends(current_user)):
     팀이 관리하는 원본 순서로 본다). 관리자가 비공개로 정한 항목은 일반 유저
     목록에서 제외하고, 관리자에게는 hidden 플래그로 표시한다 (기본 전부 공개).
     """
+    # 제품을 고른 직후라 곧 조회가 온다 — 계산 프로세스를 미리 띄워 첫 조회의
+    # 기동 대기(1~2초)를 없앤다. 백그라운드라 이 응답은 기다리지 않는다.
+    _prewarm_run_service()
     csv_fp = _find_csv(product)
     if csv_fp is None:
         raise HTTPException(400, f"'{product}' 에 매칭되는 vehicle reformatter CSV 가 없습니다")
@@ -1547,7 +1655,16 @@ def _resolve_output_cols(
     known = set(cols) | set(raw_cols)
     cols.extend(c for c in out_cols if c in wide_full.columns and c not in known)
     cols.extend(raw_cols)
-    return list(dict.fromkeys(cols))
+    # `X_new` 옆에 짝 원값 `X` 를 붙인다 — 수식이 `rmax({X_new})` 처럼 `_new` 만
+    # 참조해도 원값이 함께 나가야 한다(resolve_needed_items 가 로딩은 해 둔다).
+    paired: list[str] = []
+    for col in dict.fromkeys(cols):
+        base = new_suffix_base(col)
+        if base and base in wide_full.columns and base not in paired:
+            paired.append(base)
+        if col not in paired:
+            paired.append(col)
+    return paired
 
 
 @router.get("/settings")
@@ -1653,7 +1770,8 @@ def _run_compute(req: "RunReq", user: dict, cfg: dict, hidden: set,
     try:
         wide_full, out_cols, errors, vehicle_csv, table, _raw_rows, notice = _compute(
             req.product, req, selected_items=req_items or None,
-            max_mb=cfg.get("max_download_mb", 500), auto_trim=True, progress=report)
+            max_mb=cfg.get("max_download_mb", 500), auto_trim=True, progress=report,
+            isolate=True)
     except HTTPException as exc:
         try:
             # Wafer-scope replay is owned by ChartBuilder, not package-based ET history.
@@ -2300,7 +2418,7 @@ def _run_test(product: str, items: list[TestItem], f: Filters, auto_trim: bool =
     cfg = _settings()
     max_mb = cfg.get("max_download_mb", 500)
     wide_full, out_cols, _base_errors, vehicle_csv, _table, _raw_rows, notice = _compute(
-        product, f, max_mb=max_mb, auto_trim=auto_trim)
+        product, f, max_mb=max_mb, auto_trim=auto_trim, isolate=True)
     rows = []
     seen_alias: set[str] = set()
     for it in items:
@@ -2351,7 +2469,8 @@ def formula_help(product: str = Query(""), _admin=Depends(require_page_manager("
     if product:
         # 도움말은 참조 가능한 컬럼 이름만 필요하다 — 경량(auto_trim) 조회로 충분.
         wide_full, out_cols, _e, vehicle_csv, table, _raw_rows, _notice = _compute(
-            product, Filters(), max_mb=_settings().get("max_download_mb", 500), auto_trim=True)
+            product, Filters(), max_mb=_settings().get("max_download_mb", 500), auto_trim=True,
+            isolate=True)
         aliases = [r["alias"] for r in table if r["alias"] in wide_full.columns]
         keys = [c for c in PIVOT_KEY_COLS if c in wide_full.columns]
         metas = [c for c in PIVOT_META_COLS if c in wide_full.columns]
@@ -2626,7 +2745,7 @@ def _run_python_test(product: str, code: str, f: Filters, agg: str = ""):
     cfg = _settings()
     max_mb = cfg.get("max_download_mb", 500)
     wide_full, _out_cols, base_errors, vehicle_csv, _table, _raw_rows, notice = _compute(
-        product, f, max_mb=max_mb, auto_trim=True)
+        product, f, max_mb=max_mb, auto_trim=True, isolate=True)
     result, new_cols = _exec_python_transform(wide_full, code)
     errors = list(base_errors or [])
     keys = [c for c in PIVOT_KEY_COLS if c in result.columns]
@@ -2659,7 +2778,8 @@ def python_help(product: str = Query(""), _admin=Depends(require_page_manager("r
     out: dict = {"reference": _python_reference(), "aggregations": _AGG_HELP, "columns": {}}
     if product:
         wide_full, out_cols, _e, vehicle_csv, table, _raw_rows, _notice = _compute(
-            product, Filters(), max_mb=_settings().get("max_download_mb", 500), auto_trim=True)
+            product, Filters(), max_mb=_settings().get("max_download_mb", 500), auto_trim=True,
+            isolate=True)
         aliases = [r["alias"] for r in table if r["alias"] in wide_full.columns]
         keys = [c for c in PIVOT_KEY_COLS if c in wide_full.columns]
         metas = [c for c in PIVOT_META_COLS if c in wide_full.columns]

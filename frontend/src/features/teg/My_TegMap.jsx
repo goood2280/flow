@@ -16,7 +16,9 @@
 */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sf, postJson, putJson } from "../../lib/api";
+import { canManagePage } from "../../lib/permissions";
 import { toast } from "../../components/Toast";
+import { Icon } from "../../components/ui/Icon";
 import Modal from "../../components/Modal";
 import PageGear from "../../components/PageGear";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows, spreadsheetTextFromRows } from "../../components/SpreadsheetPasteGrid";
@@ -68,7 +70,7 @@ function directionLabel(t) { return String(t?.flat_zone || "h") === "v_L" ? "V(L
 const DIR_TIP = "방향 — Teg_location 의 direction 열(없으면 TEG 이름 접두 V_/H_) 기준."
   + " 숫자 flat_zone 은 270°=V(R), 90°=V(L·노치 왼쪽)로 구분합니다."
   + " teg_w/teg_h 는 파일에 실제 배치 방향 그대로 있어 V 는 이미 세운 크기입니다"
-  + " (크기 열이 없어 ⚙️ 기본 사이즈로 채울 때만 V 를 세워서 적용합니다).";
+  + " (크기 열이 없어 톱니 설정의 기본 사이즈로 채울 때만 V 를 세워서 적용합니다).";
 
 /* TEG 사각형 크기(mm) — MAIN(die 급 블록)은 패턴 크기(teg_w/teg_h)가 아니라
    MAIN chip 크기 파일의 chip 크기로 그린다. 크기표에 없으면 null (점만 찍는다). */
@@ -794,7 +796,7 @@ function GearSettings({ vehicle, canEdit, onSaved }) {
               marginBottom: 8, fontSize: 12, color: "var(--muted)", textAlign: "center",
               cursor: dis ? "default" : "text", outline: "none",
             }}>
-            📋 여기에 <b style={{ color: "var(--text-primary)" }}>Ctrl+V</b> 로 그림을 붙여넣으세요
+            <Icon name="clipboard" style={{ marginRight: 4 }} />여기에 <b style={{ color: "var(--text-primary)" }}>Ctrl+V</b> 로 그림을 붙여넣으세요
             <div style={{ fontSize: 11, marginTop: 2 }}>
               붙여넣으면 바로 저장되고 shot 안에 표시됩니다 (파일 선택도 가능)
             </div>
@@ -1019,7 +1021,7 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
           : selfCrossed !== null
             ? (selfCrossed ? (syn ? "var(--line)" : "#c78a1e") : "#3e7bd6")
             : "var(--line)";
-        const valueLine = measured ? `\n${valueLabel}: ${measured.value}${measured.n!=null?` (n=${measured.n})`:""}` : "\n측정값 없음";
+        const valueLine = measured ? `\n${valueLabel}: ${measured.value}${measured.n!=null?` (n=${measured.n})`:""}${measured.interpolated?" (IDW 보간)":""}` : "\n측정값 없음";
         const title = (mmMode
           ? `shot (${s0.x}, ${s0.y})\nwafer 위치: (${fmt(s0.mm_x)}, ${fmt(-s0.mm_y)}) mm\nshot 내부 ebeam 원점: (0, 0)\nradius: ${fmt(s0.radius)} mm`
             + (crossed !== null
@@ -1037,7 +1039,7 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
             <rect x={cx - shotW / 2} y={cy - shotH / 2} width={shotW} height={shotH}
               fill={isSel ? "rgba(90,140,255,0.16)" : (fullChipMode ? "transparent" : (measuredFill || (shotValues ? "#f1f5f9" : passFill)))}
               stroke={isSel ? "#5a8cff" : (fullChipMode ? "rgba(148,163,184,0.55)" : (measuredFill ? "#334155" : passStroke))} strokeWidth={isSel ? 1.6 : (fullChipMode ? 0.35 : 0.7)}
-              strokeDasharray={syn && !isSel ? "3 2" : undefined}>
+              strokeDasharray={(syn || measured?.interpolated) && !isSel ? "3 2" : undefined}>
               <title>{title}</title>
             </rect>
           </g>
@@ -1105,7 +1107,7 @@ export function ShotZoom({ data, selectedTegs, tegColor, imgUrl, dieCells, showP
   const geo = data.geometry;
   const display = data.display || { mode: "none" };
   if (geo.fit !== "radius") {
-    return <EmptyState icon="⚠" title="Chip_Radius fit 불가" hint="shot 크기(mm)를 알 수 없어 확대 뷰를 그릴 수 없습니다" />;
+    return <EmptyState icon="warning" title="Chip_Radius fit 불가" hint="shot 크기(mm)를 알 수 없어 확대 뷰를 그릴 수 없습니다" />;
   }
   const W = geo.shot_w_mm, H = geo.shot_h_mm;
   const pad = 0.12;
@@ -1601,7 +1603,7 @@ function ReferenceFiles({ user, canEdit, onSaved }) {
   useEffect(() => { loadFiles(); }, [loadFiles]);
 
   if (files === null) return <div style={{ padding: 20, color: "var(--muted)" }}>기준파일을 불러오는 중…</div>;
-  if (error) return <EmptyState icon="⚠" title="기준파일을 불러오지 못했습니다" hint={error} />;
+  if (error) return <EmptyState icon="warning" title="기준파일을 불러오지 못했습니다" hint={error} />;
   return <My_FileBrowser
     user={user}
     embeddedBaseFiles={files}
@@ -1713,7 +1715,7 @@ function ProductAccessAdmin({ onSaved }) {
 
 
 function InlineShotPicker({ data, selected, onToggle, tableName="" }) {
-  if (!data?.shots?.length) return <EmptyState icon="⌖" title="제품 map이 없습니다" hint="상단에서 제품을 선택해 주세요" />;
+  if (!data?.shots?.length) return <EmptyState icon="target" title="제품 map이 없습니다" hint="상단에서 제품을 선택해 주세요" />;
   const geo = data.geometry || {}, mmMode = geo.fit === "radius";
   const size = 620, pad = 30, shots = buildFullShots(data);
   let minX, maxX, minY, maxY, w, h;
@@ -2580,14 +2582,14 @@ export default function My_TegMap({ user }) {
 
       {view === "map" && <>
       {vehicles && vehicles.length === 0 && (
-        <EmptyState icon="📐" title={isAdmin ? "등록된 제품이 없습니다" : "접근 가능한 제품이 없습니다"}
+        <EmptyState icon="ruler" title={isAdmin ? "등록된 제품이 없습니다" : "접근 가능한 제품이 없습니다"}
           hint={isAdmin ? "왼쪽 상단의 제품 추가에서 Item/x/y 표를 붙여넣거나, fallback용 Chip_Radius 파일을 설정하세요" : "상위 제품 노드 권한을 관리자에게 요청해 주세요"} />
       )}
       {err && vehicles && vehicles.length > 0 && (
-        <EmptyState icon="⚠" title="WF MAP 을 불러오지 못했습니다" hint={err} />
+        <EmptyState icon="warning" title="WF MAP 을 불러오지 못했습니다" hint={err} />
       )}
       {mapLoading && !data && vehicles && vehicles.length > 0 && (
-        <EmptyState icon="⏳" title="WF MAP 계산 중" hint={`${vehicle} 좌표와 TEG 배치를 불러오고 있습니다.`} />
+        <EmptyState icon="hourglass" title="WF MAP 계산 중" hint={`${vehicle} 좌표와 TEG 배치를 불러오고 있습니다.`} />
       )}
 
       {data && (
@@ -2696,7 +2698,7 @@ export default function My_TegMap({ user }) {
                           title={"측정 Chip_Radius 가 fit 대비 크게 벗어나 자동 제외된 행 — 원본 CSV 값 확인 필요\n"
                             + (geo.fit_dropped || []).map(d0 =>
                               `(${d0.x}, ${d0.y}) r=${fmt(d0.r, 1)} (잔차 ${fmt(d0.residual_mm, 1)}mm)`).join("\n")}>
-                          ⚠ 잘못된 샷이 있는 것 같습니다 — {(geo.fit_dropped || []).slice(0, 4).map(d0 =>
+                          <Icon name="warning" style={{ marginRight: 4 }} />잘못된 샷이 있는 것 같습니다 — {(geo.fit_dropped || []).slice(0, 4).map(d0 =>
                             `(${d0.x}, ${d0.y})`).join(", ")}
                           {(geo.fit_dropped || []).length > 4 ? ` 외 ${(geo.fit_dropped || []).length - 4}개` : ""}
                           {" "}(Chip_Radius 값 확인 필요)
@@ -2749,7 +2751,7 @@ export default function My_TegMap({ user }) {
                           background: on ? tegColor(n) : "transparent",
                           display: "inline-flex", alignItems: "center", justifyContent: "center",
                           fontSize: 10, color: "#fff", lineHeight: 1,
-                        }}>{on ? "✓" : ""}</span>
+                        }}>{on ? <Icon name="check" /> : null}</span>
                         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n}</span>
                         {/* vertical TEG 표시 — 세워서 그린다는 걸 목록에서 바로 보이게 */}
                         {isVertical(t) && (

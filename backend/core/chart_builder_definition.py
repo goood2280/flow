@@ -12,6 +12,7 @@ FileBrowser SQL fragment that ChartBuilder already accepts.
 from __future__ import annotations
 
 import re
+import datetime as dt
 from typing import Any
 
 
@@ -21,18 +22,19 @@ QUERY_HEADER_RE = re.compile(
 )
 FIELD_RE = re.compile(
     r"^\s*(table|db|root|product|sql|query|select_cols?|columns?|reformatter|apply_reformatter|reformatter_items?|items|reformatter_agg|agg|agg_scope"
-    r"|recent_days?|recent|days|date_column|date_col|time_column|time_col"
+    r"|recent_days?|recent|days|date_column|date_col|time_column|time_col|date_from|date_to"
     r"|root_lots?|root_lot_ids?|wafers?|wafer_ids?|lot_wafer_pairs"
     r"|key|reformatize_key|rh_key|et_key|expression"
-    r"|derive|derived|derived_column|combine|filter|filters?)\s*[:=]\s*(.*)$",
+    r"|derive|derived|derived_column|combine|filter|filters?"
+    r"|wafer_filter_mode|wafer_filter_column|wafer_filter_low|wafer_filter_high|wafer_filter_agg|wafer_filter_op|wafer_filter_threshold)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
 )
 CHART_HEADER_RE = re.compile(r"^\s*chart\s*:?(.*)$", re.IGNORECASE)
 CHART_FIELD_RE = re.compile(
     r"^\s*(type|chart_type|x|x_col|y|y_col|color|color_col|trellis|trellis_col|color_rule|color_else"
-    r"|highlight|show_legend|legend|width|height|size|title|x_label|y_label|trend_grain|aggregation"
+    r"|highlight|highlight_start|highlight_end|highlight_label|show_legend|legend|width|height|size|title|x_label|y_label|trend_grain|aggregation"
     r"|x_font_size|y_font_size|radius_teg|map_y|map_scope|map_target|pie_basis|fit|point_size|marker_opacity|line_width|x_min|x_max|y_min|y_max"
-    r"|y_scale|show_grid|legend_position|spec_low|spec_high|box_points|wafer_palette|wafer_mode"
+    r"|y_scale|show_grid|legend_position|spec_low|spec_high|box_points|wafer_palette|wafer_mode|wafer_interpolation"
     r"|wafer_spec_low|wafer_spec_high|wafer_low|wafer_center|wafer_high)\s*[:=]\s*(.*)$",
     re.IGNORECASE,
 )
@@ -79,6 +81,8 @@ FIELD_ALIASES = {
     "date_column": "runtime_date_column",
     "time_col": "runtime_date_column",
     "time_column": "runtime_date_column",
+    "date_from": "runtime_date_from",
+    "date_to": "runtime_date_to",
     "root_lot": "runtime_root_lot_ids",
     "root_lots": "runtime_root_lot_ids",
     "root_lot_id": "runtime_root_lot_ids",
@@ -94,6 +98,13 @@ FIELD_ALIASES = {
     "combine": "derived_columns",
     "filter": "runtime_filters",
     "filters": "runtime_filters",
+    "wafer_filter_mode": "wafer_filter_mode",
+    "wafer_filter_column": "wafer_filter_column",
+    "wafer_filter_low": "wafer_filter_low",
+    "wafer_filter_high": "wafer_filter_high",
+    "wafer_filter_agg": "wafer_filter_agg",
+    "wafer_filter_op": "wafer_filter_op",
+    "wafer_filter_threshold": "wafer_filter_threshold",
 }
 DEFAULT_DATE_COLUMN = "tkout_time"
 MAX_RECENT_DAYS = 3650
@@ -265,6 +276,36 @@ def _assign_field(source: dict[str, Any], name: str, value: str, *, append_sql: 
         if days > MAX_RECENT_DAYS:
             raise ChartBuilderDefinitionError(f"RECENT_DAYS는 1~{MAX_RECENT_DAYS}일 사이여야 합니다.")
         source[field] = days
+        return
+    if field in {"runtime_date_from", "runtime_date_to"}:
+        if cleaned and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned):
+            raise ChartBuilderDefinitionError(f"{name.upper()}은 YYYY-MM-DD 형식이어야 합니다.")
+        source[field] = cleaned
+        return
+    if field in {"wafer_filter_low", "wafer_filter_high", "wafer_filter_threshold"}:
+        try:
+            source[field] = float(cleaned)
+        except ValueError as exc:
+            raise ChartBuilderDefinitionError(f"{name.upper()}은 숫자여야 합니다.") from exc
+        return
+    if field == "wafer_filter_mode":
+        normalized = cleaned.casefold()
+        if normalized not in {"", "spec_out", "aggregate"}:
+            raise ChartBuilderDefinitionError("WAFER_FILTER_MODE는 spec_out 또는 aggregate여야 합니다.")
+        source[field] = normalized
+        return
+    if field == "wafer_filter_agg":
+        normalized = cleaned.casefold()
+        if normalized not in {"avg", "median", "p10", "p90", "min", "max", "count", "sum"}:
+            raise ChartBuilderDefinitionError(f"지원하지 않는 WAFER_FILTER_AGG입니다: {cleaned}")
+        source[field] = normalized
+        return
+    if field == "wafer_filter_op":
+        aliases = {"<": "lt", "<=": "lte", ">": "gt", ">=": "gte", "=": "eq", "==": "eq"}
+        normalized = aliases.get(cleaned.casefold(), cleaned.casefold())
+        if normalized not in {"lt", "lte", "gt", "gte", "eq"}:
+            raise ChartBuilderDefinitionError(f"지원하지 않는 WAFER_FILTER_OP입니다: {cleaned}")
+        source[field] = normalized
         return
     if field in {"runtime_root_lot_ids", "runtime_wafer_ids"}:
         values = []
@@ -631,9 +672,11 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
             current = {
                 "id": query_id, "root": "", "product": "", "sql": "", "select_cols": "",
                 "apply_reformatter": False, "reformatter_items": "", "reformatter_agg": "",
-                "runtime_recent_days": 0, "runtime_date_column": "",
+                "runtime_recent_days": 0, "runtime_date_column": "", "runtime_date_from": "", "runtime_date_to": "",
                 "runtime_root_lot_ids": [], "runtime_wafer_ids": [], "runtime_lot_wafer_pairs": [],
-                "derived_columns": [], "runtime_filters": [],
+                "derived_columns": [], "runtime_filters": [], "wafer_filter_mode": "", "wafer_filter_column": "",
+                "wafer_filter_low": None, "wafer_filter_high": None, "wafer_filter_agg": "",
+                "wafer_filter_op": "", "wafer_filter_threshold": None,
             }
             sources.append(current)
             in_chart = False
@@ -681,12 +724,42 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
         # DATE_COLUMN 만 있으면 아무 조건도 걸리지 않으므로 조용히 흘려보내지 않고 잡는다.
         recent_days = int(source.get("runtime_recent_days") or 0)
         date_column = str(source.get("runtime_date_column") or "").strip()
-        if date_column and not recent_days:
+        date_from = str(source.get("runtime_date_from") or "").strip()
+        date_to = str(source.get("runtime_date_to") or "").strip()
+        if date_column and not recent_days and not date_from and not date_to:
             raise ChartBuilderDefinitionError(
-                f"{source['id']}: DATE_COLUMN은 RECENT_DAYS와 함께 써야 시간 조건이 걸립니다."
+                f"{source['id']}: DATE_COLUMN은 RECENT_DAYS 또는 DATE_FROM/DATE_TO와 함께 써야 시간 조건이 걸립니다."
             )
+        for label, value in (("DATE_FROM", date_from), ("DATE_TO", date_to)):
+            if value:
+                try:
+                    dt.date.fromisoformat(value)
+                except ValueError as exc:
+                    raise ChartBuilderDefinitionError(f"{source['id']}: {label}은 실제 YYYY-MM-DD 날짜여야 합니다.") from exc
+        if date_from and date_to and date_from > date_to:
+            raise ChartBuilderDefinitionError(f"{source['id']}: DATE_FROM은 DATE_TO보다 늦을 수 없습니다.")
         source["runtime_recent_days"] = recent_days
-        source["runtime_date_column"] = (date_column or DEFAULT_DATE_COLUMN) if recent_days else ""
+        source["runtime_date_column"] = (date_column or DEFAULT_DATE_COLUMN) if recent_days or date_from or date_to else ""
+        source["runtime_date_from"] = date_from
+        source["runtime_date_to"] = date_to
+        mode = str(source.get("wafer_filter_mode") or "").casefold()
+        if not mode and source.get("wafer_filter_threshold") is not None:
+            mode = "aggregate"
+        if not mode and (source.get("wafer_filter_low") is not None or source.get("wafer_filter_high") is not None):
+            mode = "spec_out"
+        source["wafer_filter_mode"] = mode
+        filter_column = str(source.get("wafer_filter_column") or "").strip()
+        if filter_column and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", filter_column):
+            raise ChartBuilderDefinitionError(f"{source['id']}: WAFER_FILTER_COLUMN은 올바른 열 이름이어야 합니다.")
+        if mode == "spec_out":
+            low, high = source.get("wafer_filter_low"), source.get("wafer_filter_high")
+            if low is not None and high is not None and float(low) >= float(high):
+                raise ChartBuilderDefinitionError(f"{source['id']}: WAFER_FILTER_LOW는 WAFER_FILTER_HIGH보다 작아야 합니다.")
+        elif mode == "aggregate":
+            if not source.get("wafer_filter_agg") or not source.get("wafer_filter_op") or source.get("wafer_filter_threshold") is None:
+                raise ChartBuilderDefinitionError(
+                    f"{source['id']}: aggregate wafer 필터에는 AGG, OP, THRESHOLD가 모두 필요합니다."
+                )
     known = set(ids)
     for join in joins:
         if join["left"] not in known or join["right"] not in known:
@@ -699,6 +772,14 @@ def parse_chart_builder_definition(code: str) -> dict[str, Any]:
         raise ChartBuilderDefinitionError("MAX_ROWS는 1~10000 사이여야 합니다.")
 
     _validate_chart(chart)
+    for source in sources:
+        if source.get("wafer_filter_mode") == "spec_out":
+            low = source.get("wafer_filter_low", chart.get("wafer_spec_low"))
+            high = source.get("wafer_filter_high", chart.get("wafer_spec_high"))
+            if low is None and high is None:
+                raise ChartBuilderDefinitionError(
+                    f"{source['id']}: spec_out wafer 필터에는 WAFER_FILTER_LOW/HIGH 또는 CHART WAFER_SPEC_LOW/HIGH가 필요합니다."
+                )
     linked_pairs = linked_chart_color_pairs(chart)
     if linked_pairs:
         linked_roots = list(dict.fromkeys(pair["root_lot_id"] for pair in linked_pairs))
@@ -723,9 +804,10 @@ def _source_dict(source: Any) -> dict[str, Any]:
         key: getattr(source, key, "")
         for key in (
             "id", "root", "product", "sql", "select_cols", "apply_reformatter", "reformatter_items", "reformatter_agg",
-            "runtime_recent_days", "runtime_date_column",
+            "runtime_recent_days", "runtime_date_column", "runtime_date_from", "runtime_date_to",
             "runtime_root_lot_ids", "runtime_wafer_ids", "runtime_lot_wafer_pairs", "reformatter_agg_scope",
-            "derived_columns", "runtime_filters",
+            "derived_columns", "runtime_filters", "wafer_filter_mode", "wafer_filter_column",
+            "wafer_filter_low", "wafer_filter_high", "wafer_filter_agg", "wafer_filter_op", "wafer_filter_threshold",
         )
     }
 
@@ -833,6 +915,7 @@ def _validate_chart(chart: dict[str, Any]) -> None:
         "box_points": {"outliers", "all", "none"},
         "wafer_palette": {"blue_gray_red", "red_gray_blue", "viridis", "gray"},
         "wafer_mode": {"value", "spec_out"},
+        "wafer_interpolation": {"none", "idw"},
     }
     for key, allowed in enums.items():
         value = str(chart.get(key) or "").casefold()
@@ -842,6 +925,18 @@ def _validate_chart(chart: dict[str, Any]) -> None:
         for key in ("y_min", "y_max"):
             if chart.get(key) is not None and float(chart[key]) <= 0:
                 raise ChartBuilderDefinitionError(f"CHART {key.upper()}은 LOG scale에서 0보다 커야 합니다.")
+    highlight_start = str(chart.get("highlight_start") or "").strip()
+    highlight_end = str(chart.get("highlight_end") or "").strip()
+    for key, value in (("HIGHLIGHT_START", highlight_start), ("HIGHLIGHT_END", highlight_end)):
+        if value:
+            try:
+                dt.date.fromisoformat(value)
+            except ValueError as exc:
+                raise ChartBuilderDefinitionError(f"CHART {key}는 실제 YYYY-MM-DD 날짜여야 합니다.") from exc
+    if bool(highlight_start) != bool(highlight_end):
+        raise ChartBuilderDefinitionError("CHART HIGHLIGHT_START와 HIGHLIGHT_END는 함께 지정해야 합니다.")
+    if highlight_start and highlight_start > highlight_end:
+        raise ChartBuilderDefinitionError("CHART HIGHLIGHT_START는 HIGHLIGHT_END보다 늦을 수 없습니다.")
 
 
 def linked_chart_color_pairs(chart: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -900,6 +995,15 @@ def format_chart_builder_definition(
             date_column = str(source.get("runtime_date_column") or "").strip() or DEFAULT_DATE_COLUMN
             lines.append(f"RECENT_DAYS = {recent_days}")
             lines.append(f"DATE_COLUMN = {date_column}")
+        date_from = str(source.get("runtime_date_from") or "").strip()
+        date_to = str(source.get("runtime_date_to") or "").strip()
+        if date_from or date_to:
+            if not recent_days:
+                lines.append(f"DATE_COLUMN = {str(source.get('runtime_date_column') or '').strip() or DEFAULT_DATE_COLUMN}")
+            if date_from:
+                lines.append(f"DATE_FROM = {date_from}")
+            if date_to:
+                lines.append(f"DATE_TO = {date_to}")
         root_lot_ids = [str(value).strip() for value in (source.get("runtime_root_lot_ids") or []) if str(value).strip()]
         wafer_ids = [str(value).strip() for value in (source.get("runtime_wafer_ids") or []) if str(value).strip()]
         linked_pairs = [pair for pair in (source.get("runtime_lot_wafer_pairs") or []) if isinstance(pair, dict) and str(pair.get("root_lot_id") or "").strip() and str(pair.get("wafer_id") or "").strip()]
@@ -938,6 +1042,20 @@ def format_chart_builder_definition(
             values = [str(value).strip() for value in (item.get("values") or []) if str(value).strip()]
             if column and (values or operator in {"is_blank", "not_blank"}):
                 lines.append(f"FILTER = {column} | operator={operator} | values={','.join(values[:200])}")
+        wafer_filter_mode = str(source.get("wafer_filter_mode") or "").strip().casefold()
+        if wafer_filter_mode:
+            lines.append(f"WAFER_FILTER_MODE = {wafer_filter_mode}")
+        wafer_filter_column = str(source.get("wafer_filter_column") or "").strip()
+        if wafer_filter_column:
+            lines.append(f"WAFER_FILTER_COLUMN = {wafer_filter_column}")
+        for key, label in (
+            ("wafer_filter_low", "WAFER_FILTER_LOW"), ("wafer_filter_high", "WAFER_FILTER_HIGH"),
+            ("wafer_filter_agg", "WAFER_FILTER_AGG"), ("wafer_filter_op", "WAFER_FILTER_OP"),
+            ("wafer_filter_threshold", "WAFER_FILTER_THRESHOLD"),
+        ):
+            value = source.get(key)
+            if value is not None and str(value).strip():
+                lines.append(f"{label} = {value}")
         lines.append("")
 
     for raw_join in joins or []:
@@ -957,6 +1075,8 @@ def format_chart_builder_definition(
         for key, label in (
             ("type", "TYPE"), ("title", "TITLE"), ("x", "X"), ("y", "Y"), ("x_label", "X_LABEL"),
             ("y_label", "Y_LABEL"), ("color", "COLOR"), ("trellis", "TRELLIS"), ("trend_grain", "TREND_GRAIN"),
+            ("highlight_start", "HIGHLIGHT_START"), ("highlight_end", "HIGHLIGHT_END"),
+            ("highlight_label", "HIGHLIGHT_LABEL"),
             ("radius_teg", "RADIUS_TEG"), ("aggregation", "AGGREGATION"), ("map_y", "MAP_Y"), ("map_scope", "MAP_SCOPE"),
             ("map_target", "MAP_TARGET"), ("pie_basis", "PIE_BASIS"), ("fit", "FIT"),
             ("x_font_size", "X_FONT_SIZE"), ("y_font_size", "Y_FONT_SIZE"),
@@ -965,6 +1085,7 @@ def format_chart_builder_definition(
             ("y_scale", "Y_SCALE"),
             ("legend_position", "LEGEND_POSITION"), ("spec_low", "SPEC_LOW"), ("spec_high", "SPEC_HIGH"),
             ("box_points", "BOX_POINTS"), ("wafer_palette", "WAFER_PALETTE"), ("wafer_mode", "WAFER_MODE"),
+            ("wafer_interpolation", "WAFER_INTERPOLATION"),
             ("wafer_spec_low", "WAFER_SPEC_LOW"), ("wafer_spec_high", "WAFER_SPEC_HIGH"), ("wafer_low", "WAFER_LOW"),
             ("wafer_center", "WAFER_CENTER"), ("wafer_high", "WAFER_HIGH"), ("width", "WIDTH"), ("height", "HEIGHT"),
         ):

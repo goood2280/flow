@@ -1,3 +1,5 @@
+import { renderIcon } from "./Icon";
+
 export function Feedback({
   kind = "empty",
   icon,
@@ -7,17 +9,17 @@ export function Feedback({
   className = "",
 }) {
   const defaultIcon = {
-    loading: "…",
-    empty: "○",
-    error: "!",
-    permission: "⊘",
-    offline: "↯",
-  }[kind] || "○";
+    loading: "hourglass",
+    empty: "tray",
+    error: "warning",
+    permission: "lock",
+    offline: "cloud-off",
+  }[kind] || "tray";
 
   return (
     <div className={`ds-feedback${className ? ` ${className}` : ""}`} data-kind={kind} role={kind === "error" ? "alert" : "status"}>
       <div className="ds-feedback__inner">
-        <div className="ds-feedback__icon" aria-hidden="true">{icon || defaultIcon}</div>
+        <div className="ds-feedback__icon" aria-hidden="true">{renderIcon(icon || defaultIcon)}</div>
         {title && <div className="ds-feedback__title">{title}</div>}
         {message && <div className="ds-feedback__message">{message}</div>}
         {actions && <div className="ds-feedback__actions">{actions}</div>}

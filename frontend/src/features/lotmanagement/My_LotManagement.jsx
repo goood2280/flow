@@ -4,6 +4,7 @@ import Loading from "../../components/Loading";
 import { PageGearButton } from "../../components/PageGear";
 import ProductOrderEditor from "../../components/ProductOrderEditor";
 import { toast } from "../../components/Toast";
+import { Icon, IconLabel } from "../../components/ui/Icon";
 import { Button, Input, PageHeader, PageShell, Pill, Select, Toolbar } from "../../components/ui";
 import { sf } from "../../lib/api";
 import { useUserRole } from "../../lib/permissions";
@@ -675,7 +676,7 @@ export default function My_LotManagement({ user }) {
             color: isMyLotMode ? "var(--accent)" : "inherit",
           }}
         >
-          <span>★ MY LOT</span>
+          <IconLabel icon="star-filled">MY LOT</IconLabel>
           <span style={{
             fontSize: 11,
             padding: "1px 6px",
@@ -836,7 +837,7 @@ export default function My_LotManagement({ user }) {
                                   transition: "all 0.12s ease",
                                 }}
                               >
-                                {isWatched ? "★" : "☆"}
+                                <Icon name={isWatched ? "star-filled" : "star"} />
                               </button>
                             </td>
                           </tr>
@@ -853,7 +854,7 @@ export default function My_LotManagement({ user }) {
                               <div className="ds-feedback__message">
                                 {purposeSearch
                                   ? "검색어를 변경하거나 지워 주세요."
-                                  : "각 제품의 랏 관리 테이블에서 comment 우측의 ☆ 버튼을 클릭해 주요랏으로 등록하면 여기서 한눈에 모아볼 수 있습니다."}
+                                  : "각 제품의 랏 관리 테이블에서 comment 우측의 별 버튼을 클릭해 주요랏으로 등록하면 여기서 한눈에 모아볼 수 있습니다."}
                               </div>
                             </div>
                           </div>
@@ -973,7 +974,7 @@ export default function My_LotManagement({ user }) {
                                 transition: "all 0.12s ease",
                               }}
                             >
-                              {isWatched ? "★" : "☆"}
+                              <Icon name={isWatched ? "star-filled" : "star"} />
                             </button>
                           );
                         })()}

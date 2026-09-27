@@ -711,8 +711,16 @@ def _polars_threads_for_role() -> int:
         is_dev = role == "worker" or not bool(PATHS.is_prod)
     except Exception:
         is_dev = role != "api"
-    if is_dev:
-        # 개발 서버의 SplitTable 계산은 1코어로 고정한다. Flow-i, 파일탐색기
+    if role == "worker":
+        # worker 는 운영이 넘긴 빌드·조회를 한 번에 1건(FLOW_WORKER_CONCURRENCY)만
+        # 실행한다. 5코어 개발서버에서 1 thread 면 4코어가 놀아 오프로드 빌드가
+        # 운영 로컬 실행보다 느려지므로 2 thread 를 쓰고, OS·Flow-i LLM 대기·
+        # 파일탐색기 DuckDB 몫으로 나머지를 남긴다. 옛 .env 의 POLARS_MAX_THREADS
+        # 잔존값 대신 worker 전용 이름으로만 조정한다.
+        default_want = max(1, min(2, cores - 3))
+        want = int(_env_float("FLOW_WORKER_POLARS_THREADS", default_want, 1, 8))
+    elif is_dev:
+        # 역할 없는 개발 API 의 SplitTable 계산은 1코어로 고정한다. Flow-i, 파일탐색기
         # DuckDB SQL, 캐시 워커 등 다른 작업이 사용할 CPU를 남긴다.
         want = 1
     else:

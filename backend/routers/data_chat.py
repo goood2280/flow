@@ -1,16 +1,22 @@
 """Administrator-only home data chat, independent of the retired agent routes."""
 import sqlite3
+from typing import Literal
 from uuid import UUID
 from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel, Field
 from core import audit, auth, data_chat, chat_conversations, chat_prompts, flowi_gate, flowi_personalization, flowi_turn
-from core import ai_semantic, home_model_status, llm_adapter
+from core import ai_semantic, home_agent_offload, home_model_status, llm_adapter, chat_feedback, chat_table
 
 router = APIRouter(prefix="/api/home-agent", tags=["data-chat"])
 
 
+PROMPT_MAX_CHARS = 4000
+
+
 class ChatRequest(BaseModel):
-    prompt: str = Field(min_length=1, max_length=4000)
+    # Typed questions stay within PROMPT_MAX_CHARS; a range pasted from Excel
+    # (tab-separated) may be longer — checked in orchestrate().
+    prompt: str = Field(min_length=1, max_length=chat_table.MAX_TABLE_PROMPT_CHARS)
     context: dict = Field(default_factory=dict)
     top_k: int = 1
     history: list[dict[str, str]] = Field(default_factory=list, max_length=20)
@@ -32,6 +38,13 @@ class SkillUpdateRequest(BaseModel):
     shared: bool = False
 
 
+class FeedbackRequest(BaseModel):
+    conversation_id: UUID
+    message_id: UUID
+    rating: Literal["up", "down"]
+    correction: str = Field(default="", max_length=1000)
+
+
 def require_flowi_user(request: Request) -> dict:
     """Keep the API gate identical to the home button's ``flowi`` permission."""
     user = auth.current_user(request)
@@ -44,6 +57,9 @@ def require_flowi_user(request: Request) -> dict:
 def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi_user)):
     if not body.prompt.strip():
         raise HTTPException(400, "메시지를 입력하세요.")
+    if len(body.prompt) > PROMPT_MAX_CHARS and not chat_table.parse(body.prompt):
+        raise HTTPException(400, f"메시지는 {PROMPT_MAX_CHARS:,}자 이내로 입력하세요. 엑셀에서 복사한 표는 "
+                                 f"{chat_table.MAX_TABLE_PROMPT_CHARS:,}자까지 붙여 넣을 수 있습니다.")
     failure = None
     success = None
     try:
@@ -77,6 +93,8 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
                 context.pop("wafer_map_query", None)
                 context.pop("pending_et", None)
                 context.pop("et_query", None)
+                context.pop("pending_semantic_update", None)
+                context.pop("pending_semantic_request", None)
             # Chart selection is an explicit client input, unlike server-owned
             # product confirmations and pending approval identifiers.
             if "selected_report_charts" in body.context:
@@ -88,6 +106,14 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
             # These keys are server-owned, refreshed for this turn only.
             context.pop("personalization", None)
             context.pop("selected_skill", None)
+            context.pop("user_feedback", None)
+            # Only persisted feedback owned by the authenticated caller is eligible.
+            # No client-supplied notes, previous-turn notes, or implicit HITL learning.
+            if chat_feedback.has_feedback():
+                products = data_chat.available_product_names()
+                matches = data_chat.product_candidates(body.prompt, products)
+                product = matches[0] if len(matches) == 1 else context.get("confirmed_product", "") if not matches else ""
+                context["user_feedback"] = chat_feedback.prompt_context(_user["username"], body.prompt, product)
             if body.skill_id:
                 try:
                     context["selected_skill"] = flowi_personalization.resolve_skill_context(_user["username"], body.skill_id)
@@ -104,15 +130,17 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
                     chat_conversations.append(state, item["role"], item["content"])
             chat_conversations.append(state, "user", body.prompt)
             try:
-                result = flowi_turn.execute(body.prompt, context, request, history=history)
+                result = home_agent_offload.run_turn(body.prompt, context, request, history=history, user=_user)
             except Exception as exc:
                 failure = exc
+                context.pop("user_feedback", None)
                 chat_conversations.append(state, "assistant", "요청 처리에 실패했습니다. 다시 시도해 주세요.", error=True,
                     response={"ok": False, "routing_trace": {"question": body.prompt, "status": "failed", "events": []}})
             else:
                 success = chat_prompts.completed_origin(state["messages"], result)
                 if success:
                     result["success_prompt"] = success["prompt"]
+                result.get("context", context).pop("user_feedback", None)
                 state["context"] = result.get("context", context)
                 display = {key: value for key, value in result.items() if key != "context"}
                 answer = result.get("reply") or result.get("answer") or (result.get("tool") or {}).get("answer") or "응답이 없습니다."
@@ -135,6 +163,41 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
 @router.get("/conversations")
 def conversations(_user=Depends(require_flowi_user)):
     return {"conversations": chat_conversations.list_conversations(_user["username"])}
+
+
+@router.post("/feedback")
+def save_feedback(body: FeedbackRequest, request: Request, _user=Depends(require_flowi_user)):
+    try:
+        feedback = chat_feedback.save(_user["username"], body.conversation_id, body.message_id, body.rating, body.correction)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "대화를 찾을 수 없습니다.") from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    audit.record(request, "home:feedback", detail=str(body.message_id), tab="home")
+    return {"feedback": feedback}
+
+
+@router.get("/feedback/{conversation_id}/{message_id}")
+def read_feedback(conversation_id: UUID, message_id: UUID, _user=Depends(require_flowi_user)):
+    try:
+        return {"feedback": chat_feedback.get(_user["username"], conversation_id, message_id)}
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(404, "답변을 찾을 수 없습니다.") from exc
+
+
+@router.delete("/feedback/{conversation_id}/{message_id}")
+def delete_feedback(conversation_id: UUID, message_id: UUID, request: Request, _user=Depends(require_flowi_user)):
+    try:
+        chat_feedback.delete(_user["username"], conversation_id, message_id)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(404, "답변을 찾을 수 없습니다.") from exc
+    audit.record(request, "home:feedback-delete", detail=str(message_id), tab="home")
+    return {"ok": True}
+
+
+@router.get("/recent-results")
+def recent_results(limit: int = 8, _user=Depends(require_flowi_user)):
+    return {"results": chat_conversations.recent_results(_user["username"], limit=max(1, min(20, int(limit))))}
 
 
 @router.get("/conversations/{conversation_id}")

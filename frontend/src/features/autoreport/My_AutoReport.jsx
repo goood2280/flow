@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { dl, postJson, sf } from "../../lib/api";
 import { toast } from "../../components/Toast";
 import { Banner, Button, DataTable, EmptyState, Panel, Pill } from "../../components/UXKit";
+import { setVisibleInterval } from "../../lib/visibleInterval";
 
 // Hyphen-free compatibility path avoids older reverse-proxy normalization
 // issues; the backend also keeps /api/auto-report for existing clients.
@@ -53,8 +54,7 @@ export default function My_AutoReport() {
 
   useEffect(() => {
     load(false, true);
-    const timer = window.setInterval(() => load(true, false), 2500);
-    return () => window.clearInterval(timer);
+    return setVisibleInterval(() => load(true, false), 2500);
   }, [load]);
 
   const submit = async () => {
@@ -181,7 +181,7 @@ export default function My_AutoReport() {
         <Panel title="생성 내역" subtitle="완료된 PPT 다운로드는 관리자 다운로드 기록에도 남습니다." right={<Button variant="subtle" onClick={() => load(false)}>새로고침</Button>} bodyStyle={{ padding: 0 }}>
           {jobs.length
             ? <DataTable columns={columns} rows={jobs} />
-            : <EmptyState icon="📑" title="생성 내역이 없습니다" hint="제품 key를 입력해 첫 Auto report를 생성하세요." />}
+            : <EmptyState icon="file" title="생성 내역이 없습니다" hint="제품 key를 입력해 첫 Auto report를 생성하세요." />}
         </Panel>
       </main>
     </div>
