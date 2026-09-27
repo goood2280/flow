@@ -85,10 +85,16 @@ function roundedRadius(role, size) {
 const SLOW_FRAME_MS = 40;
 
 const NO_ROLES = [];
+// Inline parameter overlay colours: connected, anchor not found, not connected.
+const INLINE_STATUS = {
+  matched: { line: "#2e8540", text: "#9be3ad" },
+  missing: { line: "#c0392b", text: "#ffb4a8" },
+  unlinked: { line: "#6b7280", text: "#d5dce6" },
+};
 
 export default function GaaScene({ sceneData, hiddenRoles, selectedRole, onPick, previewRoles = NO_ROLES,
   cameraPreset = "isometric", latchHighlight = false, cutAxis = "z", cutPosition = 50,
-  showLabels = true, showEdges = true, resetToken = 0, guardRing = false }) {
+  showLabels = false, showSubLabels = false, showInline = false, showEdges = true, resetToken = 0, guardRing = false }) {
   const host = useRef(null);
   const axisHost = useRef(null);
   const state = useRef(null);
@@ -334,38 +340,70 @@ export default function GaaScene({ sceneData, hiddenRoles, selectedRole, onPick,
         view.overlays.push(edges);
       }
     }
+    const addLabel = ({ text, position, color, anchor, align, leaderColor }) => {
+      if (cut && cutPlane.distanceToPoint(new THREE.Vector3(...position)) < 0) return;
+      const canvas = document.createElement("canvas");
+      canvas.width = 512; canvas.height = 48;
+      const context = canvas.getContext("2d");
+      context.font = "600 26px sans-serif";
+      const width = Math.min(1000, context.measureText(text).width + 24);
+      canvas.width = Math.ceil(width);
+      context.font = "600 26px sans-serif";
+      context.fillStyle = "rgba(12,22,36,.85)";
+      context.fillRect(0, 0, canvas.width, 48);
+      context.fillStyle = color || "#e9f2ff";
+      context.textAlign = "center"; context.textBaseline = "middle";
+      context.fillText(text, canvas.width / 2, 24, canvas.width - 12);
+      const texture = new THREE.CanvasTexture(canvas);
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, sizeAttenuation: false }));
+      sprite.position.set(...position);
+      sprite.scale.set(0.035 * canvas.width / 48, 0.035, 1);
+      if (align === "right") sprite.center.set(1, 0.5);
+      else if (align === "left") sprite.center.set(0, 0.5);
+      sprite.renderOrder = 8;
+      view.scene.add(sprite); view.overlays.push(sprite);
+      if (anchor) {
+        const leader = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(...anchor), new THREE.Vector3(...position)]),
+        // Leaders sit on the light studio background, so the default is dark ink.
+        new THREE.LineBasicMaterial({ color: leaderColor || "#4b5563", transparent: true, opacity: 0.75 }));
+        view.scene.add(leader); view.overlays.push(leader);
+      }
+    };
+    const addLine = (points, color) => {
+      const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(points.map((point) => new THREE.Vector3(...point))),
+        new THREE.LineBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 }));
+      line.renderOrder = 7;
+      view.scene.add(line); view.overlays.push(line);
+    };
     if (showLabels) {
       for (const annotation of sceneData?.annotations || []) {
         if (annotation.role && hiddenRoles.includes(annotation.role)) continue;
         if (sceneData?.type === "sram" && sceneData?.view === "gaa"
             && annotation.role === "channel" && !hiddenRoles.includes("beol")) continue;
         if (annotation.role === "guard_ring" && !guardRing) continue;
-        const position = annotation.position;
-        if (cut && cutPlane.distanceToPoint(new THREE.Vector3(...position)) < 0) continue;
-        const canvas = document.createElement("canvas");
-        canvas.width = 512; canvas.height = 48;
-        const context = canvas.getContext("2d");
-        context.font = "600 26px sans-serif";
-        const width = Math.min(504, context.measureText(annotation.text).width + 24);
-        canvas.width = Math.ceil(width);
-        context.font = "600 26px sans-serif";
-        context.fillStyle = "rgba(12,22,36,.85)";
-        context.fillRect(0, 0, canvas.width, 48);
-        context.fillStyle = annotation.color || "#e9f2ff";
-        context.textAlign = "center"; context.textBaseline = "middle";
-        context.fillText(annotation.text, canvas.width / 2, 24, canvas.width - 12);
-        const texture = new THREE.CanvasTexture(canvas);
-        const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, depthTest: false, sizeAttenuation: false }));
-        sprite.position.set(...position);
-        sprite.scale.set(0.035 * canvas.width / 48, 0.035, 1);
-        sprite.renderOrder = 8;
-        view.scene.add(sprite); view.overlays.push(sprite);
-        if (annotation.anchor) {
-          const leader = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
-            new THREE.Vector3(...annotation.anchor), new THREE.Vector3(...position)]),
-          // Leaders sit on the light studio background, so the default is dark ink.
-          new THREE.LineBasicMaterial({ color: annotation.color || "#4b5563", transparent: true, opacity: 0.75 }));
-          view.scene.add(leader); view.overlays.push(leader);
+        addLabel({ ...annotation, leaderColor: annotation.color });
+      }
+    }
+    if (showSubLabels) {
+      for (const annotation of sceneData?.sub_annotations || []) {
+        if (annotation.role && hiddenRoles.includes(annotation.role)) continue;
+        addLabel(annotation);
+      }
+    }
+    if (showInline) {
+      for (const marker of sceneData?.inline_markers || []) {
+        const palette = INLINE_STATUS[marker.status] || INLINE_STATUS.unlinked;
+        if (marker.kind === "dimension") {
+          const [x, low, z] = marker.from;
+          const high = marker.to[1];
+          addLine([marker.from, marker.to], palette.line);
+          addLine([[x - 0.06, low, z], [x + 0.06, low, z]], palette.line);
+          addLine([[x - 0.06, high, z], [x + 0.06, high, z]], palette.line);
+          addLabel({ text: marker.text, position: marker.position, color: palette.text, align: marker.align });
+        } else if (!hiddenRoles.includes(marker.role)) {
+          addLabel({ text: marker.text, position: marker.position, color: palette.text, align: marker.align,
+            anchor: marker.point, leaderColor: palette.line });
         }
       }
     }
@@ -418,7 +456,7 @@ export default function GaaScene({ sceneData, hiddenRoles, selectedRole, onPick,
       }
     }
     view.draw();
-  }, [sceneData, hiddenRoles, selectedRole, previewRoles, cameraPreset, latchHighlight, cutAxis, cutPosition, showLabels, showEdges, resetToken, guardRing]);
+  }, [sceneData, hiddenRoles, selectedRole, previewRoles, cameraPreset, latchHighlight, cutAxis, cutPosition, showLabels, showSubLabels, showInline, showEdges, resetToken, guardRing]);
 
   useEffect(() => {
     if (!latchHighlight || sceneData?.view !== "latchup") return;

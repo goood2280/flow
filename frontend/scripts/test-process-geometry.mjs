@@ -25,5 +25,17 @@ for (const depth of [0.8, 1.28, 2.28]) {
   assert.ok([...epi.attributes.position.array].every(Number.isFinite));
   epi.dispose();
 }
+// Backend outline: gate notched around a 0.6-wide sheet/inner-gate column up to y=0.2 (local).
+const notched = gateShellGeometry({ size: [0.9, 1.5, 1.4], metadata: { outlines: [[
+  [-0.7, -0.75], [-0.3, -0.75], [-0.3, 0.2], [0.3, 0.2], [0.3, -0.75], [0.7, -0.75], [0.7, 0.75], [-0.7, 0.75]]] } });
+const notchedMesh = new THREE.Mesh(notched, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide }));
+notchedMesh.updateMatrixWorld();
+ray.ray.origin.set(-2, 0, 0);
+assert.equal(ray.intersectObject(notchedMesh).length, 0, 'Inner gate column must be left to the inner gate parts');
+ray.ray.origin.set(-2, 0.4, 0);
+assert.ok(ray.intersectObject(notchedMesh).length > 0, 'Gate must cover the top of the sheet column');
+ray.ray.origin.set(-2, 0, 0.5);
+assert.ok(ray.intersectObject(notchedMesh).length > 0, 'Gate must wrap the column sides');
+notched.dispose(); notchedMesh.material.dispose();
 gate.dispose(); mesh.material.dispose();
 console.log('Process geometry: open sheet channels, wrapping metal, and invariant facet angles passed.');

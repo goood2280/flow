@@ -13,7 +13,10 @@ const PARAMS = [
   ["sheet_count", "시트 수", 1, 5, 1],
 ];
 const DETAIL_PARAMS = [
-  ["mol_level_count", "MOL 배선 층 수", 1, 3, 1, 2],
+  ["mol_level_count", "epi(S/D) MOL 단 수", 1, 4, 1, 2],
+  ["gate_mol_level_count", "게이트 MOL 단 수 (미지정 시 epi와 같음)", 1, 4, 1, null],
+  ["contact_epi_recess_nm", "epi MOL이 epi 상면을 깎은 깊이 (nm)", 0, 40, 0.5, 0],
+  ["gate_height_above_ns_nm", "NS 최상층 위 게이트 높이 (nm)", 4, 80, 0.5, null],
   ["mol_height_nm", "S/D 위 MOL M0 높이 (nm)", 8, 100, 1, 24],
   ["mol_level_pitch_nm", "MOL 층간 간격 (nm)", 8, 80, 1, 12.8],
   ["gate_to_sd_gap_nm", "게이트–S/D 간격 (nm)", 0, 30, 0.5, 14.2],
@@ -23,22 +26,46 @@ const DETAIL_PARAMS = [
   ["sdb_width_nm", "SDB 폭 (nm)", 2, 40, 0.5, 5.2],
   ["sd_doping_log10_cm3", "S/D 대표 도핑 log10(cm⁻³) · 색상만 변화", 17, 21, 0.1, 19],
 ];
+const MATERIAL_MODE_OPTIONS = [["bottom", "아래부터 쌓기"], ["liner", "측벽"], ["u_liner", "U자"], ["fill", "나머지 채움"]];
+const MATERIAL_SIZE_OPTIONS = [["", "보통"], ["thin", "얇게"], ["thick", "두껍게"]];
+const MATERIAL_REGION_ROLES = { gate: ["gate"], sd_contact: ["contact"], gate_contact: ["contact"] };
+const DISPLAY_LABELS = { inline_parameters: "Inline parameter 위치", part_labels: "소구조물 이름", structure_labels: "구조 이름" };
+// A single remainder fill must stay last, whatever order the admin typed.
+const orderLayers = (layers) => [...layers.filter((layer) => layer.mode !== "fill"), ...layers.filter((layer) => layer.mode === "fill").slice(-1)];
 const SHAPABLE = new Set(["source", "drain", "gate", "spacer", "contact", "mol", "beol", "sdb"]);
 const CD_FIELDS = [["tcd_nm", "TCD"], ["mcd_nm", "MCD"], ["bcd_nm", "BCD"]];
 const PARAM_LABELS = Object.fromEntries([...PARAMS, ...DETAIL_PARAMS].map(([key, label]) => [key, label]));
 const PARAM_FALLBACKS = Object.fromEntries(DETAIL_PARAMS.map(([key, , , , , fallback]) => [key, fallback]));
+function paramLabel(name) {
+  const inner = /^inner_gate(\d)_(width|height)_nm$/.exec(name);
+  if (inner) return `Inner gate ${inner[1]} ${inner[2] === "width" ? "폭" : "높이"} (nm)`;
+  const sheet = /^ns(\d)_(width|thickness)_nm$/.exec(name);
+  if (sheet) return `NS ${sheet[1]}층 ${sheet[2] === "width" ? "폭" : "두께"} (nm)`;
+  if (name === "mol_sd_landing_pad") return "epi MOL 단 사이 네모 패드 (1=있음 · 0=바로 연결)";
+  return PARAM_LABELS[name] || name;
+}
+function layerText(layer) {
+  const mode = MATERIAL_MODE_OPTIONS.find(([value]) => value === layer.mode)?.[1] || layer.mode;
+  const size = layer.thickness_nm ? `${layer.thickness_nm} nm` : layer.size === "thin" ? "얇게" : layer.size === "thick" ? "두껍게" : "";
+  return `${layer.material}(${mode}${size ? `, ${size}` : ""})`;
+}
 // Structures an LLM edit touches, highlighted in the 3D preview before it is applied.
 function rolesForEdit(edit) {
   if (edit.kind === "shape") return [edit.role];
+  if (edit.kind === "material") return MATERIAL_REGION_ROLES[edit.region] || [];
   const name = String(edit.name || "");
   if (/^(sheet_|ns\d)/.test(name)) return ["channel", "inner_gate", "highk"];
   if (/^gate_/.test(name)) return ["gate", "inner_gate", "spacer"];
-  if (/^mol_/.test(name)) return ["mol", "contact"];
+  if (/^inner_gate/.test(name)) return ["inner_gate", "channel"];
+  if (/^(mol_|gate_mol_)/.test(name)) return ["mol", "contact"];
+  if (name === "contact_epi_recess_nm") return ["contact", "source", "drain"];
   if (/^(sd_|epi_)/.test(name)) return ["source", "drain"];
   if (/^sdb_/.test(name)) return ["sdb"];
   return [];
 }
 const copy = (value) => JSON.parse(JSON.stringify(value));
+const modelPayload = (doc) => ({ variants: doc.variants, products: doc.products, dimensions: doc.dimensions,
+  shape_profiles: doc.shape_profiles, material_stacks: doc.material_stacks || {} });
 const keyOf = (row) => JSON.stringify([row.module || "", row.step_id, row.item_id]);
 
 export default function StructureModelWorkspace({ admin = false, onNavigate, fixedProduct = "" }) {
@@ -52,7 +79,10 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
   const [cameraPreset, setCameraPreset] = useState("isometric");
   const [cutAxis, setCutAxis] = useState("z");
   const [cutPosition, setCutPosition] = useState(50);
-  const [showLabels, setShowLabels] = useState(true);
+  // 3D text overlays stay off until the viewer asks for them.
+  const [showLabels, setShowLabels] = useState(false);
+  const [showSubLabels, setShowSubLabels] = useState(false);
+  const [showInline, setShowInline] = useState(false);
   const [showEdges, setShowEdges] = useState(true);
   const [resetToken, setResetToken] = useState(0);
   const [powerOn, setPowerOn] = useState(false);
@@ -108,13 +138,23 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
     return { ...preset, ...(override?.parameters || {}) };
   }, [draft, product, type, variant]);
   const activeShapes = { ...(draft?.shape_profiles?.[profileKey] || {}), ...(override?.shape_profiles || {}) };
+  const activeStacks = { ...(draft?.material_stacks?.[profileKey] || {}), ...(override?.material_stacks || {}) };
+  // Current model value for a parameter the admin has not set explicitly.
+  const currentFallback = (key) => {
+    const inner = /^inner_gate(\d)_(width|height)_nm$/.exec(key);
+    if (inner) return scene?.nanosheet_dimensions_nm?.inner_gates?.[Number(inner[1]) - 1]?.[`${inner[2]}_nm`] ?? "";
+    if (key === "gate_mol_level_count") return activeParams?.mol_level_count ?? 2;
+    if (key === "gate_height_above_ns_nm" && scene?.landmarks?.gate_top != null)
+      return Math.round((scene.landmarks.gate_top - scene.landmarks.ns_stack_top) * 400) / 10;
+    if (key === "mol_sd_landing_pad") return 1;
+    return PARAM_FALLBACKS[key] ?? "";
+  };
   const proposalOpen = editProposal?.target === `${product}/${type}/${variant}`;
-  const previewRoles = useMemo(() => (proposalOpen ? [...new Set(editProposal.edits.flatMap(rolesForEdit))] : []),
-    [proposalOpen, editProposal]);
-  const dirty = Boolean(saved && draft) && JSON.stringify({ variants: draft.variants, products: draft.products,
-    dimensions: draft.dimensions, shape_profiles: draft.shape_profiles })
-    !== JSON.stringify({ variants: saved.variants, products: saved.products,
-      dimensions: saved.dimensions, shape_profiles: saved.shape_profiles });
+  const previewRoles = useMemo(() => (proposalOpen ? [...new Set([
+    ...editProposal.edits.flatMap(rolesForEdit),
+    ...Object.keys(editProposal.material_stacks || {}).flatMap((region) => rolesForEdit({ kind: "material", region })),
+  ])] : []), [proposalOpen, editProposal]);
+  const dirty = Boolean(saved && draft) && JSON.stringify(modelPayload(draft)) !== JSON.stringify(modelPayload(saved));
 
   useEffect(() => {
     if (!draft) return;
@@ -122,7 +162,7 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
     const timer = setTimeout(async () => {
       try {
         const data = admin
-          ? await sf(`${API}/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ variants: draft.variants, products: draft.products, dimensions: draft.dimensions, shape_profiles: draft.shape_profiles, product, type, variant, view }) })
+          ? await sf(`${API}/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...modelPayload(draft), product, type, variant, view }) })
           : await sf(`${API}/scene${qs({ product, type, variant, view })}`);
         if (live) { setScene(data); setError(""); }
       } catch (err) { if (live) setError(err.message || "3D 모델을 그리지 못했습니다."); }
@@ -263,8 +303,7 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
     setEditing(true); setError(""); setEditProposal(null);
     try {
       const result = await sf(`${API}/suggest-edits`, { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ variants: draft.variants, products: draft.products, dimensions: draft.dimensions,
-          shape_profiles: draft.shape_profiles, product, type, variant, instruction: editPrompt.trim() }) });
+        body: JSON.stringify({ ...modelPayload(draft), product, type, variant, instruction: editPrompt.trim() }) });
       setEditProposal({ ...result, target: `${product}/${type}/${variant}` });
     } catch (err) { setError(err.message || "LLM 구조 변경안을 받지 못했습니다."); }
     finally { setEditing(false); }
@@ -278,24 +317,60 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
       const old = product ? (profiles[key] || { parameters: {}, anchors: {}, dimension_anchors: {}, shape_profiles: {} }) : null;
       const params = product ? { ...old.parameters } : { ...next.variants[type][variant] };
       const shapes = product ? { ...old.shape_profiles } : { ...(next.shape_profiles[key] || {}) };
+      const stacks = product ? { ...(old.material_stacks || {}) } : { ...(next.material_stacks?.[key] || {}) };
+      for (const [region, layers] of Object.entries(editProposal.material_stacks || {})) {
+        if (layers.length) stacks[region] = orderLayers(layers);
+        else delete stacks[region];
+      }
       for (const edit of editProposal.edits) {
         if (edit.kind === "parameter") params[edit.name] = edit.value;
         else shapes[edit.role] = { ...(shapes[edit.role] || activeShapes[edit.role] || { tcd_nm: 24, mcd_nm: 24, bcd_nm: 24 }),
           [edit.name]: edit.value };
       }
-      if (product) next.products[product] = { profiles: { ...profiles, [key]: { ...old, parameters: params, shape_profiles: shapes } } };
-      else { next.variants[type][variant] = params; next.shape_profiles[key] = shapes; }
+      if (product) next.products[product] = { profiles: { ...profiles, [key]: { ...old, parameters: params, shape_profiles: shapes, material_stacks: stacks } } };
+      else {
+        next.variants[type][variant] = params; next.shape_profiles[key] = shapes;
+        next.material_stacks = { ...(next.material_stacks || {}), [key]: stacks };
+      }
       return next;
     });
+    const display = editProposal.display || {};
+    if ("inline_parameters" in display) setShowInline(Boolean(display.inline_parameters));
+    if ("part_labels" in display) setShowSubLabels(Boolean(display.part_labels));
+    if ("structure_labels" in display) setShowLabels(Boolean(display.structure_labels));
     setEditProposal(null);
+  };
+  const setStack = (region, layers) => setDraft((current) => {
+    const next = copy(current);
+    const ordered = orderLayers(layers);
+    if (product) {
+      const profiles = next.products[product]?.profiles || {};
+      const old = profiles[profileKey] || { parameters: {}, anchors: {}, dimension_anchors: {}, shape_profiles: {} };
+      const stacks = { ...(old.material_stacks || {}) };
+      if (ordered.length) stacks[region] = ordered; else delete stacks[region];
+      next.products[product] = { profiles: { ...profiles, [profileKey]: { ...old, material_stacks: stacks } } };
+    } else {
+      const stacks = { ...(next.material_stacks?.[profileKey] || {}) };
+      if (ordered.length) stacks[region] = ordered; else delete stacks[region];
+      next.material_stacks = { ...(next.material_stacks || {}), [profileKey]: stacks };
+    }
+    return next;
+  });
+  const updateLayer = (region, index, field, value) => {
+    const layers = (activeStacks[region] || []).map((layer, position) => {
+      if (position !== index) return layer;
+      const updated = { ...layer, [field]: value };
+      if (value === "" || value === null || Number.isNaN(value)) delete updated[field];
+      return updated;
+    });
+    setStack(region, layers);
   };
   const save = async () => {
     if (!dirty || saving) return;
     setSaving(true); setError(""); setNotice("");
     try {
       const result = await sf(API, { method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ base_version: saved.version, variants: draft.variants, products: draft.products,
-          dimensions: draft.dimensions, shape_profiles: draft.shape_profiles }) });
+        body: JSON.stringify({ base_version: saved.version, ...modelPayload(draft) }) });
       setSaved(result); setDraft(copy(result));
       setNotice(`3D 모델 v${result.version}을 저장했습니다. 홈 화면에도 반영됩니다.`);
     } catch (err) { setError(err.message || "3D 모델을 저장하지 못했습니다."); }
@@ -355,6 +430,8 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
         <button type="button" onClick={() => setResetToken((value) => value + 1)}>화면 맞춤</button>
         <button type="button" onClick={() => { const el = viewerRef.current; if (document.fullscreenElement) document.exitFullscreen?.(); else el?.requestFullscreen?.(); }}>전체 화면</button>
         <label><input type="checkbox" checked={showLabels} onChange={(event) => setShowLabels(event.target.checked)}/>구조 이름</label>
+        <label><input type="checkbox" checked={showSubLabels} onChange={(event) => setShowSubLabels(event.target.checked)}/>소구조물 이름</label>
+        <label><input type="checkbox" checked={showInline} onChange={(event) => setShowInline(event.target.checked)}/>Inline parameter</label>
         <label><input type="checkbox" checked={showEdges} onChange={(event) => setShowEdges(event.target.checked)}/>윤곽선</label>
         <button type="button" onClick={() => { setHiddenRoles(["beol", "mol", "bitline", "contact"]); setResetToken((value) => value + 1); }}>소자만 보기</button>
         <button type="button" onClick={() => { setHiddenRoles([]); setResetToken((value) => value + 1); }}>전체 레이어</button>
@@ -371,7 +448,7 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
       </p>}
       <div className="gaa-main">
         <div className="gaa-viewer" ref={viewerRef}>
-          {scene && viewerVisible ? <Suspense fallback={<div className="gaa-loading">3D 엔진 준비 중…</div>}><GaaScene sceneData={scene} hiddenRoles={hiddenRoles} selectedRole={selectedRole} previewRoles={previewRoles} onPick={setSelectedRole} cameraPreset={cameraPreset} latchHighlight={powerOn && injection} cutAxis={cutAxis} cutPosition={cutPosition} showLabels={showLabels} showEdges={showEdges} resetToken={resetToken} guardRing={guardRing}/></Suspense> : <div className="gaa-loading">{scene ? "3D 모델 보기" : "장면을 만드는 중…"}</div>}
+          {scene && viewerVisible ? <Suspense fallback={<div className="gaa-loading">3D 엔진 준비 중…</div>}><GaaScene sceneData={scene} hiddenRoles={hiddenRoles} selectedRole={selectedRole} previewRoles={previewRoles} onPick={setSelectedRole} cameraPreset={cameraPreset} latchHighlight={powerOn && injection} cutAxis={cutAxis} cutPosition={cutPosition} showLabels={showLabels} showSubLabels={showSubLabels} showInline={showInline} showEdges={showEdges} resetToken={resetToken} guardRing={guardRing}/></Suspense> : <div className="gaa-loading">{scene ? "3D 모델 보기" : "장면을 만드는 중…"}</div>}
           <span className="gaa-viewer-hint">드래그 회전 · 우클릭 이동 · 휠 확대 · 구조 클릭</span>
         </div>
         <div className="gaa-controls">
@@ -380,6 +457,8 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
             <span><i style={{ background: "#eda951" }}/>MOL M0</span>
             {(scene?.mol_level_count || 0) >= 2 && <span><i style={{ background: "#50b7d9" }}/>MOL M1 / V1</span>}
             {(scene?.mol_level_count || 0) >= 3 && <span><i style={{ background: "#ab8ce0" }}/>MOL M2 / V2</span>}
+            {Math.max(scene?.mol_level_count || 0, scene?.gate_mol_level_count || 0) >= 4 && <span><i style={{ background: "#e07a9a" }}/>MOL M3 / V3</span>}
+            {scene?.mol_connection === "direct" && <span>epi MOL 직결 (패드 없음)</span>}
           </div>}
           <div className="gaa-roles">{roles.map(([role, label]) => <div className={`gaa-role${selectedRole === role ? " is-selected" : ""}`} key={role}>
             <label><input type="checkbox" checked={!hiddenRoles.includes(role)} onChange={(event) => setHiddenRoles((list) => event.target.checked ? list.filter((item) => item !== role) : [...list, role])}/><span>{label}</span></label>
@@ -395,23 +474,31 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
             <div className="gaa-llm-editor"><h3>연결된 LLM으로 구조 수정 제안</h3>
               <p>관리자 기본지식과 선택 제품 위키를 참고해 치수 변경안을 만듭니다. 제안 적용 후 3D를 확인하고 모델 저장을 눌러야 확정됩니다.</p>
               <textarea rows={3} maxLength={1200} value={editPrompt} onChange={(event) => setEditPrompt(event.target.value)}
-                placeholder="예: NS 2층 폭 34 nm, 시트 4층, MOL 3단, 소스 TCD 18 nm"/>
+                placeholder={"예: epi MOL 3단으로 해줘 · epi MOL 네모 없애고 바로 연결해줘\nGATE는 밑에서부터 D,C,E로 채워줘 G,H는 U자로 채워넣고 I는 나머지에 채워줘\ninner gate 1,2,3 각각 width 30,28,26 nm height 12,10,8 nm · Inline parameter 위치 표시해줘"}/>
               <button type="button" disabled={editing || !editPrompt.trim()} onClick={suggestEdits}>{editing ? "제안 중…" : "구조 변경안 만들기"}</button>
               {proposalOpen && <div className="gaa-llm-proposal">
                 <b>{editProposal.summary || "치수 변경 제안"}</b>
+                <span className="gaa-llm-hint">{editProposal.source === "rule" ? "규칙으로 해석 · LLM 호출 없음" : editProposal.source === "llm" ? "연결된 LLM 제안" : "규칙 해석 + 연결된 LLM 제안"}</span>
+                {(editProposal.notes || []).map((note) => <span className="gaa-llm-hint" key={note}>{note}</span>)}
                 <table className="gaa-llm-diff">
                   <thead><tr><th>항목</th><th>현재</th><th>제안</th></tr></thead>
                   <tbody>
                     {editProposal.edits.map((edit, index) => {
                       const current = edit.kind === "shape"
                         ? activeShapes[edit.role]?.[edit.name]
-                        : activeParams?.[edit.name] ?? PARAM_FALLBACKS[edit.name];
+                        : activeParams?.[edit.name] ?? currentFallback(edit.name);
                       return <tr key={index}>
-                        <td>{edit.kind === "shape" ? `${scene?.roles?.[edit.role] || edit.role} ${edit.name.replace("_nm", "").toUpperCase()}` : PARAM_LABELS[edit.name] || edit.name}</td>
+                        <td>{edit.kind === "shape" ? `${scene?.roles?.[edit.role] || edit.role} ${edit.name.replace("_nm", "").toUpperCase()}` : paramLabel(edit.name)}</td>
                         <td>{current ?? "-"}</td>
                         <td className="is-proposed">{edit.value}</td>
                       </tr>;
                     })}
+                    {Object.entries(editProposal.material_stacks || {}).map(([region, layers]) => <tr key={region}>
+                      <td>{scene?.material_regions?.[region] || region} 재료</td>
+                      <td>{(activeStacks[region] || []).map(layerText).join(" → ") || "-"}</td>
+                      <td className="is-proposed">{layers.map(layerText).join(" → ") || "제거"}</td></tr>)}
+                    {Object.entries(editProposal.display || {}).map(([key, value]) => <tr key={key}>
+                      <td>{DISPLAY_LABELS[key] || key}</td><td>-</td><td className="is-proposed">{value ? "3D에 표시" : "숨김"}</td></tr>)}
                     <tr><td>NS 적층 높이 (nm)</td><td>{editProposal.before.sheet_dimensions_nm.active_stack_height}</td>
                       <td className="is-proposed">{editProposal.after.sheet_dimensions_nm.active_stack_height}</td></tr>
                   </tbody>
@@ -434,10 +521,43 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
                   <input type="number" min="2" max={field === "width" ? "80" : "15"} step="0.5"
                     value={activeParams[key] ?? fallback} onChange={(event) => updateParam(key, Number(event.target.value))}/></label>;
               })}
+              {["width", "height"].map((field) => {
+                const key = `inner_gate${index}_${field}_nm`;
+                return <label key={key}>Inner gate {index} {field === "width" ? "폭" : "높이"} (nm)
+                  <input type="number" min="2" max={field === "width" ? "90" : "40"} step="0.5"
+                    value={activeParams[key] ?? currentFallback(key)} onChange={(event) => updateParam(key, Number(event.target.value))}/></label>;
+              })}
             </div>)}
-            {DETAIL_PARAMS.map(([key, label, min, max, step, fallback]) => <label key={key}><span>{label} <b>{activeParams[key] ?? fallback}</b></span>
-              <input type="range" min={min} max={max} step={step} value={activeParams[key] ?? fallback}
+            {DETAIL_PARAMS.map(([key, label, min, max, step]) => <label key={key}><span>{label} <b>{activeParams[key] ?? currentFallback(key)}</b></span>
+              <input type="range" min={min} max={max} step={step} value={activeParams[key] ?? currentFallback(key)}
                 onChange={(event) => updateParam(key, Number(event.target.value))}/></label>)}
+            <label className="gaa-inline-check"><input type="checkbox" checked={(activeParams.mol_sd_landing_pad ?? 1) === 0}
+              onChange={(event) => updateParam("mol_sd_landing_pad", event.target.checked ? 0 : 1)}/>epi MOL 단 사이 네모 패드 없이 바로 연결</label>
+            <div className="gaa-material-editor"><h3>재료 채움 (바깥층부터 순서대로)</h3>
+              <p>아래부터 쌓기 → 측벽/U자 → 나머지 채움 순으로 영역 안쪽을 채웁니다. 두께를 비우면 영역 크기에 맞춰 자동으로 정합니다.</p>
+              {Object.entries(scene?.material_regions || {}).map(([region, regionLabel]) => {
+                const layers = activeStacks[region] || [];
+                const resolved = scene?.material_layers?.[region] || [];
+                return <div className="gaa-material-region" key={region}>
+                  <div className="gaa-material-head"><b>{regionLabel}</b>
+                    <button type="button" onClick={() => setStack(region, [...layers, { material: `M${layers.length + 1}`, mode: layers.length ? "fill" : "bottom" }])}>층 추가</button>
+                    {!!layers.length && <button type="button" onClick={() => setStack(region, [])}>비우기</button>}
+                  </div>
+                  {layers.map((layer, index) => <div className="gaa-material-row" key={index}>
+                    <input aria-label={`${regionLabel} ${index + 1}층 재료`} value={layer.material} maxLength={40}
+                      onChange={(event) => updateLayer(region, index, "material", event.target.value)}/>
+                    <select aria-label="채움 방식" value={layer.mode} onChange={(event) => updateLayer(region, index, "mode", event.target.value)}>
+                      {MATERIAL_MODE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+                    <select aria-label="두께 정도" value={layer.size || ""} disabled={layer.mode === "fill"} onChange={(event) => updateLayer(region, index, "size", event.target.value)}>
+                      {MATERIAL_SIZE_OPTIONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select>
+                    <input aria-label="두께 nm" type="number" min="0.2" max="40" step="0.1" placeholder={resolved[index]?.thickness_nm ? `자동 ${resolved[index].thickness_nm}` : "nm"}
+                      disabled={layer.mode === "fill"} value={layer.thickness_nm ?? ""}
+                      onChange={(event) => updateLayer(region, index, "thickness_nm", event.target.value === "" ? "" : Number(event.target.value))}/>
+                    <button type="button" aria-label="층 삭제" onClick={() => setStack(region, layers.filter((_, position) => position !== index))}>삭제</button>
+                  </div>)}
+                </div>;
+              })}
+            </div>
             {SHAPABLE.has(selectedRole) && <div className="gaa-shape-editor"><h3>{scene?.roles?.[selectedRole]} 단면 CD</h3>
               <p>TCD·MCD·BCD는 선택한 소구조물의 상·중·하단 가로 폭입니다. 단위는 nm입니다.</p>
               <label>3D 기본 형상<select value={selectedShape.primitive || selectedParts[0]?.shape || "profile_box"}

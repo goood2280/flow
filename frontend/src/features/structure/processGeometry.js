@@ -45,6 +45,21 @@ function taperX(geometry, height, widths = [1, 1, 1]) {
 
 export function gateShellGeometry(part) {
   const [width, height, depth] = part.size;
+  // Backend-computed [z, y] outlines (gate notched around the sheet column).
+  const outlines = part.metadata?.outlines;
+  if (Array.isArray(outlines) && outlines.length) {
+    const shapes = outlines.filter((points) => points.length >= 3).map((points) => {
+      const shape = new THREE.Shape();
+      points.forEach(([z, y], index) => index ? shape.lineTo(z, y) : shape.moveTo(z, y));
+      shape.closePath();
+      return shape;
+    });
+    const geometry = new THREE.ExtrudeGeometry(shapes, { depth: width, bevelEnabled: false, steps: 1, curveSegments: 1 });
+    geometry.translate(0, 0, -width / 2);
+    geometry.rotateY(Math.PI / 2);
+    taperX(geometry, height, part.profile_widths);
+    return geometry;
+  }
   const outline = new THREE.Shape();
   outline.moveTo(-depth / 2, -height / 2);
   outline.lineTo(depth / 2, -height / 2);

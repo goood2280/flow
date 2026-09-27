@@ -99,10 +99,15 @@ def test_latchup_has_buried_wells_full_complementary_devices_and_parasitic_path(
     base_gate = next(part for part in base["parts"] if part["role"] == "gate")
     scaled_gate = next(part for part in scene["parts"]
                        if part["role"] == "gate" and part["metadata"]["device_id"] == "PMOS")
-    assert scaled_gate["metadata"]["sheet_holes"][0]["y"] == pytest.approx(
-        base_gate["metadata"]["sheet_holes"][0]["y"] * 0.86, abs=0.0001)
-    assert scaled_gate["metadata"]["sheet_holes"][0]["width"] == pytest.approx(
-        base_gate["metadata"]["sheet_holes"][0]["width"] * 0.86, abs=0.0001)
+    # The gate cross-section is a notched outline ([z, y] local points) around the sheet column.
+    base_point = base_gate["metadata"]["outlines"][0][1]
+    scaled_point = scaled_gate["metadata"]["outlines"][0][1]
+    assert scaled_point == pytest.approx([base_point[0] * 0.86, base_point[1] * 0.86], abs=0.0001)
+    base_spacer = next(part for part in base["parts"] if part["role"] == "spacer")
+    scaled_spacer = next(part for part in scene["parts"]
+                         if part["role"] == "spacer" and part["metadata"]["device_id"] == "PMOS")
+    assert scaled_spacer["metadata"]["sheet_holes"][0]["y"] == pytest.approx(
+        base_spacer["metadata"]["sheet_holes"][0]["y"] * 0.86, abs=0.0001)
     base_epi = next(part for part in base["parts"] if part["role"] == "source")
     scaled_epi = next(part for part in scene["parts"]
                        if part["role"] == "source" and part["metadata"]["device_id"] == "PMOS")

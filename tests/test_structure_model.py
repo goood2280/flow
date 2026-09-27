@@ -20,14 +20,15 @@ def isolated(tmp_path, monkeypatch):
 
 def test_scene_is_explicit_and_variants_change_geometry(isolated):
     reference = model.build_scene(isolated)
-    assert {key: value for key, value in reference["nanosheet_dimensions_nm"].items() if key != "sheets"} == {
+    assert {key: value for key, value in reference["nanosheet_dimensions_nm"].items()
+            if key not in {"sheets", "inner_gates"}} == {
         "count_per_stack": 3, "thickness": 5.0, "vertical_gap": 10.0,
         "pair_gaps": [10.0, 10.0], "center_pitch": 15.0, "width": 40.0,
         "active_stack_height": 35.0,
     }
     assert [sheet["width"] for sheet in reference["nanosheet_dimensions_nm"]["sheets"]] == [40.0] * 3
     assert [part["size"][1] for part in reference["parts"] if part["role"] == "channel"] == [0.125] * 3
-    assert sum(part["role"] == "inner_gate" for part in reference["parts"]) == 6
+    assert sum(part["role"] == "inner_gate" for part in reference["parts"]) == 3
     assert any(part["name"] == "상부 게이트" for part in reference["parts"])
     assert {part["stage"] for part in reference["parts"]} == {"FEOL", "MOL", "BEOL"}
     assert any(part["name"] == "BEOL M2" for part in reference["parts"])

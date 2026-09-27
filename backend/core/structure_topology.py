@@ -107,6 +107,10 @@ def _scaled_metadata(metadata, scale):
              "width": round(float(hole["width"]) * sz, 4)}
             for hole in copied["sheet_holes"]
         ]
+    if isinstance(copied.get("outlines"), list):
+        # Gate outlines are [z, y] points local to the part centre.
+        copied["outlines"] = [[[round(float(z) * sz, 4), round(float(y) * sy, 4)] for z, y in outline]
+                              for outline in copied["outlines"]]
     return copied
 
 
