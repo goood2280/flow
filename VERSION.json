@@ -1,7 +1,18 @@
 {
-  "version": "10.4.314",
+  "version": "10.4.315",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.315",
+      "date": "2026-09-29",
+      "tag": "feature",
+      "title": "업무 탭 사용법 영상([사용법] 버튼)·파일탐색기 집계는 SQL 로",
+      "changes": [
+        "[사용법] 처음 쓰는 사람이 화면 조작을 문서만으로 따라가기 어려움 → 탭별 안내 수단 없음 → 상단 바 오른쪽 [사용법] 버튼과 영상 창(챕터 이동·메모·자막) 추가. 영상은 코드와 분리해 DB 루트의 _guides/<helpId>/ 에 두며(guides/README.md), 폴더가 있는 탭에만 버튼이 뜬다. 홈·파일탐색기·스플릿 테이블·대시보드·TEG 위치 조회·ET 다운로드·ET 측정시간 7편.",
+        "[사용법] /api/guides 목록·/api/guides/media 재생(로그인 필요, <video> 용 ?t= 토큰 허용, Range 지원, 폴더/파일 이름·확장자 화이트리스트와 경로 이탈 차단).",
+        "[파일탐색기] 피벗/집계 버튼 제거 → 집계는 SQL 칸에 GROUP BY 를 직접 쓰거나(SELECT wafer_id, AVG(value) WHERE item_id = 'VTH' GROUP BY wafer_id) AI SQL 로 요청. 함수는 LATEST·AVG·SUM·MIN·MAX·MEDIAN·COUNT 중 하나, GROUP BY 를 지우고 실행하면 풀림. CSV 다운로드도 같은 집계로 받는다. SQL 가이드(예시)에 집계 예시 추가."
+      ]
+    },
     {
       "version": "10.4.314",
       "date": "2026-09-28",

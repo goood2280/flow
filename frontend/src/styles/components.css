@@ -795,3 +795,196 @@
     transition: none;
   }
 }
+
+/* 상단 바 "사용법" 버튼 + 사용법 영상 창 (components/GuideHelp.jsx) */
+.flow-guide-help {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: 30px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--font-size-label);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.flow-guide-help:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.flow-guide {
+  /* 창이 상단 바(nowrap) 안에서 열리므로 줄바꿈을 되살린다. */
+  white-space: normal;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.flow-guide__player {
+  min-width: 0;
+}
+
+.flow-guide__video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-subtle);
+}
+
+.flow-guide__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.flow-guide__quality {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.flow-guide__quality button {
+  height: 24px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
+
+.flow-guide__quality button[data-on="1"] {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.flow-guide__side {
+  min-width: 0;
+  max-height: 72vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.flow-guide__side > * {
+  min-width: 0;
+}
+
+.flow-guide__summary {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-label);
+  line-height: var(--line-height-body);
+}
+
+.flow-guide__label {
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+}
+
+.flow-guide__chapters {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flow-guide__chapters button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr);
+  gap: var(--space-1);
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-strong);
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.flow-guide__chapters button:hover {
+  background: var(--surface-hover);
+}
+
+.flow-guide__chapters button[data-on="1"] {
+  background: var(--surface-selected);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.flow-guide__chapters time {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  line-height: 20px;
+}
+
+.flow-guide__chapters strong {
+  display: block;
+  font-size: var(--font-size-label);
+  line-height: 20px;
+}
+
+.flow-guide__chapters small {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.flow-guide__note {
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--accent);
+  background: var(--surface-subtle);
+}
+
+.flow-guide__note h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--font-size-label);
+}
+
+.flow-guide__note p {
+  margin: 0 0 var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--font-size-caption);
+  line-height: var(--line-height-caption);
+}
+
+.flow-guide__note pre {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-2);
+  overflow-x: auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface-panel);
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-caption);
+  line-height: 18px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .flow-guide {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .flow-guide__side {
+    max-height: none;
+  }
+}

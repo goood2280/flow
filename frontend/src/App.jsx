@@ -4,6 +4,7 @@ import ComingSoon from "./components/ComingSoon";
 import Loading from "./components/Loading";
 import Modal from "./components/Modal";
 import BrandLogo from "./components/BrandLogo";
+import GuideHelpButton from "./components/GuideHelp";
 import { ToastHost, toast } from "./components/Toast";
 import { Icon, IconLabel } from "./components/ui/Icon";
 import { PAGE_BY_KEY, PAGE_MAP, buildNavGroups, preloadPage } from "./app/pageManifest";
@@ -646,6 +647,7 @@ export default function App() {
           ))}
         </div>
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+          <GuideHelpButton helpId={pageDefinition?.helpId} pageLabel={pageDefinition?.label} />
           <ContactButton user={user} />
           <BellDropdown notifs={notifs} user={user} onDismiss={refreshNotifications} onNavigate={nav} />
           <ProfileMenu user={user} dark={dark} setDark={setDark} onLogout={handleLogout}

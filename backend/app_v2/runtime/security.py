@@ -14,6 +14,7 @@ QUERY_TOKEN_PREFIXES = (
     "/api/informs/files/",
     "/api/lot-requests/files/",
     "/api/tracker/image",
+    "/api/guides/media/",
     "/api/meetings/stream",
     "/api/admin/my-notifications",
     "/api/admin/all-notifications",

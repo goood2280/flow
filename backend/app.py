@@ -221,6 +221,7 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/core/chat_feedback.py",
     "backend/core/llm_prompt_budget.py",
     "backend/core/structure_topology.py",
+    "backend/routers/guides.py",
 )
 
 

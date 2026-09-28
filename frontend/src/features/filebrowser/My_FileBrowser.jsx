@@ -9,6 +9,7 @@ import { statusPalette, chartPalette } from "../../components/UXKit";
 import { copyHistoryShareLink, historyIdFromLocation } from "../../lib/historyShare";
 import { setVisibleInterval } from "../../lib/visibleInterval";
 import SortRuleEditor from "./SortRuleEditor";
+import { parseTypedAggregate } from "./typedAggregate";
 import { Icon, IconLabel } from "../../components/ui/Icon";
 import "./filebrowser.css";
 const API="/api/filebrowser";
@@ -947,7 +948,6 @@ export default function My_FileBrowser({
   const[roots,setRoots]=useState([]);const[rootPqs,setRootPqs]=useState([]);const[selRoot,setSelRoot]=useState("");
   const[products,setProducts]=useState([]);const[selProd,setSelProd]=useState("");const[sideLoading,setSideLoading]=useState(true);const[productsLoading,setProductsLoading]=useState(false);
   const[data,setData]=useState(null);const[sql,setSql]=useState("");const[sortSpec,setSortSpec]=useState(null);const[aggregateSpec,setAggregateSpec]=useState(null);const[loading,setLoading]=useState(false);
-  const[showAggregateBuilder,setShowAggregateBuilder]=useState(false);const[aggregateFunction,setAggregateFunction]=useState("latest");const[aggregateColumn,setAggregateColumn]=useState("tkout_time");const[aggregateGroupByText,setAggregateGroupByText]=useState("root_lot_id, wafer_id");
   const[sampleLoading,setSampleLoading]=useState(false);const viewSeqRef=useRef(0);const viewAbortRef=useRef(null);
   const viewSessionRef=useRef(globalThis.crypto?.randomUUID?.()||(`fb-${Date.now()}-${Math.random()}`));
   const activeViewQueryRef=useRef("");
@@ -993,6 +993,8 @@ export default function My_FileBrowser({
   const readVirtRef=useRef(null);
   const pendingFindScrollRef=useRef(null);
   const restoringSqlHistoryRef=useRef("");
+  // SQL 칸에 직접 쓴 GROUP BY 집계가 지금 걸려 있는지 — GROUP BY 를 지우고 실행하면 풀어 준다(AI 집계는 해제 버튼으로).
+  const typedAggregateRef=useRef(false);
   const findInputRef=useRef(null);
   const findHitsRef=useRef(0);
   // 행 단위 액션은 매 렌더 새로 만들어지는 함수라, memo 된 행에 그대로 내리면 memo 가 깨진다.
@@ -1796,37 +1798,6 @@ export default function My_FileBrowser({
     (remoteCols||[]).forEach(c=>{const text=String(c||"").trim();if(text&&!cols.includes(text))cols.push(text);});
     return cols;
   };
-  const aggregateBuilderSpec=()=>{
-    const columns=currentColumns();
-    const lookup=new Map(columns.map(c=>[c.toLowerCase(),c]));
-    const rawGroups=String(aggregateGroupByText||"").split(",").map(c=>c.trim()).filter(Boolean);
-    const unknownGroups=rawGroups.filter(c=>!lookup.has(c.toLowerCase()));
-    if(unknownGroups.length){toast.error(`그룹 기준 컬럼을 찾을 수 없습니다: ${unknownGroups.join(", ")}`);return null;}
-    const groupBy=[];
-    rawGroups.forEach(c=>{const hit=lookup.get(c.toLowerCase());if(hit&&!groupBy.includes(hit))groupBy.push(hit);});
-    const rawColumn=String(aggregateColumn||"").trim();
-    const column=rawColumn?(lookup.get(rawColumn.toLowerCase())||""):"";
-    if(rawColumn&&!column){toast.error(`집계 대상 컬럼을 찾을 수 없습니다: ${rawColumn}`);return null;}
-    const next=cleanAggregateSpec({function:aggregateFunction,column,group_by:groupBy});
-    if(!next){toast.error("집계 대상과 함수를 확인하세요. count는 대상 컬럼 없이 전체 행 개수를 집계할 수 있습니다.");return null;}
-    return next;
-  };
-  const applyAggregateBuilder=()=>{
-    const next=aggregateBuilderSpec();
-    if(!next)return;
-    setAggregateSpec(next);
-    applySql(sql,selectedCols,sortSpec,next);
-  };
-  const applyLatestWaferPreset=()=>{
-    const columns=currentColumns();
-    const lookup=new Map(columns.map(c=>[c.toLowerCase(),c]));
-    const required=["root_lot_id","wafer_id","tkout_time"];
-    const missing=required.filter(c=>!lookup.has(c));
-    if(missing.length){toast.error(`프리셋에 필요한 컬럼이 없습니다: ${missing.join(", ")}`);return;}
-    const next=cleanAggregateSpec({function:"latest",column:lookup.get("tkout_time"),group_by:[lookup.get("root_lot_id"),lookup.get("wafer_id")]});
-    setAggregateFunction("latest");setAggregateColumn(lookup.get("tkout_time"));setAggregateGroupByText(`${lookup.get("root_lot_id")}, ${lookup.get("wafer_id")}`);
-    setAggregateSpec(next);applySql(sql,selectedCols,sortSpec,next);
-  };
   const displaySqlIdent=(name)=>{
     const text=String(name||"").trim();
     if(!text)return"";
@@ -2080,6 +2051,9 @@ export default function My_FileBrowser({
   // 첫 클릭은 스키마(meta_only)를 즉시 그리고, 최신 파티션 500행 샘플은 백그라운드로 이어서 채운다.
   // SQL/SELECT/정렬/집계가 있으면 기존처럼 한 번에 조회한다.
   const loadHiveView=(root,prod,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined,reuseHistoryId=""}={})=>{
+    const typed=parseTypedAggregate(sqlQ,currentColumns());
+    if(typed?.error){setError(typed.error);return;}
+    if(typed){sqlQ=typed.serverSql;aggregateOverride=typed.aggregate;selColsOverride=[];}
     const{seq,signal,queryId}=nextViewRequest();
     setLoading(true);setTab("data");setMode("hive");setSelProd(prod);setSelRootPq("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
@@ -2111,6 +2085,9 @@ export default function My_FileBrowser({
   };
 
   const loadRootPqView=(file,sqlQ,selColsOverride,{full=true,page:pageArg=0,sortOverride=undefined,aggregateOverride=undefined,reuseHistoryId=""}={})=>{
+    const typed=parseTypedAggregate(sqlQ,currentColumns());
+    if(typed?.error){setError(typed.error);return;}
+    if(typed){sqlQ=typed.serverSql;aggregateOverride=typed.aggregate;selColsOverride=[];}
     const{seq,signal,queryId}=nextViewRequest();
     setLoading(true);setTab("data");setMode("rootpq");setSelRootPq(file);setSelProd("");setError("");setBaseRaw(null);
     setSelBaseMeta(null);setIsBaseEditing(false);setEditCols([]);setEditRows([]);setEditOriginRows([]);setEditOriginCols([]);
@@ -2168,9 +2145,14 @@ export default function My_FileBrowser({
       return;
     }
     const parsedSql=splitDisplaySql(activeSql);
-    const activeSelectedCols=Array.isArray(selectedColsOverride)?selectedColsOverride:parsedSql.selectedColumns;
+    const typed=parseTypedAggregate(activeSql,currentColumns());
+    if(typed?.error){setError(typed.error);return;}
+    const activeSelectedCols=typed?[]:Array.isArray(selectedColsOverride)?selectedColsOverride:parsedSql.selectedColumns;
     const activeSort=sortOverride===undefined?sortSpec:sortOverride;
-    const activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
+    let activeAggregate=aggregateOverride===undefined?aggregateSpec:aggregateOverride;
+    if(typed){activeAggregate=typed.aggregate;typedAggregateRef.current=true;setAggregateSpec(typed.aggregate);}
+    else if(typedAggregateRef.current&&aggregateOverride===undefined){activeAggregate=null;typedAggregateRef.current=false;setAggregateSpec(null);}
+    else if(aggregateOverride!==undefined)typedAggregateRef.current=false;
     setSelectedCols(activeSelectedCols);
     if(mode==="rootpq"&&selRootPq)loadRootPqView(selRootPq,activeSql,activeSelectedCols,{full:true,page:0,sortOverride:activeSort,aggregateOverride:activeAggregate,reuseHistoryId});
     else if(mode==="base"&&selBaseFile){
@@ -2180,7 +2162,7 @@ export default function My_FileBrowser({
       const{seq,signal,queryId}=nextViewRequest();
       setLoading(true);setError("");
       // full=true 와 동일 — SQL 이 비어도 sample 행을 보여줘야 하므로 meta_only 꺼둠.
-      const url=API+"/base-file-view"+qs(withAccess({file:selBaseFile,sql:activeSql||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),reuse_history_id:reuseHistoryId||"",
+      const url=API+"/base-file-view"+qs(withAccess({file:selBaseFile,sql:(typed?typed.serverSql:activeSql)||"",rows:PAGE_SIZE,page:0,page_size:PAGE_SIZE,cols:10,meta_only:false,_ts:Date.now(),reuse_history_id:reuseHistoryId||"",
         query_session:viewSessionRef.current,query_id:queryId,select_cols:activeSelectedCols.length?activeSelectedCols.join(","):"",...sortParams(activeSort),...aggregateParams(activeAggregate)}));
       sf(url,{signal}).then(d=>{if(seq!==viewSeqRef.current)return;setSelectedCols(activeSelectedCols.length?selectedColsFromResponse(d,activeSelectedCols):[]);setData(d);if(!d.kind)syncBaseEditState(d);markSqlHistoryReused(reuseHistoryId);setLoading(false);}).catch(e=>{if(seq!==viewSeqRef.current||isViewAbort(e))return;setError(e.message||String(e));setLoading(false);});
     }
@@ -2994,11 +2976,13 @@ export default function My_FileBrowser({
   };
 
   const downloadCsv=()=>{
+    const typedCsv=parseTypedAggregate(sql,currentColumns());
+    if(typedCsv?.error){setError(typedCsv.error);return;}
     const maxRows=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_rows||500000),Number(fbSettings.csv_download_max_rows||500000)||500000));
     const maxBytes=Math.max(1,Math.min(Number(fbSettings.max_csv_download_max_bytes||100000000),Number(fbSettings.csv_download_max_bytes||100000000)||100000000));
-    let url=API+"/download-csv?username="+(user?.username||"anon")+"&max_rows="+encodeURIComponent(String(maxRows))+"&max_bytes="+encodeURIComponent(String(maxBytes))+"&sql="+encodeURIComponent(sql);
-    if(selectedCols.length)url+="&select_cols="+encodeURIComponent(selectedCols.join(","));
-    const agg=cleanAggregateSpec(aggregateSpec);
+    let url=API+"/download-csv?username="+(user?.username||"anon")+"&max_rows="+encodeURIComponent(String(maxRows))+"&max_bytes="+encodeURIComponent(String(maxBytes))+"&sql="+encodeURIComponent(typedCsv?typedCsv.serverSql:sql);
+    if(selectedCols.length&&!typedCsv)url+="&select_cols="+encodeURIComponent(selectedCols.join(","));
+    const agg=cleanAggregateSpec(typedCsv?typedCsv.aggregate:aggregateSpec);
     if(agg){
       url+="&agg_func="+encodeURIComponent(agg.function);
       url+="&agg_column="+encodeURIComponent(agg.column);
@@ -3302,36 +3286,14 @@ export default function My_FileBrowser({
           <button className="fb-btn" data-active={colPanelOpen&&data?"1":"0"} onClick={()=>setColPanelOpen(v=>!v)}
             disabled={!data||(mode==="base"&&isBaseEditing)} title="열 목록(스키마) — 볼 열을 고르고 실행">
             <Icon name="table" size={16}/>컬럼{data?` ${Number(data.total_cols||allCols.length||0).toLocaleString()}`:""}</button>
-          {data&&!(mode==="base"&&isBaseEditing)&&<button className="fb-btn" data-active={showAggregateBuilder?"1":"0"} onClick={()=>setShowAggregateBuilder(v=>!v)} title="그룹 기준과 집계 함수를 선택합니다.">피벗/집계</button>}
           {data&&!(mode==="base"&&isBaseEditing)&&<button className="fb-btn" onClick={downloadCsv} title={`표시는 ${PAGE_SIZE}행, CSV는 최대 ${effectiveCsvMaxRows.toLocaleString()}행 / ${effectiveCsvMaxMb.toLocaleString()}MB 까지 다운로드합니다.`}><Icon name="download" size={16}/>CSV</button>}
         </div>
-        {showAggregateBuilder&&data&&!(mode==="base"&&isBaseEditing)&&<div style={{padding:"9px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"end",gap:8,flexWrap:"wrap"}}>
-          <label style={{display:"flex",flexDirection:"column",gap:4,minWidth:230,fontSize:12,color:"var(--text-secondary)",fontWeight:700}}>
-            그룹 기준 (쉼표로 구분)
-            <input value={aggregateGroupByText} onChange={e=>setAggregateGroupByText(e.target.value)} placeholder="root_lot_id, wafer_id" style={{padding:"6px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}/>
-          </label>
-          <label style={{display:"flex",flexDirection:"column",gap:4,minWidth:145,fontSize:12,color:"var(--text-secondary)",fontWeight:700}}>
-            집계 함수
-            <select value={aggregateFunction} onChange={e=>setAggregateFunction(e.target.value)} style={{padding:"6px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13}}>
-              <option value="latest">최신값 (latest)</option><option value="avg">평균 (avg)</option><option value="sum">합계 (sum)</option><option value="min">최솟값 (min)</option><option value="max">최댓값 (max)</option><option value="median">중앙값 (median)</option><option value="count">건수 (count)</option>
-            </select>
-          </label>
-          <label style={{display:"flex",flexDirection:"column",gap:4,minWidth:190,fontSize:12,color:"var(--text-secondary)",fontWeight:700}}>
-            대상 컬럼 {aggregateFunction==="count"?"(비우면 행 수)":""}
-            <select value={aggregateColumn} onChange={e=>setAggregateColumn(e.target.value)} style={{padding:"6px 8px",borderRadius:5,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:13,fontFamily:"monospace"}}>
-              <option value="">{aggregateFunction==="count"?"전체 행":"컬럼 선택"}</option>
-              {currentColumns().map(c=><option key={c} value={c}>{c}</option>)}
-            </select>
-          </label>
-          <button onClick={applyAggregateBuilder} style={{padding:"7px 12px",borderRadius:5,border:"none",background:"var(--accent)",color:"#fff",fontSize:13,fontWeight:800,cursor:"pointer"}}>집계 적용</button>
-          <button onClick={applyLatestWaferPreset} title="root_lot_id와 wafer_id별 tkout_time의 최댓값을 반환합니다." style={{padding:"7px 10px",borderRadius:5,border:"1px solid var(--accent)",background:"transparent",color:"var(--accent)",fontSize:12,fontWeight:700,cursor:"pointer"}}>Root Lot + Wafer별 최신 tkout_time</button>
-          <button onClick={()=>{setAggregateSpec(null);applySql(sql,selectedCols,sortSpec,null);}} style={{padding:"7px 10px",borderRadius:5,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>집계 해제</button>
-          <span style={{fontSize:11,color:"var(--text-secondary)"}}>latest는 그룹별 대상 컬럼의 가장 늦은 값만 반환합니다.</span>
-        </div>}
         {aggregateSpec&&<div style={{padding:"6px 16px",borderBottom:"1px solid var(--border)",background:"var(--bg-secondary)",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-          <span style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700,flexShrink:0}}>AGG:</span>
+          <span style={{fontSize:13,color:"var(--text-secondary)",fontWeight:700,flexShrink:0}} title="집계는 AI SQL 로 요청하거나 SQL 칸에 GROUP BY 로 직접 씁니다.">{typedAggregateRef.current?"SQL 집계:":"AI 집계:"}</span>
           <span style={{fontSize:13,color:"var(--text-primary)",fontFamily:"monospace",padding:"2px 7px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)"}}>{aggregateLabel(aggregateSpec)}</span>
-          <button onClick={()=>{setAggregateSpec(null);applySql(sql,selectedCols,sortSpec,null);}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>해제</button>
+          {typedAggregateRef.current
+            ?<span style={{fontSize:12,color:"var(--text-secondary)"}}>SQL 에서 GROUP BY 와 집계 함수를 지우고 실행하면 풀립니다.</span>
+            :<button onClick={()=>{setAggregateSpec(null);applySql(sql,selectedCols,sortSpec,null);}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--border)",background:"transparent",color:"var(--text-secondary)",fontSize:12,cursor:"pointer"}}>해제</button>}
         </div>}
         {/* SQL Guide / Execution History */}
         <div style={{padding:"0 16px"}}>
@@ -3359,6 +3321,11 @@ export default function My_FileBrowser({
             <div>SELECT lot_id, value WHERE CAST(value AS DOUBLE) &gt;= 10 ORDER BY CAST(value AS DOUBLE) ASC NULLS FIRST <span style={{color:"var(--accent)"}}>— 검색 + 변환 정렬 + 빈 값 먼저</span></div>
             <div>root_lot_id = 'A1000' ORDER BY CAST(tkout_time AS TIMESTAMP) DESC <span style={{color:"var(--accent)"}}>— 문자열 시간을 최신순</span></div>
             <div>ORDER BY CAST(wafer_id AS BIGINT) ASC <span style={{color:"var(--accent)"}}>— 조건 없이 정수 순서로만</span></div>
+            <div style={{marginTop:6,fontWeight:700,color:"var(--text-primary)",fontFamily:"inherit"}}>집계(피벗) — 묶을 열 + 함수 하나</div>
+            <div>SELECT root_lot_id, wafer_id, AVG(value) WHERE item_id = 'VTH' GROUP BY root_lot_id, wafer_id <span style={{color:"var(--accent)"}}>— 웨이퍼별 평균</span></div>
+            <div>SELECT root_lot_id, LATEST(tkout_time) GROUP BY root_lot_id <span style={{color:"var(--accent)"}}>— 랏별 마지막 시각</span></div>
+            <div>SELECT step_id, COUNT(*) WHERE root_lot_id = 'A1000' GROUP BY step_id <span style={{color:"var(--accent)"}}>— step별 행 수</span></div>
+            <div style={{color:"var(--text-secondary)",fontFamily:"inherit"}}>함수: LATEST · AVG · SUM · MIN · MAX · MEDIAN · COUNT(한 번에 하나). SELECT 의 일반 열은 GROUP BY 에도 넣습니다. 말로 하려면 AI SQL 에 "웨이퍼별 VTH 평균"처럼 쓰세요.</div>
             <div style={{color:"var(--text-secondary)",fontFamily:"inherit"}}>타입: DOUBLE(숫자) · BIGINT(정수) · TIMESTAMP(날짜시간) · DATE(날짜) · VARCHAR(문자열). 정렬 키는 하나, 변환 안 되는 값은 빈 값으로 취급(NULLS LAST 기본). 표시 값은 바뀌지 않습니다.</div>
             <div style={{color:"var(--accent)",marginTop:4}}>팁: 컬럼 탭에서 컬럼명 클릭 → SELECT 토글, 실행 → 조회 적용, + WHERE → 조건 템플릿 삽입</div>
           </div>}
