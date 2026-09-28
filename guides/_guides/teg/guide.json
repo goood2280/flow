@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "id": "teg",
+  "title": "TEG 위치 조회 사용법",
+  "summary": "제품을 고르고 TEG 를 체크하면 웨이퍼 맵의 shot 마다 TEG 가 유효 영역 안에 있는지 색으로, shot 안 위치는 오른쪽 확대도로 보여 줍니다.",
+  "duration": 40.56,
+  "updated": "2026-09-29",
+  "flow_version": "10.4.x",
+  "poster": "poster.webp",
+  "captions": "captions.ko.vtt",
+  "sources": [
+    {
+      "file": "teg_1080p.mp4",
+      "label": "1080p",
+      "height": 1080
+    }
+  ],
+  "chapters": [
+    {
+      "t": 0.0,
+      "title": "소개",
+      "desc": "TEG 가 웨이퍼 어디에 있는지, 최외곽 원 안인지"
+    },
+    {
+      "t": 3.65,
+      "title": "제품 선택",
+      "desc": "제품을 고르면 웨이퍼 맵과 shot 배치가 나옵니다 / Chip_Radius 계산 정보"
+    },
+    {
+      "t": 12.5,
+      "title": "TEG 선택",
+      "desc": "TEG 목록에서 보고 싶은 TEG 를 체크 / 여러 TEG 를 함께 볼 수 있습니다"
+    },
+    {
+      "t": 22.58,
+      "title": "shot 확대",
+      "desc": "오른쪽은 shot 한 개 확대 — TEG 가 칩 사이 어디 있는지"
+    },
+    {
+      "t": 27.8,
+      "title": "radius 표",
+      "desc": "아래 표: TEG 가 있는 shot 별 반경(mm)"
+    },
+    {
+      "t": 32.39,
+      "title": "다른 탭",
+      "desc": "Mapfile 검증 · 좌표 생성 탭"
+    },
+    {
+      "t": 36.36,
+      "title": "정리",
+      "desc": "단계 요약"
+    }
+  ],
+  "notes": [
+    {
+      "title": "웨이퍼 맵 색",
+      "lines": [
+        "초록 = TEG 전체가 최외곽 원 안, 빨강 = TEG 가 원에 걸림",
+        "TEG 를 고르지 않았을 때: 파랑 = shot 전체가 원 안, 노랑 = shot 이 원에 걸침",
+        "실선 원 = 웨이퍼, 점선 원 = 제품 최외곽(유효 영역)"
+      ]
+    }
+  ]
+}

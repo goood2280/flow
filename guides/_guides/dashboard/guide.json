@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "id": "dashboard",
+  "title": "대시보드 사용법",
+  "summary": "제품과 SPLIT 기준 열(KNOB)을 정하면, 공정 구간마다 wafer 가 몇 장 있는지 split 값별 색으로 쌓아 보여 줍니다.",
+  "duration": 43.72,
+  "updated": "2026-09-29",
+  "flow_version": "10.4.x",
+  "poster": "poster.webp",
+  "captions": "captions.ko.vtt",
+  "sources": [
+    {
+      "file": "dashboard_1080p.mp4",
+      "label": "1080p",
+      "height": 1080
+    }
+  ],
+  "chapters": [
+    {
+      "t": 0.0,
+      "title": "소개",
+      "desc": "공정 구간별 wafer 물량을 split 값으로 나눠 보기"
+    },
+    {
+      "t": 3.65,
+      "title": "보는 기준",
+      "desc": "PRODUCT · LOT TYPE · X축을 고릅니다 / SPLIT 기준 열에 KNOB 이름을 넣습니다"
+    },
+    {
+      "t": 15.7,
+      "title": "차트 읽기",
+      "desc": "맨 위 막대는 전체 split 비중 / 막대에 마우스를 올리면 split 값 · wafer 수 · 비율 / [비중 100%] — 구간마다 split 구성비로 / 범례를 누르면 그 split 을 숨깁니다"
+    },
+    {
+      "t": 35.06,
+      "title": "물량 구성",
+      "desc": "아래쪽: 제품별 · LOT_TYPE 별 wafer 물량"
+    },
+    {
+      "t": 39.52,
+      "title": "정리",
+      "desc": "단계 요약"
+    }
+  ],
+  "notes": [
+    {
+      "title": "차트 조작",
+      "lines": [
+        "막대에 마우스 = split 값 · wafer 수 · 구간 내 비율",
+        "범례 클릭 = 그 split 숨기기/보이기, 범례 더블클릭 = 그 split 만 보기",
+        "물량 ↔ 비중 100% 로 장수와 구성비를 바꿔 봅니다."
+      ]
+    }
+  ]
+}

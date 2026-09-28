@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "id": "ettime",
+  "title": "ET 측정시간 사용법",
+  "summary": "Product 와 Root Lot 을 넣고 조회하면 ET step 과 PGM(pt) 별 측정 소요시간(tkout − tkin)을 보여 줍니다. 아래 추이는 제품 전체의 월별 평균입니다.",
+  "duration": 38.62,
+  "updated": "2026-09-29",
+  "flow_version": "10.4.x",
+  "poster": "poster.webp",
+  "captions": "captions.ko.vtt",
+  "sources": [
+    {
+      "file": "ettime_1080p.mp4",
+      "label": "1080p",
+      "height": 1080
+    }
+  ],
+  "chapters": [
+    {
+      "t": 0.0,
+      "title": "소개",
+      "desc": "랏의 ET 측정이 step · PGM 별로 얼마나 걸렸는지"
+    },
+    {
+      "t": 3.65,
+      "title": "조회",
+      "desc": "Product 를 고릅니다 / Root Lot ID 를 넣고 [조회]"
+    },
+    {
+      "t": 12.62,
+      "title": "표 읽기",
+      "desc": "step 별 총 측정시간과 PGM(pt) 별 측정시간 / 측정시간 = tkout - tkin"
+    },
+    {
+      "t": 24.44,
+      "title": "측정시간 추이",
+      "desc": "[추이 조회] — 제품 전체의 step 별 월 평균 / STEP 을 바꿔 보며 월별 평균 측정시간을 비교합니다"
+    },
+    {
+      "t": 34.42,
+      "title": "정리",
+      "desc": "단계 요약"
+    }
+  ],
+  "notes": [
+    {
+      "title": "표 읽는 법",
+      "lines": [
+        "측정시간 = tkout_time − tkin_time",
+        "같은 step 의 PGM(pt) 는 측정시간이 같은 것이 정상. wafer 간 1초 이상 차이나면 ⚠ 와 min~max 로 표시",
+        "Reformatter 에 등록된 항목만 확인합니다(PCHK 가 빠진 DCOP 는 누락될 수 있음)."
+      ]
+    }
+  ]
+}

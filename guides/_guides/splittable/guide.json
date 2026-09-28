@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "id": "splittable",
+  "title": "스플릿 테이블 사용법",
+  "summary": "Product 와 Root Lot 으로 검색하면 wafer × 항목 격자가 나옵니다. 같은 값은 같은 색, plan 과 다르게 진행된 칸은 빨강입니다.",
+  "duration": 64.31,
+  "updated": "2026-09-29",
+  "flow_version": "10.4.x",
+  "poster": "poster.webp",
+  "captions": "captions.ko.vtt",
+  "sources": [
+    {
+      "file": "splittable_1080p.mp4",
+      "label": "1080p",
+      "height": 1080
+    }
+  ],
+  "chapters": [
+    {
+      "t": 0.0,
+      "title": "소개",
+      "desc": "한 랏의 wafer × 공정 split 을 plan 과 비교"
+    },
+    {
+      "t": 3.65,
+      "title": "랏 검색",
+      "desc": "PRODUCT 를 고르고 Root Lot ID 를 입력합니다 / WAFER ID 로 볼 웨이퍼를 좁히고 Enter"
+    },
+    {
+      "t": 15.3,
+      "title": "표 읽기",
+      "desc": "행 = 공정 항목(KNOB), 열 = 웨이퍼 / 빨간 칸 = plan 과 다르게 진행된 곳 / 이슈추적 줄: 이 랏에 걸린 ET 추적 이슈"
+    },
+    {
+      "t": 29.38,
+      "title": "보기 바꾸기",
+      "desc": "[Split 체크] — 값을 S0 · S1 … 행으로 펼쳐 봅니다 / [병합] — 왼쪽과 같은 값을 한 칸으로 / [diff] — 웨이퍼끼리 값이 다른 행만"
+    },
+    {
+      "t": 44.1,
+      "title": "plan 입력",
+      "desc": "[Edit] 을 누르고 칸을 더블클릭 / 값을 고르면 칸에 plan 이 표시됩니다"
+    },
+    {
+      "t": 54.05,
+      "title": "History · 내려받기",
+      "desc": "[History] — 누가 언제 plan 을 바꿨는지"
+    },
+    {
+      "t": 60.11,
+      "title": "정리",
+      "desc": "단계 요약"
+    }
+  ],
+  "notes": [
+    {
+      "title": "셀 색 규칙",
+      "lines": [
+        "같은 값 = 같은 색 (한 행에서 어디가 다른지 바로 보임)",
+        "빨강 = plan 과 다르게 진행 (plan ≠ actual)",
+        "보라 + 핀 = plan 만 입력되고 아직 진행 전",
+        "회색 = 아직 진행되지 않은 공정"
+      ]
+    },
+    {
+      "title": "WAFER ID 입력",
+      "lines": [
+        "비우면 전체, 쉼표로 여러 장: 1,2,3"
+      ]
+    }
+  ]
+}

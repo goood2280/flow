@@ -1,0 +1,86 @@
+{
+  "schema": 1,
+  "id": "filebrowser",
+  "title": "파일탐색기 사용법",
+  "summary": "DB 루트와 제품을 고르고 SQL 칸에 조건을 쓰면 조회됩니다. 집계(피벗)는 GROUP BY 를 직접 쓰거나 AI SQL 에 말로 요청합니다.",
+  "duration": 80.07,
+  "updated": "2026-09-29",
+  "flow_version": "10.4.x",
+  "poster": "poster.webp",
+  "captions": "captions.ko.vtt",
+  "sources": [
+    {
+      "file": "filebrowser_1080p.mp4",
+      "label": "1080p",
+      "height": 1080
+    }
+  ],
+  "chapters": [
+    {
+      "t": 0.0,
+      "title": "소개",
+      "desc": "원천 DB 를 SQL 한 줄로 조회하고, 집계까지"
+    },
+    {
+      "t": 3.65,
+      "title": "DB 고르기",
+      "desc": "DB 루트를 누르면 제품 목록이 펼쳐집니다 / 제품을 누르면 최신 데이터 500행을 미리 봅니다"
+    },
+    {
+      "t": 14.94,
+      "title": "조건으로 조회",
+      "desc": "SQL 칸에는 WHERE 뒤 조건만 씁니다"
+    },
+    {
+      "t": 22.64,
+      "title": "열 고르기 · 정렬",
+      "desc": "SELECT 로 볼 열을, ORDER BY 로 순서를 정합니다"
+    },
+    {
+      "t": 31.74,
+      "title": "집계 (피벗)",
+      "desc": "집계는 GROUP BY 를 직접 씁니다 / 집계를 풀 때는 GROUP BY 를 지우고 실행"
+    },
+    {
+      "t": 46.96,
+      "title": "AI SQL",
+      "desc": "말로 요청하려면 [AI SQL] / 예: VTH 항목의 웨이퍼별 평균 / 결과가 맞으면 [좋아요], 틀리면 [싫어요] / 창을 닫으면 집계된 결과 표"
+    },
+    {
+      "t": 65.79,
+      "title": "컬럼 · 이력 · 저장",
+      "desc": "[컬럼] 은 열 목록(스키마) / [SQL 이력] 에서 지난 조회를 다시 실행"
+    },
+    {
+      "t": 75.87,
+      "title": "정리",
+      "desc": "단계 요약"
+    }
+  ],
+  "notes": [
+    {
+      "title": "집계(피벗)는 SQL 로",
+      "lines": [
+        "피벗/집계 버튼은 없습니다. SQL 칸에 GROUP BY 를 직접 쓰거나 AI SQL 에 말로 요청하세요.",
+        "함수는 한 번에 하나: LATEST · AVG · SUM · MIN · MAX · MEDIAN · COUNT",
+        "SELECT 에 쓴 일반 열은 GROUP BY 에도 넣습니다. GROUP BY 를 지우고 실행하면 집계가 풀립니다."
+      ],
+      "code": [
+        "SELECT wafer_id, AVG(value) WHERE item_id = 'VTH' GROUP BY wafer_id",
+        "SELECT root_lot_id, LATEST(tkout_time) GROUP BY root_lot_id",
+        "SELECT step_id, COUNT(*) WHERE root_lot_id = 'A1000' GROUP BY step_id"
+      ]
+    },
+    {
+      "title": "자주 쓰는 조건",
+      "lines": [
+        "문자열로 저장된 숫자는 CAST(value AS DOUBLE) 로 바꿔 비교·정렬합니다."
+      ],
+      "code": [
+        "root_lot_id = 'A1000' AND item_id IN ('VTH', 'IDSAT')",
+        "lot_id LIKE '%A1000%'",
+        "SELECT lot_id, wafer_id, value WHERE item_id = 'VTH' ORDER BY CAST(value AS DOUBLE) DESC"
+      ]
+    }
+  ]
+}

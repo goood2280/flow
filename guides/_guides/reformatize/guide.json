@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "id": "reformatize",
+  "title": "ET 다운로드 사용법",
+  "summary": "제품을 고르고 필요한 Index 만 체크한 뒤 root_lot_id 나 최근 N일로 좁혀 조회합니다. 결과는 CSV 로 내려받고, 검색식은 이력으로 남아 다시 불러올 수 있습니다.",
+  "duration": 51.54,
+  "updated": "2026-09-29",
+  "flow_version": "10.4.x",
+  "poster": "poster.webp",
+  "captions": "captions.ko.vtt",
+  "sources": [
+    {
+      "file": "reformatize_1080p.mp4",
+      "label": "1080p",
+      "height": 1080
+    }
+  ],
+  "chapters": [
+    {
+      "t": 0.0,
+      "title": "소개",
+      "desc": "필요한 ET Index 만 골라 랏 · 기간으로 내려받기"
+    },
+    {
+      "t": 3.65,
+      "title": "제품 · Index",
+      "desc": "제품을 고르면 그 제품의 ET Index 목록이 나옵니다 / 필요한 Index 만 체크합니다"
+    },
+    {
+      "t": 14.65,
+      "title": "필터 · 집계",
+      "desc": "root_lot_id 나 최근 N일로 좁힙니다 / 집계: shot raw 또는 wafer 단위 통계"
+    },
+    {
+      "t": 27.32,
+      "title": "조회 · 내려받기",
+      "desc": "[조회] — 검색식이 채워지고 결과 행 수가 나옵니다 / 아래에 결과 미리보기 — 고른 Index 가 열로 붙습니다 / [CSV 다운로드] 로 지금 조건 그대로 받습니다"
+    },
+    {
+      "t": 42.7,
+      "title": "검색이력",
+      "desc": "조회는 검색이력에 고유키(RH-)와 함께 남습니다"
+    },
+    {
+      "t": 47.34,
+      "title": "정리",
+      "desc": "단계 요약"
+    }
+  ],
+  "notes": [
+    {
+      "title": "빠르게 받는 요령",
+      "lines": [
+        "Index 를 적게 고를수록, root_lot_id · 최근 N일로 좁힐수록 읽는 파일이 줄어 빨라집니다.",
+        "REAL = 측정값(abs · scale 적용), ADDP = REAL 로 계산한 수식 Index 입니다.",
+        "집계: shot raw(칩 좌표별 원본) 또는 wafer 단위 AVG · MEDIAN · STD · Cpk 등"
+      ]
+    },
+    {
+      "title": "필터 입력",
+      "lines": [
+        "쉼표 = OR, 일부만 써도 포함 검색. 예: root_lot_id 에 A1000,A1001"
+      ]
+    }
+  ]
+}
