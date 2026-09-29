@@ -54,7 +54,7 @@ PARAMETER_GUIDE = {
     "inner_gate{i}_height_nm": "Inner gate {i} 높이(=NS{i} 아래 빈 공간, 바꾸면 위 시트가 이동)",
     "mol_level_count": "epi(S/D) 위 MOL 단 수 (1~4)",
     "gate_mol_level_count": "게이트 위 MOL 단 수 (없으면 mol_level_count와 같음)",
-    "mol_sd_landing_pad": "epi MOL 단 사이 네모 패드: 1=있음, 0=없애고 바로 연결(직결 기둥)",
+    "mol_sd_landing_pad": "MOL 단 사이 네모 패드(epi·게이트 공통): 0=바로 연결(기본, 직결 기둥), 1=패드 있음",
     "contact_epi_recess_nm": "epi와 연결된 MOL 콘택트가 epi 상면을 깎고 들어간 깊이",
     "gate_height_above_ns_nm": "NS 최상층 상면에서 게이트 상면까지 높이",
     "mol_height_nm": "S/D 위 MOL M0 높이", "mol_level_pitch_nm": "MOL 단 간격",
@@ -610,7 +610,8 @@ def build_scene(document, product="", kind="", variant="", *, include_candidates
     sd_levels = int(params.get("mol_level_count", 2))
     gate_levels = int(params.get("gate_mol_level_count", sd_levels))
     mol_pitch = params.get("mol_level_pitch_nm", 12.8) / nm
-    landing_pad = int(params.get("mol_sd_landing_pad", 1)) == 1
+    # Default MOL is one continuous column per terminal; wide square pads are opt-in (=1).
+    landing_pad = int(params.get("mol_sd_landing_pad", 0)) == 1
     sheet_holes = [{"y": ys[i], "thickness": thick[i], "width": sheet_w[i]} for i in range(count)]
     material_layers = {}
 
@@ -814,7 +815,7 @@ def build_scene(document, product="", kind="", variant="", *, include_candidates
         box("contact", "게이트 콘택트", [0, (gate_top + mol_y) / 2, 0],
             [0.3, mol_y - gate_top, 0.3], "#e2ae61", shape="tapered_cylinder", profile_widths=[0.68, 0.84, 1.0],
             sub_label="G 콘택트")
-    columns = [("소스", -sd_x, sd_levels, not landing_pad), ("게이트", 0.0, gate_levels, False),
+    columns = [("소스", -sd_x, sd_levels, not landing_pad), ("게이트", 0.0, gate_levels, not landing_pad),
                ("드레인", sd_x, sd_levels, not landing_pad)]
     column_tops = {}
     for name, x, levels, direct in columns:

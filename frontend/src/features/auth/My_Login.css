@@ -1,0 +1,173 @@
+.flow-login {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  isolation: isolate;
+  box-sizing: border-box;
+  padding: var(--space-8) var(--space-5);
+  background: var(--login-page);
+  color: var(--login-text);
+  font-family: var(--font-sans);
+  font-style: normal;
+  letter-spacing: normal;
+  line-height: 1.5;
+  color-scheme: dark;
+}
+
+.flow-login__vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 35%, var(--login-page) 100%);
+}
+
+.flow-login__content {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  max-width: 400px;
+}
+
+.flow-login__brand {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--space-6);
+}
+
+.flow-login__card {
+  padding: var(--space-6);
+  border: 1px solid var(--login-border);
+  border-radius: var(--radius-3);
+  background: var(--login-panel);
+}
+
+.flow-login__header { margin-bottom: var(--space-5); }
+.flow-login__header h1 {
+  margin: 0 0 var(--space-2);
+  color: var(--login-text);
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.35;
+  letter-spacing: -0.03em;
+}
+.flow-login__header p, .flow-login__hint {
+  margin: 0;
+  color: var(--login-muted);
+  font-size: var(--font-size-body);
+}
+
+.flow-login__form { display: grid; gap: var(--space-4); }
+.flow-login__field { display: grid; gap: var(--space-2); min-width: 0; }
+.flow-login__field label {
+  color: var(--login-label);
+  font-size: var(--font-size-label);
+  font-weight: 600;
+}
+.flow-login__field input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--login-input-border);
+  border-radius: var(--radius-2);
+  background: var(--login-input);
+  color: var(--login-text);
+  font: inherit;
+  font-size: 16px;
+  caret-color: var(--login-accent);
+  transition: border-color 150ms ease;
+}
+.flow-login__field input::placeholder { color: var(--login-muted); opacity: 1; }
+.flow-login__field input:focus { border-color: var(--login-accent); }
+.flow-login__hint { font-size: var(--font-size-caption); line-height: 1.6; }
+.flow-login__remember {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 24px;
+  color: var(--login-label);
+  font-size: var(--font-size-body);
+  cursor: pointer;
+}
+.flow-login__remember input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--login-accent);
+}
+
+.flow-login button { font-family: inherit; font-style: normal; letter-spacing: normal; }
+.flow-login__submit, .flow-login__provider {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 48px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--login-accent);
+  border-radius: var(--radius-2);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 150ms ease, border-color 150ms ease;
+}
+.flow-login__submit { background: var(--login-accent); color: var(--login-on-accent); }
+.flow-login__submit:hover:not(:disabled) { background: var(--login-accent-hover); border-color: var(--login-accent-hover); }
+.flow-login__providers { display: grid; gap: var(--space-3); }
+.flow-login__provider { background: var(--login-accent-surface); color: var(--login-text); }
+.flow-login__provider:hover:not(:disabled) { background: var(--login-accent-surface-hover); }
+.flow-login button:disabled { opacity: .6; cursor: wait; }
+.flow-login :is(input, button):focus-visible { outline: 2px solid var(--login-accent); outline-offset: 3px; }
+.flow-login__divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin: var(--space-5) 0;
+  color: var(--login-muted);
+  font-size: var(--font-size-caption);
+}
+.flow-login__divider::before, .flow-login__divider::after { content: ""; flex: 1; border-top: 1px solid var(--login-border); }
+.flow-login__links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--login-border);
+}
+.flow-login__links button {
+  min-height: 32px;
+  padding: var(--space-1) 0;
+  border: 0;
+  background: transparent;
+  color: var(--login-muted);
+  font-size: var(--font-size-body);
+  font-weight: 500;
+  cursor: pointer;
+}
+.flow-login__links button:hover { color: var(--login-text); text-decoration: underline; }
+.flow-login__message {
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  border: 1px solid currentColor;
+  border-radius: var(--radius-2);
+  color: var(--login-error);
+  font-size: var(--font-size-body);
+  overflow-wrap: anywhere;
+}
+.flow-login__message--success { color: var(--login-success); }
+.flow-login__version { margin-top: var(--space-5); color: var(--login-muted); text-align: center; font-size: var(--font-size-caption); }
+@media (max-width: 480px) {
+  .flow-login { padding: var(--space-6) var(--space-4); }
+  .flow-login__card { padding: var(--space-5); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .flow-login > canvas { display: none; }
+  .flow-login input, .flow-login button { transition: none; }
+}

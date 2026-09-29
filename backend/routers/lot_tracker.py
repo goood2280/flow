@@ -63,6 +63,15 @@ def get_lot_tracker(
         raise HTTPException(400, str(exc)) from exc
 
 
+@router.get("/products")
+def get_lot_tracker_products(request: Request):
+    """FAB DB 제품 목록 — 제품 입력 칸의 드롭다운 제안."""
+    user = current_user(request)
+    _require_view(user)
+    from core.lot_tracker import _fab_source_roots, fab_products
+    return {"products": fab_products(), "fab_roots": _fab_source_roots()}
+
+
 @router.get("/preset-steps")
 def get_preset_steps(request: Request, product: str = Query("", max_length=100)):
     """Return the saved per-product target-step presets for the suggestion list."""

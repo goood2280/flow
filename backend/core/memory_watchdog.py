@@ -84,14 +84,7 @@ def _env_flag(name: str, default: bool) -> bool:
 
 
 def _is_prod_server() -> bool:
-    """운영 서버 여부 — 개발서버는 확인 주기만 짧게 잡는다(임계값은 공통)."""
-    try:
-        from core.worker_dispatch import server_role
-
-        if server_role() == "worker":
-            return False
-    except Exception:
-        pass
+    """운영 서버 여부 — 개발 PC 는 확인 주기만 짧게 잡는다(임계값은 공통)."""
     try:
         from core.paths import PATHS
 
@@ -104,18 +97,104 @@ def enabled() -> bool:
     return _env_flag("FLOW_MEMORY_WATCHDOG_ENABLE", True)
 
 
+# 개발 PC(비운영)는 운영보다 일찍 축출한다. 개발 캐시는 작고
+# 빌드 작업 잔여 메모리가 대부분이라, 95% 까지 기다리면 16GB 호스트가 늘 가득 찬다.
+_DEV_WARN_PCT_DEFAULT = 65.0
+_DEV_CRITICAL_PCT_DEFAULT = 80.0
+_DEV_SAFE_PCT_DEFAULT = 45.0
+# 평상시 반환(trim): 프로세스가 이 비율 이상이면 위기가 아니어도 주기적으로
+# gc + allocator arena 를 OS 에 돌려준다. 보통 사용량(30~40%) 위에서만 동작한다.
+_IDLE_TRIM_PCT_DEFAULT = 50.0
+_DEV_IDLE_TRIM_PCT_DEFAULT = 35.0
+_IDLE_TRIM_INTERVAL_SEC_DEFAULT = 60.0
+_LAST_IDLE_TRIM_TS = 0.0
+
+
+def _large_ceiling_pct() -> float:
+    """대형 서버(운영)면 메모리 상한(128GB → 약 100GB)의 호스트 대비 %. 아니면 0.
+
+    대형 서버는 캐시를 크게 잡는 대신 기준선을 '호스트 %' 가 아니라 이 상한에 맞춘다.
+    예전 운영 기본(critical 95%)은 128GB 에서 121GB 까지 기다려 OS 가 페이징에 들어간다."""
+    if not _is_prod_server():
+        return 0.0
+    try:
+        from core import runtime_limits
+
+        if not runtime_limits.is_large_profile():
+            return 0.0
+        total_gb = float(runtime_limits.system_memory_snapshot().get("system_memory_total_gb") or 0.0)
+        ceiling_gb = float(runtime_limits.large_memory_ceiling_gb() or 0.0)
+    except Exception:
+        return 0.0
+    if total_gb <= 0 or ceiling_gb <= 0:
+        return 0.0
+    return max(40.0, min(95.0, 100.0 * ceiling_gb / total_gb))
+
+
 def warn_pct() -> float:
-    return _env_float("FLOW_MEMORY_WARN_PCT", _WARN_PCT_DEFAULT, 30.0, 99.0)
+    large = _large_ceiling_pct()
+    if large:
+        default = large - 6.0
+    else:
+        default = _WARN_PCT_DEFAULT if _is_prod_server() else _DEV_WARN_PCT_DEFAULT
+    return _env_float("FLOW_MEMORY_WARN_PCT", default, 30.0, 99.0)
 
 
 def critical_pct() -> float:
     # critical 은 warn 밑으로 내려갈 수 없다 — 잘못 설정해도 순서 보장.
-    return max(warn_pct(), _env_float("FLOW_MEMORY_CRITICAL_PCT", _CRITICAL_PCT_DEFAULT, 40.0, 99.0))
+    large = _large_ceiling_pct()
+    if large:
+        default = large
+    else:
+        default = _CRITICAL_PCT_DEFAULT if _is_prod_server() else _DEV_CRITICAL_PCT_DEFAULT
+    return max(warn_pct(), _env_float("FLOW_MEMORY_CRITICAL_PCT", default, 40.0, 99.0))
 
 
 def safe_pct() -> float:
     # safe 는 warn 위로 올라갈 수 없다.
-    return min(warn_pct(), _env_float("FLOW_MEMORY_SAFE_PCT", _SAFE_PCT_DEFAULT, 20.0, 95.0))
+    large = _large_ceiling_pct()
+    if large:
+        default = large - 16.0
+    else:
+        default = _SAFE_PCT_DEFAULT if _is_prod_server() else _DEV_SAFE_PCT_DEFAULT
+    return min(warn_pct(), _env_float("FLOW_MEMORY_SAFE_PCT", default, 20.0, 95.0))
+
+
+def idle_trim_pct() -> float:
+    large = _large_ceiling_pct()
+    if large:
+        # 캐시 풀(총량의 ~48%)이 꽉 찬 평상시에는 trim 하지 않는다.
+        default = large - 22.0
+    else:
+        default = _IDLE_TRIM_PCT_DEFAULT if _is_prod_server() else _DEV_IDLE_TRIM_PCT_DEFAULT
+    return _env_float("FLOW_MEMORY_IDLE_TRIM_PCT", default, 5.0, 99.0)
+
+
+def idle_trim_interval_sec() -> float:
+    return _env_float("FLOW_MEMORY_IDLE_TRIM_INTERVAL_SEC", _IDLE_TRIM_INTERVAL_SEC_DEFAULT, 10.0, 3600.0)
+
+
+def _maybe_idle_trim(pct: float, now: float) -> dict | None:
+    """위기 전 단계에서 주기적으로 해제 메모리를 OS 에 돌려준다(최대 idle_trim_interval 1회)."""
+    global _LAST_IDLE_TRIM_TS
+    if pct < idle_trim_pct():
+        return None
+    with _LOCK:
+        if now - _LAST_IDLE_TRIM_TS < idle_trim_interval_sec():
+            return None
+        _LAST_IDLE_TRIM_TS = now
+    try:
+        from core import memory_trim
+
+        result = memory_trim.trim(reason="idle")
+    except Exception:
+        return None
+    with _LOCK:
+        _STATE["last_idle_trim"] = {
+            "ts": now, "pct": round(pct, 1),
+            "released_mb": round(int(result.get("released_bytes") or 0) / (1024 * 1024), 1),
+        }
+    return result
 
 
 def interval_sec() -> float:
@@ -193,6 +272,12 @@ def _evict_lot_list(max_bytes: int) -> int:
     return lot_list_cache.emergency_evict(max_bytes)
 
 
+def _evict_dashboard_wip(max_bytes: int) -> int:
+    from routers import dashboard
+
+    return dashboard.emergency_evict(max_bytes)
+
+
 # 순서 = 축출 비용이 낮고 복구가 쉬운 순.
 #
 # 2026-08-05: 보조 캐시(scratch)/candidate index memo/lot list RAM 세 tier 추가.
@@ -202,6 +287,7 @@ def _evict_lot_list(max_bytes: int) -> int:
 _TIERS: tuple[tuple[str, Callable[[int], int]], ...] = (
     ("filebrowser_preview", _evict_filebrowser),
     ("reformatize", _evict_reformatize),
+    ("dashboard_wip_memo", _evict_dashboard_wip),
     ("splittable_scratch", _evict_scratch),
     ("splittable_view_payload", _evict_view_payload),
     ("lookup_candidate_index", _evict_candidate_index),
@@ -337,6 +423,8 @@ def check_once(trigger: str = "interval") -> dict:
     if pct <= 0:
         return {"pct": 0.0, "acted": False}
     acted = False
+    if pct < critical_pct():
+        _maybe_idle_trim(pct, now)
     if pct >= warn_pct():
         with _LOCK:
             should_log = now - _LAST_WARN_LOG_TS >= _WARN_LOG_COOLDOWN_SEC
@@ -409,6 +497,7 @@ def status() -> dict:
         "warn_pct": warn_pct(),
         "critical_pct": critical_pct(),
         "safe_pct": safe_pct(),
+        "idle_trim_pct": idle_trim_pct(),
         "interval_sec": interval_sec(),
         "running": bool(_BG_THREAD and _BG_THREAD.is_alive()),
         "noop_backoff_sec": _NOOP_EVICT_BACKOFF_SEC,

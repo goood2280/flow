@@ -276,9 +276,15 @@ def test_epi_protrusion_and_contacts_follow_actual_top_sheet(isolated):
     assert source["center"][1] + source["size"][1] / 2 == pytest.approx(
         scene["landmarks"]["ns_stack_top"] + 22.4 / 40, abs=0.001)
     contact = next(part for part in scene["parts"] if part["role"] == "contact")
+    # Default MOL is a direct column: the epi contact stops where the column starts.
     assert contact["center"][1] + contact["size"][1] / 2 == pytest.approx(
-        scene["landmarks"]["mol_m0_bottom"] + 0.07, abs=0.001)
+        scene["landmarks"]["mol_m0_bottom"], abs=0.001)
     assert contact["profile_widths"][0] < contact["profile_widths"][2]
+    padded = deepcopy(isolated)
+    padded["variants"]["logic"]["6T"]["mol_sd_landing_pad"] = 1
+    padded_contact = next(part for part in model.build_scene(padded)["parts"] if part["role"] == "contact")
+    assert padded_contact["center"][1] + padded_contact["size"][1] / 2 == pytest.approx(
+        scene["landmarks"]["mol_m0_bottom"] + 0.07, abs=0.001)
     assert source["metadata"]["facet_angle_deg"] == pytest.approx(54.7356)
     custom = deepcopy(isolated)
     custom["variants"]["logic"]["6T"]["epi_facet_angle_deg"] = 60

@@ -4,8 +4,8 @@ from typing import Literal
 from uuid import UUID
 from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel, Field
-from core import audit, auth, data_chat, chat_conversations, chat_prompts, flowi_gate, flowi_personalization, flowi_turn
-from core import ai_semantic, home_agent_offload, home_model_status, llm_adapter, chat_feedback, chat_table
+from core import audit, auth, data_chat, chat_conversations, chat_prompts, flowi_gate, flowi_personalization, flowi_quota, flowi_turn
+from core import ai_semantic, home_model_status, llm_adapter, chat_feedback, chat_table
 
 router = APIRouter(prefix="/api/home-agent", tags=["data-chat"])
 
@@ -45,6 +45,14 @@ class FeedbackRequest(BaseModel):
     correction: str = Field(default="", max_length=1000)
 
 
+class _QuotaDenied(Exception):
+    """Raised inside the conversation turn so nothing is saved for a refused request."""
+
+    def __init__(self, payload: dict):
+        super().__init__(payload.get("answer", ""))
+        self.payload = payload
+
+
 def require_flowi_user(request: Request) -> dict:
     """Keep the API gate identical to the home button's ``flowi`` permission."""
     user = auth.current_user(request)
@@ -62,9 +70,17 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
                                  f"{chat_table.MAX_TABLE_PROMPT_CHARS:,}자까지 붙여 넣을 수 있습니다.")
     failure = None
     success = None
+    reservation = None
     try:
         with chat_conversations.turn(_user["username"], body.conversation_id) as state:
             existing = bool(state["messages"])
+            # Per-user question quota. Replies to a choice the stored conversation
+            # is waiting for (human in the loop) continue a counted question.
+            reservation = flowi_quota.consume(
+                _user, len(flowi_turn.split_questions(body.prompt)),
+                followup=existing and flowi_quota.awaiting_input(state["context"], state["messages"]))
+            if not reservation["allowed"]:
+                raise _QuotaDenied(flowi_quota.denied_payload(reservation))
             history = chat_conversations.history(state) if existing else [
                 {"role": item["role"], "content": item.get("content", "")[:4000]}
                 for item in body.history if item.get("role") in {"user", "assistant"}
@@ -130,9 +146,10 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
                     chat_conversations.append(state, item["role"], item["content"])
             chat_conversations.append(state, "user", body.prompt)
             try:
-                result = home_agent_offload.run_turn(body.prompt, context, request, history=history, user=_user)
+                result = flowi_turn.execute(body.prompt, context, request, history=history)
             except Exception as exc:
                 failure = exc
+                flowi_quota.refund(_user, reservation)
                 context.pop("user_feedback", None)
                 chat_conversations.append(state, "assistant", "요청 처리에 실패했습니다. 다시 시도해 주세요.", error=True,
                     response={"ok": False, "routing_trace": {"question": body.prompt, "status": "failed", "events": []}})
@@ -147,6 +164,9 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
                 chat_conversations.append(state, "assistant", str(answer), response=display)
                 result["conversation_id"] = state["id"]
                 result["message_id"] = state["messages"][-1]["id"]
+    except _QuotaDenied as denied:
+        audit.record(request, "home:rate-limited", detail=str(denied.payload["quota"].get("reason") or ""), tab="home")
+        return denied.payload
     except sqlite3.OperationalError as exc:
         if "locked" in str(exc).lower():
             raise HTTPException(409, "이 대화에서 다른 요청을 처리 중입니다. 잠시 후 다시 시도해 주세요.") from exc
@@ -156,6 +176,8 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
     if success:
         tool = result.get("tool") or {}
         chat_prompts.record_success(success["prompt"], user=_user["username"], category=tool.get("feature") or "")
+    result["quota"] = {**flowi_quota.snapshot(_user), "charged": reservation.get("charged", 0),
+                       "free_followup": bool(reservation.get("free_followup"))}
     audit.record(request, "home:data-chat", detail=str(result.get("conversation_id") or ""), tab="home")
     return result
 
@@ -255,7 +277,7 @@ def personal_skill_delete(skill_id: UUID, request: Request, _user=Depends(requir
 
 @router.get("/status")
 def status(_user=Depends(require_flowi_user)):
-    return {"model": home_model_status.snapshot(), "semantic": ai_semantic.snapshot()}
+    return {"model": home_model_status.snapshot(), "semantic": ai_semantic.snapshot(), "quota": flowi_quota.snapshot(_user)}
 
 
 @router.post("/probe")

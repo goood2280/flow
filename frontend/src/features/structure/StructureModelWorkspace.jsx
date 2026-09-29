@@ -41,7 +41,7 @@ function paramLabel(name) {
   if (inner) return `Inner gate ${inner[1]} ${inner[2] === "width" ? "폭" : "높이"} (nm)`;
   const sheet = /^ns(\d)_(width|thickness)_nm$/.exec(name);
   if (sheet) return `NS ${sheet[1]}층 ${sheet[2] === "width" ? "폭" : "두께"} (nm)`;
-  if (name === "mol_sd_landing_pad") return "epi MOL 단 사이 네모 패드 (1=있음 · 0=바로 연결)";
+  if (name === "mol_sd_landing_pad") return "MOL 단 사이 네모 패드 (0=바로 연결·기본 · 1=있음)";
   return PARAM_LABELS[name] || name;
 }
 function layerText(layer) {
@@ -68,7 +68,8 @@ const modelPayload = (doc) => ({ variants: doc.variants, products: doc.products,
   shape_profiles: doc.shape_profiles, material_stacks: doc.material_stacks || {} });
 const keyOf = (row) => JSON.stringify([row.module || "", row.step_id, row.item_id]);
 
-export default function StructureModelWorkspace({ admin = false, onNavigate, fixedProduct = "" }) {
+// stacked: 조절 패널을 오른쪽 열 대신 전체 폭 3D 아래에 둔다(제품 위키).
+export default function StructureModelWorkspace({ admin = false, onNavigate, fixedProduct = "", stacked = false }) {
   const [saved, setSaved] = useState(null);
   const [draft, setDraft] = useState(null);
   const [products, setProducts] = useState([]);
@@ -146,7 +147,7 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
     if (key === "gate_mol_level_count") return activeParams?.mol_level_count ?? 2;
     if (key === "gate_height_above_ns_nm" && scene?.landmarks?.gate_top != null)
       return Math.round((scene.landmarks.gate_top - scene.landmarks.ns_stack_top) * 400) / 10;
-    if (key === "mol_sd_landing_pad") return 1;
+    if (key === "mol_sd_landing_pad") return 0;
     return PARAM_FALLBACKS[key] ?? "";
   };
   const proposalOpen = editProposal?.target === `${product}/${type}/${variant}`;
@@ -406,7 +407,7 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
   const landmarkEntries = Object.entries(scene?.landmark_labels || {});
   const dimensionRows = Object.entries(scene?.measurements || {});
 
-  return <section className={`gaa-workspace${admin ? " is-admin" : ""}`} aria-label="GAA 3D 구조 모델">
+  return <section className={`gaa-workspace${admin ? " is-admin" : ""}${stacked ? " is-stacked" : ""}`} aria-label="GAA 3D 구조 모델">
     <header className="gaa-heading">
       <div><div className="gaa-eyebrow">DEVICE STRUCTURE</div><h2>GAA 구조 3D</h2>
         <p>X: 소스→드레인, Y: 높이, Z: 셀 높이 방향 · 나노시트 치수는 공개 연구 사례 기준, 나머지 형상은 개념도</p></div>
@@ -531,8 +532,8 @@ export default function StructureModelWorkspace({ admin = false, onNavigate, fix
             {DETAIL_PARAMS.map(([key, label, min, max, step]) => <label key={key}><span>{label} <b>{activeParams[key] ?? currentFallback(key)}</b></span>
               <input type="range" min={min} max={max} step={step} value={activeParams[key] ?? currentFallback(key)}
                 onChange={(event) => updateParam(key, Number(event.target.value))}/></label>)}
-            <label className="gaa-inline-check"><input type="checkbox" checked={(activeParams.mol_sd_landing_pad ?? 1) === 0}
-              onChange={(event) => updateParam("mol_sd_landing_pad", event.target.checked ? 0 : 1)}/>epi MOL 단 사이 네모 패드 없이 바로 연결</label>
+            <label className="gaa-inline-check"><input type="checkbox" checked={(activeParams.mol_sd_landing_pad ?? 0) === 0}
+              onChange={(event) => updateParam("mol_sd_landing_pad", event.target.checked ? 0 : 1)}/>MOL 단 사이 네모 패드 없이 바로 연결 (epi·게이트)</label>
             <div className="gaa-material-editor"><h3>재료 채움 (바깥층부터 순서대로)</h3>
               <p>아래부터 쌓기 → 측벽/U자 → 나머지 채움 순으로 영역 안쪽을 채웁니다. 두께를 비우면 영역 크기에 맞춰 자동으로 정합니다.</p>
               {Object.entries(scene?.material_regions || {}).map(([region, regionLabel]) => {

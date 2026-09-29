@@ -2739,7 +2739,8 @@ export default function My_TegMap({ user }) {
                           + `\n${directionLabel(t)} · 사이즈 ${fmt(Number(t.teg_w) * 1000, 1)}`
                           + ` × ${fmt(Number(t.teg_h) * 1000, 1)}`}
                         style={{
-                          display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
+                          display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 6, cursor: "pointer",
+                          width: "100%", boxSizing: "border-box", minWidth: 0,
                           border: "none", borderLeft: `3px solid ${on ? tegColor(n) : "transparent"}`,
                           background: on ? "var(--bg-hover)" : "transparent", color: "var(--text-primary)",
                           padding: "5px 8px", fontSize: 13, textAlign: "left",
@@ -2752,7 +2753,7 @@ export default function My_TegMap({ user }) {
                           display: "inline-flex", alignItems: "center", justifyContent: "center",
                           fontSize: 10, color: "#fff", lineHeight: 1,
                         }}>{on ? <Icon name="check" /> : null}</span>
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n}</span>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left", minWidth: 0 }}>{n}</span>
                         {/* vertical TEG 표시 — 세워서 그린다는 걸 목록에서 바로 보이게 */}
                         {isVertical(t) && (
                           <span style={{ marginLeft: "auto", fontSize: 10, flexShrink: 0,

@@ -1,5 +1,5 @@
-/* My_ValveAlerts.jsx — 개발 서버 FAB 매칭 검사.
-   - 개발 worker가 FAB 제품을 하나씩 순회하며 처음 보는 step_id/ppid/reticle_id를 표시한다.
+/* My_ValveAlerts.jsx — FAB 매칭 검사.
+   - 서버 검사기가 FAB 제품을 하나씩 순회하며 처음 보는 step_id/ppid/reticle_id를 표시한다.
    - step_id는 Vehicle_matching.csv, ppid는 ppid_knob.csv, reticle_id는 mask_info.csv에
      엔지니어 판정으로 반영한다 (reticle_id→mask 규칙은 전 제품 공용이며
      mask 이름은 기존 category, vehicle은 기존 product 열에 입력하고
@@ -14,6 +14,7 @@ import PageGear from "../../components/PageGear";
 import SpreadsheetPasteGrid, { normalizeSpreadsheetRows, spreadsheetTextFromRows } from "../../components/SpreadsheetPasteGrid";
 import { canManagePage } from "../../lib/permissions";
 import { setVisibleInterval } from "../../lib/visibleInterval";
+import WikiKnobAlerts from "./WikiKnobAlerts";
 
 const API = "/api/valve-alerts";
 
@@ -264,7 +265,7 @@ function MatchingScannerSettings({ config = {}, scanner = {}, canManage, onChang
     setRunning(true);
     try {
       const result = await postJson(API + "/poll", {});
-      const message = result.message || "개발 worker에 다음 제품 검사를 요청했습니다";
+      const message = result.message || "다음 제품 검사를 요청했습니다";
       // 검사기가 없는데 "등록했습니다" 만 뜨면 요청이 사라진 것처럼 보인다.
       if (result.scanner_alive === false) toast.error(message);
       else toast.ok(message);
@@ -296,8 +297,8 @@ function MatchingScannerSettings({ config = {}, scanner = {}, canManage, onChang
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <div style={{ fontSize: 13, color: "var(--text-secondary)", lineHeight: 1.55 }}>
-        대용량 FAB 검사는 개발 worker에서 제품을 하나씩 수행합니다. 운영 API에서 수동 검사를
-        눌러도 Parquet를 직접 읽지 않고 공유 요청만 등록합니다.
+        대용량 FAB 검사는 서버가 제품을 하나씩, 사용자 요청이 조용할 때 수행합니다. 수동 검사를
+        눌러도 화면 요청이 Parquet를 직접 읽지 않고 검사 요청만 등록합니다.
       </div>
       <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14 }}>
         <input type="checkbox" checked={enabled} disabled={!canManage || saving}
@@ -325,7 +326,7 @@ function MatchingScannerSettings({ config = {}, scanner = {}, canManage, onChang
           요청 상태: {scanner.scan_requested
             ? `대기 중${waitingText}`
             : "대기 없음"}<br />
-          현재 서버: {scanner.execution_enabled_here ? "개발 worker (검사 실행 가능)" : "운영 API (요청만 전달)"}
+          검사 실행: {scanner.execution_enabled_here ? "이 서버 프로세스" : "다른 프로세스(background owner)"}
         </div>
         {/* "왜 안 도는가" 를 화면에서 끝낸다 — 검사기가 죽었는지, 살아 있는데
             다른 제품을 오래 검사 중인지가 여기서 갈린다. */}
@@ -540,7 +541,7 @@ export default function My_ValveAlerts({ user }) {
       setLoading(false);
     }
   };
-  // 개발 worker의 제품별 검사 상태를 주기적으로 갱신한다. 입력값은 별도 state라 유지된다.
+  // 검사기의 제품별 검사 상태를 주기적으로 갱신한다. 입력값은 별도 state라 유지된다.
   useEffect(() => {
     load();
     return setVisibleInterval(load, 60000);
@@ -698,7 +699,7 @@ export default function My_ValveAlerts({ user }) {
   const forceScan = () =>
     act("__force_scan__", async () => {
       const result = await postJson(API + "/poll", {});
-      const message = result.message || "개발 worker에 다음 제품 강제 검사를 요청했습니다";
+      const message = result.message || "다음 제품 강제 검사를 요청했습니다";
       if (result.scanner_alive === false) toast.error(message);
       else toast.ok(message);
     });
@@ -864,9 +865,11 @@ export default function My_ValveAlerts({ user }) {
       <div className="valve-alerts-body">
       {data && !data.ok && (
         <Banner tone="danger">
-          <b>검사 오류</b> {data.error} — 개발 서버의 FAB 경로와 worker 역할 설정을 확인하세요.
+          <b>검사 오류</b> {data.error} — 서버의 FAB 원천 경로(DB 루트)를 확인하세요.
         </Banner>
       )}
+      {/* FAB 검사와 독립 — FAB 알람이 실패해도 제품위키 knob 칸은 따로 표시한다. */}
+      {!loading && <WikiKnobAlerts canManage={canManage} product={selectedProduct || ""} />}
       {data?.ok && (
         <nav className="ds-stat-strip" aria-label="판정 구역 요약">
           {sectionStats.map(stat => (

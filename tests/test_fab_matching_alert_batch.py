@@ -367,7 +367,7 @@ def _isolate_state(tmp_path, monkeypatch):
     monkeypatch.setattr(alerts, "STATE_PATH", tmp_path / "state.json")
     monkeypatch.setattr(alerts, "SCANNER_PATH", tmp_path / "scanner.json")
     monkeypatch.setattr(alerts, "_scanner_local", {})
-    # 이 테스트들은 worker 역할을 흉내내므로, 진짜 검사 스레드가 뜨지 않게 막는다.
+    # 이 테스트들은 background owner 를 흉내내므로, 진짜 검사 스레드가 뜨지 않게 막는다.
     monkeypatch.setattr(alerts, "_ensure_scheduler_running", lambda: False)
 
 
@@ -427,7 +427,7 @@ def test_recommendation_batch_records_error_without_raising(tmp_path, monkeypatc
 def test_scan_request_is_cleared_even_when_no_products_are_found(tmp_path, monkeypatch):
     """예전에는 이 경로가 요청 플래그를 남겨 화면이 영원히 '검사 요청 대기 중'이었다."""
     _isolate_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(alerts, "_development_worker_enabled", lambda: True)
+    monkeypatch.setattr(alerts, "_scheduler_owner_enabled", lambda: True)
     monkeypatch.setattr(alerts, "discover_products", list)
     monkeypatch.setattr(alerts, "load_cfg", lambda: {"enabled": True, "scan_interval_seconds": 300})
     alerts.request_scan()
@@ -443,7 +443,7 @@ def test_scan_request_is_cleared_even_when_no_products_are_found(tmp_path, monke
 
 def test_scan_request_is_cleared_before_the_product_scan_runs(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(alerts, "_development_worker_enabled", lambda: True)
+    monkeypatch.setattr(alerts, "_scheduler_owner_enabled", lambda: True)
     monkeypatch.setattr(alerts, "discover_products",
                         lambda: [{"product": "P1", "path": str(tmp_path), "root": "FAB"}])
     monkeypatch.setattr(alerts, "load_cfg", lambda: {"enabled": True, "scan_interval_seconds": 300})
@@ -457,7 +457,7 @@ def test_scan_request_is_cleared_before_the_product_scan_runs(tmp_path, monkeypa
 
 def test_list_alerts_explains_a_pending_request_with_no_running_scanner(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(alerts, "_development_worker_enabled", lambda: False)
+    monkeypatch.setattr(alerts, "_scheduler_owner_enabled", lambda: False)
     monkeypatch.setattr(alerts, "_acks", dict)
     monkeypatch.setattr(alerts, "_decided_ids", dict)
     monkeypatch.setattr(alerts, "_recommendations", dict)
@@ -467,12 +467,12 @@ def test_list_alerts_explains_a_pending_request_with_no_running_scanner(tmp_path
 
     assert scanner["scan_requested"] is True
     assert scanner["scanner_alive"] is False and scanner["scanner_state"] == "down"
-    assert "개발 worker 검사기가 없습니다" in scanner["scan_request_hint"]
+    assert "실행 중인 검사기가 없습니다" in scanner["scan_request_hint"]
 
 
 def test_list_alerts_reports_the_product_being_scanned_right_now(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(alerts, "_development_worker_enabled", lambda: True)
+    monkeypatch.setattr(alerts, "_scheduler_owner_enabled", lambda: True)
     monkeypatch.setattr(alerts, "_acks", dict)
     monkeypatch.setattr(alerts, "_decided_ids", dict)
     monkeypatch.setattr(alerts, "_recommendations", dict)
@@ -546,7 +546,7 @@ def test_step_exception_scoped_to_one_product_leaves_others_alerting(tmp_path, m
 
 def test_saved_exception_hides_matching_steps_before_the_next_fab_scan(tmp_path, monkeypatch):
     _isolate_state(tmp_path, monkeypatch)
-    monkeypatch.setattr(alerts, "_development_worker_enabled", lambda: True)
+    monkeypatch.setattr(alerts, "_scheduler_owner_enabled", lambda: True)
     monkeypatch.setattr(alerts, "_acks", dict)
     monkeypatch.setattr(alerts, "_decided_ids", dict)
     monkeypatch.setattr(alerts, "_recommendations", dict)

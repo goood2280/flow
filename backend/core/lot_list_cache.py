@@ -81,11 +81,17 @@ def budget_bytes() -> int:
             from core import ml_table_lookup
 
             is_dev = bool(ml_table_lookup._root_ram_cache_use_dev())
-            mb = float(cache_settings.get_float_role("lot_list_mb", is_dev, DEFAULT_BUDGET_MB) or 0.0)
+            mb = float(cache_settings.get_float_role("lot_list_mb", is_dev, None) or 0.0)
         except Exception:
             mb = 0.0
     if mb <= 0:
         mb = DEFAULT_BUDGET_MB
+        try:
+            from core import cache_budget
+            if cache_budget.large_host():
+                mb = 256.0  # 대형 서버: 제품 전체의 root_lot_id 풀을 RAM 에 둔다
+        except Exception:
+            pass
     mb = max(_BUDGET_MB_MIN, min(_BUDGET_MB_MAX, mb))
     return int(mb * 1024 * 1024)
 

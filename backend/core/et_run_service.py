@@ -117,13 +117,24 @@ def queue_wait_sec() -> float:
     return _env_float("FLOW_REFORMATIZE_RUN_QUEUE_WAIT_SEC", 120.0, 1.0, 1800.0)
 
 
+def _large_host() -> bool:
+    try:
+        from core import cache_budget
+        return cache_budget.large_host()
+    except Exception:
+        return False
+
+
 def recycle_bytes() -> int:
-    return int(_env_float("FLOW_REFORMATIZE_RUN_RECYCLE_MB", 1536.0, 0.0, 262144.0) * 1024 * 1024)
+    # 대형 서버는 자식을 덜 재기동한다(재기동마다 polars import·예열 1~3초).
+    default = 4096.0 if _large_host() else 1536.0
+    return int(_env_float("FLOW_REFORMATIZE_RUN_RECYCLE_MB", default, 0.0, 262144.0) * 1024 * 1024)
 
 
 def linger_bytes() -> int:
-    """계산 뒤 이보다 크면 짧게만(linger_sec) 다음 요청을 기다리고 종료한다 (기본 512MB)."""
-    return int(_env_float("FLOW_REFORMATIZE_RUN_LINGER_MB", 512.0, 0.0, 262144.0) * 1024 * 1024)
+    """계산 뒤 이보다 크면 짧게만(linger_sec) 다음 요청을 기다리고 종료한다 (기본 512MB, 대형 2GB)."""
+    default = 2048.0 if _large_host() else 512.0
+    return int(_env_float("FLOW_REFORMATIZE_RUN_LINGER_MB", default, 0.0, 262144.0) * 1024 * 1024)
 
 
 def linger_sec() -> float:

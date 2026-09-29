@@ -487,12 +487,14 @@ function iconFor(appKey) {
 
 export const HOME_APP_ICON_KEYS = Object.keys(ICONS);
 
+// 128px WebP 는 vite.config.js(assetsInlineLimit)가 홈 청크에 data URL 로 넣는다 —
+// 타일마다 이미지 요청(최대 24개)을 보내 서버를 기다리던 지연·팝인 없이 한 번에 그린다.
 const BAKED = import.meta.glob("./icons3d/*.webp", { eager: true, import: "default" });
 
 export default function HomeAppIcon({ appKey }) {
   const uid = `hi${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
   const baked = BAKED[`./icons3d/${appKey}.webp`];
-  if (baked) return <img className="home-app-icon home-app-icon--3d" src={baked} alt="" aria-hidden="true" draggable={false} />;
+  if (baked) return <img className="home-app-icon home-app-icon--3d" src={baked} width={58} height={58} decoding="sync" alt="" aria-hidden="true" draggable={false} />;
   const { viewBox, ground, items } = iconFor(appKey);
   const ref = (name) => `url(#${uid}-${name})`;
   return (

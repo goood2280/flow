@@ -19,15 +19,8 @@ class GenerateReq(BaseModel):
 
 @router.get("/config")
 def config(_user=Depends(current_user)):
-    from core import worker_dispatch
-
     payload = auto_report.preflight()
-    worker = worker_dispatch.status()
-    payload["execution"] = {
-        "server_role": worker.get("role"),
-        "worker_alive": bool(worker.get("worker_alive")),
-        "queue_depth": int(worker.get("queue_depth") or 0),
-    }
+    payload["execution"] = {"queue_depth": auto_report.queue_depth()}
     payload["history"] = auto_report.history_status()
     return payload
 

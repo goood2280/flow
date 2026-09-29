@@ -2298,7 +2298,8 @@ def _teg_rows_for(vehicle: str) -> tuple[list[str], dict[str, list[str]], bool, 
     order: list[str] = []
     top_cells: dict[str, list[str]] = {}
     dirs: dict[str, str] = {}
-    for _, row in sub.iterrows():
+    # iterrows 는 행마다 Series 를 만들어 체크 대상 조회 비용의 대부분이었다.
+    for row in sub.to_dict("records"):
         teg = str(row["teg"]).strip()
         if not teg:
             continue

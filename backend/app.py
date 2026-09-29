@@ -150,6 +150,81 @@ app = FastAPI(
 
 app.add_middleware(AuthMiddleware)
 app.add_middleware(ResourceGuardMiddleware)
+
+
+_THREADPOOL_TUNED = False
+
+
+def _tune_threadpool() -> None:
+    """sync 핸들러가 도는 anyio 스레드 풀(기본 40)을 키운다 — 이벤트 루프 안에서 1회.
+
+    홈 에이전트 턴·LLM 호출·공유드라이브 파일 조회는 스레드를 오래 잡고 대부분
+    I/O 대기다. 40개가 다 차면 모든 sync API 가 줄을 서서 화면 전체가 멈추고
+    (관리자 화면 지연), 헬스체크 타임아웃으로 프로세스 관리자가 재시작한다
+    ("가끔 꺼짐"). FLOW_THREADPOOL_TOKENS 로 조정(40~400, 기본 120)."""
+    global _THREADPOOL_TUNED
+    if _THREADPOOL_TUNED:
+        return
+    _THREADPOOL_TUNED = True
+    try:
+        import anyio.to_thread
+
+        try:
+            default_tokens = 120
+            try:
+                from core.runtime_limits import is_large_profile
+                if is_large_profile():
+                    default_tokens = 240  # 전용 대형 서버: 동시 sync 요청을 더 받는다
+            except Exception:
+                pass
+            tokens = int(os.environ.get("FLOW_THREADPOOL_TOKENS", "") or default_tokens)
+        except ValueError:
+            tokens = 120
+        tokens = max(40, min(400, tokens))
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        if limiter.total_tokens < tokens:
+            limiter.total_tokens = tokens
+        logger.info(f"threadpool tokens = {limiter.total_tokens}")
+    except Exception as exc:
+        logger.warning(f"threadpool tuning skipped: {exc}")
+
+
+class _InflightTrackingMiddleware:
+    """진행 중 API 요청을 sysmon 에 남긴다 — 서버가 죽으면 그때 무엇이 돌고 있었는지가
+    다음 기동의 boot_history 에 기록된다(crash forensics).
+
+    순수 ASGI 로 둔다. BaseHTTPMiddleware(@app.middleware) 는 응답 본문을 한 번 더
+    스트림으로 옮겨 담아, 큰 파일 조회·CSV 응답마다 층 하나만큼 지연이 붙었다."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") != "http":
+            return await self.app(scope, receive, send)
+        _tune_threadpool()
+        path = scope.get("path") or ""
+        if not path.startswith("/api/"):
+            return await self.app(scope, receive, send)
+        try:
+            from core import sysmon as _sysmon
+            token = _sysmon.request_started(scope.get("method") or "", path)
+        except Exception:
+            return await self.app(scope, receive, send)
+        status = {"code": 500}
+
+        async def _send(message):
+            if message.get("type") == "http.response.start":
+                status["code"] = int(message.get("status") or 0)
+            await send(message)
+
+        try:
+            await self.app(scope, receive, _send)
+        finally:
+            _sysmon.request_finished(token, status["code"])
+
+
+app.add_middleware(_InflightTrackingMiddleware)
 # 가장 바깥: 인증 거절·503 JSON 까지 포함해 완성된 응답만 압축한다.
 if _http_compression is not None:
     app.add_middleware(_http_compression.GzipJsonMiddleware)
@@ -182,15 +257,17 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/core/auto_report.py",
     "backend/core/auto_report_child.py",
     "backend/core/auto_report_history.py",
-    "backend/core/structure_edit_rules.py",
     "backend/routers/auto_report.py",
     "backend/routers/dcop.py",
+    "backend/core/ops_scan.py",
+    "backend/core/structure_edit_rules.py",
     "backend/routers/lot_location.py",
     "backend/routers/data_chat.py",
     "backend/core/data_chat.py",
     "backend/core/data_product_catalog.py",
     "backend/core/flowi_db_reference.py",
     "backend/core/flowi_gate.py",
+    "backend/core/flowi_quota.py",
     "backend/core/flowi_personalization.py",
     "backend/core/flowi_routing.py",
     "backend/core/flowi_turn.py",
@@ -205,7 +282,7 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/core/mapfile_alerts.py",
     "backend/core/mapfile_traffic_scheduler.py",
     "backend/app_v2/runtime/http_compression.py",
-    "backend/core/home_agent_offload.py",
+    "backend/core/heavy_jobs.py",
     "backend/core/json_fast.py",
     "backend/core/et_run_service.py",
     "backend/core/et_run_child.py",
@@ -325,6 +402,11 @@ logger.info(f"  app_root  = {PATHS.app_root}")
 logger.info(f"  data_root = {PATHS.data_root}")
 logger.info(f"  db_root   = {PATHS.db_root}")
 
+try:
+    from core.sysmon import start_crash_forensics
+    start_crash_forensics()
+except Exception as _crash_exc:
+    logger.warning(f"crash forensics unavailable: {_crash_exc}")
 start_background_services(logger)
 try:
     from core import llm_adapter
@@ -500,7 +582,7 @@ _PROCESS_STARTED_AT = datetime.datetime.now()
 
 
 @app.get("/health")
-def health():
+async def health():
     """무인증 헬스체크 — 프로세스 관리자·외부 모니터링용.
 
     인증을 요구하면 감시 도구가 쓸 수 없으므로 `/api/*` 밖에 둔다. 대신
@@ -509,6 +591,9 @@ def health():
 
     반환은 "이 프로세스가 요청을 처리할 수 있는가" 만 답한다. 200 이 아니거나
     응답이 없으면 재시작 대상이다.
+
+    async 로 둔다 — sync 면 스레드 풀에서 돌아, 긴 요청들이 풀을 다 채운 순간
+    헬스체크까지 줄을 서다 타임아웃되고 멀쩡한 프로세스가 재시작됐다.
     """
     uptime = (datetime.datetime.now() - _PROCESS_STARTED_AT).total_seconds()
     return JSONResponse(
@@ -607,6 +692,14 @@ def _scheduler_health_snapshot() -> dict:
         return {"error": f"{type(exc).__name__}: {exc}", "failed": []}
 
 
+def _crash_forensics_snapshot() -> dict:
+    try:
+        from core.sysmon import crash_forensics_snapshot
+        return crash_forensics_snapshot()
+    except Exception as exc:
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 @app.get("/deploy-info.json")
 def deploy_info(_admin=Depends(require_admin)):
     """무인증 배포 진단 — 운영 Docker 서버에 셸 접근이 없는 환경용.
@@ -693,6 +786,9 @@ def deploy_info(_admin=Depends(require_admin)):
                 "core.background_owner", fromlist=["snapshot"]
             ).snapshot(),
             "can_create_in_assets": can_create,
+            # 서버가 "가끔 튕기는" 원인: 직전 실행이 atexit 없이 끝났으면 그때의
+            # 메모리·진행 중 요청·cgroup oom_kill·네이티브 크래시 로그를 보여 준다.
+            "crash_forensics": _crash_forensics_snapshot(),
             "server_time": datetime.datetime.now().isoformat(timespec="seconds"),
         },
         headers={"Cache-Control": "no-store, max-age=0"},

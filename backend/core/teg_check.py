@@ -586,7 +586,7 @@ def load_ref(vehicle: str) -> tuple[dict[str, list[dict]] | None, dict[str, str]
     scale = float(cfg["ebeam_scale"])
     ref: dict[str, list[dict]] = {}
     tc_to_teg: dict[str, str] = {}
-    for _, row in sub.iterrows():
+    for row in sub.to_dict("records"):  # iterrows 보다 수 배 빠르고 값은 같다
         teg = str(row["teg"]).strip()
         fz = _tm.normalize_direction(row.get("flat_zone"), teg)
         tw, th = _tm.teg_size(row["teg_w"], row["teg_h"], scale, cfg, fz, vehicle)

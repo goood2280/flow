@@ -56,3 +56,16 @@ frontend/chat-qa.html
 frontend/qa-flow-e2e.html
 frontend/pnpm-lock.yaml
 frontend/scripts/test-page-loading.mjs
+
+# Flow data encryption key (people.enc) - never commit
+.flow_data.key
+.flow_stop
+
+# Local scratch folders and assistant tool config (never pushed; repo is PUBLIC)
+tmp/
+scratch/
+.claude/
+
+# Non-code deliverables (decks, reports) stay out of the public repo
+*.pptx
+*.docx

@@ -5,25 +5,32 @@ Run from the flow/ directory:
 
     python _build_setup.py
 
-Output: overwrites setup.py at the repo root. Release history is read from
+Output: overwrites setup.py at the repo root by default. To include the latest
+private admin knowledge, use --include-domain-knowledge [SQLITE] and --output
+pointing outside this public repository (for example a local deliverables folder).
+Release history is read from
 VERSION.json, while user-facing version output is mtime-based.
 
-The installer embeds source files only. It never bundles or overwrites
-runtime data under data/, FLOW_DATA_ROOT, FLOW_DB_ROOT, or
-FLOW_WAFER_MAP_ROOT. Before extraction it snapshots small config/state
+The default installer embeds source files only. The private build also carries
+a seed of the latest domain knowledge; existing revisions are never overwritten.
+Other runtime data under data/, FLOW_DATA_ROOT, FLOW_DB_ROOT, or
+FLOW_WAFER_MAP_ROOT is not bundled. Before extraction it snapshots small config/state
 files to ~/.flow_backups and can restore them with
 `python setup.py restore [latest|<timestamp>]`.
 """
 import base64
+import argparse
 import datetime
 import gzip
 import hashlib
+import importlib.util
 import json
 import os
 import shutil
 import subprocess
 import sys
 import textwrap
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).parent
@@ -307,7 +314,24 @@ def installer_version_meta(version: dict) -> dict:
     return meta
 
 
-def build():
+def _load_local_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _domain_knowledge_payload(source: str = "auto") -> str:
+    helper = _load_local_module("flow_knowledge_seed", ROOT / "backend/core/domain_knowledge_seed.py")
+    if source == "auto":
+        profile = _load_local_module("flow_root_profile", ROOT / "backend/core/root_profile.py")
+        data_root = Path(os.environ.get("FLOW_DATA_ROOT") or profile.default_data_root())
+        source = data_root / "knowledge/domain_knowledge.sqlite3"
+    document = helper.export_document(Path(source))
+    return base64.b64encode(gzip.compress(json.dumps(document, ensure_ascii=False).encode("utf-8"))).decode("ascii")
+
+
+def build(domain_knowledge_payload: str = ""):
     # dist 를 먼저 재생성한 뒤에 파일을 모은다 — 순서가 바뀌면 방금 빌드한 dist 가
     # 번들에 안 실린다.
     frontend_stamp = ensure_frontend_build()
@@ -347,8 +371,9 @@ This file embeds {len(files)} source files as gzip+base64 blobs. Data
 (data/, flow-data/, Fab/, DB/, Base/, wafer_maps/ and external
 FLOW_DATA_ROOT/FLOW_DB_ROOT — users.csv, groups, informs, admin_settings,
 tracker, splittable, meetings, calendar, messages, dbmap, S3 sync config, …)
-is NEVER bundled and NEVER overwritten — re-running setup.py on an existing
-install preserves ALL user data.
+is not bundled or overwritten. An explicitly built PRIVATE installer can carry
+the latest admin domain knowledge as an initial seed; existing revisions are
+always preserved. The seed is stored in data/install-seeds beside this installer.
 
 데이터 보존 정책 (요약):
   - data/ 트리 전체 (data/Fab, data/Base, data/DB, data/flow-data)
@@ -391,6 +416,7 @@ VERSION_META = {json.dumps(installer_meta, ensure_ascii=False)}
 # 이 번들의 frontend/dist 가 어느 소스에서 빌드됐는지. build_frontend() 가 서버에서
 # frontend/src 로 지문을 다시 계산해 비교한다 (_build_setup.ensure_frontend_build).
 FRONTEND_STAMP = {frontend_stamp!r}
+DOMAIN_KNOWLEDGE_PAYLOAD = {domain_knowledge_payload!r}
 _FE_STAMP_EXTRA = ('package.json', 'vite.config.js', 'vite.config.mjs',
                    'vite.config.ts', 'index.html')
 
@@ -1063,6 +1089,27 @@ def _ensure_critical_deps() -> None:
     _pip_install(missing, timeout=180)
 
 
+def _seed_domain_knowledge() -> None:
+    if not DOMAIN_KNOWLEDGE_PAYLOAD:
+        return
+    # These modules use only the standard library, before pip dependencies exist.
+    import importlib.util
+
+    def load(name, relative):
+        spec = importlib.util.spec_from_file_location(name, ROOT / relative)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    helper = load('flow_install_knowledge', 'backend/core/domain_knowledge_seed.py')
+    profile = load('flow_install_roots', 'backend/core/root_profile.py')
+    data_root = Path(os.environ.get('FLOW_DATA_ROOT') or profile.default_data_root())
+    document = json.loads(gzip.decompress(base64.b64decode(DOMAIN_KNOWLEDGE_PAYLOAD)))
+    installed = helper.install_seed(ROOT, document, data_root)
+    print('[seed] domain knowledge ' + ('installed' if installed else 'preserved'))
+    print('[seed] local seed: ' + str(ROOT / helper.SEED_RELATIVE_PATH))
+
+
 def _seed_semiconductor_flow_data() -> None:
     """Install default RCA seed knowledge only when the runtime copy is absent."""
     src = ROOT / 'backend' / 'core' / 'semiconductor_rca_seed_knowledge.json'
@@ -1239,7 +1286,7 @@ def _seed_default_agent_wiki_docs() -> None:
 # 풀어야 할 때는 `python setup.py extract --all`.
 #
 # scripts/ 는 제외하지 않는다 — preflight_internal.py(사내 반입 점검)와
-# worker_watchdog.py(개발서버 상주 프로세스)가 운영 절차에 들어 있다.
+# flow_server.py(감시기)·windows/*.bat 이 운영 절차에 들어 있다.
 _RUNTIME_SKIP_TOP = {'tests', 'docs'}
 _RUNTIME_SKIP_FILES = {'CLAUDE.md', 'AGENTS.md', '_build_setup.py', '.gitignore', '.gitattributes'}
 
@@ -1355,6 +1402,13 @@ def extract(argv: list = None) -> int:
         _verify_and_restore(snap)
     except Exception as e:
         print(f"[verify] WARN failed: {e}")
+    # Unlike optional legacy seeds, a requested knowledge installation must not
+    # report success when the database or local seed could not be written.
+    try:
+        _seed_domain_knowledge()
+    except Exception as e:
+        print(f"[seed] ERROR domain knowledge install failed: {e}", file=sys.stderr)
+        return 1
     try:
         _seed_semiconductor_flow_data()
     except Exception as e:
@@ -1409,6 +1463,7 @@ def install_deps() -> int:
     pkgs = [
         'fastapi', 'uvicorn[standard]', 'pandas', 'pyarrow', 'polars', 'numpy',
         'python-multipart', 'boto3', 'scikit-learn', 'scipy',
+        'cryptography', 'websockets',  # company login and encrypted manager contacts
         'openpyxl', 'xlsxwriter', 'xlrd',
         'matplotlib', 'python-pptx', 'python-dotenv',
         'pillow',   # TEG shot 그림에서 die 사각형 인식 (core/teg_shape.py)
@@ -1641,10 +1696,32 @@ if __name__ == '__main__':
     return header + files_block + footer
 
 
-def main():
-    out = build()
-    dst = ROOT / 'setup.py'
-    dst.write_text(out, encoding='utf-8')
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--include-domain-knowledge', nargs='?', const='auto', metavar='SQLITE',
+                        help='Include the latest saved domain knowledge in a PRIVATE local installer; optionally specify its SQLite path.')
+    parser.add_argument('--output', type=Path, help='Installer output path (private installers must be outside this public repository).')
+    args = parser.parse_args(argv)
+    dst = (args.output or ROOT / 'setup.py').resolve()
+    payload = ''
+    if args.include_domain_knowledge:
+        if not args.output or dst.is_relative_to(ROOT.resolve()):
+            parser.error('Knowledge contains private content: use --output outside the public repository, e.g. ../deliverables/flow-private/setup.py')
+        payload = _domain_knowledge_payload(args.include_domain_knowledge)
+        print('[build] PRIVATE installer: includes latest domain knowledge; do not publish it.')
+    out = build(payload)
+    compile(out, str(dst), 'exec')
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=dst.parent,
+                                         prefix=dst.name + '.', suffix='.tmp', delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(out)
+        temporary.replace(dst)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     print(f"wrote {dst} ({dst.stat().st_size:,} bytes)")
 
 

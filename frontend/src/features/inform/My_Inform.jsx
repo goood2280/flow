@@ -17,6 +17,7 @@ import SplitTableSnapshotView from "../../components/SplitTableSnapshotView";
 import RichBoardEditor, { RichBoardContent, richTextHasContent } from "../../components/RichBoardEditor";
 import { moduleColor } from "../../lib/moduleColors";
 import { columnSearchMatcher } from "../../lib/columnSearch";
+import { INFORM_WIZARD_OPEN_KEY, clearInformDraft, saveInformDraft, takeInformDraft } from "../../lib/informDraft";
 
 const API = "/api/informs";
 export const WIZARD_STEPS = ["lot_module", "splittable", "mail_preview"];
@@ -29,8 +30,7 @@ export const WIZARD_BACKEND_CALLS = [
   "POST /api/informs",
   "POST /api/informs/bulk-create",
 ];
-const WIZARD_DRAFT_KEY = "flow_inform_wizard_draft_v1";
-const WIZARD_OPEN_KEY = "flow_inform_open_wizard_v1";
+const WIZARD_OPEN_KEY = INFORM_WIZARD_OPEN_KEY;
 const LOT_CANDIDATE_LIMIT = 20000;
 const OK = statusPalette.ok;
 const WARN = statusPalette.warn;
@@ -1882,9 +1882,8 @@ export default function My_Inform({ user }) {
     // 보충한다. 신규 latest가 아직 없는 제품은 backend ML_TABLE catalog가 채운다.
     refreshWizardOptions();
     try {
-      const raw = localStorage.getItem(WIZARD_DRAFT_KEY);
-      if (raw) {
-        const draft = JSON.parse(raw);
+      const draft = takeInformDraft();
+      if (draft) {
         if (draft?.form) setForm({ ...defaultInformForm(), ...draft.form });
         if (Array.isArray(draft?.createImages)) setCreateImages(draft.createImages);
         if (typeof draft?.wizardStep === "number") {
@@ -1900,6 +1899,9 @@ export default function My_Inform({ user }) {
         if (Array.isArray(draft?.embedCustomCols)) setEmbedCustomCols(draft.embedCustomCols);
         if (draft?.wizardMailDraft) setWizardMailDraft(draft.wizardMailDraft);
         if (draft?.wizardMailMeta) setWizardMailMetaSynced(draft.wizardMailMeta);
+        if (draft?.embedOmitted) {
+          toast.warn("임시 저장본에는 크기 때문에 SplitTable 스냅샷이 빠져 있습니다. 2단계에서 다시 첨부하거나 SplitTable 에서 [Inform 스냅샷]을 다시 누르세요.", 8000);
+        }
       }
     } catch (_) {}
     setCreating(true);
@@ -2331,7 +2333,7 @@ export default function My_Inform({ user }) {
       setWizardMode("create");
       setReInformParent(null);
       setCreating(false); setMsg("");
-      try { localStorage.removeItem(WIZARD_DRAFT_KEY); } catch (_) {}
+      clearInformDraft();
       const created = results.find(r => r?.inform)?.inform;
       if (created?.id) {
         const resolvedMailMeta = mailMetaForSubmit;
@@ -2585,19 +2587,18 @@ export default function My_Inform({ user }) {
 
   useEffect(() => {
     if (!creating || wizardMode !== "create") return;
-    try {
-      localStorage.setItem(WIZARD_DRAFT_KEY, JSON.stringify({
-        wizardVersion: 2,
-        form,
-        createImages,
-        wizardStep,
-        wizardAttachMode,
-        wizardSelectedSetIds,
-        embedCustomCols,
-        wizardMailDraft,
-        wizardMailMeta,
-      }));
-    } catch (_) {}
+    // 큰 스냅샷은 한도 때문에 저장에서 빠질 수 있다(saveInformDraft 참고). 화면 상태는 그대로다.
+    saveInformDraft({
+      wizardVersion: 2,
+      form,
+      createImages,
+      wizardStep,
+      wizardAttachMode,
+      wizardSelectedSetIds,
+      embedCustomCols,
+      wizardMailDraft,
+      wizardMailMeta,
+    });
   }, [creating, wizardMode, form, createImages, wizardStep, wizardAttachMode, wizardSelectedSetIds, embedCustomCols, wizardMailDraft, wizardMailMeta]);
 
   useEffect(() => {

@@ -30,7 +30,9 @@ Endpoints:
   GET  /api/calendar/meetings                 # distinct meeting refs (for 필터)
 """
 import datetime
+import threading
 import uuid
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -370,6 +372,174 @@ def _safe_date(s: str) -> str:
         return ""
 
 
+# ── 제품 위키 → 변경점 관리 ─────────────────────────────────────
+# 제품 위키에 등록한 기록(Inline 변경점·이슈 등)은 "제품 위키" 출처 이벤트로
+# 달력에 함께 올라간다. 원본은 위키이므로 달력에서는 읽기 전용이고, 위키의
+# 저장·삭제가 그대로 반영된다. 제품별 위키 revision 을 표식 파일에 기록해 두고
+# 달라진 제품만 다시 맞춘다 — 위키 저장 직후 훅이 실패해도 다음 달력 조회가 맞춘다.
+WIKI_SOURCE_TYPE = "product_wiki"
+WIKI_EVENT_CATEGORY = "제품 위키"
+WIKI_SYNC_MARKER = "product_wiki_sync.json"
+_WIKI_EVENT_STATUS = {"open": "pending", "investigating": "in_progress", "validated": "done", "closed": "done"}
+_WIKI_BODY_LIMIT = 600
+_wiki_sync_lock = threading.Lock()
+
+
+def _wiki_event_date(entry: dict) -> str:
+    occurred = _safe_date(entry.get("occurred_on") or "")
+    if occurred:
+        return occurred
+    created = str(entry.get("created_at") or "")
+    try:
+        # 위키 시각은 UTC — 달력 날짜는 서버 현지 날짜로 둔다.
+        return datetime.datetime.fromisoformat(created).astimezone().date().isoformat()
+    except Exception:
+        return _safe_date(created) or datetime.date.today().isoformat()
+
+
+def _wiki_event_fields(product: str, entry: dict) -> dict:
+    from core import product_wiki as _wiki
+    try:
+        from core.product_wiki_knowledge import plain_text as _plain
+    except Exception:  # pragma: no cover - optional helper
+        def _plain(value):
+            return str(value or "")
+    status = str(entry.get("status") or "open")
+    summary = str(entry.get("summary") or "").strip() or _plain(entry.get("body") or "").strip()
+    summary = " ".join(summary.split())
+    if len(summary) > _WIKI_BODY_LIMIT:
+        summary = summary[:_WIKI_BODY_LIMIT - 1] + "…"
+    head = f"제품 위키 · {product} · {_wiki.STATUS_LABELS.get(status, status)}"
+    return {
+        "title": f"[{product} 위키] {str(entry.get('title') or '').strip()}"[:120],
+        "body": f"{head}\n{summary}" if summary else head,
+        "date": _wiki_event_date(entry),
+        "end_date": "",
+        "category": WIKI_EVENT_CATEGORY,
+        "status": _WIKI_EVENT_STATUS.get(status, "pending"),
+    }
+
+
+def _wiki_ref(product: str, entry: dict) -> dict:
+    entry_id = str(entry.get("id") or "")
+    return {
+        "product": product,
+        "product_key": product.casefold(),
+        "entry_id": entry_id,
+        "anchor": f"entry-{entry_id[:8]}",
+        "author": str(entry.get("author") or ""),
+    }
+
+
+def sync_product_wiki_events(products: Optional[List[str]] = None, *, cal_dir: Optional[Path] = None) -> dict:
+    """위키 기록을 달력 이벤트로 맞춘다.
+
+    products 를 주면 그 제품만 무조건 다시 맞추고, 비우면 위키 revision 이
+    표식과 다른 제품만 맞춘다(달력 조회 때 부르는 싼 경로).
+    """
+    from core import product_wiki as _wiki
+    folder = Path(cal_dir) if cal_dir else CAL_DIR
+    events_file = folder / "events.json"
+    marker_file = folder / WIKI_SYNC_MARKER
+    with _wiki_sync_lock:
+        with _wiki.database() as db:
+            revisions = {str(r[0]): (str(r[1]), int(r[2] or 0))
+                         for r in db.execute("SELECT key, name, revision FROM products")}
+        marker = load_json(marker_file, {})
+        if not isinstance(marker, dict):
+            marker = {}
+        if products:
+            targets = {_wiki.product_name(p).casefold() for p in products if str(p or "").strip()}
+        else:
+            targets = {k for k, (_, rev) in revisions.items() if marker.get(k) != rev}
+            targets |= {k for k in marker if k not in revisions}
+        if not targets:
+            return {"created": 0, "updated": 0, "removed": 0}
+
+        expected: dict = {}
+        for key in targets:
+            if key not in revisions:
+                continue
+            doc = _wiki.read_entries(revisions[key][0])
+            for entry in doc.get("entries") or []:
+                if entry.get("id"):
+                    expected[(key, str(entry["id"]))] = (doc["product"], entry)
+
+        raw = load_json(events_file, [])
+        items = [_upgrade_event(x) for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
+        now = _now_iso()
+        created = updated = removed = 0
+        seen: set = set()
+        kept = []
+        for e in items:
+            ref = e.get("wiki_ref") or {}
+            key = ref.get("product_key")
+            if e.get("source_type") != WIKI_SOURCE_TYPE or key not in targets:
+                kept.append(e)
+                continue
+            pair = (key, str(ref.get("entry_id") or ""))
+            if pair not in expected or pair in seen:
+                removed += 1
+                continue
+            seen.add(pair)
+            product, entry = expected[pair]
+            before = {}
+            for fld, val in _wiki_event_fields(product, entry).items():
+                if e.get(fld) != val:
+                    before[fld] = e.get(fld)
+                    e[fld] = val
+            e["wiki_ref"] = _wiki_ref(product, entry)
+            e["author"] = e["wiki_ref"]["author"] or e.get("author") or ""
+            if before:
+                e["version"] = int(e.get("version") or 1) + 1
+                e["updated_at"] = now
+                hist = e.get("history") or []
+                hist.append({"ts": now, "actor": str(entry.get("updated_by") or ""),
+                             "action": "wiki_sync_update", "before": before})
+                e["history"] = hist[-HIST_CAP:]
+                updated += 1
+            kept.append(e)
+        for pair, (product, entry) in expected.items():
+            if pair in seen:
+                continue
+            ref = _wiki_ref(product, entry)
+            kept.append({
+                "id": _new_id(),
+                "version": 1,
+                **_wiki_event_fields(product, entry),
+                "author": ref["author"],
+                "source_type": WIKI_SOURCE_TYPE,
+                "meeting_ref": None,
+                "wiki_ref": ref,
+                "group_ids": [],
+                "created_at": now,
+                "updated_at": now,
+                "history": [{"ts": now, "actor": ref["author"], "action": "wiki_sync_create", "before": {}}],
+            })
+            created += 1
+        if created or updated or removed:
+            save_json(events_file, kept, indent=2)
+        for key in targets:
+            if key in revisions:
+                marker[key] = revisions[key][1]
+            else:
+                marker.pop(key, None)
+        save_json(marker_file, marker, indent=2)
+        return {"created": created, "updated": updated, "removed": removed}
+
+
+def _sync_wiki_quietly() -> None:
+    try:
+        sync_product_wiki_events()
+    except Exception:
+        pass
+
+
+def _reject_wiki_event(event: dict) -> None:
+    if (event or {}).get("source_type") == WIKI_SOURCE_TYPE:
+        raise HTTPException(409, "제품 위키에서 올라온 변경점입니다. 제품 위키에서 수정·삭제하세요.")
+
+
 def _load_cats() -> list:
     data = load_json(CATS_FILE, None)
     if not isinstance(data, list) or not data:
@@ -430,6 +600,7 @@ def list_events(request: Request, month: Optional[str] = Query(None), all: bool 
     me = current_user(request)
     role = me.get("role", "user")
     my_gids = _my_group_ids(me["username"], role)
+    _sync_wiki_quietly()
     items = _load_events()
     items = [x for x in items if _event_visible(x, me["username"], role, my_gids)]
     if all or not month:
@@ -485,7 +656,15 @@ def list_meeting_refs():
         elif st == "meeting_action":
             agg[mid]["actions"] += 1
     out = sorted(agg.values(), key=lambda x: (x["meeting_title"] or "", x["meeting_id"]))
-    return {"meetings": out}
+    wiki: dict = {}
+    for e in items:
+        if e.get("source_type") != WIKI_SOURCE_TYPE:
+            continue
+        product = (e.get("wiki_ref") or {}).get("product") or ""
+        if product:
+            wiki[product] = wiki.get(product, 0) + 1
+    return {"meetings": out,
+            "wiki_products": [{"product": p, "count": n} for p, n in sorted(wiki.items())]}
 
 
 @router.get("/events/search")
@@ -558,6 +737,7 @@ def update_event(req: EventUpdate, request: Request):
     if idx < 0:
         raise HTTPException(404)
     cur = items[idx]
+    _reject_wiki_event(cur)
     if not is_page_manager(me, "calendar") and cur.get("author") != me["username"]:
         raise HTTPException(403, "Only author or admin can edit")
     server_v = int(cur.get("version", 1))
@@ -629,6 +809,7 @@ def set_event_status(req: EventStatusReq, request: Request):
     if idx < 0:
         raise HTTPException(404)
     cur = items[idx]
+    _reject_wiki_event(cur)
     # Anyone can update status (progress tracking is collaborative).
     if cur.get("status") == st:
         return {"ok": True, "event": cur, "noop": True}
@@ -661,6 +842,7 @@ def delete_event(request: Request, id: str = Query(...)):
     target = next((x for x in items if x.get("id") == id), None)
     if not target:
         raise HTTPException(404)
+    _reject_wiki_event(target)
     if not is_page_manager(me, "calendar") and target.get("author") != me["username"]:
         raise HTTPException(403, "Only author or admin can delete")
     items = [x for x in items if x.get("id") != id]

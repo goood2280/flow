@@ -6,7 +6,7 @@ import time
 from typing import Iterable
 
 from fastapi import Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from core.runtime_limits import (
@@ -132,6 +132,8 @@ DEFAULT_LIGHT_PATHS = (
     "/api/llm/flowi/workflows",
 )
 
+HOME_AGENT_TURN_PATH = "/api/home-agent/orchestrate"
+
 DEFAULT_FLOWI_CHAT_PATHS = (
     "/api/llm/flowi/chat",
 )
@@ -194,7 +196,17 @@ def _auto_essential_concurrency() -> int:
     while giving enough slots to handle a small burst of UI reads:
     cores  1→1  2→1  3→2  4→2  5→3  6→3  7→4  8→4"""
     cores = int(effective_cpu_count())
+    if _is_large_profile():
+        return max(1, min(8, cores))
     return max(1, min(4, (cores + 1) // 2))
+
+
+def _is_large_profile() -> bool:
+    try:
+        from core.runtime_limits import is_large_profile
+        return is_large_profile()
+    except Exception:
+        return False
 
 
 def _self_gated_paths() -> tuple[str, ...]:
@@ -220,57 +232,6 @@ def _flowi_chat_paths() -> tuple[str, ...]:
     raw = os.environ.get("FLOW_FLOWI_CHAT_PATHS", "")
     extra = tuple(p.strip() for p in raw.split(",") if p.strip())
     return DEFAULT_FLOWI_CHAT_PATHS + extra
-
-
-async def _try_upstream_proxy(request: Request) -> Response | None:
-    """worker 역할이면 운영 소유 read/단일-AI 실행을 운영서버로 위임.
-
-    운영의 예열된 RAM 캐시를 활용해 개발서버가 자체 캐시 없이도 빠르게
-    응답한다 (cache_budget worker 축소 계수와 한 쌍). 실패/비대상이면 None —
-    SplitTable GET은 기존 로컬 경로를 그대로 타고, 운영 전용 AI POST는 호출측이
-    503을 반환한다. 블로킹 urllib 호출은 스레드로
-    내려 이벤트 루프를 막지 않는다."""
-    try:
-        from core import upstream_proxy
-
-        if not upstream_proxy.should_proxy(
-            request.url.path, request.method, request.headers
-        ):
-            return None
-        body = await request.body() if request.method.upper() == "POST" else b""
-        result = await asyncio.to_thread(
-            upstream_proxy.forward,
-            request.url.path,
-            request.url.query,
-            request.headers.get("x-session-token", ""),
-            request.method,
-            body,
-            request.headers.get("content-type", ""),
-        )
-    except Exception:
-        return None
-    if result is None:
-        return None
-    status_code, body, content_type = result
-    return Response(
-        content=body,
-        status_code=status_code,
-        media_type=content_type,
-        headers={"X-Flow-Upstream-Proxy": "hit"},
-    )
-
-
-def _requires_operating_server(request: Request) -> bool:
-    try:
-        from core import upstream_proxy
-        return upstream_proxy.requires_operating(
-            request.url.path, request.method, request.headers)
-    except Exception:
-        return False
-
-
-# Compatibility name retained for tests/imports written before AI POST proxying.
-_split_requires_operating = _requires_operating_server
 
 
 def _trigger_emergency_evict(reason: str) -> None:
@@ -307,11 +268,13 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         # Metadata/list requests stay light; heavy scans are serialised on tiny
         # hosts but get 2 slots once the host has ≥5 cores.
         # cores  ≤4 → 1  5-6 → 2  7+ → 3.  Override with env var if needed.
-        default_concurrency = (
-            max(1, min(3, (int(effective_cpu_count()) - 1) // 2))
-            if is_small_profile()
-            else 3
-        )
+        if is_small_profile():
+            default_concurrency = max(1, min(3, (int(effective_cpu_count()) - 1) // 2))
+        elif _is_large_profile():
+            # 전용 대형 서버: 코어 절반만큼 무거운 작업을 동시에 받는다(8코어 → 4).
+            default_concurrency = max(3, min(8, int(effective_cpu_count()) // 2))
+        else:
+            default_concurrency = 3
         self._concurrency = _int_env("FLOW_HEAVY_REQUEST_CONCURRENCY", default_concurrency, 1, 8)
         self._queue_timeout = _float_env("FLOW_HEAVY_REQUEST_QUEUE_TIMEOUT_SEC", 120.0, 1.0, 600.0)
         self._flowi_concurrency = _int_env("FLOW_FLOWI_CHAT_CONCURRENCY", 1, 1, 4)
@@ -457,27 +420,49 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
             # 백그라운드 작업(캐시 빌드, S3 주기 동기화)이 사용자 요청에 양보하도록
             # 사용자 활동 시각을 남긴다.
             _request_priority.note_api_request(path)
-            # 개발 워커에서 브라우저로 직접 실행한 AI SQL·unit AI·차트
-            # Assistant와 SplitTable read는 먼저 운영 API의 예열 캐시를 시도한다.
-            # SplitTable은 연결 실패 시 로컬 검색하고, AI POST만 운영 전용으로 유지한다.
-            proxied = await _try_upstream_proxy(request)
-            if proxied is not None:
-                return proxied
-            operating_required = _requires_operating_server(request)
-            if operating_required:
-                return JSONResponse(
-                    {
-                        "detail": "홈 AI와 단일 AI 실행은 운영서버에서 처리합니다. 개발서버의 FLOW_API_SERVER_URL 설정과 운영서버 연결을 확인해 주세요.",
-                        "error_code": "operating_server_required",
-                    },
-                    status_code=503,
-                    headers={"Retry-After": "3"},
-                )
         if path.startswith("/api/") and self._is_light_request(request):
             self._stamp_lane_wait(request, 0.0, "light")
             return await call_next(request)
         if not path.startswith("/api/"):
             return await call_next(request)
+        # 스플릿테이블 외 탭 요청이 진행 중인 동안 스플릿 cold 계산 레인이 1슬롯으로
+        # 줄어든다 — 공용 Polars 풀을 스플릿이 독점해 다른 탭이 밀리지 않게 한다.
+        other_request = _request_priority.begin_other_request(path)
+        try:
+            return await self._dispatch_nonlight(request, call_next, path)
+        finally:
+            _request_priority.end_other_request(other_request)
+
+    async def _dispatch_nonlight(self, request: Request, call_next, path: str):
+        # 보도블럭(sysmon 합성 부하)이 같은 프로세스에 RAM 을 잡고 있으면 사용자
+        # 작업 전에 먼저 푼다. 아래 essential 레인은 메모리 가드를 건너뛰므로,
+        # 풀지 않으면 스캔 한 번에 컨테이너 한도를 넘어 OOM kill 로 서버가 죽는다.
+        # 보도블럭이 없을 때(대부분)는 락 없는 확인만 하고, 있을 때만 해제(대용량
+        # 메모리 반환 포함)를 스레드로 내려 이벤트 루프를 막지 않는다.
+        if not (path.startswith("/api/monitor") or path.startswith("/api/system")):
+            try:
+                from core.sysmon import paver_holding, yield_paver_to_user
+
+                if paver_holding():
+                    await asyncio.to_thread(yield_paver_to_user, f"사용자 요청 {path}")
+            except Exception:
+                pass
+        # 홈 에이전트 턴은 이제 운영 프로세스에서 바로 실행된다(워커 큐 대기 제거).
+        # 차트·원본 조회 턴이 메모리가 이미 한도 근처일 때 시작되면 OOM kill 로
+        # 서버 전체가 꺼질 수 있으므로, 대기열 없이 메모리 검사만 건다 — 높으면
+        # 캐시 긴급 축출을 요청하고 잠시 후 재시도하게 한다.
+        if path == HOME_AGENT_TURN_PATH and request.method.upper() == "POST":
+            if await self._memory_high_after_delay():
+                _trigger_emergency_evict("home_agent_memory_guard")
+                return JSONResponse(
+                    {
+                        "detail": "서버 메모리가 부족해 홈 AI 요청을 잠시 보류했습니다. 캐시를 정리하는 중이니 잠시 후 다시 시도해 주세요.",
+                        "error_code": "resource_memory_guard",
+                        **process_memory_snapshot(),
+                    },
+                    status_code=503,
+                    headers={"Retry-After": "15"},
+                )
         # 스플릿테이블 불러오기·파일 보기 등 기본 UI 작업은 메모리 보호 대상에서
         # 제외하고, 예약된 전용 레인으로 항상 처리한다.
         if self._is_essential_request(request):

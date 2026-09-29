@@ -179,6 +179,25 @@ def _chart_builder_inline_assist(root: str, product: str) -> dict:
     }
 
 
+def column_name_matcher(query: str):
+    """Column search — SplitTable CUSTOM 목록(frontend lib/columnSearch.js)과 같은 규칙.
+    쉼표(, ，)로 나눈 검색어는 OR, `*`·`%` 는 아무 글자 0개 이상, 대소문자 무시·부분일치.
+    `_` 는 컬럼 이름에 흔해 와일드카드로 보지 않는다."""
+    patterns = []
+    for term in re.split(r"[,，]", str(query or "")):
+        term = term.strip().casefold()
+        if not term:
+            continue
+        if "*" in term or "%" in term:
+            rx = re.compile(".*".join(re.escape(part) for part in re.split(r"[*%]+", term)))
+            patterns.append(lambda name, rx=rx: bool(rx.search(name)))
+        else:
+            patterns.append(lambda name, needle=term: needle in name)
+    if not patterns:
+        return lambda name: True
+    return lambda name: any(p(str(name).casefold()) for p in patterns)
+
+
 @router.get("/columns/search")
 def search_columns(request: Request, root: str = Query(""), product: str = Query(""),
                    file: str = Query(""), q: str = Query(""),
@@ -212,8 +231,8 @@ def search_columns(request: Request, root: str = Query(""), product: str = Query
     } if assist else {}
     completion_schema = {**schema, **virtual_schema}
     columns = list(completion_schema.keys())
-    needle = str(q or "").strip().casefold()
-    matches = [c for c in columns if not needle or needle in c.casefold()]
+    matcher = column_name_matcher(q)
+    matches = [c for c in columns if matcher(c)]
     try:
         limit = int(limit)
     except Exception:
@@ -2343,7 +2362,7 @@ def _chart_builder_assistant_plan(req: ChartBuilderAssistantReq) -> dict:
 def chart_builder_assistant(req: ChartBuilderAssistantReq, request: Request):
     """Apply a validated, minimal natural-language patch on the operating API."""
     me = _require_filebrowser_user(request)
-    from core.auth import is_page_manager
-    if not is_page_manager(me, "chartbuilder"):
-        raise HTTPException(403, "LLM execution is admin-only during POC")
+    from core.auth import has_page_access
+    if not has_page_access(me, "chartbuilder"):
+        raise HTTPException(403, "ChartBuilder 권한이 있는 사용자만 AI를 쓸 수 있습니다.")
     return _chart_builder_assistant_plan(req)

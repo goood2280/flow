@@ -956,14 +956,7 @@ def scan_phase(only_issue_id: str = "", full: bool = False) -> dict:
 
 
 def _notify_issue(iss: dict, matched: list[dict], cfg: dict, *, actor: str, summary: dict) -> None:
-    """신규 측정 감지 이슈 1건에 대한 bell + (설정 시) 메일 발송 — api 측 전용."""
-    try:
-        from core.worker_dispatch import server_role
-        if server_role() == "worker":
-            logger.info("skip ET Tracker notification/mail on worker role")
-            return
-    except Exception:
-        pass
+    """신규 측정 감지 이슈 1건에 대한 bell + (설정 시) 메일 발송."""
     base_targets = set()
     if iss.get("username"):
         base_targets.add(iss["username"])
@@ -1185,16 +1178,8 @@ def _scheduler_loop():
             if not is_owner():
                 time.sleep(5)
                 continue
-            # v9.5.14: 스케줄 트리거는 양산(api)·standalone 만 — worker 역할은
-            #   worker_dispatch 큐로 스캔 phase 만 위임받아 실행한다. 역할은
-            #   재시작 없이 바뀔 수 있으므로 tick 마다 확인.
-            try:
-                from core.worker_dispatch import external_services_enabled
-                trigger_allowed = external_services_enabled()
-            except Exception:
-                trigger_allowed = True
             cfg = et_tracker_config()
-            if trigger_allowed and cfg["enabled"] and cfg["scan_times"]:
+            if cfg["enabled"] and cfg["scan_times"]:
                 now = dt.datetime.now()
                 due = _tick_due_slots(now, cfg)
                 if due:
@@ -1212,13 +1197,6 @@ def start_scheduler() -> bool:
     if os.environ.get("FLOW_DISABLE_ET_TRACKER_SCHED") == "1":
         logger.info("et tracker scheduler disabled via FLOW_DISABLE_ET_TRACKER_SCHED=1")
         return False
-    try:
-        from core.worker_dispatch import server_role
-        if server_role() == "worker":
-            logger.info("et tracker scheduler not started on worker role (scan jobs arrive via worker_dispatch)")
-            return False
-    except Exception:
-        pass
     t = threading.Thread(target=_scheduler_loop, name="et-tracker-scheduler", daemon=True)
     t.start()
     _scheduler_thread = t

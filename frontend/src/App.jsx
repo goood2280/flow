@@ -127,10 +127,12 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
   );
 }
 
-function NavGroup({ group, activeKey, onNavigate }) {
+function NavGroup({ group, activeKey, activeSection, onNavigate }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  const activeItem = group.items.find(t => t.key === activeKey);
+  // 관리자처럼 한 페이지를 구역(section)별 항목으로 펼친 경우 현재 구역 항목만 활성으로 본다.
+  const isActive = t => t.key === activeKey && (!t.section || t.section === (activeSection || group.items.find(i => i.key === t.key)?.section));
+  const activeItem = group.items.find(isActive);
   const active = !!activeItem;
   const direct = group.direct && group.items.length === 1;
 
@@ -170,10 +172,11 @@ function NavGroup({ group, activeKey, onNavigate }) {
         <div className="flow-nav-menu">
           {group.items.map(item => (
             <button
-              key={item.key}
+              key={item.navId || item.key}
               type="button"
-              className={"flow-nav-menu-item" + (item.key === activeKey ? " is-active" : "")}
-              onClick={() => { setOpen(false); onNavigate(item.key); }}
+              title={item.hint || undefined}
+              className={"flow-nav-menu-item" + (isActive(item) ? " is-active" : "")}
+              onClick={() => { setOpen(false); onNavigate(item.key, item.search || ""); }}
               onMouseEnter={() => preloadPage(item.key)}
               onFocus={() => preloadPage(item.key)}
             >
@@ -626,6 +629,7 @@ export default function App() {
     handleLogin,
     handleLogout,
     nav,
+    adminSection,
     refreshNotifications,
   } = useFlowShell();
 
@@ -634,6 +638,7 @@ export default function App() {
 
   const pageDefinition = PAGE_BY_KEY[tab];
   const navGroups = buildNavGroups(visibleTabs);
+  const activeSection = tab === "admin" ? adminSection : "";
 
   return (
     <div className="flow-app">
@@ -643,7 +648,7 @@ export default function App() {
         <div className="flow-nav-separator" />
         <div className="flow-nav-groups">
           {navGroups.map(group => (
-            <NavGroup key={group.id} group={group} activeKey={tab} onNavigate={nav} />
+            <NavGroup key={group.id} group={group} activeKey={tab} activeSection={activeSection} onNavigate={nav} />
           ))}
         </div>
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:10,flexShrink:0}}>

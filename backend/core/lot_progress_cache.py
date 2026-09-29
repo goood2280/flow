@@ -1974,13 +1974,11 @@ def cache_status() -> dict:
 
 
 def _refresh_with_offload() -> None:
-    """주기 풀스캔 1회 — 낡았을 때만 워커(개발서버) 오프로드, 아니면 no-op.
+    """주기 풀스캔 1회 — 낡았을 때만 FAB parquet 을 다시 훑는다.
 
-    신선하면 스캔 자체를 건너뛴다(불필요한 워커 큐잉 방지). 낡았으면 FAB
-    parquet 풀스캔을 워커로 위임하고, 워커 다운/과부하/타임아웃이면
-    run_heavy 가 로컬 폴백한다 — 산출물은 공유 캐시 JSON 이라 어느 서버가
-    빌드해도 동일하게 읽힌다. 원격 성공 시 공유 파일을 로컬 메모리로
-    재적재해 이 서버의 소비자도 즉시 fresh 상태를 본다."""
+    신선하면 스캔 자체를 건너뛴다. 낡았으면 사용자 요청이 조용해진 뒤
+    (heavy_jobs idle lane, 조회 전제 캐시라 짧은 유예) 메모리 admission 을 거쳐
+    이 서버에서 다시 만든다."""
     max_age = lot_progress_cache_refresh_seconds()
     fresh = read_lot_progress_cache(max_age, allow_stale=False)
     if _safe_text(fresh.get("generated_at")):
@@ -1990,33 +1988,18 @@ def _refresh_with_offload() -> None:
         state = load_lot_progress_cache(max_age_seconds=max_age)
         return {"ok": bool(state.get("generated_at")), "count": int(state.get("count") or 0)}
 
-    from core import worker_dispatch as _wd
-    res = _wd.run_heavy(
-        "lot_progress_cache_refresh",
-        {"max_age_seconds": int(max_age)},
+    from core import heavy_jobs
+    heavy_jobs.run_heavy(
+        "splittable_lot_progress_cache_refresh",
         _local_refresh,
         label="lot_progress_refresh",
-        local_fallback=False,
-        durable=True,
-        priority="maintenance",
-        dedupe_key="lot_progress_refresh",
-        timeout_sec=6 * 3600.0,
+        idle_only=True,
     )
-    if (res or {}).get("ok"):
-        # 워커가 재빌드한 공유 파일 → 이 프로세스 _CACHE_STATE 로 적재.
-        read_lot_progress_cache(max_age, allow_stale=True)
 
 
 def _scheduler_loop() -> None:
     while not _CACHE_STOP.is_set():
         try:
-            # worker(개발서버) 역할은 공유 lease 를 잡아 운영 스캔을 밀어내지
-            # 않도록 주기 풀스캔을 건너뛴다. 역할은 재시작 없이 바뀔 수 있으므로
-            # 매 반복 확인한다 (s3_ingest._scheduler_loop 와 동일 패턴).
-            from core import worker_dispatch as _wd
-            if not _wd.external_services_enabled():
-                _CACHE_STOP.wait(30)
-                continue
             _refresh_with_offload()
         except Exception as exc:
             logger.warning("LOT progress cache refresh failed: %s", exc)

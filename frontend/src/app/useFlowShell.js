@@ -188,7 +188,9 @@ export function useFlowShell() {
     };
     const onPopState = () => {
       const next = tabFromPath();
-      if (next) openTab(next, window.location.search || "", false);
+      if (!next) return;
+      openTab(next, window.location.search || "", false);
+      window.dispatchEvent(new CustomEvent("flow:location", { detail: { tab: next, search: window.location.search || "" } }));
     };
     window.addEventListener("flow:navigate", onNavigate);
     window.addEventListener("popstate", onPopState);
@@ -260,10 +262,20 @@ export function useFlowShell() {
       if (window.location.pathname + window.location.search !== nextUrl) {
         window.history.pushState({ tab: tabKey }, "", nextUrl);
       }
+      // 이미 열린 페이지가 새 query(`/admin?section=system` 등)를 따라가게 알린다.
+      window.dispatchEvent(new CustomEvent("flow:location", { detail: { tab: tabKey, search: search || "" } }));
       if (user) logActivity(user.username, "nav:" + tabKey);
     },
     [canAccess, user],
   );
+
+  // 관리자 콘솔이 지금 보여 주는 구역(ops/system/agent) — 상단 메뉴 활성 표시용.
+  const [adminSection, setAdminSection] = useState("");
+  useEffect(() => {
+    const onSection = (event) => setAdminSection(String(event.detail?.section || ""));
+    window.addEventListener("flow:admin-section", onSection);
+    return () => window.removeEventListener("flow:admin-section", onSection);
+  }, []);
 
   const handleLogin = useCallback((nextUser) => {
     setUser(nextUser);
@@ -287,6 +299,7 @@ export function useFlowShell() {
     handleLogin,
     handleLogout,
     nav,
+    adminSection,
     refreshNotifications,
   };
 }

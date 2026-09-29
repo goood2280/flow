@@ -1001,8 +1001,9 @@ def parse_template_code(req: TemplateCodeReq, user=Depends(current_user)):
 @router.post("/assistant")
 def template_assistant(req: TemplateAssistantReq, user=Depends(current_user)):
     """Let the configured company LLM create/edit full Template code, then validate it."""
-    if not is_page_manager(user, "templatereport"):
-        raise HTTPException(403, "LLM execution is admin-only during POC")
+    from core.auth import has_page_access
+    if not has_page_access(user, "templatereport"):
+        raise HTTPException(403, "Template Report 권한이 있는 사용자만 AI를 쓸 수 있습니다.")
     instruction = _clean_multiline(req.instruction, 3000)
     if not instruction:
         raise HTTPException(400, "AI에게 만들거나 수정할 Template 내용을 입력해 주세요.")

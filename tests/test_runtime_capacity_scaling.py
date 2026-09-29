@@ -19,6 +19,11 @@ def _mock_host(monkeypatch, runtime_limits, cores: int, memory_gb: float) -> Non
     monkeypatch.setenv("FLOW_SYSTEM_MEMORY_TOTAL_GB", str(memory_gb))
     monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_FRACTION", raising=False)
     monkeypatch.delenv("FLOW_DEV_PROCESS_MEMORY_LIMIT_GB", raising=False)
+    # 이 파일은 공유 호스트(small) 비례 산출을 검증한다. 64GB·8코어 이상 자동 large 판정과
+    # 앱 기동이 남긴 CPU 예산 env 에 끌려가지 않게 고정한다.
+    monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
+    monkeypatch.delenv("FLOW_CPU_BUDGET_CORES", raising=False)
+    monkeypatch.delenv("FLOW_PROCESS_MEMORY_LIMIT_GB", raising=False)
 
 
 @pytest.mark.parametrize(
@@ -78,6 +83,8 @@ def test_effective_cpu_count_respects_affinity_quota_and_operator_ceiling(monkey
     monkeypatch.setattr(runtime_limits.os, "sched_getaffinity", lambda _pid: set(range(8)), raising=False)
     monkeypatch.setattr(runtime_limits, "_cgroup_cpu_quota_cores", lambda: 6.0)
     monkeypatch.setenv("FLOW_SYSTEM_CPU_CORES", "4")
+    monkeypatch.setenv("FLOW_RESOURCE_PROFILE", "small")
+    monkeypatch.delenv("FLOW_CPU_BUDGET_CORES", raising=False)
 
     assert runtime_limits.effective_cpu_count() == 4
     assert runtime_limits.cpu_budget_cores() == 3
@@ -141,7 +148,7 @@ def test_query_workers_save_zero_persists_auto_value(monkeypatch):
     assert result["desired"] == 4
 
 
-@pytest.mark.parametrize(("cores", "expected"), [(5, "4"), (12, "11")])
+@pytest.mark.parametrize(("cores", "expected"), [(5, "4"), (12, "9")])
 def test_polars_threads_auto_scales_and_explicit_value_is_preserved(monkeypatch, tmp_path, cores, expected):
     from core import runtime_limits
     from core.paths import PATHS
@@ -160,32 +167,12 @@ def test_polars_threads_auto_scales_and_explicit_value_is_preserved(monkeypatch,
     assert runtime_limits._polars_threads_for_role() == min(4, int(expected))
 
 
-@pytest.mark.parametrize(("cores", "expected"), [(5, 2), (12, 2), (3, 1)])
-def test_polars_threads_worker_uses_spare_dev_cores(monkeypatch, tmp_path, cores, expected):
-    from core import runtime_limits
-    from core.paths import PATHS
-
-    from core import worker_dispatch
-
-    monkeypatch.setattr(PATHS, "data_root", tmp_path)
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "worker")
-    monkeypatch.delenv("FLOW_WORKER_POLARS_THREADS", raising=False)
-    monkeypatch.setattr(runtime_limits, "effective_cpu_count", lambda: float(cores))
-    assert runtime_limits._polars_threads_for_role() == expected
-
-    monkeypatch.setenv("FLOW_WORKER_POLARS_THREADS", "3")
-    assert runtime_limits._polars_threads_for_role() == min(3, cores)
-
-
-def test_polars_threads_roleless_dev_api_is_fixed_one(monkeypatch, tmp_path):
+def test_polars_threads_nonproduction_dev_pc_is_fixed_one(monkeypatch, tmp_path):
     from core import runtime_limits
     from core.paths import PATHS
 
     monkeypatch.setattr(PATHS, "data_root", tmp_path)
-    from core import worker_dispatch
-
     monkeypatch.setattr(PATHS, "is_prod", False)
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "api")
     monkeypatch.setattr(runtime_limits, "effective_cpu_count", lambda: 12.0)
     assert runtime_limits._polars_threads_for_role() == 1
 
@@ -213,3 +200,28 @@ def test_view_cache_auto_budget_grows_with_64_gib_host(monkeypatch):
     assert splittable._view_cache_auto_max_mb() == pytest.approx(64 * 1024 * 0.15)
     assert splittable._view_cache_max_bytes() == cap
     cache_budget.invalidate()
+
+
+def test_splittable_cold_lane_defaults_to_40pct_and_yields_to_other_tabs(monkeypatch):
+    """스플릿 cold 계산은 평상시 코어 40%, 다른 탭 요청이 돌면 1슬롯으로 양보한다."""
+    from core import request_priority
+    from routers import splittable as st
+
+    monkeypatch.delenv("FLOW_SPLITTABLE_VIEW_COLD_CONCURRENCY", raising=False)
+    monkeypatch.setattr(st._ml_table_lookup, "_root_ram_cache_use_dev", lambda: False)
+    monkeypatch.setattr("core.runtime_limits.effective_cpu_count", lambda: 5.0)
+    monkeypatch.setattr("core.cache_settings.get_int_role", lambda *a, **k: None)
+    assert st._view_cold_lane_default() == 2
+    assert st._view_cold_lane_concurrency() == 2
+
+    token = request_priority.begin_other_request("/api/filebrowser/view")
+    try:
+        assert request_priority.other_requests_active() == 1
+        assert st._view_cold_lane_concurrency() == 1
+        assert st._view_cold_lane_configured() == 2
+    finally:
+        request_priority.end_other_request(token)
+    assert st._view_cold_lane_concurrency() == 2
+    # 스플릿 자신의 요청과 폴링은 "다른 탭"으로 세지 않는다.
+    assert request_priority.begin_other_request("/api/splittable/view") is False
+    assert request_priority.begin_other_request("/api/monitor/system") is False

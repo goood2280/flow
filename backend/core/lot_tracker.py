@@ -3,16 +3,20 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import logging
 import re
 from collections import Counter
+from pathlib import Path
 
 import polars as pl
 
-from core.long_pivot import scan_long_fab
+from core.long_pivot import FAB_ROOT, normalize_fab_history, scan_long_fab
 from core.lot_progress_cache import lookup_lot_progress
 from core.lot_wip import describe_step
 from core.paths import PATHS
 
+logger = logging.getLogger("flow.lot_tracker")
+_LEGACY_FAB_ROOT = "1.RAWDATA_DB"
 _STEP_NUMBER = re.compile(r"^(?:FAB[_\s-]*)?(\d{1,3})(?:\.(\d+))?(?:\D|$)", re.I)
 _DAY = 86400.0
 
@@ -286,11 +290,13 @@ def predict(lot_points: list[dict], ref_points: list[dict], target_step_id: str 
 
 
 def _fab_source_roots() -> list[str]:
-    """Resolve the physical FAB DB using FileBrowser's configured display name.
+    """Resolve the physical FAB DB folders, most specific first.
 
-    An explicit ``db_name_aliases`` entry displayed as ``FAB`` wins. When the
-    operator has not configured one, LOT Tracker uses the legacy
-    ``1.RAWDATA_DB`` folder.
+    An explicit ``db_name_aliases`` entry displayed as ``FAB`` wins. Otherwise
+    every FAB folder that actually exists is searched: the standard
+    ``1.RAWDATA_DB_FAB`` and then the legacy ``1.RAWDATA_DB``. (v10.4.304 fell
+    back to ``1.RAWDATA_DB`` only, so hosts whose FAB data lives in
+    ``1.RAWDATA_DB_FAB`` found no products and no history.)
     """
     db_root = PATHS.db_root
     actual_by_name: dict[str, str] = {}
@@ -327,7 +333,72 @@ def _fab_source_roots() -> list[str]:
     if matched:
         return matched
 
-    return [actual_by_name.get("1.rawdata_db", "1.RAWDATA_DB")]
+    found = [actual_by_name[name.casefold()] for name in (FAB_ROOT, _LEGACY_FAB_ROOT)
+             if name.casefold() in actual_by_name]
+    return found or [FAB_ROOT]
+
+
+def _product_dirs(folder: str) -> list[str]:
+    root = PATHS.db_root / folder
+    if not root.is_dir():
+        return []
+    try:
+        return sorted(p.name for p in root.iterdir()
+                      if p.is_dir() and not p.name.startswith((".", "_")))
+    except OSError:
+        return []
+
+
+def fab_products() -> list[str]:
+    """LOT Tracker 제품 드롭다운 — FAB DB 폴더의 제품 폴더 이름."""
+    seen: dict[str, str] = {}
+    for folder in _fab_source_roots():
+        for name in _product_dirs(folder):
+            text = name[len("product="):] if name.startswith("product=") else name
+            seen.setdefault(text.upper(), text)
+    return sorted(seen.values(), key=str.upper)
+
+
+def _fab_files(folder: str, product: str) -> list[Path]:
+    base = PATHS.db_root / folder / product
+    if not base.is_dir():
+        base = PATHS.db_root / folder / f"product={product}"
+    if not base.is_dir():
+        return []
+    for pattern in ("date=*/*.parquet", "*.parquet", "**/*.parquet"):
+        files = sorted(base.glob(pattern))
+        if files:
+            return files
+    return []
+
+
+def _scan_fab(folder: str, product: str, per_file: bool = False):
+    """FAB 이력 스캔 — 날짜 파티션끼리 타입이 달라도(String/Categorical 등) 읽는다.
+
+    예전 hive glob 스캔은 파티션 간 타입이 다르면 collect 시점에 예외가 나서
+    HTTP 500 이 됐다. 관대한 스캔으로 먼저 읽고, 그래도 안 되면 파일별로 읽어
+    느슨하게 합친다(diagonal_relaxed)."""
+    files = _fab_files(folder, product)
+    if not files:
+        return None
+    from core.parquet_perf import scan_parquet_hive_files, scan_parquet_relaxed
+
+    paths = [str(f) for f in files]
+    if per_file:
+        return normalize_fab_history(scan_parquet_hive_files(paths))
+    return normalize_fab_history(scan_parquet_relaxed(paths if len(paths) > 1 else paths[0]))
+
+
+def _lot_rows(lf, lot_id: str) -> list[dict]:
+    names = set(lf.collect_schema().names())
+    if not {"lot_id", "step_id", "tkout_time"}.issubset(names):
+        return []
+    selected = ["lot_id", "step_id", "tkout_time"] + (["tkin_time"] if "tkin_time" in names else [])
+    return (lf.select(selected)
+              .filter(pl.col("lot_id").cast(pl.Utf8, strict=False)
+                      .str.strip_chars().str.to_uppercase() == _key(lot_id))
+              .with_columns([pl.col(c).cast(pl.Utf8, strict=False) for c in selected])
+              .collect().to_dicts())
 
 
 def _product_candidates(lot_id: str, product: str) -> list[str]:
@@ -335,34 +406,43 @@ def _product_candidates(lot_id: str, product: str) -> list[str]:
         return [product.strip()]
     cached = lookup_lot_progress(lot_id=lot_id, limit=100, refresh_if_missing=False)
     known = {_key(row.get("product")) for row in cached if row.get("product")}
-    for folder in _fab_source_roots():
-        root = PATHS.db_root / folder
-        if root.is_dir():
-            try:
-                known.update(p.name for p in root.iterdir() if p.is_dir())
-            except OSError:
-                continue
+    known.update(fab_products())
     return sorted(known)
+
+
+class FabReadError(RuntimeError):
+    """FAB DB 를 읽지 못함 — 화면에 원인을 보여 준다(HTTP 500 대신)."""
 
 
 def _history(lot_id: str, candidates: list[str]) -> tuple[str, list[dict]]:
     matches = []
-    for folder in _fab_source_roots():
-        for product in candidates:
-            lf = scan_long_fab(product, PATHS.db_root, folder)
-            if lf is None:
+    errors = []
+    folders = _fab_source_roots()
+    for product in candidates:
+        # 같은 제품이 두 FAB 폴더에 있어도 한 번만 센다 — 처음 찾은 폴더가 우선.
+        for folder in folders:
+            try:
+                lf = _scan_fab(folder, product)
+                if lf is None:
+                    continue
+                try:
+                    rows = _lot_rows(lf, lot_id)
+                except Exception as first:
+                    # 날짜 파티션끼리 타입이 다르면(String vs Datetime 등) 한 번에 읽는
+                    # 스캔이 collect 에서 실패한다 — 파일별로 읽어 느슨하게 합친다.
+                    logger.info("LOT Tracker FAB per-file retry folder=%s product=%s: %s", folder, product, first)
+                    rows = _lot_rows(_scan_fab(folder, product, per_file=True), lot_id)
+            except Exception as exc:
+                logger.warning("LOT Tracker FAB read failed folder=%s product=%s: %s", folder, product, exc)
+                errors.append(f"{folder}/{product}: {type(exc).__name__}: {str(exc)[:200]}")
                 continue
-            names = set(lf.collect_schema().names())
-            if not {"lot_id", "step_id", "tkout_time"}.issubset(names):
-                continue
-            selected = ["lot_id", "step_id", "tkout_time"] + (["tkin_time"] if "tkin_time" in names else [])
-            rows = (lf.filter(pl.col("lot_id").cast(pl.Utf8, strict=False)
-                              .str.strip_chars().str.to_uppercase() == _key(lot_id))
-                      .select(selected).collect().to_dicts())
             if rows:
                 matches.append((product, rows))
+                break
     if len(matches) > 1:
         raise ValueError("같은 lot_id가 여러 제품에 있습니다. product를 지정하세요: " + ", ".join(p for p, _ in matches))
+    if not matches and errors:
+        raise FabReadError("FAB DB를 읽지 못했습니다 — " + " / ".join(errors[:3]))
     return matches[0] if matches else ("", [])
 
 
@@ -370,9 +450,13 @@ def track_lot(lot_id: str, reference_lot_id: str = "", target_step_id: str = "",
     lot_id = _key(lot_id)
     if not lot_id:
         raise ValueError("lot_id를 입력하세요.")
-    product, rows = _history(lot_id, _product_candidates(lot_id, product))
+    try:
+        product, rows = _history(lot_id, _product_candidates(lot_id, product))
+    except FabReadError as exc:
+        return {"ok": False, "note": str(exc), "lot": None, "references": [], "reference": None,
+                "forecast": None, "fab_roots": _fab_source_roots()}
     if not rows:
-        return {"ok": False, "note": f"FAB DB에서 lot_id '{lot_id}'의 TKOUT 이력을 찾지 못했습니다.",
+        return {"ok": False, "note": f"FAB DB({', '.join(_fab_source_roots())})에서 lot_id '{lot_id}'의 TKOUT 이력을 찾지 못했습니다.",
                 "lot": None, "references": [], "reference": None, "forecast": None}
     points = build_timeline(rows, product)
     if not points:
@@ -394,7 +478,10 @@ def track_lot(lot_id: str, reference_lot_id: str = "", target_step_id: str = "",
     ref_lots = []
     parsed_refs = parse_lot_ids(reference_lot_id)
     for r_id in parsed_refs:
-        ref_product, ref_rows = _history(r_id, [product])
+        try:
+            ref_product, ref_rows = _history(r_id, [product])
+        except FabReadError:
+            continue
         if ref_rows:
             r_points = build_timeline(ref_rows, ref_product)
             if r_points:

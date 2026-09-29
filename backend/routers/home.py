@@ -263,6 +263,10 @@ def home_alerts(request: Request, limit: int = 50):
                     # 가입 신청 알람 → 관리자 콘솔 사용자 탭(승인 대기자가 맨 위)으로 바로 연다.
                     target_search = "?tab=users"
                     action_label = "가입 승인하기"
+                elif target_tab == "admin" and payload.get("target_search"):
+                    # 운영 점검 자동 스캔 등 관리자 소탭으로 보내는 알림(`?tab=ops_scan`).
+                    target_search = str(payload.get("target_search") or "")
+                    action_label = str(payload.get("action_label") or action_label)
 
             alerts.append({
                 "id": f"notif-{n.get('id')}",

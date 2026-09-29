@@ -317,8 +317,8 @@ def _enqueue_manual_lot_progress_refresh(products: list[str]) -> bool:
         ok = False
         detail: dict = {}
         try:
+            from core import heavy_jobs
             from core import lot_progress_cache as _lpc
-            from core import worker_dispatch as _wd
 
             def _local_refresh() -> dict:
                 state = _lpc.refresh_lot_progress_cache(
@@ -326,16 +326,10 @@ def _enqueue_manual_lot_progress_refresh(products: list[str]) -> bool:
                 return {"ok": bool((state or {}).get("generated_at")),
                         "count": int((state or {}).get("count") or 0)}
 
-            res = _wd.run_heavy(
+            res = heavy_jobs.run_heavy(
                 "splittable_lot_progress_cache_refresh",
-                {"force": True, "required_products": list(products or [])},
                 _local_refresh,
                 label="WIP latest lot cache",
-                local_idle_only=False,
-                local_fallback=True,
-                durable=False,
-                priority="normal",
-                dedupe_key="lot_progress_refresh",
             )
             ok = bool((res or {}).get("ok"))
             detail = {"count": int((res or {}).get("count") or 0)}
@@ -420,12 +414,11 @@ def _refresh_dashboard_latest_v4(products: list[str], *, force: bool,
 
 def _enqueue_required_split_caches(product: str, force: bool, job_id: str = "", *,
                                    owns_job: bool = True,
-                                   local_only: bool = False, production_token: str = "") -> dict:
+                                   local_only: bool = False) -> dict:
     """Build the four required SplitTable caches and keep the scan task cancellable.
 
-    local_only=True 면 네 단계 모두 이 서버에서 직접 빌드한다 (개발 워커 오프로드
-    금지). 관리자가 "수동 캐싱" 을 누른 서버가 결과와 진행률을 보는 서버이므로,
-    그 서버에서 바로 돌아야 진행 표시와 중단이 모두 같은 곳에서 동작한다.
+    local_only=True 면 네 단계 모두 idle 창을 기다리지 않고 바로 빌드한다
+    (관리자가 "수동 캐싱" 을 누른 경우 — 진행 표시와 중단이 바로 동작해야 한다).
 
     The previous implementation returned as soon as it had spawned independent
     daemon queues.  The UI therefore lost its cancellable scan task while the
@@ -602,14 +595,14 @@ def _enqueue_required_split_caches(product: str, force: bool, job_id: str = "", 
                 if row.get("source"):
                     ready = not force and not _pivot_cache_needs_build(
                         row["product"], Path(row["source"]))
-                    retries = 1  # Two total completed attempts, then production fallback.
+                    retries = 2  # 최대 세 번 시도한다.
                     for attempt in range(retries + 1):
                         if ready:
                             break
                         _cancel_point()
                         row["pivot_queued"] = _enqueue_pivot_cache_build(
                             row["product"], reason="manual_queue" if attempt == 0 else "retry",
-                            immediate=True, local_only=local_only, allow_local_fallback=False)
+                            immediate=True, local_only=local_only)
                         finished = _wait_for(
                             f"SplitTable pivot · {row['product']}",
                             lambda prod=row["product"]: _pivot_cache_build_state(prod) != "building",
@@ -627,39 +620,6 @@ def _enqueue_required_split_caches(product: str, force: bool, job_id: str = "", 
                                product=row["product"], detail={"retry": attempt + 1})
                         _wait_for("Pivot 재시도 대기", lambda: time.monotonic() >= retry_at,
                                   timeout=delay + 2)
-                    if not ready and finished and row.get("pivot_attempts", 0) >= 2:
-                        _cancel_point()
-                        from core import worker_dispatch as _wd, upstream_proxy as _upstream
-                        if _wd.server_role() == "worker" and production_token:
-                            response = _upstream.forward(
-                                "/api/splittable/ram-cache/pivot-fallback", "", production_token,
-                                method="POST", body=json.dumps({"product":row["product"]}).encode("utf-8"))
-                            if response and 200 <= response[0] < 300:
-                                row["pivot_execution_target"] = "production"
-                                record("scan", f"[Pivot캐시] {row['product']} 2회 실패 · 운영서버로 전환", product=row["product"])
-                                remote_state = {"last_poll":0.0,"fresh":False,"done":False}
-                                def remote_finished():
-                                    if time.monotonic() - remote_state["last_poll"] < 2:
-                                        return remote_state["done"]
-                                    remote_state["last_poll"] = time.monotonic()
-                                    from urllib.parse import urlencode
-                                    status = _upstream.forward("/api/splittable/ram-cache/pivot-fallback", urlencode({"product":row["product"]}), production_token)
-                                    if not status or not 200 <= status[0] < 300:
-                                        return False
-                                    info = json.loads(status[1])
-                                    remote_state.update(fresh=bool(info.get("fresh")),done=info.get("status") != "building")
-                                    return remote_state["done"]
-                                finished = _wait_for("운영서버 Pivot 빌드", remote_finished)
-                                ready = finished and remote_state["fresh"] and not _pivot_cache_needs_build(row["product"], Path(row["source"]))
-                            else:
-                                row["pivot_fallback_error"] = "운영서버 연결/인증 실패 — FLOW_API_SERVER_URL 및 공유 세션을 확인하세요."
-                        elif _wd.server_role() != "worker":
-                            row["pivot_execution_target"] = "production"
-                            _enqueue_pivot_cache_build(row["product"], reason="production_fallback", immediate=True, local_only=True)
-                            finished = _wait_for("운영서버 Pivot 빌드", lambda prod=row["product"]: _pivot_cache_build_state(prod) != "building")
-                            ready = finished and not _pivot_cache_needs_build(row["product"], Path(row["source"]))
-                        else:
-                            row["pivot_fallback_error"] = "운영서버 전환용 사용자 세션이 없습니다. 운영서버 캐시관리에서 실행하세요."
                     row["pivot_ready"] = bool(ready)
                     ok = ok and bool(ready)
             return ok
@@ -741,7 +701,7 @@ def _enqueue_required_split_caches(product: str, force: bool, job_id: str = "", 
 
 
 def _run_unified_scan(product: str, force: bool, job_id: str = "", *,
-                      owns_job: bool = True, local_only: bool = False, production_token: str = "") -> dict:
+                      owns_job: bool = True, local_only: bool = False) -> dict:
     """FAB 매칭 캐시 → 제품 원본 RAM 캐시 → Root lot RAM 캐시를 순서대로 갱신.
 
     owns_job=False 면 job 종료/busy 해제를 호출자가 맡는다(전체 셋업이 이 함수를
@@ -749,7 +709,7 @@ def _run_unified_scan(product: str, force: bool, job_id: str = "", *,
     # 구형 match/product-RAM/root-RAM 직렬 스캔 대신 필수 공유 디스크
     # 산출물만 일반 큐에 넣는다. 아래 본문은 과거 작업 이력 호환용으로 보존한다.
     return _enqueue_required_split_caches(product, force, job_id, owns_job=owns_job,
-                                          local_only=local_only, production_token=production_token)
+                                          local_only=local_only)
 
     global _UNIFIED_SCAN_BUSY
     results: dict = {"ok": True, "product": product}
@@ -1051,15 +1011,15 @@ _PRODUCT_CACHE_PIPELINE_STAGES = [
 
 def _submit_product_cache_scan(product: str, *, force: bool, source: str,
                                on_started=None, on_finished=None,
-                               local_only: bool = False, production_token: str = "") -> dict:
+                               local_only: bool = False) -> dict:
     """Queue one product's four cache stages as a single serial pipeline.
 
     Manual and scheduled work share this entry point so a server never starts
     independent per-cache schedules.  The scan gate serializes pipelines and
     the pipeline itself waits for each cache kind before advancing to the next.
 
-    local_only=True 는 관리자가 누른 수동 캐싱 전용이다 — 네 단계를 이 서버에서
-    직접 돌린다. 자동(스케줄러) 캐싱은 종전대로 개발 워커로 오프로드할 수 있다.
+    local_only=True 는 관리자가 누른 수동 캐싱 전용이다 — 사용자 요청이 조용해질
+    때까지 기다리지 않고 바로 돈다. 자동(스케줄러) 캐싱은 idle 창을 기다린다.
     """
     product = str(product or "").strip()
     _reap_dead_unified_scan()
@@ -1089,7 +1049,7 @@ def _submit_product_cache_scan(product: str, *, force: bool, source: str,
                 logger.debug("product cache on_started callback failed", exc_info=True)
         result: dict = {"ok": False, "error": "pipeline_not_started"}
         try:
-            result = _run_unified_scan(product, force, job_id, local_only=local_only, production_token=production_token)
+            result = _run_unified_scan(product, force, job_id, local_only=local_only)
             return result
         finally:
             # _run_unified_scan 도 finally 에서 풀지만, 여기서 한 번 더 확실히 푼다 —
@@ -1128,7 +1088,7 @@ def unified_scan(req: UnifiedScanReq, request: Request = None, _perm=Depends(req
     # 중단 버튼이 모두 이 서버의 scan gate 를 보고 있으므로, 실작업만 다른 서버로
     # 가면 화면은 "등록됨" 인데 아무 진행도 안 보이고 중단도 먹지 않는다.
     out = _submit_product_cache_scan(product, force=force, source="manual",
-                                     local_only=True, production_token=request.headers.get("x-session-token", "") if request else "")
+                                     local_only=True)
     return {
         **out,
         "product": product,
@@ -1138,7 +1098,7 @@ def unified_scan(req: UnifiedScanReq, request: Request = None, _perm=Depends(req
 
 
 # ── 전체 셋업 (초기 1회, 운영 로컬·고자원 빠른 캐싱) ───────────────────────
-#   개발 워커로 오프로드하지 않고 운영 서버에서 직접, 큰 메모리로 전 제품
+#   운영 서버에서 직접, 큰 메모리로 전 제품
 #   캐시(랏 lookup → 매칭 → 제품RAM → 예열)를 한 번에 빌드한다. 관리자 전용.
 #
 #   workers 기본값은 1 이다 (2026-07-28). "한 서버에서 캐싱 작업은 한 번에 한 제품
@@ -1171,7 +1131,6 @@ def _full_setup_config() -> dict:
 def _full_setup_env_apply(cfg: dict) -> dict:
     """전체 셋업 동안만 적용할 env 오버라이드. 원래 값 dict 반환(복원용)."""
     overrides = {
-        "FLOW_WORKER_OFFLOAD": "0",                                  # 개발 오프로드 금지 → 운영 로컬 처리
         "FLOW_PROCESS_MEMORY_LIMIT_GB": str(cfg["memory_gb"]),       # 메모리 가드 상한 고정
     }
     # 청크/배치는 명시 지정(>0)일 때만 덮어쓴다. env 가 캐시관리 ⚙ 설정보다
@@ -1432,10 +1391,10 @@ def _scan_gate_snapshot() -> dict:
 def _cache_queue_snapshot() -> dict:
     """관리 화면에 노출할 캐시 관련 실행/대기 큐의 작은 스냅샷."""
     try:
-        from core import worker_dispatch
-        worker = worker_dispatch.queue_snapshot(limit=50)
+        from core import heavy_jobs
+        heavy = heavy_jobs.status()
     except Exception:
-        worker = {"depth": 0, "queued": [], "running": []}
+        heavy = {"running": [], "stats": {}}
     try:
         lookup_raw = _ml_table_lookup.build_queue_snapshot()
         lookup = {
@@ -1462,7 +1421,7 @@ def _cache_queue_snapshot() -> dict:
         root_status = {}
     auto_schedule = _auto_product_cache_schedule_snapshot()
     return {
-        "worker": worker,
+        "heavy": heavy,
         "lookup_build": lookup,
         "root_prefetch": root_prefetch,
         "match_cache": {
@@ -1742,7 +1701,7 @@ def _cache_budget_settings_payload() -> dict:
             "product_ram_enabled": _product_ram_cache_available(),
             "product_ram_gb": _gb(_product_ram_cache_max_bytes()),
             "match_cache_batch_roots": _match_cache_stream_batch_roots(),
-            "view_cold_concurrency": _view_cold_lane_concurrency(),
+            "view_cold_concurrency": _view_cold_lane_configured(),
             "lookup_build_chunk_roots": _ml_table_lookup._lookup_cache_build_chunk_size(),
             "pivot_build_chunk_roots": _pivot_cache_builder.pivot_build_chunk_roots(),
             "cache_speed_level": cache_settings.cache_speed_level(
@@ -1761,7 +1720,8 @@ def _cache_budget_settings_payload() -> dict:
             "lookup_build_chunk_roots": _ml_table_lookup.lookup_cache_build_chunk_default(),
             "pivot_build_chunk_roots": _pivot_cache_builder.pivot_build_chunk_default(),
             "cache_speed_level": 1,
-            "auto_product_cache_enabled": False,
+            # 전용 대형 서버는 기본 켜짐(_auto_product_cache_enabled 참고).
+            "auto_product_cache_enabled": _split_large_host(),
             "auto_product_cache_interval_minutes": _AUTO_PRODUCT_CACHE_DEFAULT_INTERVAL_MINUTES,
         },
         "auto_schedule": _auto_product_cache_schedule_snapshot(),
@@ -2163,7 +2123,6 @@ def get_ram_cache_overview(request: Request):
         # 예열 상태 요약 — 이 서버(운영/개발)에서 예열이 실제로 돌고 있는지,
         # 설정한 예산이 그대로 적용됐는지. 제품별 현황 위에 한 줄로 표시한다.
         "warmup": {
-            "server_role": warm.get("server_role") or "",
             "scheduler_started": bool(warm.get("scheduler_started")),
             "disabled_reason": warm.get("disabled_reason") or "",
             "last_refresh_at": warm.get("last_refresh_at") or "",
@@ -2331,12 +2290,6 @@ def get_memory_overview():
         budget_pool = _cache_budget.overview()
     except Exception as e:
         logger.debug("memory overview: cache budget overview unavailable: %s", e)
-    proxy = {}
-    try:
-        from core import upstream_proxy as _upstream_proxy
-        proxy = _upstream_proxy.status()
-    except Exception as e:
-        logger.debug("memory overview: upstream proxy status unavailable: %s", e)
 
     return {
         "ok": True,
@@ -2346,7 +2299,6 @@ def get_memory_overview():
         "process": process,
         "watchdog": watchdog,
         "cache_budget_pool": budget_pool,
-        "upstream_proxy": proxy,
     }
 
 
@@ -3530,27 +3482,3 @@ def _load_plan_data(product: str) -> dict:
 # risk payload 등) 호환을 위해 그대로 둔다.
 
 
-class PivotFallbackReq(BaseModel):
-    product: str
-
-
-@router.post("/ram-cache/pivot-fallback")
-def pivot_production_fallback(req: PivotFallbackReq, _perm=Depends(require_page_manager_any("ramcache", "splittable"))):
-    """One production-only local build, with existing per-product shared lease."""
-    from core import worker_dispatch
-    if worker_dispatch.server_role() == "worker":
-        raise HTTPException(409, "운영서버 전용입니다. FLOW_API_SERVER_URL이 개발 워커를 가리키는지 확인하세요.")
-    source = _product_path(req.product)
-    if not _pivot_cache_needs_build(req.product, source):
-        return {"ok":True,"status":"fresh","execution_target":"production"}
-    queued = _enqueue_pivot_cache_build(req.product, reason="worker_failed_twice", immediate=True, local_only=True)
-    return {"ok":True,"queued":queued,"status":_pivot_cache_build_state(req.product),"execution_target":"production"}
-
-
-@router.get("/ram-cache/pivot-fallback")
-def pivot_production_status(product: str, _perm=Depends(require_page_manager_any("ramcache", "splittable"))):
-    from core import worker_dispatch
-    if worker_dispatch.server_role() == "worker":
-        raise HTTPException(409, "운영서버 전용입니다.")
-    source = _product_path(product)
-    return {"status":_pivot_cache_build_state(product),"fresh":not _pivot_cache_needs_build(product,source)}

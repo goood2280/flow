@@ -612,12 +612,6 @@ def scan_all(*, actor: str = "scheduler") -> dict:
 
 def _notify_new_et(item: dict, count: int, actor: str) -> None:
     try:
-        from core.worker_dispatch import server_role
-        if server_role() == "worker":
-            return
-    except Exception:
-        pass
-    try:
         from core.notify import emit_event
         summary = build_progress(item)["summary"]
         layers = ", ".join(f"{k} {v}" for k, v in summary["layers"].items())

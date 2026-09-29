@@ -65,7 +65,13 @@ logger = logging.getLogger("flow.llm")
 # POC execution policy. This is deliberately code-owned rather than migrated
 # into admin_settings.json: existing saved provider profiles stay untouched,
 # while a missing policy can never widen access after an in-place deployment.
-_POC_ADMIN_ONLY = True
+# 2026-09: 관리자 전용 해제 — 로그인한 사용자라면 각 기능의 페이지/Flow-i 권한
+# 검사(라우터)를 통과한 경우 사용할 수 있다. 인증 주체가 없는 호출(스케줄러 등)은
+# 여전히 거절한다(_execution_denial).
+_POC_ADMIN_ONLY = False
+# 설치 시 만들어지는 기본 관리자 계정. 이 계정의 호출만 LLM 설정에 저장한 User-Id 를
+# 쓰고, 다른 모든 사용자(admin 권한자 포함)는 자기 Flow 아이디를 User-Id 로 보낸다.
+BUILTIN_ADMIN_USERNAME = "hol"
 _ERROR_EXPLANATION_ENABLED = False
 _EXECUTION_PRINCIPAL: contextvars.ContextVar[Dict[str, Any] | None] = contextvars.ContextVar(
     "flow_llm_execution_principal",
@@ -90,6 +96,8 @@ _DATA_TASK_PATHS = (
     "/api/product-wiki/intake", "/api/product-wiki/compile",
     "/api/product-semantics/bootstrap", "/api/product-semantics/propose",
     "/api/admin/domain-knowledge/preview",
+    # 관리자 > 에이전트 > 운영 점검 스캔의 AI 추천(아무것도 바꾸지 않음).
+    "/api/admin/ops-scan/run",
 )
 
 ADMIN_SETTINGS_FILE = PATHS.data_root / "admin_settings.json"
@@ -153,6 +161,9 @@ def execution_policy_snapshot() -> Dict[str, Any]:
 
 
 def _execution_denial() -> str:
+    principal = _EXECUTION_PRINCIPAL.get()
+    if not isinstance(principal, dict):
+        return "llm execution requires an authenticated user"
     if _POC_ADMIN_ONLY and not execution_policy_snapshot()["request_admin"]:
         return "llm execution is admin-only during POC"
     path = _EXECUTION_PATH.get()
@@ -848,6 +859,18 @@ def _set_header(headers: Dict[str, str], name: str, value: Any) -> None:
     headers[name] = text
 
 
+def llm_user_id(cfg: Dict[str, Any]) -> str:
+    """사내 LLM 헤더 User-Id — 사용자마다 치환한다.
+
+    기본 관리자(hol)와 인증 주체가 없는 호출은 LLM 설정에 저장한 user_id 를 쓰고,
+    그 밖의 사용자는 admin 권한이 있어도 자기 Flow 아이디를 쓴다."""
+    principal = _EXECUTION_PRINCIPAL.get() or {}
+    username = str(principal.get("username") or "").strip()
+    if username and username != BUILTIN_ADMIN_USERNAME:
+        return username
+    return str(cfg.get("user_id") or "").strip() or username
+
+
 def _replace_header_tokens(value: Any, *, token: str, prompt_msg_id: str,
                            completion_msg_id: str, cfg: Dict[str, Any]) -> str:
     text = str(value)
@@ -856,7 +879,7 @@ def _replace_header_tokens(value: Any, *, token: str, prompt_msg_id: str,
         "{prompt_msg_id}": prompt_msg_id,
         "{completion_msg_id}": completion_msg_id,
         "{system_name}": str(cfg.get("system_name") or ""),
-        "{user_id}": str(cfg.get("user_id") or ""),
+        "{user_id}": llm_user_id(cfg),
         "{user_type}": str(cfg.get("user_type") or ""),
     }
     for key, val in replacements.items():
@@ -1085,7 +1108,7 @@ def _build_request_headers(cfg: Dict[str, Any], *,
 
     if str(cfg.get("provider") or "").strip().lower() in {"playground", "gemma4"}:
         _set_header(headers, "Send-System-Name", cfg.get("system_name") or "playground")
-        _set_header(headers, "User-Id", cfg.get("user_id") or (_EXECUTION_PRINCIPAL.get() or {}).get("username") or "")
+        _set_header(headers, "User-Id", llm_user_id(cfg))
         _set_header(headers, "User-Type", cfg.get("user_type") or (_EXECUTION_PRINCIPAL.get() or {}).get("role") or "")
         _set_header(headers, "Prompt-Msg-Id", prompt_id)
         _set_header(headers, "Completion-Msg-Id", completion_id)

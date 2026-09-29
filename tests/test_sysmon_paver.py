@@ -145,8 +145,6 @@ class ScheduledThread:
 
 @pytest.fixture
 def scheduled(monkeypatch):
-    from core import worker_dispatch
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "api")
     monkeypatch.setattr(sysmon.PATHS, "is_prod", True)
     monkeypatch.setattr(sysmon.threading, "Thread", ScheduledThread)
     monkeypatch.setattr(ScheduledThread, "starts", [])
@@ -170,12 +168,8 @@ def test_schedule_uses_korean_time(scheduled):
     assert sysmon.get_schedule()["last_run_at"].startswith("2026-09-22T11:01")
 
 
-def test_disabled_and_worker_schedule_never_start(scheduled, monkeypatch):
-    from core import worker_dispatch
+def test_disabled_schedule_never_starts(scheduled, monkeypatch):
     sysmon.save_schedule(enabled=False, at="11:00")
-    assert not sysmon._maybe_start_scheduled_load(dt.datetime(2026, 9, 22, 12))
-    sysmon.save_schedule(enabled=True, at="11:00")
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "worker")
     assert not sysmon._maybe_start_scheduled_load(dt.datetime(2026, 9, 22, 12))
     assert not scheduled.starts
 
@@ -243,11 +237,10 @@ def test_sampling_error_stops_all_auxiliary_threads(monkeypatch):
 def test_monitor_is_registered_only_with_elected_scheduler_owner(monkeypatch):
     import logging
     from app_v2.runtime import startup
-    from core import background_owner, worker_dispatch, scheduler_health
+    from core import background_owner, scheduler_health
     batches = []
     callbacks = []
     monkeypatch.setattr(startup, "_start_many", lambda entries, _logger: batches.append(entries))
-    monkeypatch.setattr(worker_dispatch, "external_services_enabled", lambda: True)
     monkeypatch.setattr(background_owner, "start", lambda callback, _logger: callbacks.append(callback))
     monkeypatch.setattr(scheduler_health, "record_startup", lambda *_args: None)
     monkeypatch.setattr(scheduler_health, "start_monitor", lambda *_args: None)
@@ -282,3 +275,61 @@ def test_cpu_only_idle_result_does_not_require_ram(monkeypatch):
     sysmon._load_worker(600, "auto", 85, False)
     assert sysmon._load_result["status"] == "reached"
     assert sysmon._load_result["reached_80"] is False
+
+
+def test_user_request_releases_paver_ram_and_pauses_cpu(monkeypatch):
+    monkeypatch.setattr(sysmon, "_load_mode", "scheduled")
+    monkeypatch.setattr(sysmon, "_mem_hold", [bytearray(8)])
+    monkeypatch.setattr(sysmon, "_mem_allocated_mb", 4096)
+    monkeypatch.setattr(sysmon, "_manual_paver_allocated_mb", 0)
+    monkeypatch.setattr(sysmon, "_paver_user_yield_until", 0.0)
+    monkeypatch.setattr(sysmon, "_paver_mem_yield", threading.Event())
+
+    released = sysmon.yield_paver_to_user("사용자 요청 /api/splittable/view")
+
+    assert released == 4096
+    assert sysmon._mem_hold == [] and sysmon._mem_allocated_mb == 0
+    assert sysmon._paver_mem_yield.is_set()
+    assert sysmon._paver_user_yield_until > sysmon._now()
+    assert "4096MB" in sysmon._load_release_reason
+
+
+def test_user_request_is_noop_without_paver(monkeypatch):
+    monkeypatch.setattr(sysmon, "_mem_allocated_mb", 0)
+    monkeypatch.setattr(sysmon, "_manual_paver_allocated_mb", 0)
+    monkeypatch.setattr(sysmon, "_paver_mem_yield", threading.Event())
+
+    assert sysmon.yield_paver_to_user() == 0
+    assert not sysmon._paver_mem_yield.is_set()
+
+
+def test_unclean_previous_run_is_recorded_with_oom_cause(monkeypatch, tmp_path):
+    monkeypatch.setattr(sysmon, "BOOT_HISTORY_LOG", tmp_path / "boot_history.jsonl")
+    monkeypatch.setattr(sysmon, "_run_state_path", lambda: tmp_path / "run_state_api.json")
+    monkeypatch.setattr(sysmon, "_fault_log_path", lambda: tmp_path / "faulthandler_api.log")
+    monkeypatch.setattr(sysmon, "_crash_role", lambda: "api")
+    monkeypatch.setattr(sysmon, "_crash_started", False)
+    monkeypatch.setattr(sysmon, "_cgroup_oom_kill_count", lambda: 3)
+    monkeypatch.setattr(sysmon.threading, "Thread", lambda *a, **k: type("T", (), {"start": lambda self: None})())
+    monkeypatch.setattr("atexit.register", lambda fn: None)
+    monkeypatch.setattr("faulthandler.enable", lambda **k: None)
+    sysmon.save_json(tmp_path / "run_state_api.json", {
+        "clean_exit": False, "oom_kill_count": 2, "uptime_sec": 900.0,
+        "inflight_requests": [{"method": "GET", "path": "/api/splittable/view", "running_sec": 4.2}],
+    })
+
+    sysmon.start_crash_forensics()
+    snap = sysmon.crash_forensics_snapshot()
+
+    boot = snap["recent_boots"][0]
+    assert boot["previous_unclean"] is True
+    assert boot["suspected_cause"] == "oom_kill"
+    assert boot["previous"]["inflight_requests"][0]["path"] == "/api/splittable/view"
+    assert snap["unclean_restarts"] == 1
+
+
+def test_unclean_cause_heuristics(monkeypatch, tmp_path):
+    monkeypatch.setattr(sysmon, "_fault_log_path", lambda: tmp_path / "none.log")
+    assert sysmon._judge_previous_run({"oom_kill_count": 1}, 1) == "killed_without_trace"
+    assert sysmon._judge_previous_run({"system_memory_percent": 93}, None) == "memory_pressure_suspected"
+    assert sysmon._judge_previous_run({"paver": {"ram_mb": 2048}}, None) == "paver_holding_ram"

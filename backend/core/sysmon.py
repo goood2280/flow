@@ -40,6 +40,12 @@ try:
     import psutil as _psutil
 except Exception:
     _psutil = None
+_PSUTIL_CPU_LAST = {"mono": 0.0, "value": 0.0}
+if _psutil is not None:
+    try:
+        _psutil.cpu_percent(interval=None)  # 기준점 — 첫 non-blocking 호출이 의미 있는 값을 주게
+    except Exception:
+        pass
 
 # ── 설정 상수 ────────────────────────────────────────────────────────
 SAMPLE_INTERVAL_SEC  = 5 * 60           # 5분 주기로 수집
@@ -57,6 +63,11 @@ DEFAULT_SCHEDULE_TARGET_PCT = 85.0
 PAVER_MIN_TARGET_PCT = 80.0
 PAVER_MAX_TARGET_PCT = 89.0
 PAVER_RELEASE_PCT = 90.0
+# 사용자 heavy/essential 요청이 들어오면 보도블럭이 양보한다. RAM 은 이번 실행
+# 동안 다시 잡지 않고, CPU 는 마지막 사용자 요청 뒤 이 시간만큼 쉰다.
+# (2026-09 운영 튕김: 보도블럭이 컨테이너 RAM 85% 를 같은 프로세스에 잡고 있는
+# 동안 essential 레인 스캔이 메모리 가드 없이 들어와 cgroup OOM kill 로 uvicorn 전체가 죽었다.)
+PAVER_USER_YIELD_SEC = 60
 
 RESOURCE_LOG: Path = PATHS.resource_log
 SYSMON_STATE_FILE: Path = PATHS.log_dir / "sysmon_state.json"
@@ -163,6 +174,8 @@ _manual_paver_pending_steps: int = 0
 _manual_paver_thread: Optional[threading.Thread] = None
 _manual_paver_stop = threading.Event()
 _paused_until: float = 0.0              # 유휴 체크를 건너뛰는 마감 시각
+_paver_user_yield_until: float = 0.0    # 이 시각까지 보도블럭 CPU duty 0
+_paver_mem_yield = threading.Event()    # 이번 실행에서 RAM 보도블럭을 다시 잡지 않음
 _bg_thread: Optional[threading.Thread] = None
 _last_sample: dict = {}
 _load_result: dict = {}
@@ -337,7 +350,16 @@ def _collect_stats() -> dict:
         sample.update(process_cpu_snapshot())
         return _apply_effective_cpu(sample)
     try:
-        cpu = float(_psutil.cpu_percent(interval=0.3))
+        # interval=None: 직전 호출 이후 평균 — 요청 스레드를 0.3초씩 막지 않는다
+        # (관리자 화면 /api/monitor/system 이 매번 300ms 지연되던 원인). 백그라운드
+        # 샘플러가 주기적으로 부르므로 값은 그 주기 평균이 된다. 너무 짧은 간격이면
+        # psutil 이 0.0 을 줄 수 있어 마지막 유효값을 쓴다.
+        now_mono = time.monotonic()
+        cpu = float(_psutil.cpu_percent(interval=None))
+        if now_mono - _PSUTIL_CPU_LAST["mono"] < 0.1 and _PSUTIL_CPU_LAST["mono"]:
+            cpu = _PSUTIL_CPU_LAST["value"]
+        else:
+            _PSUTIL_CPU_LAST.update(mono=now_mono, value=cpu)
     except Exception:
         cpu = 0.0
     try:
@@ -386,12 +408,47 @@ def collect_once() -> dict:
     return s
 
 
+def live_snapshot() -> dict:
+    """현재 상태만 읽어 반환 — resource_log 에는 쓰지 않는다.
+
+    관리자 모니터 탭은 2초마다 현재 값을 폴링한다. 예전엔 여기서 collect_once()
+    를 불러 폴링마다 resource_log 에 한 줄씩 append 했고, 5분 샘플 로그(약 한 달치
+    8640줄)가 몇 시간 만에 채워져 잘리고 파일 재작성이 반복됐다. 기록은
+    백그라운드 5분 샘플러와 /heartbeat 만 한다."""
+    global _last_sample
+    s = _collect_stats()
+    with _lock:
+        _last_sample = dict(s)
+    return s
+
+
+# resource_log tail 메모 — (mtime, size, limit) 가 같으면 파싱 결과를 재사용한다.
+# 모니터 탭·홈 위젯이 같은 tail 을 반복 요청해도 공유 드라이브의 10MB 파일을
+# 매번 역방향 파싱하지 않는다. 로그는 5분마다 한 줄씩만 늘어난다.
+_HISTORY_MEMO: dict = {}
+_HISTORY_MEMO_LOCK = threading.Lock()
+
+
 def history(limit: int = 288) -> List[dict]:
     """resource_log tail. 기본 288 = 1일치 @ 5min."""
     try:
-        return jsonl_read(RESOURCE_LOG, limit) or []
+        st = RESOURCE_LOG.stat()
+        sig = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return []
+    with _HISTORY_MEMO_LOCK:
+        hit = _HISTORY_MEMO.get(limit)
+        if hit is not None and hit[0] == sig:
+            return list(hit[1])
+    try:
+        rows = jsonl_read(RESOURCE_LOG, limit) or []
     except Exception:
         return []
+    with _HISTORY_MEMO_LOCK:
+        if len(_HISTORY_MEMO) > 16:
+            _HISTORY_MEMO.clear()
+        _HISTORY_MEMO[limit] = (sig, rows)
+    return list(rows)
 
 
 def _window_peaked_above(threshold: float) -> bool:
@@ -415,10 +472,13 @@ def _window_peaked_above(threshold: float) -> bool:
 def mark_user_activity() -> None:
     """사용자 활동 감지 — 자동 유휴 부하만 중단하고 30분 대기 창을 설정한다."""
     global _last_user_activity, _paused_until
-    with _lock:
-        _last_user_activity = _now()
-        _paused_until = _last_user_activity + PAUSE_AFTER_USER_SEC
-        explicit_paver = _load_mode in {"manual", "scheduled"}
+    # 인증 미들웨어가 이벤트 루프에서 매 요청 부른다 — _lock 을 잡지 않는다.
+    # (_lock 은 공유드라이브 JSON I/O 동안 잡힐 수 있어 전 요청이 멈췄다.)
+    # 두 값은 단순 대입이고 읽는 쪽도 근사값이면 충분하다.
+    now = _now()
+    _last_user_activity = now
+    _paused_until = now + PAUSE_AFTER_USER_SEC
+    explicit_paver = _load_mode in {"manual", "scheduled"}
     # 수동/예약 보도블럭은 관리자가 명시적으로 시작한 작업이다. 일반 화면 요청이
     # 들어와도 유지하고, 관리자 모니터의 중지 버튼은 stop_load()로 언제든 중단한다.
     # 사용자 활동으로 양보해야 하는 것은 백그라운드가 시작한 자동 유휴 부하뿐이다.
@@ -618,10 +678,12 @@ def _hold_memory_until(stop_event: threading.Event, deadline: float, target_pct:
         return
     chunk_bytes = MEM_CHUNK_MB * 1024 * 1024
     try:
-        while not stop_event.is_set() and _now() < deadline:
+        while not stop_event.is_set() and not _paver_mem_yield.is_set() and _now() < deadline:
             # 한 단계 안에서는 64MB씩 실제 페이지를 touch하고, 단계 사이에서
             # 사용률을 다시 읽는다. 그래프에는 약 1GB씩 계단식으로 보인다.
             for _ in range(MEM_STEP_MB // MEM_CHUNK_MB):
+                if _paver_mem_yield.is_set():
+                    break
                 s = _collect_stats()
                 mem_pct = float(s.get("memory_percent") or 0)
                 with _lock:
@@ -648,7 +710,7 @@ def _hold_memory_until(stop_event: threading.Event, deadline: float, target_pct:
                 break
             if stop_event.wait(timeout=0.8):
                 return
-        while not stop_event.is_set() and _now() < deadline:
+        while not stop_event.is_set() and not _paver_mem_yield.is_set() and _now() < deadline:
             # 목표 도달 후 유지 중에도 다른 프로세스 때문에 90%가 되면 이 기능이
             # 잡은 메모리를 즉시 푼다.
             mem_pct = float(_collect_stats().get("memory_percent") or 0)
@@ -730,6 +792,7 @@ def _run_load_worker(duration_sec: int, mode: str = "auto", target_pct: float = 
         _load_error = ""
         _load_release_reason = ""
     _mem_hold = []
+    _paver_mem_yield.clear()
     logger.info(f"[sysmon] load generation start — {duration_sec}s planned mode={mode} target={target_pct}")
 
     # 호스트(또는 cgroup quota)의 각 논리 CPU마다 워커를 하나 둔다. 워커 수를 8로
@@ -779,8 +842,9 @@ def _run_load_worker(duration_sec: int, mode: str = "auto", target_pct: float = 
             equivalent_cores = _next_paver_cpu_equivalents(
                 equivalent_cores, cpu_pct, target_pct, cpu_worker_count,
             )
+            user_yield = _now() < _paver_user_yield_until
             for duty_state, duty in zip(duty_states, _paver_cpu_duties(cpu_worker_count, equivalent_cores)):
-                duty_state["value"] = duty
+                duty_state["value"] = 0.0 if user_yield else duty
             if _load_stop.wait(timeout=0.2):
                 break
 
@@ -882,6 +946,39 @@ def _release_manual_paver_locked() -> int:
     return released
 
 
+def paver_holding() -> bool:
+    """보도블럭이 돌거나 RAM 을 잡고 있는지 — 락 없이 읽는다(전역 읽기는 원자적).
+
+    모든 API 요청이 이벤트 루프에서 이걸 먼저 본다. _lock 은 공유드라이브 JSON
+    읽기·쓰기 동안 잡히는 경우가 있어, 매 요청 락을 잡으면 그 사이 들어온 모든
+    요청이 이벤트 루프째 멈췄다(전 탭 지연)."""
+    return bool(_load_mode or _mem_allocated_mb or _manual_paver_allocated_mb)
+
+
+def yield_paver_to_user(reason: str = "사용자 작업") -> int:
+    """보도블럭이 돌고 있으면 RAM 을 즉시 풀고 CPU 를 잠시 멈춘다.
+
+    ResourceGuardMiddleware 가 light 가 아닌 모든 API 요청 시작 시 호출한다.
+    보도블럭이 없으면 락 한 번으로 끝난다. 반환값은 해제한 MB.
+    """
+    global _mem_hold, _mem_allocated_mb, _paver_user_yield_until, _load_release_reason
+    if not paver_holding():
+        return 0
+    with _lock:
+        if not (_load_mode or _mem_allocated_mb or _manual_paver_allocated_mb):
+            return 0
+        _paver_user_yield_until = _now() + PAVER_USER_YIELD_SEC
+        released = _mem_allocated_mb + _release_manual_paver_locked()
+        _mem_hold = []
+        _mem_allocated_mb = 0
+        if released:
+            _load_release_reason = f"{reason} 시작으로 RAM {released}MB 즉시 해제"
+    _paver_mem_yield.set()
+    if released:
+        logger.warning("[sysmon] paver yielded %dMB RAM to %s", released, reason)
+    return released
+
+
 def release_manual_paver() -> dict:
     """구버전 호출 호환: CPU와 RAM을 함께 해제한다."""
     return stop_load()
@@ -956,11 +1053,7 @@ def _maybe_start_scheduled_load(now: _dt.datetime | None = None) -> bool:
     The local lock also serializes manual starts and settings updates.
     """
     global _load_thread, _load_mode, _load_target_pct
-    try:
-        from core.worker_dispatch import server_role
-        if server_role() == "worker" or not PATHS.is_prod:
-            return False
-    except Exception:
+    if not PATHS.is_prod:
         return False
     kst = _dt.timezone(_dt.timedelta(hours=9))
     local_now = now or _dt.datetime.now(kst)
@@ -1048,3 +1141,211 @@ def start_background() -> None:
     _bg_thread = threading.Thread(target=_bg_loop, name="sysmon-bg", daemon=True)
     _bg_thread.start()
     logger.info("[sysmon] background loop started")
+
+
+# ── 비정상 종료 추적 (crash forensics) ─────────────────────────────────
+# 운영 Docker 서버는 셸/로그 접근이 없어 "가끔 튕긴다"의 원인을 볼 수 없었다.
+# 기동 때마다 직전 실행이 정상 종료(atexit)였는지 확인하고, 아니면 마지막
+# heartbeat 의 메모리·진행 중 요청·보도블럭 상태와 cgroup oom_kill 카운터,
+# faulthandler(네이티브 크래시) 로그를 묶어 boot_history.jsonl 에 남긴다.
+# /deploy-info.json 의 crash_forensics 로 브라우저에서 본다.
+CRASH_HEARTBEAT_SEC = 10
+CRASH_RECENT_REQUESTS = 20
+BOOT_HISTORY_LOG: Path = PATHS.log_dir / "boot_history.jsonl"
+
+_crash_lock = threading.Lock()
+_crash_started = False
+_crash_boot: dict = {}
+_crash_fault_file = None
+_inflight: dict[int, dict] = {}
+_inflight_seq = 0
+_recent_requests: list[dict] = []
+
+
+def _crash_role() -> str:
+    # 파일 이름(run_state_api.json 등)을 예전과 같게 유지한다 — 운영 단일 서버.
+    return "api"
+
+
+def _run_state_path() -> Path:
+    return PATHS.log_dir / f"run_state_{_crash_role()}.json"
+
+
+def _fault_log_path() -> Path:
+    return PATHS.log_dir / f"faulthandler_{_crash_role()}.log"
+
+
+def _cgroup_oom_kill_count() -> Optional[int]:
+    """cgroup 이 이 컨테이너에서 OOM kill 을 몇 번 했는지(v2 memory.events / v1 oom_control)."""
+    for path in ("/sys/fs/cgroup/memory.events", "/sys/fs/cgroup/memory/memory.oom_control"):
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    key, _, value = line.strip().partition(" ")
+                    if key == "oom_kill":
+                        return int(value)
+        except Exception:
+            continue
+    return None
+
+
+def request_started(method: str, path: str) -> int:
+    """진행 중 요청 등록. 반환 토큰을 request_finished 에 넘긴다."""
+    global _inflight_seq
+    with _crash_lock:
+        _inflight_seq += 1
+        token = _inflight_seq
+        _inflight[token] = {"method": method, "path": path[:200], "started": _now()}
+    return token
+
+
+def request_finished(token: int, status: int = 0) -> None:
+    with _crash_lock:
+        item = _inflight.pop(token, None)
+        if item is None:
+            return
+        elapsed = _now() - item["started"]
+        # 짧은 요청까지 다 남기면 의미 있는 heavy 요청이 밀려난다.
+        if elapsed >= 1.0 or status >= 500:
+            _recent_requests.append({
+                "method": item["method"], "path": item["path"], "status": int(status or 0),
+                "sec": round(elapsed, 2), "at": _iso(item["started"]),
+            })
+            del _recent_requests[:-CRASH_RECENT_REQUESTS]
+
+
+def _run_state_snapshot(clean_exit: bool) -> dict:
+    mem = {}
+    try:
+        mem = process_memory_snapshot()
+    except Exception:
+        pass
+    now = _now()
+    with _crash_lock:
+        inflight = sorted(
+            ({**item, "running_sec": round(now - item["started"], 1), "started": _iso(item["started"])}
+             for item in _inflight.values()),
+            key=lambda item: -item["running_sec"],
+        )[:30]
+        recent = list(_recent_requests)
+    with _lock:
+        paver = {"mode": _load_mode, "ram_mb": _mem_allocated_mb + _manual_paver_allocated_mb}
+    fault = _fault_log_path()
+    return {
+        "boot_id": _crash_boot.get("boot_id", ""),
+        "pid": os.getpid(),
+        "started_at": _crash_boot.get("boot_at", ""),
+        "last_heartbeat_at": _iso(now),
+        "uptime_sec": round(now - float(_crash_boot.get("boot_ts") or now), 1),
+        "clean_exit": clean_exit,
+        "process_rss_gb": mem.get("process_rss_gb"),
+        "process_memory_limit_gb": mem.get("process_memory_limit_gb"),
+        "system_memory_total_gb": mem.get("system_memory_total_gb"),
+        "system_memory_available_gb": mem.get("system_memory_available_gb"),
+        "system_memory_percent": mem.get("system_memory_percent"),
+        "system_memory_source": mem.get("system_memory_source"),
+        "inflight_requests": inflight,
+        "recent_slow_requests": recent,
+        "paver": paver,
+        "oom_kill_count": _cgroup_oom_kill_count(),
+        "fault_log_size": fault.stat().st_size if fault.is_file() else 0,
+    }
+
+
+def _judge_previous_run(prev: dict, oom_now: Optional[int]) -> str:
+    oom_prev = prev.get("oom_kill_count")
+    if oom_now is not None and oom_prev is not None and oom_now > int(oom_prev):
+        return "oom_kill"
+    fault = _fault_log_path()
+    if fault.is_file() and fault.stat().st_size > int(prev.get("fault_log_size") or 0):
+        return "native_crash"
+    if float(prev.get("system_memory_percent") or 0) >= 88.0:
+        return "memory_pressure_suspected"
+    if (prev.get("paver") or {}).get("ram_mb"):
+        return "paver_holding_ram"
+    return "killed_without_trace"
+
+
+def _mark_clean_exit() -> None:
+    try:
+        save_json(_run_state_path(), _run_state_snapshot(clean_exit=True), indent=2)
+    except Exception:
+        pass
+
+
+def _crash_heartbeat_loop() -> None:
+    while True:
+        try:
+            save_json(_run_state_path(), _run_state_snapshot(clean_exit=False), indent=2)
+        except Exception:
+            logger.debug("run_state heartbeat failed", exc_info=True)
+        time.sleep(CRASH_HEARTBEAT_SEC)
+
+
+def start_crash_forensics() -> None:
+    """앱 기동 시 1회. 직전 실행의 비정상 종료를 기록하고 heartbeat 를 시작한다."""
+    global _crash_started, _crash_boot, _crash_fault_file
+    with _crash_lock:
+        if _crash_started:
+            return
+        _crash_started = True
+    import atexit
+    import faulthandler
+    import uuid
+
+    now = _now()
+    oom_now = _cgroup_oom_kill_count()
+    prev = load_json(_run_state_path(), {}) or {}
+    _crash_boot = {
+        "boot_id": uuid.uuid4().hex[:12],
+        "boot_ts": now,
+        "boot_at": _iso(now),
+        "role": _crash_role(),
+        "pid": os.getpid(),
+        "oom_kill_count": oom_now,
+    }
+    record = {k: v for k, v in _crash_boot.items() if k != "boot_ts"}
+    if prev and not prev.get("clean_exit", True):
+        record["previous_unclean"] = True
+        record["suspected_cause"] = _judge_previous_run(prev, oom_now)
+        record["previous"] = prev
+        logger.warning("[sysmon] previous %s run ended abnormally (%s) after %ss",
+                       record["role"], record["suspected_cause"], prev.get("uptime_sec"))
+    else:
+        record["previous_unclean"] = False
+    try:
+        jsonl_append(BOOT_HISTORY_LOG, record, max_lines=500)
+    except Exception:
+        logger.warning("boot history append failed", exc_info=True)
+    try:
+        _crash_fault_file = open(_fault_log_path(), "a", encoding="utf-8")
+        _crash_fault_file.write(f"\n=== boot {_crash_boot['boot_at']} id={_crash_boot['boot_id']} ===\n")
+        _crash_fault_file.flush()
+        faulthandler.enable(file=_crash_fault_file, all_threads=True)
+    except Exception:
+        logger.warning("faulthandler enable failed", exc_info=True)
+    atexit.register(_mark_clean_exit)
+    threading.Thread(target=_crash_heartbeat_loop, name="sysmon-crash-heartbeat", daemon=True).start()
+
+
+def crash_forensics_snapshot(limit: int = 10) -> dict:
+    """관리자 진단용: 최근 기동 기록(비정상 종료 원인 추정 포함)과 네이티브 크래시 로그 끝부분."""
+    role = _crash_role()
+    boots = [b for b in jsonl_read(BOOT_HISTORY_LOG, limit=200) if b.get("role") == role][-limit:]
+    tail = ""
+    fault = _fault_log_path()
+    try:
+        if fault.is_file():
+            with open(fault, "rb") as fh:
+                fh.seek(max(0, fault.stat().st_size - 6000))
+                tail = fh.read().decode("utf-8", errors="replace")
+    except Exception:
+        tail = ""
+    return {
+        "role": role,
+        "current_boot": {k: v for k, v in _crash_boot.items() if k != "boot_ts"},
+        "unclean_restarts": sum(1 for b in boots if b.get("previous_unclean")),
+        "recent_boots": list(reversed(boots)),
+        "oom_kill_count_now": _cgroup_oom_kill_count(),
+        "fault_log_tail": tail,
+    }

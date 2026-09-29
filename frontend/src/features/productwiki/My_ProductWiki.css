@@ -223,16 +223,6 @@
   color: var(--text-primary, #f8fafc);
 }
 
-.pw-wiki-badge {
-  background: rgba(59, 130, 246, 0.15);
-  border: 1px solid var(--accent, #3b82f6);
-  color: var(--accent, #60a5fa);
-  font-size: 11px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 4px;
-}
-
 .pw-wiki-byline {
   margin-top: 8px;
   font-size: 13px;
@@ -360,7 +350,8 @@
   padding-bottom: 8px;
 }
 
-.pw-wiki-body .pw-wiki-h2 {
+.pw-wiki-body .pw-wiki-h2,
+.pw-wiki-appendix > .pw-wiki-h2 {
   font-size: 21px;
   font-weight: 700;
   margin: 32px 0 12px;
@@ -1202,4 +1193,13 @@
   margin: 8px 0;
   border: 1px solid var(--border);
   border-radius: 3px;
+}
+
+/* 위키 본문 뒤에 이어지는 개선 knob · LOT 목적 절 (문서와 같은 제목 모양) */
+.pw-wiki-appendix {
+  scroll-margin-top: 60px;
+}
+
+.pw-wiki-appendix .pk-panel {
+  padding: 0;
 }

@@ -224,7 +224,8 @@ def _scan_et_packages(product: str, root_lot_id: str, lot_id: str = "") -> list[
     if not files:
         raise HTTPException(404, f"ET DB 에서 product '{product}' 파일을 찾지 못했습니다")
     try:
-        lf = pl.scan_parquet([str(f) for f in files[-ET_SCAN_FILE_LIMIT:]], hive_partitioning=True)
+        from core.parquet_perf import scan_parquet_hive_files
+        lf = scan_parquet_hive_files(files[-ET_SCAN_FILE_LIMIT:], hive_partitioning=True)
     except Exception:
         lf = pl.scan_parquet([str(f) for f in files[-ET_SCAN_FILE_LIMIT:]])
     lf = _filter_valid_wafers(lf)
@@ -369,7 +370,8 @@ def et_time_trend(request: Request, product: str = Query(""), months: int = Quer
     if not files:
         raise HTTPException(404, f"ET DB 에서 product '{product_text}' 파일을 찾지 못했습니다")
     try:
-        lf = pl.scan_parquet([str(f) for f in files], hive_partitioning=True)
+        from core.parquet_perf import scan_parquet_hive_files
+        lf = scan_parquet_hive_files(files, hive_partitioning=True)
     except Exception:
         lf = pl.scan_parquet([str(f) for f in files])
     lf = _filter_valid_wafers(lf)

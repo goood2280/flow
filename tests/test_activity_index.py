@@ -76,3 +76,21 @@ def test_filters_unicode_and_exact_owner_before_pagination(tmp_path):
     result = index.page(path, username="alice", limit=1, offset=1)
     assert result["total"] == 4 and result["logs"][0]["username"] == "ALICE"
     assert index.page(path, username="길동", action="öpen")["total"] == 1
+
+
+def test_exclude_admin_accounts_from_every_aggregate(tmp_path):
+    path = tmp_path / "activity.jsonl"
+    write(path, [row("hol", action="admin:users") for _ in range(8)]
+          + [row("alice", action="splittable:view") for _ in range(3)] + [row("bob")])
+    full = index.summary(path)
+    assert full["total"] == 12 and full["by_user"]["hol"] == 8
+    only_users = index.summary(path, exclude_users=["HOL "])
+    assert only_users["total"] == 4 and "hol" not in only_users["by_user"]
+    assert only_users["excluded_users"] == ["hol"] and only_users["excluded_count"] == 8
+    today = dt.date.today().isoformat()
+    assert only_users["active_users_by_day"][today] == 2
+    assert full["active_users_by_day"][today] == 3
+    features = {entry["feature"]: entry for entry in index.features(path, exclude_users=["hol"])["features"]}
+    assert "admin" not in features and features["splittable"]["users"] == ["alice"]
+    assert index.page(path, exclude_users=["hol"])["total"] == 4
+    assert index.page(path)["total"] == 12

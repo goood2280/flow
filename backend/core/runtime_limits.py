@@ -63,17 +63,69 @@ def _env_float(name: str, default: float, lo: float = 0.0, hi: float = 10_000.0)
     return max(lo, min(hi, value))
 
 
-def resource_profile() -> str:
-    """Return the configured resource profile name.
+# 전용 대형 서버 자동 감지 기준. 이 이상이면 FLOW_RESOURCE_PROFILE 미설정 시
+# "large" 로 간주해 CPU·메모리 제한을 풀고 동시성을 코어 수만큼 연다.
+_LARGE_HOST_MIN_MEMORY_GB = 64.0
+_LARGE_HOST_MIN_CORES = 8
+_AUTO_PROFILE: str | None = None
 
-    `small` is the default because this app is expected to be usable on a
-    shared workstation without consuming the whole machine.
+
+def _auto_profile() -> str:
+    """호스트 크기로 프로파일을 고른다 — 64GB·8코어 이상 전용 서버면 large."""
+    global _AUTO_PROFILE
+    if _AUTO_PROFILE is None:
+        profile = "small"
+        try:
+            total_gb = float(system_memory_snapshot().get("system_memory_total_gb") or 0.0)
+            if total_gb >= _LARGE_HOST_MIN_MEMORY_GB and effective_cpu_count() >= _LARGE_HOST_MIN_CORES:
+                profile = "large"
+        except Exception:
+            profile = "small"
+        _AUTO_PROFILE = profile
+    return _AUTO_PROFILE
+
+
+def resource_profile() -> str:
+    """Return the resource profile name.
+
+    Explicit ``FLOW_RESOURCE_PROFILE`` wins. Unset (or ``auto``) derives it from
+    the detected host: a dedicated large host (≥64GB and ≥8 cores, e.g. the
+    Windows Xeon 128GB server) runs as ``large`` so Flow uses the whole
+    machine; smaller shared workstations stay ``small``.
     """
-    return os.environ.get("FLOW_RESOURCE_PROFILE", "small").strip().lower()
+    raw = os.environ.get("FLOW_RESOURCE_PROFILE", "").strip().lower()
+    if raw in ("", "auto"):
+        return _auto_profile()
+    return raw
 
 
 def is_small_profile() -> bool:
     return resource_profile() in _SMALL_PROFILES
+
+
+def is_large_profile() -> bool:
+    return resource_profile() in {"large", "max", "dedicated"}
+
+
+# 대형 서버에서 Flow 한 프로세스(캐시 + 요청 작업 메모리)가 쓸 수 있는 상한 비율.
+# 128GB → 약 100GB. 나머지는 OS·파일 캐시·ET 계산 자식 프로세스 몫이다.
+_LARGE_MEMORY_CEILING_FRACTION_DEFAULT = 0.78
+
+
+def large_memory_ceiling_gb() -> float:
+    """대형 서버 메모리 상한(GB). env ``FLOW_MEMORY_CEILING_GB`` 가 정확한 값을 고정한다.
+
+    메모리 워치독의 긴급 축출 기준과 프로세스 메모리 한도가 이 값을 같이 쓴다 —
+    캐시가 커져도 이 선을 넘기 전에 덜 중요한 캐시부터 비운다. 총량을 못 읽으면 0."""
+    total_gb = float(system_memory_snapshot().get("system_memory_total_gb") or 0.0)
+    if total_gb <= 0:
+        return 0.0
+    raw = os.environ.get("FLOW_MEMORY_CEILING_GB", "")
+    if str(raw).strip():
+        return _env_float("FLOW_MEMORY_CEILING_GB", total_gb * _LARGE_MEMORY_CEILING_FRACTION_DEFAULT,
+                          1.0, max(1.0, total_gb - 1.0))
+    frac = _env_float("FLOW_MEMORY_CEILING_FRACTION", _LARGE_MEMORY_CEILING_FRACTION_DEFAULT, 0.3, 0.95)
+    return round(total_gb * frac, 1)
 
 
 def _read_float_file(path: str) -> float:
@@ -183,14 +235,22 @@ def cpu_budget_cores() -> float:
     return max(0.01, min(value, effective_cpu_count()))
 
 
+def _default_process_memory_limit_gb() -> float:
+    if is_small_profile():
+        return auto_process_memory_limit_gb()
+    if is_large_profile():
+        return large_memory_ceiling_gb()
+    return 0.0
+
+
 def process_memory_limit_gb() -> float:
     raw = os.environ.get("FLOW_PROCESS_MEMORY_LIMIT_GB", "")
     if raw.strip() == "":
-        return auto_process_memory_limit_gb() if is_small_profile() else 0.0
+        return _default_process_memory_limit_gb()
     try:
         value = float(raw)
     except Exception:
-        value = auto_process_memory_limit_gb() if is_small_profile() else 0.0
+        value = _default_process_memory_limit_gb()
     return max(0.0, value)
 
 
@@ -203,17 +263,6 @@ def heavy_background_jobs_enabled() -> bool:
     """
     if "FLOW_ENABLE_HEAVY_BACKGROUND_JOBS" in os.environ:
         return _env_flag("FLOW_ENABLE_HEAVY_BACKGROUND_JOBS")
-    # worker는 api가 제출한 작업을 소비하는 실행 노드이지 스케줄 소유자가 아니다.
-    # 여기서 자체 scheduler까지 켜면 api 스케줄과 중복 실행되고, lookup 빌드와
-    # Tracker/ET 스캔이 같은 개발 서버에서 겹쳐 OOM을 유발한다. 명시 env는
-    # 비표준 단독-worker 배포를 위해 위에서 계속 우선한다.
-    try:
-        from core.worker_dispatch import server_role as _server_role
-        if _server_role() == "worker":
-            return False
-    except Exception:
-        if os.environ.get("FLOW_SERVER_ROLE", "").strip().lower() == "worker":
-            return False
     return resource_profile() in _FULL_PROFILES
 
 
@@ -690,38 +739,20 @@ def process_memory_high(reserve_gb: float = 1.0) -> bool:
 
 
 def _polars_threads_for_role() -> int:
-    """역할 기반 Polars/rayon 스레드 수 — 프로세스 시작 시 1회 결정.
+    """Polars/rayon 스레드 수 — 프로세스 시작 시 1회 결정.
 
     Polars 풀은 프로세스 수명 동안 최초 1회만 크기가 정해지고(런타임 변경 불가)
-    모든 동시 검색이 이 단일 풀을 공유한다. 그래서 무거운 빌드를 개발서버로
-    오프로드하는 api 는 CPU 예산만큼 검색 병렬도를 주고, 수 GB FAB/lookup 빌드를 직접
-    도는 worker는 1코어로 제한한다. 역할은 운영/개발 두 종류이며 모두 실제 코어
-    수로 상한 클램프한다.
-
-    연결 상태(개발서버 alive 여부)는 런타임에 변하지만 풀은 재크기 불가이므로,
-    풀 크기는 '연결 상태' 가 아니라 '역할' 로만 결정한다(사용자 확정 방향)."""
+    모든 동시 검색이 이 단일 풀을 공유한다. 운영 서버는 CPU 예산만큼 검색 병렬도를
+    주고, 비운영 개발 PC 는 1코어로 제한한다. 모두 실제 코어 수로 상한 클램프한다."""
     cores = int(effective_cpu_count())
     try:
-        from core import worker_dispatch
-        role = worker_dispatch.server_role()
-    except Exception:
-        role = "api"
-    try:
         from core.paths import PATHS
-        is_dev = role == "worker" or not bool(PATHS.is_prod)
+        is_dev = not bool(PATHS.is_prod)
     except Exception:
-        is_dev = role != "api"
-    if role == "worker":
-        # worker 는 운영이 넘긴 빌드·조회를 한 번에 1건(FLOW_WORKER_CONCURRENCY)만
-        # 실행한다. 5코어 개발서버에서 1 thread 면 4코어가 놀아 오프로드 빌드가
-        # 운영 로컬 실행보다 느려지므로 2 thread 를 쓰고, OS·Flow-i LLM 대기·
-        # 파일탐색기 DuckDB 몫으로 나머지를 남긴다. 옛 .env 의 POLARS_MAX_THREADS
-        # 잔존값 대신 worker 전용 이름으로만 조정한다.
-        default_want = max(1, min(2, cores - 3))
-        want = int(_env_float("FLOW_WORKER_POLARS_THREADS", default_want, 1, 8))
-    elif is_dev:
-        # 역할 없는 개발 API 의 SplitTable 계산은 1코어로 고정한다. Flow-i, 파일탐색기
-        # DuckDB SQL, 캐시 워커 등 다른 작업이 사용할 CPU를 남긴다.
+        is_dev = False
+    if is_dev:
+        # 개발 PC 의 SplitTable 계산은 1코어로 고정한다. 홈 에이전트, 파일탐색기
+        # DuckDB SQL, 캐시 빌드 등 다른 작업이 사용할 CPU를 남긴다.
         want = 1
     else:
         # 운영 기본은 CPU 예산 자동, 관리자 설정으로 수동 제한 가능. Polars 풀은
@@ -735,7 +766,16 @@ def _polars_threads_for_role() -> int:
                     want = int(raw_cfg.get("query_workers", 0) or 0)
         except Exception:
             want = 0
-        budget = max(1, int(cpu_budget_cores()))
+        # 운영 풀 상한은 코어의 80%(피크 목표). Polars 풀은 모든 탭이 공유하므로
+        # 예산 전체(코어-1)를 주면 스플릿 검색이 겹칠 때 다른 탭이 CPU 를 못 얻는다.
+        # 전용 대형 서버(large)는 코어 전부를 쓴다.
+        if is_large_profile():
+            # 옛 소형 서버에서 저장한 query_workers(예: 3)가 이사 후에도 따라와 코어를
+            # 묶지 않게, 대형 서버에서는 저장값 대신 코어 전부를 쓴다.
+            budget = max(1, int(cpu_budget_cores()))
+            want = 0
+        else:
+            budget = max(1, min(int(cpu_budget_cores()), int(cores * 0.8)))
         want = budget if want <= 0 else min(want, budget)
     return max(1, min(want, cores))
 
@@ -748,13 +788,10 @@ def _default_polars_threads() -> str:
 
 def apply_runtime_limits() -> None:
     """Apply CPU/memory-conscious defaults unless deploy set explicit values."""
-    os.environ.setdefault("FLOW_RESOURCE_PROFILE", "small")
+    os.environ.setdefault("FLOW_RESOURCE_PROFILE", resource_profile())
     # 호스트 크기를 읽어 비례 산출 — 환경이 바뀌어도 (코어/메모리 증감) 재배포 없이 맞춰진다.
     os.environ.setdefault("FLOW_CPU_BUDGET_CORES", str(auto_cpu_budget_cores()) if is_small_profile() else "")
-    os.environ.setdefault(
-        "FLOW_PROCESS_MEMORY_LIMIT_GB",
-        str(auto_process_memory_limit_gb()) if is_small_profile() else "0",
-    )
+    os.environ.setdefault("FLOW_PROCESS_MEMORY_LIMIT_GB", str(_default_process_memory_limit_gb()))
     # STRICT 기본값을 강제로 심지 않는다 — 소프트밴드는 기본적으로 실제 호스트
     # 여유 메모리를 확인한다(위 process_memory_high). 명시적 env "1"만 엄격 모드.
     os.environ.setdefault("POLARS_MAX_THREADS", _default_polars_threads())
@@ -762,6 +799,10 @@ def apply_runtime_limits() -> None:
     os.environ.setdefault("PYARROW_NUM_THREADS", os.environ.get("POLARS_MAX_THREADS", "3"))
     os.environ.setdefault("WEB_CONCURRENCY", "1")
     os.environ.setdefault("MALLOC_ARENA_MAX", "2")
+    # Polars 가 내장한 jemalloc(tikv-jemallocator, `_RJEM_` 접두)은 해제한 페이지를
+    # 기본 수십 초 쥐고 있다. 1초 안에 OS 로 돌려주게 해 빌드 뒤 RSS 가 남지 않게 한다.
+    # polars import 전에만 효과가 있다 — 이 함수는 앱 기동 초기에 불린다.
+    os.environ.setdefault("_RJEM_MALLOC_CONF", "background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:0")
     for name in (
         "OMP_NUM_THREADS",
         "OPENBLAS_NUM_THREADS",

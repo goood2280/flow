@@ -68,7 +68,7 @@ export default function My_AutoReport() {
       const result = await postJson(`${API}/jobs`, { key: value });
       setJobs(current => [result.job, ...current.filter(row => row.id !== result.job.id)]);
       setKeyValue("");
-      toast("개발 서버 실행 큐에 전달했습니다.", "ok");
+      toast("생성 대기열에 등록했습니다.", "ok");
     } catch (err) {
       toast(err.message || "Auto report 요청에 실패했습니다.", "bad");
     } finally {
@@ -116,12 +116,11 @@ export default function My_AutoReport() {
       <Banner tone="warn" style={{ borderRadius: 0, borderBottom: "1px solid var(--warn-line)", lineHeight: 1.45 }}>
         <span style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <span>
-            <b>주의사항</b> · 운영 서버는 요청을 큐에 전달하며, 실제 PPT 생성은 개발 서버 worker에서 순서대로 수행됩니다.
-            제품·LOT·STEP key를 확인한 후 요청해 주세요.
+            <b>주의사항</b> · PPT 생성은 서버에서 한 번에 한 건씩, 요청 순서대로 수행됩니다. 서버 메모리가 부족하거나
+            다른 캐시 작업이 돌고 있으면 그 뒤에 시작합니다. 제품·LOT·STEP key를 확인한 후 요청해 주세요.
           </span>
           <span style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <Pill tone={execution.server_role === "worker" ? "info" : "muted"}>{execution.server_role === "worker" ? "개발 서버" : "운영 서버"}</Pill>
-            <Pill tone={execution.worker_alive ? "ok" : "warn"}>{execution.worker_alive ? "개발 worker 연결" : "개발 worker 대기"}</Pill>
+            <Pill tone={Number(execution.queue_depth || 0) > 0 ? "info" : "muted"}>대기·실행 {Number(execution.queue_depth || 0)}건</Pill>
           </span>
         </span>
       </Banner>
@@ -133,14 +132,11 @@ export default function My_AutoReport() {
             DB의 <code>Auto report</code> 폴더 준비가 필요합니다. 누락: {(config?.missing || []).join(", ") || "폴더 확인 필요"}
           </Banner>
         )}
-        {!execution.worker_alive && (
-          <Banner tone="info">요청은 공유 큐에 보관됩니다. 개발 서버 worker가 연결되면 순서대로 실행됩니다.</Banner>
-        )}
         {history.state === "failed" && (
           <Banner tone="warn">ET history 최근 갱신에 실패했습니다. {history.error || "제품별 상세 오류를 확인해 주세요."}</Banner>
         )}
 
-        <Panel title="PPT 생성 요청" subtitle="운영 서버는 큐 전달만 하며 실제 생성은 개발 서버에서 수행합니다.">
+        <Panel title="PPT 생성 요청" subtitle="요청은 대기열에 저장되어 서버를 재시작해도 이어서 실행됩니다.">
           <div style={{ display: "grid", gap: 10 }}>
             <label style={{ display: "grid", gap: 5 }}>
               <span style={{ color: "var(--text-secondary)", fontSize: 13 }}>제품 key</span>

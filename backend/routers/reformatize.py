@@ -142,10 +142,24 @@ def _env_cache_mb(name: str, default_mb: float, budget_name: str = "") -> int:
         try:
             from core import cache_budget
 
+            if not pinned:
+                budget = cache_budget.default_bytes(budget_name, budget)
             budget = cache_budget.capped(budget_name, budget, explicit=pinned)
         except Exception:
             pass
     return budget
+
+
+def _cache_entry_limit(small_default: int) -> int:
+    """캐시 항목 수 상한. 대형 서버는 byte 예산이 커지므로 항목 수도 4배로 연다."""
+    try:
+        from core import cache_budget
+
+        if cache_budget.large_host():
+            return small_default * 4
+    except Exception:
+        pass
+    return small_default
 
 
 def _cache_max_bytes() -> int:
@@ -577,10 +591,10 @@ def _scan_one_et_file(fp: Path, needed_ids: set[str] | None,
 
     실패하면 None 을 돌려 호출부가 기존 eager 경로로 폴백한다.
     """
-    from core.parquet_perf import collect_streaming, scan_parquet_relaxed
+    from core.parquet_perf import collect_streaming, scan_parquet_relaxed, with_hive_path_columns
     from core.utils import filter_valid_wafer_ids_lazy
     try:
-        lf = scan_parquet_relaxed(str(fp)) if fp.suffix != ".csv" else None
+        lf = with_hive_path_columns(scan_parquet_relaxed(str(fp)), fp) if fp.suffix != ".csv" else None
         if lf is None:
             from core.utils import scan_one_file
             lf = scan_one_file(fp)
@@ -633,7 +647,7 @@ def _candidate_files(files: list[Path], needed_ids: set[str] | None,
     """
     if not files or f is None or not _probe_enabled():
         return files
-    from core.parquet_perf import scan_parquet_relaxed
+    from core.parquet_perf import scan_parquet_relaxed, with_hive_path_columns
     report = progress or _noop_progress
     keep: list[Path] = []
     total = len(files)
@@ -645,7 +659,7 @@ def _candidate_files(files: list[Path], needed_ids: set[str] | None,
         # 훑는 조회에서 숫자만 올라가면 멈춘 것과 구분이 안 된다.
         report(f"대상 parquet 찾는 중: {fp.name} ({i + 1}/{total}개)", i, total)
         try:
-            lf = scan_parquet_relaxed(str(fp))
+            lf = with_hive_path_columns(scan_parquet_relaxed(str(fp)), fp)
             names = [str(c) for c in lf.collect_schema().names()]
             _pre, _post, probe = _split_pushdown_exprs(names, needed_ids, f)
             if not probe:
@@ -892,7 +906,7 @@ def _load_raw(product: str, product_sig: tuple, full_sig: tuple,
     est = _df_est_bytes(df)
     with _CACHE_LOCK:
         _RAW_CACHE.pop(key, None)
-        if _evict_cache_locked(_RAW_CACHE, _RAW_CACHE_MAX, _raw_cache_max_bytes(), est):
+        if _evict_cache_locked(_RAW_CACHE, _cache_entry_limit(_RAW_CACHE_MAX), _raw_cache_max_bytes(), est):
             _RAW_CACHE[key] = (full_sig, df, notice, est)
     return df, notice
 
@@ -1004,7 +1018,7 @@ def _compute(product: str, f: Filters,
         est = _df_est_bytes(wide)
         with _CACHE_LOCK:
             _CACHE.pop(key, None)
-            if _evict_cache_locked(_CACHE, _CACHE_MAX, _cache_max_bytes(), est):
+            if _evict_cache_locked(_CACHE, _cache_entry_limit(_CACHE_MAX), _cache_max_bytes(), est):
                 _CACHE[key] = (full_sig, wide, out_cols, errors, csv_fp.name, table, raw_rows, notice, est)
         return wide, out_cols, errors, csv_fp.name, table, raw_rows, notice
     finally:
@@ -3098,9 +3112,7 @@ def _save_or_increment_reformatize_history(
             if name and name.strip():
                 entry["name"] = name.strip()
             entries[existing_idx] = entry
-            with open(HISTORY_FILE, "w", encoding="utf-8") as fh:
-                for row in entries:
-                    fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            _rewrite_history(entries)
             return entry
         else:
             uid_seed = f"{expr_hash}_{time.time()}_{len(entries)}"
@@ -3140,6 +3152,13 @@ def _save_or_increment_reformatize_history(
             }
             jsonl_append(HISTORY_FILE, entry)
             return entry
+
+
+def _rewrite_history(entries: list[dict]) -> None:
+    """이력 전체 재기록 — 임시 파일에 쓴 뒤 교체한다. 쓰는 도중 다른 요청이
+    잘린 파일을 읽거나, 크래시로 이력이 비는 일이 없다."""
+    from core.utils import atomic_write_text
+    atomic_write_text(HISTORY_FILE, "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in entries))
 
 
 def _reformatize_visible_history_entries(*, recent_limit: int = 500) -> list[dict]:
@@ -3360,7 +3379,5 @@ def reformatize_history_reuse(history_id: str, user=Depends(current_user)):
                 break
         if not found:
             raise HTTPException(404, "이력을 찾을 수 없습니다.")
-        with open(HISTORY_FILE, "w", encoding="utf-8") as fh:
-            for row in entries:
-                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        _rewrite_history(entries)
         return {"ok": True, "entry": target_entry}

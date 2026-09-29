@@ -1170,7 +1170,8 @@ def _load_operational_history(product: str, root_lot_id: str, wafer_ids: str,
         def filter_by_visibility(items, username, role, key="group_ids"):
             return []
 
-    tracker_items = filter_by_visibility(load_json(TRACKER_ISSUES_FILE, []), username, role, key="group_ids")
+    # 읽기 전용 — mtime·크기가 같으면 파싱 결과를 재사용한다(수정 금지).
+    tracker_items = filter_by_visibility(load_json_cached(TRACKER_ISSUES_FILE, []), username, role, key="group_ids")
     for issue in tracker_items or []:
         matched_rows = []
         for row in (issue.get("lots") or []):
@@ -1218,7 +1219,7 @@ def _load_operational_history(product: str, root_lot_id: str, wafer_ids: str,
                     "ref_id": issue.get("id") or "",
                 })
 
-    inform_items = filter_by_visibility(load_json(INFORMS_FILE, []), username, role, key="group_ids")
+    inform_items = filter_by_visibility(load_json_cached(INFORMS_FILE, []), username, role, key="group_ids")
     for inf in inform_items or []:
         inf_root = str(inf.get("root_lot_id") or "").strip()
         inf_lot = str(inf.get("lot_id") or "").strip()
@@ -1291,7 +1292,8 @@ def _related_tracker_issues(product: str, root_lot_id: str,
         def filter_by_visibility(items, username, role, key="group_ids"):
             return []
     try:
-        tracker_items = filter_by_visibility(load_json(TRACKER_ISSUES_FILE, []), username, role, key="group_ids")
+        # SplitTable 조회마다 불린다 — 트래커 전체 JSON 을 매번 다시 파싱하지 않는다.
+        tracker_items = filter_by_visibility(load_json_cached(TRACKER_ISSUES_FILE, []), username, role, key="group_ids")
     except Exception:
         tracker_items = []
     out: list[dict] = []

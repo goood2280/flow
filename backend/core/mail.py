@@ -279,6 +279,16 @@ def _users_by_login_key() -> dict:
         key = canonical_username(un, domains)
         if key:
             out.setdefault(key, u)
+    from core.auth_providers import read_people
+    for username, profile in read_people().items():
+        if not profile.get("email"):
+            continue
+        entry = {**out.get(username, {}), "username": username,
+                 "name": profile.get("name", ""), "email": profile["email"]}
+        out[username] = entry
+        key = canonical_username(username, domains)
+        if key:
+            out[key] = entry
     return out
 
 
@@ -388,16 +398,6 @@ def send_mail(
         "payload":    dict (dry_run 시 실제 전송되었을 data_obj),
       }
     """
-    # v9.4.5: worker(개발서버) 역할은 외부 서비스 연동 없음 — 모든 발송 경로
-    # (인폼로그/회의/valve 알람 등)를 이 공통 진입점에서 한 번에 차단한다.
-    try:
-        from core import worker_dispatch as _wd
-        _role_blocked = not _wd.external_services_enabled()
-    except Exception:
-        _role_blocked = False
-    if _role_blocked:
-        return {"ok": False, "status": 0, "to": [], "skipped": [],
-                "reason": "worker(개발서버) 역할에서는 메일 발송이 비활성화되어 있습니다 — 운영서버에서 발송됩니다."}
     cfg = cfg_override if cfg_override is not None else load_mail_cfg()
     if not cfg.get("enabled") or not cfg.get("api_url"):
         return {"ok": False, "status": 0, "to": [], "skipped": [],

@@ -173,6 +173,12 @@ export function dl(url, filename) {
     a.click();
     a.remove();
     window.setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    // 서버가 행 수 한도에서 잘랐으면 헤더로 알려 준다(파일탐색기 CSV). 호출부가 팝업을 띄운다.
+    return {
+      truncated: r.headers.get("X-Flow-Download-Truncated") === "1",
+      rowLimit: Number(r.headers.get("X-Flow-Download-Row-Limit") || 0),
+      rows: Number(r.headers.get("X-Flow-Download-Rows") || 0),
+    };
   });
 }
 

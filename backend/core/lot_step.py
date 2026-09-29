@@ -1850,7 +1850,8 @@ def _build_et_history_rows(product: str, files: list[Path]):
         return pl.DataFrame()
     scan_files = [str(fp) for fp in files]
     try:
-        lf = pl.scan_parquet(scan_files, hive_partitioning=True)
+        from core.parquet_perf import scan_parquet_hive_files
+        lf = scan_parquet_hive_files(scan_files, hive_partitioning=True)
     except Exception:
         lf = pl.scan_parquet(scan_files)
     lf = _filter_valid_wafers(lf)
@@ -2168,7 +2169,8 @@ def _et_scan_context(pl, product: str, source_root: str, since_date: str, info: 
     scan_files = [str(f) for f in files[-ET_PACKAGE_FILE_LIMIT:]]
     info["files"] = len(scan_files)
     try:
-        lf = pl.scan_parquet(scan_files, hive_partitioning=True)
+        from core.parquet_perf import scan_parquet_hive_files
+        lf = scan_parquet_hive_files(scan_files, hive_partitioning=True)
     except Exception:
         try:
             lf = pl.scan_parquet(scan_files)

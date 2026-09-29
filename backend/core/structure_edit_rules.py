@@ -247,7 +247,7 @@ def summarize(edits, stacks, display):
     for edit in edits:
         name, value = edit["name"], edit["value"]
         if name == "mol_sd_landing_pad":
-            parts.append("epi MOL 네모 패드 제거·바로 연결" if not value else "epi MOL 패드 복원")
+            parts.append("MOL 네모 패드 제거·바로 연결" if not value else "MOL 네모 패드 복원")
         elif name in names:
             parts.append(names[name].format(int(value) if name.endswith("count") else value))
         elif name.startswith("inner_gate"):

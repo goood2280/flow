@@ -116,7 +116,8 @@ def test_auth_middleware_binds_admin_scope_for_sync_endpoints(monkeypatch):
                                "headers": [(b"x-session-token", role.encode())]})
             response = await middleware.dispatch(request, call_next)
             if role:
-                assert json.loads(response.body) == {"denied": role != "admin"}
+                # 관리자 전용 해제 — 인증된 사용자는 역할과 무관하게 실행 범위를 받는다.
+                assert json.loads(response.body) == {"denied": False}
             else:
                 assert response.status_code == 401
             assert llm_adapter._execution_denial()
@@ -154,17 +155,17 @@ class _Response:
         return json.dumps({"choices": [{"message": {"content": "allowed"}}]}).encode()
 
 
-def test_llm_adapter_denies_non_admin_before_network(monkeypatch):
+def test_llm_adapter_denies_unauthenticated_before_network(monkeypatch):
     calls = []
     monkeypatch.setattr(llm_adapter, "_raw_config", _connected_config)
     monkeypatch.setattr(llm_adapter.urllib.request, "urlopen", lambda *_args, **_kwargs: calls.append(True))
 
-    with llm_adapter.request_execution_scope({"username": "engineer", "role": "user"}):
+    with llm_adapter.request_execution_scope(None):
         result = llm_adapter.complete("make a chart")
 
     assert result["ok"] is False
     assert result["meta"]["invoked"] is False
-    assert "admin-only" in result["error"]
+    assert "authenticated" in result["error"]
     assert calls == []
 
 

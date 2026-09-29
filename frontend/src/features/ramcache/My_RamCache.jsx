@@ -177,7 +177,7 @@ function WarmupBanner({ w, isDev }) {
     border: `1px solid ${bad ? "var(--danger-line)" : "var(--border)"}`,
     background: bad ? "rgba(239,68,68,0.05)" : "var(--bg-secondary)", fontSize: 12 }}>
     <div style={{ display: "flex", gap: 14, flexWrap: "wrap", fontFamily: "monospace" }}>
-      <span>서버 <b>{isDev ? "개발" : "운영"}{w.server_role ? ` (${w.server_role})` : ""}</b></span>
+      <span>서버 <b>{isDev ? "개발" : "운영"}</b></span>
       <span>예열 스케줄러 {w.scheduler_started
         ? <b style={{ color: "var(--ok)" }}>작동중</b>
         : <b style={{ color: "var(--danger)" }}>미시작</b>}</span>
@@ -349,17 +349,17 @@ function MilestoneLog({ milestones }) {
 function CacheJobPanel({ jobs, queues, canManage, onStopProduct, milestones }) {
   const visible = (jobs || []).slice(0, 3);
   const matchCache = queues?.match_cache || {};
-  const worker = queues?.worker || {};
+  const heavyRunning = queues?.heavy?.running || [];
   const lookup = queues?.lookup_build || {};
   const rootPrefetch = queues?.root_prefetch || {};
-  const externalQueued = Number(worker.depth || 0) + (lookup.queued || []).length
+  const externalQueued = (lookup.queued || []).length
     + (lookup.retrying || []).length
     + Number(rootPrefetch.depth || 0)
     + Number(queues?.match_cache?.queued || 0) + Number(queues?.product_ram?.queued || 0);
   const stopTarget = matchCache.running ? String(matchCache.current || "") : "";
   const hasLog = ((milestones || []).length > 0);
   if (!hasLog && !visible.length && !externalQueued && !stopTarget
-      && !(worker.running || []).length && !lookup.running) return null;
+      && !heavyRunning.length && !lookup.running) return null;
   return <div style={{ display: "grid", gap: 8, padding: "8px 10px", borderRadius: 7,
     border: "1px solid var(--border)", background: "var(--bg-card)" }}>
     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
@@ -441,18 +441,16 @@ function CacheJobPanel({ jobs, queues, canManage, onStopProduct, milestones }) {
       {Number(matchCache.cancelled_count || 0) > 0 && <span style={{ fontSize: 11, color: "var(--warn)", fontFamily: "monospace" }}>
         이번 작업에서 중단 {matchCache.cancelled_count}건</span>}
     </div>}
-    {(externalQueued > 0 || (worker.running || []).length > 0 || lookup.running) &&
+    {(externalQueued > 0 || heavyRunning.length > 0 || lookup.running) &&
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11,
         color: "var(--text-secondary)", fontFamily: "monospace" }}>
-        <span>개발 워커: 실행 {(worker.running || []).length} / 대기 {worker.depth || 0}</span>
-        <span>worker 실사용 RAM {Number(worker.load?.mem_effective_gb || 0).toFixed(2)}GB</span>
+        <span>무거운 작업 실행 {heavyRunning.length}{heavyRunning.length ? ` (${heavyRunning.map(r => r.label).join(", ")})` : ""}</span>
         <span>lookup: {lookup.current || "-"} / 대기 {(lookup.queued || []).length}
           {(lookup.retrying || []).length > 0 ? ` / 재시도 ${(lookup.retrying || []).length}` : ""}</span>
         {lookup.paused && <span style={{ color: "var(--warn)" }}>lookup 일시정지: {lookup.pause_reason || "resource guard"}</span>}
         <span>Root 유휴 예열: {rootPrefetch.current_root || "-"} / 대기 {rootPrefetch.depth || 0}</span>
         <span>FAB 대기 {queues?.match_cache?.queued || 0}</span>
         <span>제품 RAM 대기 {queues?.product_ram?.queued || 0}</span>
-        {worker.overloaded_reason && <span style={{ color: "var(--danger)" }}>worker guard: {worker.overloaded_reason}</span>}
       </div>}
   </div>;
 }
@@ -1045,7 +1043,6 @@ export default function My_RamCache({ user }) {
   const runFullSetup = () => {
     if (!window.confirm(
       "전체 셋업(초기 1회)을 시작합니다.\n\n" +
-      "· 개발 워커로 넘기지 않고 운영 서버에서 직접 처리\n" +
       "· 서버당 제품 1개씩 순차로 전 제품 캐시(랏→매칭→제품RAM→예열)를 빌드\n" +
       "· 제품 수가 많으면 오래 걸릴 수 있고 운영 서버 자원을 많이 사용합니다.\n\n계속할까요?"
     )) return;
@@ -1683,7 +1680,7 @@ export default function My_RamCache({ user }) {
               {unifiedScanBusy ? "큐 등록 중..." : selProd ? `수동 캐싱 (${selProd})` : "수동 캐싱 (전체 제품)"}
             </button>
             <span style={{ fontSize: 12, color: "var(--text-secondary)" }}>
-              필수 디스크 캐시 4단계를 <b>이 서버에서 바로</b> 1회 실행합니다 (개발 워커로 넘기지 않음)
+              필수 디스크 캐시 4단계를 <b>지금 바로</b> 1회 실행합니다 (사용자 요청이 조용해질 때까지 기다리지 않음)
             </span>
           </div>
           <div style={{ display: "grid", gap: 5, paddingTop: 8, borderTop: "1px dashed var(--border)",

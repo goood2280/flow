@@ -132,7 +132,7 @@ def test_route_refreshes_server_feedback_and_does_not_learn_hitl_implicitly(clie
     def run(prompt, context, request, **kwargs):
         seen.append(deepcopy(context))
         return {"reply": "선택해 주세요", "context": context, "tool": {"missing": ["product"]}}
-    monkeypatch.setattr(api.home_agent_offload, "run_turn", run)
+    monkeypatch.setattr(api.flowi_turn, "execute", run)
     forged = {"user_feedback": [{"correction": "forged"}]}
     result = client.post("/api/home-agent/orchestrate", json={"prompt": "REAL_ALPHA 대시보드 요약", "context": forged})
     assert result.status_code == 200

@@ -1,9 +1,15 @@
-"""Auto report durable queue integration and development-worker runner.
+"""Auto report durable job queue and local runner (single production server).
 
-The production API only creates a shared worker task.  A server configured as
-the Flow development worker prepares ET/INLINE/FAB data, launches the legacy
-``_TRIGGER_<vehicle>_<lot>_<step>`` entry point, and publishes the resulting
-PPTX back into the shared Flow data root.
+A request writes a ``queued`` job file.  One runner thread in the background
+owner process takes queued jobs oldest-first, one at a time, through
+``core.heavy_jobs`` (memory admission + the server-wide cache/scan slot).  It
+prepares ET/INLINE/FAB data, launches the legacy
+``_TRIGGER_<vehicle>_<lot>_<step>`` entry point in a child process, and
+publishes the resulting PPTX into the Flow data root.
+
+The job files are the queue, so nothing is lost on restart: a job left
+``running`` by a crash is re-queued once (``RECOVERY_RETRIES``) and then failed.
+Until 2026-09-29 this ran on a separate development worker.
 
 Runtime code and presentation assets are operator-owned and are read from
 ``<DB root>/Auto report``.  Vehicle reformatter CSV files remain in the normal
@@ -15,6 +21,7 @@ from __future__ import annotations
 import csv
 import datetime as dt
 import json
+import logging
 import os
 import re
 import shutil
@@ -28,13 +35,16 @@ from pathlib import Path
 from typing import Any
 
 from core.paths import PATHS
+
+logger = logging.getLogger("flow.auto_report")
 from core.utils import jsonl_append
 
 JOB_ROOT_NAME = "auto_report"
 ASSET_DIR_NAME = "Auto report"
 HISTORY_DIR_NAME = "ET_HISTORY"
 TASK_TYPE = "auto_report_generate"
-JOB_TIMEOUT_SEC = 7 * 24 * 3600
+RECOVERY_RETRIES = 1
+ADMISSION_RETRY_SEC = 60.0
 RUN_TIMEOUT_SEC = 6 * 3600
 REQUIRED_CODE = ("Main.py", "My_Function.py", "My_config.py", "anomaly_engine.py")
 REQUIRED_ASSETS = (
@@ -45,6 +55,9 @@ REQUIRED_ASSETS = (
 _SAFE_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _JOB_LOCK = threading.RLock()
 _RUN_LOCK = threading.Lock()
+_RUNNER_LOCK = threading.Lock()
+_RUNNER_WAKE = threading.Event()
+_RUNNER: threading.Thread | None = None
 
 
 def _job_root() -> Path:
@@ -261,55 +274,122 @@ def preflight(product: str = "") -> dict:
 
 
 def enqueue(raw_key: str, username: str) -> dict:
-    from core import worker_dispatch
-
     parsed = parse_key(raw_key)
     check = preflight(parsed["product"])
     if not check["ok"]:
         raise FileNotFoundError("Auto report 실행 파일 확인 필요: " + ", ".join(check["missing"]))
     job_id = f"ar-{int(time.time())}-{uuid.uuid4().hex[:8]}"
+    ahead = queue_depth()
     row = update_job(
         job_id,
         **parsed,
         username=str(username or "anonymous"),
         state="queued",
-        phase="개발 서버 대기열에 전달 중",
+        phase=f"대기열 등록 — 앞에 {ahead}건" if ahead else "대기열 등록 — 곧 시작합니다",
         download_count=0,
     )
-    submitted = worker_dispatch.submit_async(
-        TASK_TYPE,
-        {"job_id": job_id},
-        timeout_sec=JOB_TIMEOUT_SEC,
-        priority="normal",
-    )
-    if not submitted.get("ok"):
-        update_job(job_id, state="failed", phase="큐 전달 실패", error=submitted.get("error") or "queue error")
-        raise RuntimeError(str(submitted.get("error") or "queue submission failed"))
-    row = update_job(
-        job_id,
-        task_id=submitted["task_id"],
-        phase="개발 서버 실행 대기",
-        worker_alive_at_submit=bool(submitted.get("worker_alive")),
-    )
+    _RUNNER_WAKE.set()
     return public_job(row)
 
 
 def refresh_job(row: dict) -> dict:
-    if row.get("state") not in {"queued", "running"} or not row.get("task_id"):
-        return row
-    try:
-        from core import worker_dispatch
-
-        snap = worker_dispatch.async_status(str(row["task_id"]))
-    except Exception:
-        return row
-    state = snap.get("state")
-    if state == "running" and row.get("state") == "queued":
-        return update_job(str(row["id"]), state="running", phase="개발 서버에서 실행 중")
-    if state == "failed":
-        result = snap.get("result") or {}
-        return update_job(str(row["id"]), state="failed", phase="개발 서버 실행 실패", error=result.get("error") or "worker failed")
+    """Job files are updated in place by the runner; kept for callers."""
     return row
+
+
+def _job_rows() -> list[dict]:
+    rows: list[dict] = []
+    try:
+        paths = list(_jobs_dir().glob("*.json"))
+    except OSError:
+        return rows
+    for path in paths:
+        try:
+            row = json.loads(path.read_text("utf-8"))
+        except Exception:
+            continue
+        if isinstance(row, dict) and row.get("id"):
+            rows.append(row)
+    return rows
+
+
+def queue_depth() -> int:
+    return sum(1 for row in _job_rows() if row.get("state") in {"queued", "running"})
+
+
+def _next_queued_job_id() -> str:
+    queued = [row for row in _job_rows() if row.get("state") == "queued"]
+    queued.sort(key=lambda row: (str(row.get("created_at") or ""), str(row.get("id"))))
+    return str(queued[0]["id"]) if queued else ""
+
+
+def recover_interrupted_jobs() -> list[str]:
+    """Re-queue jobs a crash left ``running``; fail them after RECOVERY_RETRIES."""
+    changed: list[str] = []
+    for row in _job_rows():
+        if row.get("state") != "running":
+            continue
+        job_id = str(row["id"])
+        attempts = int(row.get("recovery_attempts") or 0)
+        if attempts < RECOVERY_RETRIES:
+            update_job(job_id, state="queued", phase="서버 재시작으로 중단 — 다시 대기열에 넣었습니다",
+                       recovery_attempts=attempts + 1)
+        else:
+            update_job(job_id, state="failed", phase="Auto report 생성 실패",
+                       completed_at=dt.datetime.now().isoformat(timespec="seconds"),
+                       error="서버 재시작으로 두 번 중단되어 실패 처리했습니다. 다시 요청하세요.")
+        changed.append(job_id)
+    return changed
+
+
+def run_next_job() -> dict | None:
+    """Run the oldest queued job through heavy_jobs. None when the queue is empty."""
+    from core import heavy_jobs
+
+    job_id = _next_queued_job_id()
+    if not job_id:
+        return None
+    result = heavy_jobs.run_heavy(
+        TASK_TYPE, lambda: generate_job(job_id), label=f"Auto report {job_id}",
+    ) or {"ok": False, "error": "no result"}
+    if read_job(job_id).get("state") == "queued":
+        # Admission refused (memory / cache slot): keep it queued and say why.
+        update_job(job_id, phase=f"서버 자원 대기 중 — {result.get('reason') or result.get('error') or ''}".rstrip(" —"))
+        result = {**result, "deferred": True}
+    return {**result, "job_id": job_id}
+
+
+def _runner_loop() -> None:
+    try:
+        recovered = recover_interrupted_jobs()
+        if recovered:
+            logger.warning("Auto report: recovered interrupted jobs %s", recovered)
+    except Exception:
+        logger.warning("Auto report: interrupted job recovery failed", exc_info=True)
+    while True:
+        try:
+            result = run_next_job()
+        except Exception:
+            logger.exception("Auto report runner tick failed")
+            result = {"deferred": True}
+        if result is None:
+            _RUNNER_WAKE.wait(30.0)
+            _RUNNER_WAKE.clear()
+        elif result.get("deferred"):
+            _RUNNER_WAKE.wait(ADMISSION_RETRY_SEC)
+            _RUNNER_WAKE.clear()
+
+
+def start_runner() -> bool:
+    """Start the single Auto report runner (background owner process only)."""
+    global _RUNNER
+    with _RUNNER_LOCK:
+        if _RUNNER is not None and _RUNNER.is_alive():
+            return False
+        _RUNNER = threading.Thread(target=_runner_loop, name="auto-report-runner", daemon=True)
+        _RUNNER.start()
+    logger.info("Auto report runner started")
+    return True
 
 
 def _norm(value: str) -> str:
@@ -503,7 +583,7 @@ def refresh_history_product(vehicle: str, days: int = 120) -> dict:
 
 
 def refresh_all_histories() -> dict:
-    """Refresh configured main/comparison vehicles serially on the dev worker."""
+    """Refresh configured main/comparison vehicles serially (runs through the scan gate)."""
     config = _config_data()
     default_days = max(1, min(int(os.environ.get("FLOW_AUTO_REPORT_HISTORY_DAYS") or 120), 3650))
     plan: dict[str, int] = {}
@@ -694,17 +774,9 @@ def _prepare_runtime(job: dict) -> tuple[Path, Path]:
 
 
 def generate_job(job_id: str) -> dict:
-    """Worker handler: prepare local inputs, run the legacy trigger, publish PPTX."""
-    # Defence in depth: the API process is only a durable queue producer.  Even
-    # an accidental direct call must not start the legacy renderer in
-    # production; only the development worker may consume and execute it.
-    from core import worker_dispatch
+    """Prepare local inputs, run the legacy trigger in a child process, publish PPTX.
 
-    if worker_dispatch.server_role() != "worker":
-        return {
-            "ok": False,
-            "error": "auto_report_generation_requires_development_worker",
-        }
+    Called only by the runner (``run_next_job``) inside heavy_jobs admission."""
     with _RUN_LOCK:
         job = read_job(job_id)
         if not job:
@@ -713,7 +785,7 @@ def generate_job(job_id: str) -> dict:
         try:
             runtime, inline_file = _prepare_runtime(job)
             update_job(job_id, phase=f"{job['trigger']} 실행 중", runtime_dir=str(runtime))
-            log_path = runtime / "auto_report_worker.log"
+            log_path = runtime / "auto_report_run.log"
             backend_root = Path(__file__).resolve().parent.parent
             env = dict(os.environ)
             env["PYTHONPATH"] = str(backend_root) + os.pathsep + env.get("PYTHONPATH", "")

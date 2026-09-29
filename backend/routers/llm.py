@@ -140,8 +140,9 @@ def _is_gpt_oss_120b() -> bool:
 @router.post("/dcop/summary")
 def dcop_summary(req: DcopSummaryReq, request: Request):
     me = current_user(request)
-    if str((me or {}).get("role") or "") != "admin":
-        raise HTTPException(403, "LLM execution is admin-only during POC")
+    from core.auth import has_page_access
+    if not has_page_access(me, "dcop"):
+        raise HTTPException(403, "DCOP 페이지 권한이 있는 사용자만 AI 요약을 쓸 수 있습니다.")
     if not llm_adapter.is_available() or not _is_gpt_oss_120b() or not llm_adapter.should_attempt_llm():
         return {"ok": True, "used": False, "summary": "", "reason": "gpt_oss_120b_not_connected"}
     findings = [row for row in req.findings[:100] if isinstance(row, dict) and str(row.get("severity") or "").lower() in {"fail", "warning"}]

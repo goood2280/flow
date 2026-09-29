@@ -1,8 +1,17 @@
 """routers/groups.py v8.8.3 — User groups for Dashboard/Tracker visibility + LOT watch + module 담당.
 
 스키마 ({data_root}/groups/groups.json):
-  [{id, name, description, owner, members:[username], watched_lots:[lot_id],
+  [{id, name, description, owner, departments:[부서명], members:[username], watched_lots:[lot_id],
     modules:[module_name], created, updated}]
+
+부서 기준 멤버십 (2026-09-29):
+  - 그룹 소속은 사람이 아니라 부서(users.csv `department`, SSO 가 채움)로 정한다.
+    `departments` 에 적힌 부서의 승인된 사용자가 곧 멤버다 — 입·퇴사·부서 이동이
+    그룹 편집 없이 반영된다.
+  - 저장 파일의 `members` 는 예전 방식의 개별 멤버(하위 호환)다. `_load()` 는 이것을
+    `manual_members` 로 옮기고 `department_members` 와 합친 실제 소속을 `members` 로
+    돌려준다. 다른 라우터(인폼·회의·알람·가시성)는 계속 `members` 만 읽으면 된다.
+  - `_save()` 는 파생 필드를 버리고 개별 멤버만 `members` 로 되쓴다.
 
 v8.8.3 변경:
   - description(optional str) 필드 추가: 그룹 목적 자유 텍스트.
@@ -32,6 +41,7 @@ v8.8.1 정책 변경:
 """
 import datetime
 import re
+import threading
 import uuid
 from typing import List, Optional
 
@@ -79,6 +89,90 @@ def _sanitize_members(raw, users_by_name: dict | None = None) -> list:
         seen.add(s)
         out.append(s)
     return out
+
+
+def _department_key(value) -> str:
+    """부서명 비교 키 — 대소문자·연속 공백 무시 (admin 권한 그룹과 같은 규칙)."""
+    return " ".join(str(value or "").strip().split()).casefold()
+
+
+def _clean_departments(values) -> list:
+    if isinstance(values, str):
+        values = values.replace("\r", "\n").replace(",", "\n").split("\n")
+    out: list = []
+    seen: set = set()
+    for value in values or []:
+        label = " ".join(str(value or "").strip().split())
+        key = _department_key(label)
+        if label and key not in seen:
+            seen.add(key)
+            out.append(label[:200])
+    return out
+
+
+_INACTIVE_USER_STATUSES = {"pending", "rejected", "disabled", "deleted", "inactive"}
+_DEPT_INDEX_LOCK = threading.Lock()
+_DEPT_INDEX: dict = {"sig": None, "members": {}, "labels": {}, "names": {}}
+
+
+def _department_index() -> tuple:
+    """(부서키 → username 목록, 부서키 → 표시명, username → 이름).
+
+    users.csv 가 바뀔 때만 다시 만든다 — 가시성 필터가 요청마다 `_load()` 를 부르므로
+    매번 전체 사용자를 훑지 않게 한다. 승인 대기·거절 계정과 test 계정은 뺀다."""
+    try:
+        from routers import auth as _auth_router
+        sig = _auth_router._users_csv_sig()
+    except Exception:
+        sig = None
+    with _DEPT_INDEX_LOCK:
+        if sig is not None and _DEPT_INDEX["sig"] == sig:
+            return _DEPT_INDEX["members"], _DEPT_INDEX["labels"], _DEPT_INDEX["names"]
+    members: dict = {}
+    labels: dict = {}
+    names: dict = {}
+    for username, user in _load_users_by_name().items():
+        if not isinstance(user, dict) or _is_blocked_member(username):
+            continue
+        if str(user.get("status") or "").strip().lower() in _INACTIVE_USER_STATUSES:
+            continue
+        names[username] = str(user.get("name") or "").strip()
+        label = " ".join(str(user.get("department") or "").strip().split())
+        key = _department_key(label)
+        if not key:
+            continue
+        labels.setdefault(key, label)
+        members.setdefault(key, []).append(username)
+    for key in members:
+        members[key].sort(key=str.casefold)
+    with _DEPT_INDEX_LOCK:
+        _DEPT_INDEX.update({"sig": sig, "members": members, "labels": labels, "names": names})
+    return members, labels, names
+
+
+def _resolve_members(g: dict, dept_members: dict | None = None) -> dict:
+    """저장된 개별 멤버 + 부서 소속 사용자 → 실제 멤버(`members`)."""
+    if dept_members is None:
+        dept_members = _department_index()[0]
+    manual = [str(m).strip() for m in (g.get("manual_members", g.get("members")) or []) if str(m).strip()]
+    departments = _clean_departments(g.get("departments") or [])
+    from_depts: list = []
+    seen: set = set()
+    for dept in departments:
+        for username in dept_members.get(_department_key(dept), []):
+            if username not in seen:
+                seen.add(username)
+                from_depts.append(username)
+    g["departments"] = departments
+    g["manual_members"] = sorted(set(manual), key=str.casefold)
+    g["department_members"] = sorted(from_depts, key=str.casefold)
+    g["members"] = sorted(set(manual) | seen, key=str.casefold)
+    return g
+
+
+def _manual_members(g: dict) -> list:
+    """개별 멤버 — `_load()` 가 풀어 둔 값, 없으면(해석 전 레코드) 저장된 members."""
+    return list(g.get("manual_members", g.get("members")) or [])
 
 
 def _group_name_key(value: str) -> str:
@@ -258,11 +352,36 @@ def _load() -> list:
             except Exception:
                 pass
         data = migrated
+    dept_members = _department_index()[0]
+    for g in data:
+        if isinstance(g, dict):
+            _resolve_members(g, dept_members)
     return data
 
 
+_DERIVED_KEYS = ("manual_members", "department_members")
+
+
 def _save(groups: list) -> None:
-    save_json(GROUPS_FILE, groups, indent=2)
+    """파생 필드를 버리고 개별 멤버만 `members` 로 저장한다.
+
+    `mail_groups.py` 처럼 `members` 를 직접 고치는 예전 호출부도 있다. 그때는
+    `members` 가 (개별 ∪ 부서) 와 달라지므로, 부서 소속을 뺀 나머지를 개별 멤버로 본다."""
+    out = []
+    for g in groups or []:
+        if not isinstance(g, dict):
+            continue
+        row = {k: v for k, v in g.items() if k not in _DERIVED_KEYS}
+        if "manual_members" in g:
+            members = [str(m).strip() for m in (g.get("members") or []) if str(m).strip()]
+            manual = [str(m).strip() for m in (_manual_members(g)) if str(m).strip()]
+            dept = {str(m).strip() for m in (g.get("department_members") or [])}
+            if set(members) != set(manual) | dept:
+                manual = [m for m in members if m not in dept]
+            row["members"] = sorted(set(manual), key=str.casefold)
+        row["departments"] = _clean_departments(g.get("departments") or [])
+        out.append(row)
+    save_json(GROUPS_FILE, out, indent=2)
 
 
 def _audit(actor: str, action: str, group_id: str, detail: str = "") -> None:
@@ -344,6 +463,7 @@ def filter_by_visibility(items: list, username: str, role: str, key: str = "grou
 class GroupCreate(BaseModel):
     name: str
     description: Optional[str] = None
+    departments: List[str] = []
     members: List[str] = []
     watched_lots: List[str] = []
     modules: List[str] = []
@@ -354,6 +474,7 @@ class GroupCreate(BaseModel):
 class GroupUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    departments: Optional[List[str]] = None
     members: Optional[List[str]] = None
     watched_lots: Optional[List[str]] = None
     modules: Optional[List[str]] = None
@@ -418,6 +539,7 @@ def create_group(req: GroupCreate, request: Request):
         "name": name,
         "description": (req.description or "").strip() or None,
         "owner": me["username"],
+        "departments": _clean_departments(req.departments or []),
         "members": members,
         "watched_lots": sorted(set(req.watched_lots or [])),
         "modules": sorted(set(req.modules or [])),
@@ -426,9 +548,10 @@ def create_group(req: GroupCreate, request: Request):
         "created": now,
         "updated": now,
     }
+    _resolve_members(g)
     groups.append(g)
     _save(groups)
-    _audit(me["username"], "create", gid, name)
+    _audit(me["username"], "create", gid, f"{name} departments={','.join(g['departments'])}")
     return {"ok": True, "group": g}
 
 
@@ -450,9 +573,12 @@ def update_group(req: GroupUpdate, request: Request, id: str = Query(...)):
         g["name"] = name
     if req.description is not None:
         g["description"] = req.description.strip() or None
+    if req.departments is not None:
+        g["departments"] = _clean_departments(req.departments)
     if req.members is not None:
-        # v8.8.1: owner 자동 포함 X. admin/test 필터.
-        g["members"] = sorted(set(_sanitize_members(req.members)))
+        # v8.8.1: owner 자동 포함 X. admin/test 필터. 부서 기준 전환 뒤에는 개별 멤버만 뜻한다.
+        g["manual_members"] = sorted(set(_sanitize_members(req.members)))
+    _resolve_members(g)
     if req.watched_lots is not None:
         g["watched_lots"] = sorted(set(req.watched_lots))
     if req.modules is not None:
@@ -522,9 +648,10 @@ def add_member(req: MemberReq, request: Request, id: str = Query(...)):
     users_by_name = _load_users_by_name()
     if _is_blocked_member(req.username, users_by_name):
         raise HTTPException(400, "admin/test 계정은 멤버로 추가할 수 없습니다.")
-    members = set(g.get("members") or [])
+    members = set(_manual_members(g))
     members.add(req.username)
-    g["members"] = sorted(_sanitize_members(members, users_by_name))
+    g["manual_members"] = sorted(_sanitize_members(members, users_by_name))
+    _resolve_members(g)
     g["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
     _save(groups)
     _audit(me["username"], "member_add", id, req.username)
@@ -550,7 +677,7 @@ def add_members_bulk(req: MembersBulkReq, request: Request, id: str = Query(...)
         for username in users_by_name
         if str(username).strip()
     }
-    existing = [str(member).strip() for member in (g.get("members") or []) if str(member).strip()]
+    existing = [str(member).strip() for member in (_manual_members(g)) if str(member).strip()]
     existing_keys = {member.casefold() for member in existing}
     added: list[str] = []
     already_members: list[str] = []
@@ -574,7 +701,8 @@ def add_members_bulk(req: MembersBulkReq, request: Request, id: str = Query(...)
         added.append(actual)
 
     if added:
-        g["members"] = sorted(existing, key=str.casefold)
+        g["manual_members"] = sorted(existing, key=str.casefold)
+        _resolve_members(g)
         g["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
         _save(groups)
         _audit(me["username"], "member_add_bulk", id, ",".join(added))
@@ -598,8 +726,9 @@ def remove_member(req: MemberReq, request: Request, id: str = Query(...)):
         raise HTTPException(404)
     if not _can_edit(g, me["username"], me.get("role", "user")):
         raise HTTPException(403)
-    # v8.8.1: owner 자동 포함 정책 제거. 멤버는 자유롭게 제거 가능.
-    g["members"] = sorted([m for m in (g.get("members") or []) if m != req.username])
+    # v8.8.1: owner 자동 포함 정책 제거. 개별 멤버만 뺄 수 있다 — 부서 소속은 부서에서 뺀다.
+    g["manual_members"] = sorted([m for m in (_manual_members(g)) if m != req.username])
+    _resolve_members(g)
     g["updated"] = datetime.datetime.now().isoformat(timespec="seconds")
     _save(groups)
     _audit(me["username"], "member_remove", id, req.username)
@@ -658,9 +787,30 @@ def eligible_users(request: Request):
             "role": u.get("role", "user") if isinstance(u, dict) else "user",
             # v8.8.27: 이름(실명) 라벨. FE 가 `{name} ({username})` 로 표시.
             "name": (u.get("name", "") if isinstance(u, dict) else "").strip(),
+            "department": (u.get("department", "") if isinstance(u, dict) else "").strip(),
         })
     out.sort(key=lambda x: ((x.get("name") or "").lower(), x["username"].lower()))
     return {"users": out}
+
+
+@router.get("/departments")
+def list_departments(request: Request):
+    """그룹에 넣을 수 있는 부서 목록 — users.csv 의 부서별 승인 사용자 수.
+
+    부서명은 SSO 로그인 때 채워진다. 아직 아무도 로그인하지 않은 부서도 그룹에
+    적어 둘 수 있다(그 부서 사람이 처음 로그인하는 순간 멤버가 된다)."""
+    current_user(request)
+    members, labels, names = _department_index()
+    rows = [
+        {
+            "department": labels.get(key, key),
+            "count": len(users),
+            "users": [{"username": u, "name": names.get(u, "")} for u in users[:200]],
+        }
+        for key, users in members.items()
+    ]
+    rows.sort(key=lambda r: r["department"].casefold())
+    return {"departments": rows}
 
 
 @router.get("/audit")

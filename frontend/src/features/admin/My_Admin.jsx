@@ -8,6 +8,7 @@ import { Icon, IconLabel } from "../../components/ui/Icon";
 import { PROCESS_AREAS, areaColor } from "../../constants/processAreas";
 import { sf, dl, postJson, userLabel, userMatches } from "../../lib/api";
 import { SUB_TABS, TABS } from "../../config";
+import { ADMIN_NAV_SECTIONS } from "../../app/pageManifest";
 import { INHERITED_TAB_ACCESS, inheritedAccessSources } from "../../lib/permissions";
 // v9.2.x: 에이전트 탭 재편 — Semantic layer 편집기와 LLM 설정을 관리 탭으로 이관.
 import SemanticLayerPanel from "../../components/agent/SemanticLayerPanel";
@@ -15,6 +16,8 @@ import ProductSemanticPanel from "../productwiki/ProductSemanticPanel";
 import ProductAdminPanel from "./ProductAdminPanel";
 import FlowiRoutesPanel from "./FlowiRoutesPanel";
 import DomainKnowledgePanel from "./DomainKnowledgePanel";
+import DepartmentAccessPanel from "./DepartmentAccessPanel";
+import OpsScanPanel from "./OpsScanPanel";
 import LlmTab from "../../components/agent/LlmTab";
 import { setVisibleInterval } from "../../lib/visibleInterval";
 // v8.8.3: inform/meeting/calendar 권한 항목 추가.
@@ -220,94 +223,29 @@ function HistoryPager({offset=0,limit=HISTORY_PAGE_SIZE,total=0,hasMore=false,lo
   </div>;
 }
 
-// v9.4.x: 워커 분산 패널 — 개발서버 신호등 · 역할 설정 · 원격 기동 (docs/WORKER_DISPATCH.md).
-// 8초 폴링으로 heartbeat 를 확인해 신호등을 자동 갱신한다. "켜기"는 shared
-// workspace 의 start_request 를 남기고, 개발서버 상주 워치독이 이를 소비해
-// uvicorn 워커를 띄운다 (워치독이 죽어 있으면 버튼 대신 안내 문구).
-const WD_ANIM=`@keyframes wdPulse{0%{opacity:1}50%{opacity:0.45}100%{opacity:1}}`;
-const WORKER_ROLE_LABELS={api:"운영 (API)",worker:"개발 (워커)"};
-function WorkerPanel(){
+// 무거운 작업 패널 — 운영 단일 서버에서 지금 도는 캐시 빌드·스캔·Auto report 와
+// 메모리·대기 한도로 미뤄진 횟수(core/heavy_jobs.py). 8초 폴링.
+const HEAVY_STAT_LABELS={ran:"실행",memory_guard:"메모리 부족으로 미룸",queue_timeout:"대기 시간 초과",idle_deferred:"사용자 요청 많아 미룸",cache_gate_timeout:"캐시 슬롯 대기 초과"};
+function HeavyJobsPanel(){
   const[st,setSt]=useState(null);
-  const[roleSel,setRoleSel]=useState("");
-  const[busy,setBusy]=useState(false);
-  const load=()=>sf("/api/admin/worker").then(d=>{setSt(d);setRoleSel(prev=>prev||d.role);}).catch(()=>{});
+  const load=()=>sf("/api/monitor/heavy-jobs").then(setSt).catch(()=>{});
   useEffect(()=>{load();const t=setInterval(load,8000);return()=>clearInterval(t);},[]);
   if(!st)return null;
-  const alive=!!st.worker_alive;
-  const pending=!alive&&!!st.start_request_pending;
-  const lightColor=alive?OK.fg:(pending?WARN.fg:BAD.fg);
-  const lightText=alive?"개발서버 온라인":(pending?"기동 요청됨 — 부팅 대기 중":"개발서버 오프라인");
-  const hbAge=st.heartbeat_age_sec;
-  const saveRole=()=>{
-    if(busy||!roleSel||roleSel===st.role)return;
-    setBusy(true);
-    sf("/api/admin/worker/role",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({role:roleSel})})
-      .then(d=>{setSt(d);toast.ok(`이 서버 역할을 '${WORKER_ROLE_LABELS[roleSel]||roleSel}'(으)로 고정했습니다. 즉시 반영되며 재시작 후에도 유지됩니다.`);})
-      .catch(e=>toast.error(e.message||"역할 변경 실패")).finally(()=>setBusy(false));
-  };
-  const startWorker=()=>{
-    if(busy)return;
-    setBusy(true);
-    sf("/api/admin/worker/start",{method:"POST"})
-      .then(d=>{
-        if(d.already_running)toast.ok("개발서버가 이미 켜져 있습니다.");
-        else if(d.ok)toast.ok("기동 요청을 보냈습니다 — 워커 부팅까지 수십 초 걸릴 수 있습니다.");
-        else toast.warn(d.error||"기동 요청 실패");
-        if(d.status)setSt(d.status);
-      })
-      .catch(e=>toast.error(e.message||"기동 요청 실패")).finally(()=>setBusy(false));
-  };
+  const running=st.running||[];
   const stats=st.stats||{};
-  const hb=st.heartbeat||{};
   return(<div style={{background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16,marginBottom:16}}>
-    <style>{WD_ANIM}</style>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
-        <span title={lightText} style={{width:14,height:14,borderRadius:"50%",background:lightColor,flexShrink:0,
-          boxShadow:`0 0 6px ${lightColor}`,animation:(alive||pending)?"wdPulse 1.6s ease-in-out infinite":"none"}}/>
-        <div>
-          <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>워커 서버 (개발서버 분산)</div>
-          <div style={{fontSize:14,color:alive?"var(--text-secondary)":lightColor,marginTop:2}}>
-            {lightText}
-            {alive&&hbAge!=null&&` · heartbeat ${Math.round(hbAge)}초 전`}
-            {alive&&hb.owner&&` · ${hb.owner}`}
-            {alive&&(hb.running||[]).length>0&&` · 실행 중 ${(hb.running||[]).length}건`}
-            {!alive&&st.offline_reason==="stale"&&hbAge!=null&&` · 마지막 heartbeat ${Math.round(hbAge)}초 전`}
-            {!alive&&st.offline_reason==="no_heartbeat"&&" · heartbeat 기록 없음 — 개발서버 FLOW_DATA_ROOT 가 같은 flow-data 를 보는지 확인"}
-            {alive&&st.clock_skew_suspected&&" · 서버 간 시계 차이 감지 (변화 감지로 온라인 판정)"}
-          </div>
+      <div>
+        <div style={{fontSize:14,fontWeight:800,color:"var(--text-primary)"}}>무거운 작업 (이 서버)</div>
+        <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:2}}>
+          {running.length?running.map(r=>`${r.label} · ${Math.round(r.elapsed_sec)}초`).join(" / "):"지금 도는 캐시 빌드·스캔·Auto report 없음"}
         </div>
       </div>
-      <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
-        <Button variant="subtle" onClick={load}>새로고침</Button>
-        {!alive&&(st.watchdog_alive
-          ?<Button variant="primary" disabled={busy||pending} onClick={startWorker}>{pending?"기동 대기 중...":"개발서버 켜기"}</Button>
-          :<span title="개발서버 머신에서 python scripts/worker_watchdog.py 를 상주시키면 여기서 원격 기동할 수 있습니다."
-              style={{fontSize:13,color:"var(--text-secondary)"}}>워치독 미응답 — 원격 기동 불가</span>)}
-      </div>
-    </div>
-    <div style={{display:"flex",gap:14,alignItems:"center",flexWrap:"wrap",marginTop:12,paddingTop:12,borderTop:"1px solid var(--border)"}}>
-      <span style={{fontSize:14,color:"var(--text-secondary)"}}>이 서버 역할</span>
-      <select value={roleSel} onChange={e=>setRoleSel(e.target.value)} disabled={!st.role_editable||busy}
-        style={{fontSize:14,padding:"6px 10px",borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)"}}>
-        {Object.entries(WORKER_ROLE_LABELS).map(([k,l])=><option key={k} value={k}>{l}</option>)}
-      </select>
-      {st.role_editable
-        ?<Button variant="subtle" disabled={busy||roleSel===st.role} onClick={saveRole}
-          title="한 번 저장하면 이 서버에 영구 고정됩니다. 개발은 공유 data root의 호스트별 worker 마커를 만들고, 운영은 역할 마커를 지웁니다.">역할 저장</Button>
-        :<Pill tone="neutral" size="sm">FLOW_SERVER_ROLE env 고정</Pill>}
-      <span style={{fontSize:13,color:"var(--text-secondary)",fontFamily:"monospace"}}>
-        role={st.role} ({st.role_source}) · queue {st.queue_depth||0} · 오프로드 {stats.offloaded||0} · 원격성공 {stats.remote_ok||0} · 로컬폴백 {(stats.local_fallback||0)+(stats.remote_fail||0)}
-      </span>
+      <Button variant="subtle" onClick={load}>새로고침</Button>
     </div>
     <div style={{fontSize:13,color:"var(--text-secondary)",marginTop:8}}>
-      {st.role_marker
-        ? <>역할 마커 <code style={{fontFamily:"monospace"}}>{st.role_marker}</code> — 이 파일이 이 서버의 역할을 고정합니다. 지우면 다음 기동부터 운영으로 뜹니다.</>
-        : <>역할 마커 없음 — 이 서버는 재시작해도 항상 <b>운영(API)</b>으로 뜹니다. 개발 워커로 쓰려면 <code style={{fontFamily:"monospace"}}>{st.worker_marker_path||".dev_worker"}</code> 파일을 만드세요.</>}
+      서버 기동 이후 · {Object.entries(HEAVY_STAT_LABELS).map(([k,l])=>`${l} ${stats[k]||0}`).join(" · ")}
     </div>
-    {st.role==="api"&&!alive&&<div style={{fontSize:13,color:"var(--text-secondary)",marginTop:8}}>
-      개발서버가 꺼져 있거나 작업을 받을 수 없으면 운영서버가 모든 작업을 직접 처리합니다. heartbeat가 돌아오면 자동으로 다시 분산됩니다.
-    </div>}
   </div>);
 }
 
@@ -418,12 +356,17 @@ export default function My_Admin({user}){
     return()=>{clearTimeout(timer);dlRequestRef.current++;};
   },[dlFilter.q,dlFilter.source,dlOffset,tab,isAdmin,user?.username]);
   const loadQa=()=>{if(!isAdmin)return;sf("/api/admin/qa/report").then(d=>{setQaReport(d.report||{runs:[]});}).catch(e=>setQaMsg(e.message));};
-  const loadSys=()=>{sf("/api/monitor/system").then(setSys).catch(()=>{});
-    sf(`/api/monitor/resource-log?limit=${RESOURCE_LOG_LIMIT}`).then(d=>setResLog(d.logs||[])).catch(()=>{});
+  // 현재 값(system·farm-status)은 2초 폴링, 7일 이력(resource-log, 5분 샘플 ~2MB)은
+  // 탭 진입·새로고침·1분 주기로만 받는다 — 이력은 5분에 한 줄만 늘어난다.
+  const loadSysLive=()=>{sf("/api/monitor/system").then(setSys).catch(()=>{});
     sf("/api/monitor/farm-status").then(d=>{setFarmStatus(d||{});if(d?.schedule)setPaverSchedule(d.schedule);}).catch(()=>{});};
+  const loadResLog=()=>sf(`/api/monitor/resource-log?limit=${RESOURCE_LOG_LIMIT}`).then(d=>setResLog(d.logs||[])).catch(()=>{});
+  const loadSys=()=>{loadSysLive();loadResLog();};
   useEffect(()=>{
     if(!isAdmin||tab!=="monitor")return;
-    return setVisibleInterval(loadSys,2000);
+    const stopLive=setVisibleInterval(loadSysLive,2000);
+    const stopLog=setVisibleInterval(loadResLog,60000);
+    return()=>{stopLive();stopLog();};
   },[isAdmin,tab]);
   const startPaverLoad=()=>{
     if(!isAdmin||loadBusy)return;
@@ -529,24 +472,32 @@ export default function My_Admin({user}){
     try{ if(k==="qa")loadQa(); }catch(e){console.warn("[admin tab] qa loader threw",e);}
   };
   // 홈 알람(가입 승인 요청 등)이 `/admin?tab=users` 로 보내면 그 소탭을 바로 연다.
+  // 상단 "관리" 메뉴의 운영/시스템/에이전트는 `/admin?section=<k>` 로 와서 그 구역의 마지막 소탭을 연다.
   useEffect(()=>{
     if(!isAdmin)return;
     const openFromSearch=(search)=>{
-      const k=new URLSearchParams(search||"").get("tab");
-      if(k&&ADMIN_SECTIONS.some(sec=>sec.tabs.some(([t])=>t===k)))openTab(k);
+      const params=new URLSearchParams(search||"");
+      const k=params.get("tab");
+      if(k&&ADMIN_SECTIONS.some(sec=>sec.tabs.some(([t])=>t===k))){openTab(k);return;}
+      const next=ADMIN_SECTIONS.find(sec=>sec.k===params.get("section"));
+      if(!next)return;
+      const remembered=lastTabBySection.current[next.k];
+      openTab(next.tabs.some(([t])=>t===remembered)?remembered:next.tabs[0][0]);
     };
     openFromSearch(window.location.search);
     const onNavigate=(e)=>{if(e?.detail?.tab==="admin")openFromSearch(e.detail.search);};
     window.addEventListener("flow:navigate",onNavigate);
-    return()=>window.removeEventListener("flow:navigate",onNavigate);
+    window.addEventListener("flow:location",onNavigate);
+    return()=>{
+      window.removeEventListener("flow:navigate",onNavigate);
+      window.removeEventListener("flow:location",onNavigate);
+    };
   },[isAdmin]);
+  // 상단 메뉴가 지금 구역을 활성으로 표시하게 알린다.
+  useEffect(()=>{
+    if(section)window.dispatchEvent(new CustomEvent("flow:admin-section",{detail:{section:section.k}}));
+  },[section?.k]);
   if(section)lastTabBySection.current[section.k]=tab;
-  const openSection=(k)=>{
-    const next=ADMIN_SECTIONS.find(sec=>sec.k===k);
-    if(!next||next.k===section?.k)return;
-    const remembered=lastTabBySection.current[k];
-    openTab(next.tabs.some(([t])=>t===remembered)?remembered:next.tabs[0][0]);
-  };
   const tabItems=(tabs||[]).map(([k,l])=>({k,l,badge:k==="users"&&isAdmin&&userCounts.pending>0?`대기 ${userCounts.pending}`:undefined}));
   // username → 권한 그룹명 (한 사용자는 하나의 권한 그룹에만 속함)
   const userPermGroup={};
@@ -579,15 +530,17 @@ export default function My_Admin({user}){
   const pagedUsers=visibleUsers.slice(safeUserPage*USER_PAGE_SIZE,(safeUserPage+1)*USER_PAGE_SIZE);
   return(
     <div style={{padding:"24px 32px",background:"var(--bg-primary)",minHeight:"calc(100vh - 52px)",color:"var(--text-primary)",fontFamily:"'Pretendard',sans-serif"}}>
-      <PageHeader
-        title={isAdmin?"관리자 콘솔":"내 관리"}
-        subtitle={isAdmin?undefined:"내 알림과 로그를 확인합니다."}
+      {/* 관리자는 상단 내비게이션(관리 › 관리자)과 사용자 표시가 이미 제목 역할을 한다 —
+          그 바로 아래 "관리자 콘솔" 제목 카드를 또 그리면 같은 제목이 두 번 보였다.
+          일반 사용자 화면(내 관리)은 안내 문구가 있어 헤더를 유지한다. */}
+      {!isAdmin&&<PageHeader
+        title="내 관리"
+        subtitle="내 알림과 로그를 확인합니다."
         right={<div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           <Pill tone="neutral" size="md">{user?.username||"guest"}</Pill>
         </div>}
         style={{borderRadius:10,border:"1px solid var(--border)",marginBottom:14}}
-      />
-      {isAdmin&&<AdminSwitcher label="관리 구역" items={ADMIN_SECTIONS} active={section.k} onChange={openSection}/>}
+      />}
       <TabStrip
         items={tabItems}
         active={tab}
@@ -970,8 +923,8 @@ export default function My_Admin({user}){
            필드명 불일치로 사용량이 전부 0 으로 표시되던 문제. */}
       {tab==="monitor"&&isAdmin&&<div>
         <style>{FARM_ANIM}</style>
-        {/* v9.4.x: 워커 분산 — 개발서버 신호등/역할/원격 기동 */}
-        <WorkerPanel/>
+        {/* 운영 단일 서버의 무거운 작업 현황 */}
+        <HeavyJobsPanel/>
         {farmStatus.farming&&<div style={{background:WARN.bg,border:`1px solid ${WARN.fg}`,borderRadius:10,padding:16,marginBottom:16,display:"flex",alignItems:"center",gap:16}}>
           <div style={{animation:"fabFarm 1s ease-in-out infinite",fontSize:32,color:"var(--accent)"}}><Icon name="factory" /></div>
           <div><div style={{fontSize:14,fontWeight:700,color:WARN.fg}}>{farmStatus.paver_active?"CPU·RAM 보도블럭 가는 중...":"FAB-i 가 farming 중..."}</div>
@@ -1082,6 +1035,9 @@ export default function My_Admin({user}){
       {/* v9.2.x: LLM 연결/설정 — 에이전트 탭에서 이관 (admin only) */}
       {tab==="llm_cfg"&&isAdmin&&<LlmTab isAdmin={isAdmin}/>}
 
+      {/* 운영 점검 스캔 — 읽기 전용 점검 + LLM 추천 (admin only) */}
+      {tab==="ops_scan"&&isAdmin&&<OpsScanPanel onOpenAdminTab={openTab}/>}
+
       {/* v8.7.2: Mail API (admin only) */}
       {tab==="mail_cfg"&&isAdmin&&<MailCfgPanel/>}
 
@@ -1095,6 +1051,9 @@ export default function My_Admin({user}){
 
       {/* 데이터챗 추천 질문 관리 (admin only) */}
       {tab==="chat_prompts"&&isAdmin&&<ChatPromptsPanel/>}
+
+      {/* 사내 로그인(websocket) 부서별 로그인·권한 규칙 + 암호화된 관리자·대리인 정보 */}
+      {tab==="dept_access"&&isAdmin&&<DepartmentAccessPanel onChanged={load}/>}
       </TabBoundary>
     </div>);
 }
@@ -1105,11 +1064,15 @@ export default function My_Admin({user}){
 // v9.0.3: 메시지 기능은 "문의함" 용어로 정리.
 // ── 관리자 구역 ─────────────────────────────────────────────────────
 // 운영: 사람과 업무 권한·활동 / 시스템: 서버·데이터·백업 / 에이전트: LLM·지식·학습.
+// 구역 이름·설명은 상단 메뉴와 같은 원천(app/pageManifest ADMIN_NAV_SECTIONS)을 쓴다.
 const ADMIN_SECTIONS=[
-  {k:"ops",l:"운영",hint:"사용자 · 업무 권한 · 활동",tabs:[["users","사용자"],["perms","업무 권한·위임"],["groups","그룹"],["notifs","알림"],["activity_dash","활동 현황"],["logs","관리 로그"],["downloads","다운로드"]]},
-  {k:"system",l:"시스템",hint:"서버 · 데이터 · 백업",tabs:[["monitor","모니터"],["data_roots","데이터 루트"],["backup_sched","백업"],["mail_cfg","메일 API"],["qa","QA 점검"]]},
-  {k:"agent",l:"에이전트",hint:"LLM · 지식 · 학습",tabs:[["llm_cfg","LLM 설정"],["domain_knowledge","기본지식"],["flowi_learning","Flow-i 학습"],["product_admin","제품 공정·시맨틱"],["chat_prompts","추천 질문"]]},
-];
+  {k:"ops",tabs:[["users","사용자"],["dept_access","사내 로그인·관리자"],["perms","업무 권한·위임"],["groups","그룹"],["notifs","알림"],["activity_dash","활동 현황"],["logs","관리 로그"],["downloads","다운로드"]]},
+  {k:"system",tabs:[["monitor","모니터"],["data_roots","데이터 루트"],["backup_sched","백업"],["mail_cfg","메일 API"],["qa","QA 점검"]]},
+  {k:"agent",tabs:[["llm_cfg","LLM 설정"],["domain_knowledge","기본지식"],["flowi_learning","Flow-i 학습"],["product_admin","제품 공정·시맨틱"],["chat_prompts","추천 질문"],["ops_scan","운영 점검 스캔"]]},
+].map(sec=>{
+  const nav=ADMIN_NAV_SECTIONS.find(n=>n.id===sec.k)||{};
+  return {...sec,l:nav.label||sec.k,hint:nav.hint||""};
+});
 const PERM_VIEWS=[
   {k:"work",l:"업무별"},
   {k:"users",l:"사용자별"},
@@ -2364,8 +2327,11 @@ function ChatPromptsPanel(){
   );
 }
 
+const ACTIVITY_EXCLUDE_ADMINS_KEY="flow_admin_activity_exclude_admins";
 function ActivityDashboardPanel(){
   const [days,setDays]=useState(0);
+  // 관리자(hol 등 role=admin) 활동이 많아 일반 사용자 패턴이 묻힌다 — 빼고 보는 선택. 브라우저별로 기억.
+  const [excludeAdmins,setExcludeAdmins]=useState(()=>{try{return localStorage.getItem(ACTIVITY_EXCLUDE_ADMINS_KEY)==="1";}catch{return false;}});
   const [userPeriod,setUserPeriod]=useState("monthly");
   const [periodPage,setPeriodPage]=useState(0);
   const [summary,setSummary]=useState(null);
@@ -2384,10 +2350,15 @@ function ActivityDashboardPanel(){
   const reload=()=>{
     const requestId=++summaryRequestRef.current;
     setErr("");
-    sf("/api/admin/activity/summary?include_recent=false&days="+days).then(d=>{if(requestId===summaryRequestRef.current)setSummary(d);}).catch(e=>{if(requestId===summaryRequestRef.current)setErr("요약 로드 오류: "+e.message);});
-    sf("/api/admin/activity/features?days="+days).then(d=>{if(requestId===summaryRequestRef.current)setFeatures(d);}).catch(()=>{});
+    const scope=excludeAdmins?"&exclude_admins=true":"";
+    sf("/api/admin/activity/summary?include_recent=false&days="+days+scope).then(d=>{if(requestId===summaryRequestRef.current)setSummary(d);}).catch(e=>{if(requestId===summaryRequestRef.current)setErr("요약 로드 오류: "+e.message);});
+    sf("/api/admin/activity/features?days="+days+scope).then(d=>{if(requestId===summaryRequestRef.current)setFeatures(d);}).catch(()=>{});
   };
-  useEffect(()=>{reload();return()=>{summaryRequestRef.current++;};},[days]);
+  useEffect(()=>{reload();return()=>{summaryRequestRef.current++;};},[days,excludeAdmins]);
+  const toggleExcludeAdmins=(checked)=>{
+    setEventOffset(0);setExcludeAdmins(checked);
+    try{localStorage.setItem(ACTIVITY_EXCLUDE_ADMINS_KEY,checked?"1":"0");}catch{}
+  };
   useEffect(()=>{setPeriodPage(0);},[days,userPeriod]);
   useEffect(()=>{
     const element=eventSectionRef.current;
@@ -2404,6 +2375,7 @@ function ActivityDashboardPanel(){
     const requestId=++eventRequestRef.current;
     const q=new URLSearchParams({limit:String(HISTORY_PAGE_SIZE),offset:String(eventOffset),days:String(days)});
     if(eventUsername)q.set("username",eventUsername);
+    if(excludeAdmins)q.set("exclude_admins","true");
     setEventLoading(true);setEventError("");
     const timer=setTimeout(()=>{
       sf("/api/admin/logs?"+q.toString()).then(d=>{
@@ -2414,7 +2386,7 @@ function ActivityDashboardPanel(){
         .finally(()=>{if(requestId===eventRequestRef.current)setEventLoading(false);});
     },250);
     return()=>{clearTimeout(timer);eventRequestRef.current++;};
-  },[days,eventUsername,eventOffset,eventSectionVisible]);
+  },[days,eventUsername,eventOffset,eventSectionVisible,excludeAdmins]);
   // 라벨 칸을 고정폭으로 못박아 바 시작점을 정렬한다. minWidth 만 주면 라벨이
   // 길어질 때(액션명) 칸이 늘어나 행마다 바 왼쪽이 어긋난다 — 넘치면 ellipsis + title.
   const barItem=(label,val,max,color,labelW=120)=>(<div key={String(label)} style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
@@ -2450,7 +2422,11 @@ function ActivityDashboardPanel(){
       <span style={{fontSize:14,fontWeight:700}}>활동 대시보드</span>
       <span style={{fontSize:14,color:"var(--text-secondary)"}}>조회 기간</span>
       {[{days:0,label:"전체"},{days:1,label:"1일"},{days:7,label:"7일"},{days:30,label:"30일"},{days:90,label:"90일"}].map(option=>(<span key={option.days} onClick={()=>{setEventOffset(0);setDays(option.days);}} style={{cursor:"pointer",fontSize:14,padding:"3px 10px",borderRadius:6,background:days===option.days?"var(--accent-glow)":"transparent",color:days===option.days?"var(--accent)":"var(--text-secondary)",fontWeight:days===option.days?700:500,border:"1px solid "+(days===option.days?"var(--accent)":"var(--border)")}}>{option.label}</span>))}
-      {summary&&<span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:"auto"}}>{days===0&&summary.activity_start&&summary.activity_end&&`보존 기록 ${summary.activity_start} ~ ${summary.activity_end} · `}총 {summary.total}건 · 기능 {features?.feature_count||0}개</span>}
+      <label title="role=admin 계정의 활동을 모든 집계·이벤트 이력에서 뺍니다" style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:14,cursor:"pointer",color:excludeAdmins?"var(--text-primary)":"var(--text-secondary)"}}>
+        <input type="checkbox" checked={excludeAdmins} onChange={e=>toggleExcludeAdmins(e.target.checked)}/>
+        관리자 제외{excludeAdmins&&_arr(summary?.excluded_users).length>0?` (${_arr(summary.excluded_users).join(", ")})`:" (hol 등)"}
+      </label>
+      {summary&&<span style={{fontSize:14,color:"var(--text-secondary)",marginLeft:"auto"}}>{days===0&&summary.activity_start&&summary.activity_end&&`보존 기록 ${summary.activity_start} ~ ${summary.activity_end} · `}총 {summary.total}건{excludeAdmins&&summary.excluded_count>0?` (관리자 ${Number(summary.excluded_count).toLocaleString()}건 제외)`:""} · 기능 {features?.feature_count||0}개</span>}
       {err&&<span style={{fontSize:14,color:BAD.fg}}>{err}</span>}
     </div>
     <div style={{gridColumn:"1 / -1",minWidth:0,background:"var(--bg-secondary)",borderRadius:10,border:"1px solid var(--border)",padding:16}}>
@@ -3100,7 +3076,10 @@ function DataRootsPanel(){
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:16,lineHeight:1.5}}>
       flow 는 기본적으로 <b>DB 루트 하나</b>만 받습니다. 로컬 checkout 기본값은
       <span style={{fontFamily:"monospace"}}> data/Fab </span>,
-      prod 앱 루트 또는 FLOW_PROD=1 에서는
+      Windows 운영 서버(setup.py 로 푼 설치본)는
+      <span style={{fontFamily:"monospace"}}> D:\DB </span>(flow-data 는
+      <span style={{fontFamily:"monospace"}}> D:\flow-data </span>),
+      Linux 운영은
       <span style={{fontFamily:"monospace"}}> /config/work/sharedworkspace/DB </span>
       입니다. 단일 파일(rulebook, ML_TABLE, features parquet)도 DB 루트 최상단에서 읽습니다.
       우선순위: <b>FLOW env → admin_settings.data_roots → default</b>.
@@ -3125,13 +3104,14 @@ function DataRootsPanel(){
       <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:12,lineHeight:1.5}}>
         data_root 전체와 DB 루트 최상단 설정 파일을 zip 스냅샷으로 백업합니다.
         서버 기동 시 1회 + 설정된 주기로 자동 실행. 보관개수 초과 시 오래된 백업부터 자동 삭제.
-        경로를 비워두면 현재 <span style={{fontFamily:"monospace"}}>/config/work/sharedworkspace</span> 를 자동 사용합니다.
+        경로를 비워두면 <span style={{fontFamily:"monospace"}}>{backup.default_path||"기본 위치"}</span> 를 자동 사용합니다
+        (Windows 는 flow-data 옆 flow-backups 폴더).
       </div>
       <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:10,alignItems:"end"}}>
         <div>
-          <div style={L}>백업 경로 (비워두면 /config/work/sharedworkspace 자동)</div>
+          <div style={L}>백업 경로 (비워두면 {backup.default_path||"기본 위치"} 자동)</div>
           <input value={backup.path||""} onChange={e=>setBackup({...backup,path:e.target.value})}
-            placeholder="예: /config/work/sharedworkspace"
+            placeholder={backup.default_path?`예: ${backup.default_path}`:"예: D:\\flow-backups"}
             style={I}/>
         </div>
         <div>
@@ -3795,47 +3775,52 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
   const [editDesc,setEditDesc]=useState("");
   const [editDescSaved,setEditDescSaved]=useState(false);
   const [msg,setMsg]=useState("");
-  const [memberSearch,setMemberSearch]=useState("");
-  const [bulkMemberText,setBulkMemberText]=useState("");
-  const [bulkAdding,setBulkAdding]=useState(false);
-  // v8.8.1: 그룹 멤버 후보. admin/test 제외 — 모든 로그인 유저가 조회 가능.
+  // 그룹 소속은 사람이 아니라 부서 기준 — 부서 목록(부서별 승인 사용자)과 입력칸.
+  const [deptQuery,setDeptQuery]=useState("");
+  const [departments,setDepartments]=useState([]);
   const [eligible,setEligible]=useState([]);
   const load=()=>sf("/api/groups/list").then(d=>setGroups(d.groups||[])).catch(e=>setMsg(e.message));
+  const loadDepartments=()=>sf("/api/groups/departments").then(d=>setDepartments(d.departments||[])).catch(()=>setDepartments([]));
   const loadEligible=()=>sf("/api/groups/eligible-users")
     .then(d=>setEligible(d.users||[]))
     .catch(()=>setEligible((allUsers||[]).filter(u=>u.role!=="admin"&&!/test/i.test(u.username||""))));
-  useEffect(()=>{load();loadEligible();},[]);
+  useEffect(()=>{load();loadDepartments();loadEligible();},[]);
   const create=()=>{
     const n=newName.trim();if(!n)return;
     sf("/api/groups/create",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({name:n,description:newDesc.trim()||null,members:[]})})
-      .then(()=>{setNewName("");setNewDesc("");setMsg("생성 완료");load();}).catch(e=>setMsg(e.message));
+      body:JSON.stringify({name:n,description:newDesc.trim()||null,departments:[],members:[]})})
+      .then(d=>{setNewName("");setNewDesc("");setMsg("생성 완료 — 오른쪽에서 소속 부서를 지정하세요");if(d?.group?.id)setSel(d.group.id);load();}).catch(e=>setMsg(e.message));
   };
   const del=(id)=>{if(!confirm("삭제하시겠습니까?"))return;
     sf("/api/groups/delete?id="+encodeURIComponent(id),{method:"POST"})
       .then(()=>{setSel(null);load();}).catch(e=>setMsg(e.message));};
-  const addMember=(id,u)=>sf("/api/groups/members/add?id="+encodeURIComponent(id),
-    {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u})})
-    .then(()=>{setMemberSearch("");return load();}).catch(e=>setMsg(e.message));
-  const addMembersBulk=async(id)=>{
-    const entries=bulkMemberText.trim();
-    if(!entries){setMsg("일괄 등록할 이메일 또는 ID를 입력하세요.");return;}
-    setBulkAdding(true);
-    try{
-      const d=await sf("/api/groups/members/add-bulk?id="+encodeURIComponent(id),
-        {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({entries})});
-      const notes=[`${(d.added||[]).length}명 추가`];
-      if((d.already_members||[]).length)notes.push(`${d.already_members.length}명 기존 멤버`);
-      if((d.not_found||[]).length)notes.push(`미등록 ID: ${d.not_found.join(", ")}`);
-      if((d.rejected||[]).length)notes.push(`제외: ${d.rejected.join(", ")}`);
-      setMsg(notes.join(" · "));
-      setBulkMemberText("");
-      await load();
-    }catch(e){setMsg(e.message);}finally{setBulkAdding(false);}
+  const saveDepartments=(id,list,extra={})=>sf("/api/groups/update?id="+encodeURIComponent(id),
+    {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({departments:list,...extra})})
+    .then(()=>{setDeptQuery("");return load();}).catch(e=>setMsg(e.message));
+  const deptKey=(v)=>String(v||"").trim().split(/\s+/).join(" ").toLowerCase();
+  const addDepartment=(g,label)=>{
+    const clean=String(label||"").trim().split(/\s+/).join(" ");
+    if(!clean)return;
+    const cur=g.departments||[];
+    if(cur.some(d=>deptKey(d)===deptKey(clean))){setDeptQuery("");return;}
+    saveDepartments(g.id,[...cur,clean]);
   };
+  const rmDepartment=(g,label)=>saveDepartments(g.id,(g.departments||[]).filter(d=>deptKey(d)!==deptKey(label)));
   const rmMember=(id,u)=>sf("/api/groups/members/remove?id="+encodeURIComponent(id),
     {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u})})
     .then(load);
+  // 예전 개별 멤버 → 그 사람들의 부서로 전환(개별 멤버는 비운다).
+  const convertManualToDepartments=(g)=>{
+    const byUser=Object.fromEntries((eligible||[]).map(u=>[u.username,u]));
+    const manual=g.manual_members||[];
+    const found=[];const missing=[];
+    manual.forEach(m=>{const d=String(byUser[m]?.department||"").trim();if(d)found.push(d);else missing.push(m);});
+    const merged=[...(g.departments||[])];
+    found.forEach(d=>{if(!merged.some(x=>deptKey(x)===deptKey(d)))merged.push(d);});
+    const note=missing.length?`\n부서 정보가 없는 ${missing.length}명(${missing.slice(0,5).join(", ")}${missing.length>5?" …":""})은 개별 멤버로 남습니다.`:"";
+    if(!confirm(`개별 멤버 ${manual.length}명을 부서 ${merged.length-(g.departments||[]).length}곳으로 전환합니다.${note}`))return;
+    saveDepartments(g.id,merged,{members:missing}).then(()=>setMsg("부서 기준으로 전환했습니다"));
+  };
   const addLot=(id)=>{const v=newLot.trim();if(!v)return;
     sf("/api/groups/lots/add?id="+encodeURIComponent(id),
       {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({lot_id:v})})
@@ -3862,16 +3847,16 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
   useEffect(()=>{
     setEditDesc(cur?.description||"");
     setEditDescSaved(false);
-    setMemberSearch("");
-    setBulkMemberText("");
+    setDeptQuery("");
   },[sel,cur?.description]);
-  // v8.8.1: admin/test 제외된 후보 풀에서 이미 멤버인 사람 제외.
-  // v8.8.27: 후보를 username 문자열이 아닌 유저 오브젝트({username,name})로 보존 → 드롭다운에서 이름+id 표시.
-  const currentMemberKeys=new Set((cur?.members||[]).map(m=>String(m||"").toLowerCase()));
-  const availableUserObjs=(eligible||[]).filter(u=>u&&u.username&&!currentMemberKeys.has(String(u.username).toLowerCase()));
-  const memberSearchResults=memberSearch.trim()
-    ?availableUserObjs.filter(u=>userMatches(u,memberSearch)).slice(0,12)
-    :[];
+  // 부서 후보 — 이미 지정한 부서는 빼고, 입력한 글자로 거른다.
+  const curDeptKeys=new Set((cur?.departments||[]).map(deptKey));
+  const deptCounts=Object.fromEntries((departments||[]).map(d=>[deptKey(d.department),d.count]));
+  const q=deptQuery.trim().toLowerCase();
+  const deptCandidates=(departments||[])
+    .filter(d=>!curDeptKeys.has(deptKey(d.department))&&(!q||d.department.toLowerCase().includes(q)))
+    .slice(0,12);
+  const exactDeptKnown=q&&(departments||[]).some(d=>deptKey(d.department)===deptKey(deptQuery));
   // username→user 매핑(멤버 chip 에 이름을 붙이기 위해).
   const userIndex=Object.fromEntries((eligible||[]).filter(u=>u&&u.username).map(u=>[u.username,u]));
   // 편집 권한 — admin 또는 owner.
@@ -3899,8 +3884,9 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
                 border:"1px solid "+(sel===g.id?"var(--accent)":"transparent")}}>
               <div style={{fontSize:14,fontWeight:600}}>{g.name}</div>
               {g.description&&<div style={{fontSize:14,color:"var(--text-secondary)",marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{g.description}</div>}
-              <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:1}}>
-                owner: {g.owner} · members: {(g.members||[]).length} · modules: {(g.modules||[]).length}
+              <div style={{fontSize:14,color:"var(--text-secondary)",marginTop:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}
+                title={(g.departments||[]).join(", ")}>
+                {(g.departments||[]).length?`부서 ${(g.departments||[]).join(", ")}`:"부서 미지정"} · {(g.members||[]).length}명
               </div>
             </div>
           ))}
@@ -3938,60 +3924,81 @@ function GroupsPanel({allUsers, isAdmin, currentUser}){
             }
           </div>
 
-          <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>멤버 ({(cur.members||[]).length})</div>
-          {/* v8.8.27: 멤버 chip 에 이름(있으면) + id 표시. 동명이인이어도 id 가 항상 붙음. */}
+          {/* 소속 부서 — 그룹 멤버십의 기준. 이 부서의 승인된 사용자가 곧 멤버다. */}
+          <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>소속 부서 ({(cur.departments||[]).length})</div>
           <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10}}>
-            {(cur.members||[]).map(m=>{
+            {(cur.departments||[]).map(d=>(
+              <span key={d} style={{padding:"3px 10px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-tertiary)",fontSize:14,display:"inline-flex",alignItems:"center",gap:6}}>
+                {d}<span style={{color:"var(--text-secondary)"}}>{deptCounts[deptKey(d)]||0}명</span>
+                {canEdit&&<button onClick={()=>rmDepartment(cur,d)} title="부서 빼기" style={{border:"none",background:"transparent",color:"var(--danger)",cursor:"pointer",fontSize:14,padding:0}}>×</button>}
+              </span>
+            ))}
+            {(cur.departments||[]).length===0&&<span style={{fontSize:14,color:"var(--text-secondary)",fontStyle:"italic"}}>지정된 부서 없음 — 아래에서 부서를 추가하세요</span>}
+          </div>
+          {canEdit&&<div style={{marginBottom:16}}>
+            <input value={deptQuery} onChange={e=>setDeptQuery(e.target.value)}
+              placeholder="부서명 검색 또는 입력 후 Enter"
+              onKeyDown={e=>{
+                if(e.key!=="Enter"||e.nativeEvent?.isComposing||e.keyCode===229)return;
+                addDepartment(cur,deptCandidates[0]&&!exactDeptKnown&&q&&deptCandidates[0].department.toLowerCase().startsWith(q)?deptCandidates[0].department:deptQuery);
+              }}
+              style={{width:"100%",padding:"7px 9px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
+            <div style={{marginTop:6,border:"1px solid var(--border)",borderRadius:4,maxHeight:220,overflow:"auto",background:"var(--bg-primary)"}}>
+              {deptCandidates.map(d=><button key={d.department} onClick={()=>addDepartment(cur,d.department)}
+                title={(d.users||[]).map(u=>u.name?`${u.name}(${u.username})`:u.username).join(", ")}
+                style={{display:"flex",width:"100%",justifyContent:"space-between",alignItems:"center",gap:12,padding:"7px 10px",border:"none",borderBottom:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",cursor:"pointer",textAlign:"left",fontSize:14}}>
+                <span>{d.department} <span style={{color:"var(--text-secondary)"}}>{d.count}명</span></span><span style={{color:"var(--accent)",fontWeight:600}}>추가</span>
+              </button>)}
+              {q&&!exactDeptKnown&&<button onClick={()=>addDepartment(cur,deptQuery)}
+                style={{display:"flex",width:"100%",justifyContent:"space-between",alignItems:"center",gap:12,padding:"7px 10px",border:"none",background:"transparent",color:"var(--text-primary)",cursor:"pointer",textAlign:"left",fontSize:14}}>
+                <span>'{deptQuery.trim()}' 그대로 추가 <span style={{color:"var(--text-secondary)"}}>— 아직 로그인한 사람이 없는 부서</span></span><span style={{color:"var(--accent)",fontWeight:600}}>추가</span>
+              </button>}
+              {!q&&deptCandidates.length===0&&<div style={{padding:"9px 10px",fontSize:14,color:"var(--text-secondary)"}}>
+                {(departments||[]).length?"모든 부서가 이미 지정되었습니다.":"부서 정보가 있는 사용자가 아직 없습니다. 부서명을 직접 입력할 수 있습니다."}
+              </div>}
+            </div>
+          </div>}
+
+          <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>멤버 ({(cur.department_members||[]).length}) <span style={{fontWeight:400,color:"var(--text-secondary)"}}>— 소속 부서 기준 자동</span></div>
+          {/* v8.8.27: 멤버 chip 에 이름(있으면) + id 표시. 동명이인이어도 id 가 항상 붙음. */}
+          <div style={{display:"flex",flexWrap:"wrap",gap:6,marginBottom:10,maxHeight:180,overflow:"auto"}}>
+            {(cur.department_members||[]).map(m=>{
               const u=userIndex[m]||{username:m};
               return(
-                <span key={m} title={m} style={{padding:"3px 10px",borderRadius:999,background:"var(--bg-tertiary)",fontSize:14,display:"inline-flex",alignItems:"center",gap:6}}>
+                <span key={m} title={`${m}${u.department?` · ${u.department}`:""}`} style={{padding:"3px 10px",borderRadius:999,background:"var(--bg-tertiary)",fontSize:14}}>
                   {userLabel(u)}
-                  {canEdit&&<button onClick={()=>rmMember(cur.id,m)} style={{border:"none",background:"transparent",color:"var(--danger)",cursor:"pointer",fontSize:14,padding:0}}>×</button>}
                 </span>
               );
             })}
-            {(cur.members||[]).length===0&&<span style={{fontSize:14,color:"var(--text-secondary)",fontStyle:"italic"}}>멤버 없음 — 아래 + 멤버 추가 에서 선택</span>}
+            {(cur.department_members||[]).length===0&&<span style={{fontSize:14,color:"var(--text-secondary)",fontStyle:"italic"}}>소속 부서의 사용자가 없습니다</span>}
           </div>
-          {canEdit&&<div style={{marginBottom:16}}>
-            <div style={{fontSize:14,fontWeight:600,marginBottom:6}}>이름 또는 ID로 멤버 추가</div>
-            <input value={memberSearch} onChange={e=>setMemberSearch(e.target.value)}
-              placeholder="이름, 로그인 ID 또는 사내 이메일 검색"
-              onKeyDown={e=>{
-                if(e.key!=="Enter"||e.nativeEvent?.isComposing||e.keyCode===229)return;
-                if(memberSearchResults[0])addMember(cur.id,memberSearchResults[0].username);
-              }}
-              style={{width:"100%",padding:"7px 9px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14}}/>
-            {memberSearch.trim()&&<div style={{marginTop:6,border:"1px solid var(--border)",borderRadius:6,maxHeight:220,overflow:"auto",background:"var(--bg-primary)"}}>
-              {memberSearchResults.map(u=><button key={u.username} onClick={()=>addMember(cur.id,u.username)}
-                style={{display:"flex",width:"100%",justifyContent:"space-between",alignItems:"center",gap:12,padding:"7px 10px",border:"none",borderBottom:"1px solid var(--border)",background:"transparent",color:"var(--text-primary)",cursor:"pointer",textAlign:"left",fontSize:14}}>
-                <span>{userLabel(u)}</span><span style={{color:"var(--accent)",fontWeight:600}}>추가</span>
-              </button>)}
-              {memberSearchResults.length===0&&<div style={{padding:"9px 10px",fontSize:14,color:"var(--text-secondary)"}}>검색 결과가 없습니다.</div>}
-            </div>}
 
-            <div style={{fontSize:14,fontWeight:600,marginTop:14,marginBottom:6}}>여러 명 일괄 등록</div>
-            <textarea value={bulkMemberText} onChange={e=>setBulkMemberText(e.target.value)} rows={3}
-              placeholder="id@메일api도메인; id2@메일api도메인; id3@메일api도메인"
-              style={{width:"100%",padding:"7px 9px",borderRadius:4,border:"1px solid var(--border)",background:"var(--bg-primary)",color:"var(--text-primary)",fontSize:14,fontFamily:"monospace",resize:"vertical"}}/>
-            <div style={{display:"flex",alignItems:"center",gap:8,marginTop:6}}>
-              <button onClick={()=>addMembersBulk(cur.id)} disabled={bulkAdding||!bulkMemberText.trim()}
-                style={{padding:"7px 14px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,fontWeight:600,cursor:bulkAdding?"wait":"pointer",opacity:(bulkAdding||!bulkMemberText.trim()) ? 0.55 : 1}}>
-                {bulkAdding?"등록 중…":"일괄 등록"}
-              </button>
-              <span style={{fontSize:14,color:"var(--text-secondary)"}}>세미콜론·쉼표·공백·줄바꿈 구분 · @ 앞의 ID로 등록</span>
+          {/* 예전 방식의 개별 멤버 — 새로 추가하지 않고, 부서로 전환하거나 뺄 수만 있다. */}
+          {(cur.manual_members||[]).length>0&&<div style={{marginBottom:16,padding:10,border:"1px solid var(--border)",borderRadius:4}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+              <div style={{fontSize:14,fontWeight:600,flex:1}}>개별 멤버 ({cur.manual_members.length}) <span style={{fontWeight:400,color:"var(--text-secondary)"}}>— 이전 방식, 계속 수신·공유 대상</span></div>
+              {canEdit&&<button onClick={()=>convertManualToDepartments(cur)}
+                style={{padding:"5px 10px",borderRadius:4,border:"none",background:"var(--accent)",color:"#fff",fontSize:14,cursor:"pointer"}}>부서로 전환</button>}
+            </div>
+            <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+              {cur.manual_members.map(m=>{
+                const u=userIndex[m]||{username:m};
+                return(
+                  <span key={m} title={`${m}${u.department?` · ${u.department}`:" · 부서 정보 없음"}`} style={{padding:"3px 10px",borderRadius:999,background:"var(--bg-tertiary)",fontSize:14,display:"inline-flex",alignItems:"center",gap:6}}>
+                    {userLabel(u)}
+                    {canEdit&&<button onClick={()=>rmMember(cur.id,m)} style={{border:"none",background:"transparent",color:"var(--danger)",cursor:"pointer",fontSize:14,padding:0}}>×</button>}
+                  </span>
+                );
+              })}
             </div>
           </div>}
 
           <div style={{marginTop:16,padding:10,background:"var(--bg-primary)",borderRadius:6,fontSize:14,color:"var(--text-secondary)",lineHeight:1.6}}>
-            • 이 그룹에 속한 유저는 Dashboard/Tracker 에서 이 그룹에 연결된 차트·이슈만 공유함.<br/>
-            • admin 은 모든 그룹과 콘텐츠를 볼 수 있음 (전체 담당).<br/>
-            • <b>설명</b>은 그룹의 목적·소속 부서 등 자유 텍스트. 리스트 보조 텍스트로 노출됨.<br/>
+            • 그룹 멤버는 <b>소속 부서</b>로 정해집니다. 그 부서의 승인된 사용자가 자동으로 멤버가 되고, 부서 이동·입사가 그룹 편집 없이 반영됩니다.<br/>
+            • 부서명은 사내 로그인(SSO) 정보의 부서를 씁니다. 아직 아무도 로그인하지 않은 부서도 이름을 직접 넣어 둘 수 있습니다.<br/>
+            • 이 그룹에 속한 유저는 Dashboard/Tracker 에서 이 그룹에 연결된 차트·이슈만 공유함. admin 은 모든 그룹과 콘텐츠를 볼 수 있음.<br/>
             • 그룹명이 제품명과 같으면 대소문자를 구분하지 않고 해당 제품 알람 그룹으로 사용됨.<br/>
-            • 일괄 등록의 이메일은 @ 앞 로그인 ID만 추출하며 외부 이메일 수신자로 저장하지 않음.<br/>
-            • <b>v8.8.23</b> 메일 그룹과 이슈추적 그룹이 이 Admin 그룹으로 통합됨. 여기서 만든 그룹이
-              인폼 메일 수신 드롭다운 / 이슈추적 그룹 선택 / 회의 mail_group_ids 에 모두 노출됩니다.
-              기존 <code>mail_groups.json</code> 과 <code>admin_settings:recipient_groups</code> 는 자동 병합.<br/>
-            • <b>v8.8.5</b> admin 도 멤버 풀에 포함 (사내 계정은 이메일 보유) · test substring 계정만 제외 · 생성자는 자동 가입되지 않음 (명시적으로 추가).
+            • 메일 그룹과 이슈추적 그룹이 이 그룹으로 통합되어 있어, 인폼 메일 수신 / 이슈추적 그룹 선택 / 회의 메일 그룹에 같은 멤버로 노출됩니다.
           </div>
         </>}
       </div>

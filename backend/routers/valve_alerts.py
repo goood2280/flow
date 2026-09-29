@@ -268,3 +268,41 @@ def recommend(req: RecommendReq, _user=Depends(current_user)):
     if alert.get("type") != "unmatched_step":
         raise HTTPException(400, f"미매칭 step 알람이 아님: {req.id}")
     return {"ok": True, "checked": 1, "records": [_adv.recommend(alert, force=req.force)]}
+
+
+# ── 제품위키 knob 미등록 (ppid_knob feature_name 과 이름·별칭·PPID 로 대조) ──
+# FAB 검사와 독립이다 — FAB 알람이 실패해도 이 목록은 따로 내려간다.
+class WikiKnobAlias(BaseModel):
+    knob_id: str
+    alias: str
+
+
+class WikiKnobAliasReq(BaseModel):
+    product: str
+    items: list[WikiKnobAlias] = []
+
+
+@router.get("/wiki-knobs")
+def wiki_knobs(_user=Depends(current_user)):
+    from core import product_wiki_structure as _pws
+    try:
+        return _pws.unregistered_knob_report()
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "products": [], "count": 0}
+
+
+@router.post("/wiki-knobs/aliases")
+def wiki_knob_aliases(req: WikiKnobAliasReq, user=Depends(_require_manager)):
+    from core import product_wiki as _wiki
+    from core import product_wiki_structure as _pws
+    items = [i.model_dump() if hasattr(i, "model_dump") else i.dict() for i in req.items]
+    try:
+        out = _pws.add_knob_aliases(req.product, items, user.get("username", ""))
+    except _wiki.Conflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    from core.audit import record_user as _audit_user
+    _audit_user(user.get("username", ""), "valve-alerts:wiki-knob-alias",
+                detail=f"product={req.product} added={out['added']}", tab="valve")
+    return out

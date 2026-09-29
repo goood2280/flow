@@ -647,7 +647,8 @@ export default function My_TemplateReport({user}){
 
   const options=draft?.options||{};
   const canManageSettings=canManagePage(user,"templatereport");
-  const canUseLlm=canManageSettings;
+  // AI 코드 작성은 Template Report 탭 사용자 누구나(서버가 페이지 권한을 다시 검사).
+  const canUseLlm=true;
   const previewBackgroundId=text(editing?options.background_id:(deck?.background_id??options.background_id));
   const backgroundImage=previewBackgroundId==="none"?"":previewBackgroundId?(reportSettings?.backgrounds||[]).find(item=>item.id===previewBackgroundId)?.data_url||"":reportSettings?.background?.data_url||"";
   const defaultSubtitle=defaultPageSubtitle(user);

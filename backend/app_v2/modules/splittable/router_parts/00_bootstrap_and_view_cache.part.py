@@ -241,6 +241,7 @@ _PLAN_RISK_CACHE_MAX = 64
 _VIEW_CACHE: OrderedDict[tuple, tuple[tuple, tuple, dict, int]] = OrderedDict()
 _VIEW_CACHE_LOCK = threading.Lock()
 _VIEW_CACHE_MAX_ENTRIES_DEFAULT = 512
+_VIEW_CACHE_MAX_ENTRIES_LARGE_DEFAULT = 20000
 _VIEW_CACHE_BYTES = 0  # 현재 보유 추정치 (lock 하에서만 갱신)
 _VIEW_CACHE_AUTO_MB_LOCK = threading.Lock()
 _VIEW_CACHE_AUTO_MB_CACHE: tuple[float, float] | None = None
@@ -277,11 +278,35 @@ def _view_cold_lane_default() -> int:
         cores = int(effective_cpu_count())
     except Exception:
         cores = 4
-    # 운영 기본은 3슬롯이다. 실제 할당 코어가 3보다 적으면 그 수에 맞춰 낮춘다.
-    return max(1, min(3, cores))
+    try:
+        from core.runtime_limits import is_large_profile
+        if is_large_profile():
+            # 전용 대형 서버: 코어 절반까지 동시 cold 계산(8코어 → 4슬롯).
+            return max(1, min(8, cores // 2))
+    except Exception:
+        pass
+    # 운영 기본은 코어의 40% (5코어 → 2슬롯, 8코어 → 3슬롯). cold 계산은 한 건이
+    # 공용 Polars 풀 전체를 쓰므로, 슬롯을 코어 수만큼 열면 스플릿 검색 몇 건이
+    # CPU 를 다 잡아 다른 탭 응답이 밀렸다. 최대 3슬롯.
+    return max(1, min(3, round(cores * 0.4)))
 
 
 def _view_cold_lane_concurrency() -> int:
+    """설정된 cold 레인 크기 — 단, 다른 탭 요청이 처리 중이면 1슬롯으로 양보한다.
+
+    스플릿테이블 cold 계산은 공용 Polars 풀을 쓰므로, 다른 탭(파일탐색기·대시보드·
+    홈 등) 요청이 돌고 있는 동안에는 한 건씩만 계산해 그 요청들이 밀리지 않게 한다."""
+    limit = _view_cold_lane_configured()
+    try:
+        from core import request_priority as _rp
+        if _rp.other_requests_active() > 0:
+            return 1
+    except Exception:
+        pass
+    return limit
+
+
+def _view_cold_lane_configured() -> int:
     """우선순위: env > 톱니바퀴 설정(운영/개발 분리) > 코어수 기반 기본값.
 
     호출할 때마다 다시 읽는다 — 톱니바퀴에서 저장하면 재시작 없이 다음 요청부터
@@ -388,13 +413,24 @@ def _view_cold_lane_release() -> None:
             pass
 
 
-def _view_cache_max_entries() -> int:
+def _split_large_host() -> bool:
+    """전용 대형 운영 서버(auto→large, 개발/worker 제외)인가."""
     try:
-        n = int(float(os.environ.get("FLOW_SPLITTABLE_VIEW_CACHE_MAX_ENTRIES", "")
-                      or _VIEW_CACHE_MAX_ENTRIES_DEFAULT))
+        from core import cache_budget
+        return bool(cache_budget.large_host())
     except Exception:
-        n = _VIEW_CACHE_MAX_ENTRIES_DEFAULT
-    return max(8, min(4096, n))
+        return False
+
+
+def _view_cache_max_entries() -> int:
+    # 대형 서버(128GB)는 바이트 예산(약 20GB)이 실제 상한이다. 512개 고정 상한이면 예열한
+    # 응답 수천 개 중 대부분이 곧바로 밀려나 첫 조회가 다시 계산으로 떨어진다.
+    default = _VIEW_CACHE_MAX_ENTRIES_LARGE_DEFAULT if _split_large_host() else _VIEW_CACHE_MAX_ENTRIES_DEFAULT
+    try:
+        n = int(float(os.environ.get("FLOW_SPLITTABLE_VIEW_CACHE_MAX_ENTRIES", "") or default))
+    except Exception:
+        n = default
+    return max(8, min(50000, n))
 
 
 def _view_cache_auto_max_mb() -> float:
@@ -527,6 +563,48 @@ def _view_disk_cache_read(key: tuple, hard_sig: tuple, soft_sig: tuple) -> tuple
         return "miss", None
 
 
+_VIEW_DISK_PRUNE_STATE: dict[str, list] = {}
+
+
+def _view_disk_cache_max_per_product() -> int:
+    # 재시작 뒤 첫 조회는 이 디스크 사본에서 복원된다. 대형 서버는 예열 대상(수천 root)을
+    # 모두 담을 만큼 둔다 — 압축 payload 라 root 당 수십~수백 KB 다.
+    default = 4000.0 if _split_large_host() else 64.0
+    return int(max(8.0, min(20000.0, _env_float("FLOW_SPLITTABLE_VIEW_DISK_MAX_PER_PRODUCT", default))))
+
+
+def _view_disk_cache_prune(folder: Path) -> None:
+    """제품 폴더를 보관 수 이하로 줄인다.
+
+    예전에는 쓸 때마다 폴더 전체를 glob+stat 했다 — 64개일 땐 괜찮지만 수천 개면 검색
+    응답마다 수천 번 stat 이 붙는다. 쓰기 횟수가 한도의 5%를 넘었거나 2분이 지났을 때만
+    정리한다(그 사이 잠깐 한도를 넘는 것은 디스크 몇 MB 차이다).
+    """
+    limit = _view_disk_cache_max_per_product()
+    key = str(folder)
+    now = time.monotonic()
+    with _VIEW_DISK_CACHE_LOCK:
+        state = _VIEW_DISK_PRUNE_STATE.setdefault(key, [0, 0.0])
+        state[0] += 1
+        if state[0] < max(4, limit // 20) and now - state[1] < 120.0:
+            return
+        state[0], state[1] = 0, now
+        entries = []
+        for p in folder.glob("*.json.z"):
+            try:
+                entries.append((p.stat().st_mtime, p))
+            except OSError:
+                continue
+        if len(entries) <= limit:
+            return
+        entries.sort(key=lambda item: item[0], reverse=True)
+        for _mtime, old in entries[limit:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+
+
 def _view_disk_cache_write(key: tuple, hard_sig: tuple, soft_sig: tuple, payload: dict) -> None:
     if not _view_disk_cache_enabled():
         return
@@ -555,14 +633,7 @@ def _view_disk_cache_write(key: tuple, hard_sig: tuple, soft_sig: tuple, payload
         os.replace(tmp, fp)
         # 제품별 최근 결과만 디스크에 유지한다. RAM과 달리 압축 bytes라 작지만
         # 검색 이력이 무한히 쌓이지 않도록 쓰기 시점에 저비용 상한을 적용한다.
-        limit = int(max(8.0, min(512.0, _env_float("FLOW_SPLITTABLE_VIEW_DISK_MAX_PER_PRODUCT", 64.0))))
-        with _VIEW_DISK_CACHE_LOCK:
-            files = sorted(fp.parent.glob("*.json.z"), key=lambda p: p.stat().st_mtime, reverse=True)
-            for old in files[limit:]:
-                try:
-                    old.unlink()
-                except OSError:
-                    pass
+        _view_disk_cache_prune(fp.parent)
     except Exception:
         logger.debug("SplitTable disk view cache write failed", exc_info=True)
 
@@ -1591,6 +1662,8 @@ def _product_ram_cache_max_bytes() -> int:
     budget = int(gb * 1024 * 1024 * 1024)
     try:
         from core import cache_budget
+        if not raw:
+            budget = cache_budget.default_bytes("splittable_product_ram", budget)
         # 명시값은 이 캐시의 희망 상한이며, 전체 캐시 안전 풀은 항상 적용한다.
         budget = cache_budget.capped("splittable_product_ram", budget)
     except Exception:
@@ -2354,11 +2427,96 @@ def _knob_prewarm_interval_sec() -> float:
 
 
 def _knob_prewarm_max_lots() -> int:
+    default = 3000 if _split_large_host() else 50
     try:
-        n = int(float(os.environ.get("FLOW_SPLITTABLE_KNOB_PREWARM_MAX_LOTS", "") or 50))
+        n = int(float(os.environ.get("FLOW_SPLITTABLE_KNOB_PREWARM_MAX_LOTS", "") or default))
     except Exception:
-        n = 50
-    return max(1, min(500, n))
+        n = default
+    return max(1, min(10000, n))
+
+
+def _knob_prewarm_recent_days() -> float:
+    return max(1.0, min(90.0, _env_float("FLOW_SPLITTABLE_KNOB_PREWARM_RECENT_DAYS", 14.0)))
+
+
+def _knob_prewarm_recent_search_targets(limit: int) -> list[tuple[str, str]]:
+    """최근 사용자들이 실제로 찾은 (product, root) — 많이 찾은 순, 같은 횟수면 최근 순.
+
+    검색 타이밍 로그(운영이 이미 쌓는 공유 JSONL)만 읽는다. 원천 스캔 없음.
+    """
+    try:
+        since = time.time() - _knob_prewarm_recent_days() * 86400.0
+        rows = _search_timing_log._read_shared(since) or []
+    except Exception:
+        return []
+    score: dict[tuple[str, str], list] = {}
+    for row in rows:
+        # 사용자 HTTP 검색만 센다 — 예열·재검증이 남긴 기록이 스스로를 다시 예열 대상으로
+        # 끌어올리지 않게.
+        if not isinstance(row, dict) or str(row.get("actor_type") or "") != "user_search":
+            continue
+        product = str(row.get("product") or "").strip()
+        root = str(row.get("root_lot_id") or "").strip()
+        if not product or not root:
+            continue
+        entry = score.setdefault((product, root), [0, 0.0])
+        entry[0] += 1
+        entry[1] = max(entry[1], float(row.get("ts") or 0.0))
+    ranked = sorted(score.items(), key=lambda item: (item[1][0], item[1][1]), reverse=True)
+    return [key for key, _ in ranked[:limit]]
+
+
+def _knob_prewarm_active_wip_targets(limit: int) -> list[tuple[str, str]]:
+    """최근 공정 진행(tkout)이 있는 root — 앞으로 조회될 가능성이 가장 큰 lot.
+
+    latest-lot 캐시(제품×root×wafer 최신 1행, 수 MB)만 읽는다. 캐시가 없으면 건너뛴다.
+    """
+    try:
+        path = _latest_lot_step_cache_path()
+    except Exception:
+        return []
+    if not path or not Path(path).is_file():
+        return []
+    try:
+        names = set(_cached_scan_schema(Path(path))[1] or [])
+        need = {"product", "root_lot_id", "tkout_time"}
+        if not need.issubset(names):
+            return []
+        cutoff = datetime.datetime.now() - datetime.timedelta(days=_knob_prewarm_recent_days())
+        frame = (
+            pl.scan_parquet(str(path))
+            .select([pl.col("product").cast(pl.Utf8), pl.col("root_lot_id").cast(pl.Utf8),
+                     pl.col("tkout_time").cast(pl.Utf8).str.slice(0, 19)
+                     .str.to_datetime(strict=False).alias("__t")])
+            .filter(pl.col("__t") >= cutoff)
+            .group_by(["product", "root_lot_id"])
+            .agg(pl.col("__t").max())
+            .sort("__t", descending=True)
+            .head(limit)
+            .collect()
+        )
+    except Exception:
+        logger.debug("KNOB prewarm WIP targets skipped", exc_info=True)
+        return []
+    products = {}
+    try:
+        for item in _match_cache_products(""):
+            products[_ml_table_lookup_key(item)] = item
+    except Exception:
+        pass
+    out = []
+    for product, root in zip(frame["product"].to_list(), frame["root_lot_id"].to_list()):
+        product = str(product or "").strip()
+        root = str(root or "").strip()
+        if not product or not root:
+            continue
+        out.append((products.get(_ml_table_lookup_key(product), product), root))
+    return out
+
+
+def _ml_table_lookup_key(product: str) -> str:
+    text = str(product or "").strip().upper()
+    return text[len("ML_TABLE_"):] if text.startswith("ML_TABLE_") else text
 
 
 def _knob_prewarm_targets() -> list[tuple[str, str]]:
@@ -2420,6 +2578,19 @@ def _knob_prewarm_requests() -> list[tuple[str, str, str]]:
             out.append(target)
             if len(out) >= limit:
                 break
+    if not _split_large_host() or len(out) >= limit:
+        return out
+    # 대형 서버: 우선 lot 뒤로 최근 검색 root, 최근 진행 root 를 채운다. 여유 메모리가 충분해
+    # 첫 조회를 계산 대신 완성 응답 캐시에서 돌려주는 쪽이 동시 사용자 체감에 가장 크다.
+    extra = _knob_prewarm_recent_search_targets(limit) + _knob_prewarm_active_wip_targets(limit)
+    for product, root in extra:
+        target = (product, root, "")
+        if target in seen:
+            continue
+        seen.add(target)
+        out.append(target)
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -2460,7 +2631,7 @@ def _knob_prewarm_once() -> dict:
                 warmed += 1
             elif result.get("deferred") or result.get("queued"):
                 skipped += 1
-                reason = "개발 worker 큐에서 대기 중"
+                reason = "서버 작업 대기 중"
             else:
                 failed += 1
         except Exception as exc:

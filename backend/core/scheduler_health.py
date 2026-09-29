@@ -77,16 +77,13 @@ def _parse(ts: str):
 
 
 def _server_role() -> str:
-    """운영(api) / 개발 worker. 판정 실패는 운영으로 본다."""
-    try:
-        from core.worker_dispatch import server_role
-        return str(server_role() or "api")
-    except Exception:
-        return "unknown"
+    """상태 파일 이름에 쓰는 역할 — 운영 단일 서버라 항상 api (예전 파일명 유지)."""
+    return "api"
 
 
 def _role_label(role: str) -> str:
-    return {"api": "운영서버", "worker": "개발 worker", "standalone": "운영서버"}.get(role, role)
+    # 예전 개발 worker 가 남긴 상태 파일도 읽을 수 있게 라벨은 남겨 둔다.
+    return {"api": "운영서버", "worker": "(폐지된) 개발 worker", "standalone": "운영서버"}.get(role, role)
 
 
 def _host_key() -> str:

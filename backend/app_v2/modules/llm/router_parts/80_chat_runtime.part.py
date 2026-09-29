@@ -878,134 +878,14 @@ def _run_flowi_chat_maybe_offloaded(
     agent_context: dict[str, Any] | None = None,
     allow_rag_update: bool = False,
 ) -> dict[str, Any]:
-    """Flow-i 턴을 워커(개발서버)에 여유가 있으면 위임, 아니면 로컬 실행.
+    """Flow-i 턴 실행(운영 단일 서버 — 예전 개발 worker 위임은 폐지됐다).
 
-    Flow-i 는 LLM 대기(수초~수십초)가 지배해 큐 왕복(~1초)이 체감되지 않고,
-    부수 상태(차트 세션·유저 이벤트 md·활동 로그)는 전부 공유 data_root 에
-    남아 어느 서버가 실행해도 이후 요청(chart-session raw-data 등)을 그대로
-    서빙한다. 운영서버는 스플릿테이블/plan 상호작용 보장이 최우선이므로
-    flowi 의 데이터 스캔/컨텍스트 빌드 CPU·메모리를 워커로 넘긴다. 워커
-    다운/과부하/큐 포화면 run_heavy 가 로컬 실행 — 기능 동일, 위치만 바뀐다.
-
-    워커에서 난 HTTPException 은 {"http_error"} 봉투로 돌아와 재실행 없이
-    그대로 변환한다 — LLM 이중 호출(이중 과금·이중 이벤트 기록)을 막는다.
-    FLOW_FLOWI_OFFLOAD=0 으로 끄고, 타임아웃은 FLOW_FLOWI_OFFLOAD_TIMEOUT_SEC
-    (기본 570초)."""
-
-    def _local() -> dict[str, Any]:
-        return {"ok": True, "result": _run_flowi_chat(
-            prompt=prompt, product=product, max_rows=max_rows, me=me,
-            source_ai=source_ai, client_run_id=client_run_id,
-            agent_context=agent_context, allow_rag_update=allow_rag_update,
-        )}
-
-    execution_class, execution_reason = _flowi_turn_execution_class(prompt, agent_context)
-    disabled = str(os.environ.get("FLOW_FLOWI_OFFLOAD", "1")).strip().lower() in {"0", "false", "no", "off"}
-    local_called = False
-
-    def _tracked_local() -> dict[str, Any]:
-        nonlocal local_called
-        local_called = True
-        return _local()
-
-    # 검색/캐시 조회/SplitTable view/직전 표 재표시는 운영 API의 warm RAM과
-    # 세션을 바로 쓰는 편이 빠르다. 무거운 분석 턴만 개발 worker로 위임한다.
-    if disabled or execution_class == "light":
-        env = _tracked_local() if execution_class == "heavy" else _local()
-    else:
-        from core import worker_dispatch as _wd
-        try:
-            timeout = float(os.environ.get("FLOW_FLOWI_OFFLOAD_TIMEOUT_SEC", "") or 570.0)
-        except Exception:
-            timeout = 570.0
-        env = _wd.run_heavy(
-            "flowi_chat_turn",
-            {
-                "prompt": prompt,
-                "product": product,
-                "max_rows": int(max_rows or 0),
-                "me": dict(me or {}),
-                "source_ai": str(source_ai or ""),
-                "client_run_id": str(client_run_id or ""),
-                "agent_context": agent_context if isinstance(agent_context, dict) else None,
-                "allow_rag_update": bool(allow_rag_update),
-            },
-            _tracked_local,
-            timeout_sec=max(30.0, min(3600.0, timeout)),
-            label="flowi_chat",
-        ) or {}
-    http_error = env.get("http_error") if isinstance(env, dict) else None
-    if isinstance(http_error, dict) and http_error.get("status"):
-        raise HTTPException(int(http_error["status"]), http_error.get("detail"))
-    result = env.get("result") if isinstance(env, dict) else None
-    if isinstance(result, dict):
-        if execution_class == "light":
-            target = "production_api" if _wd_server_role() != "worker" else "development_worker"
-        elif local_called:
-            target = "production_api_fallback" if _wd_server_role() != "worker" else "development_worker"
-        else:
-            target = "development_worker"
-        result["execution"] = {
-            "class": execution_class,
-            "target": target,
-            "policy": "light_on_api_heavy_on_worker",
-            "reason": execution_reason,
-        }
-        return result
-    # 봉투 형태가 아니면(형 불일치 등 예상 밖 응답) 로컬 실행이 최후 폴백.
+    이름은 호출부 호환용으로 남겼다."""
     return _run_flowi_chat(
         prompt=prompt, product=product, max_rows=max_rows, me=me,
         source_ai=source_ai, client_run_id=client_run_id,
         agent_context=agent_context, allow_rag_update=allow_rag_update,
     )
-
-
-def _wd_server_role() -> str:
-    try:
-        from core import worker_dispatch as _wd
-        return str(_wd.server_role() or "api")
-    except Exception:
-        return "api"
-
-
-def _flowi_turn_execution_class(
-    prompt: str,
-    agent_context: dict[str, Any] | None = None,
-) -> tuple[str, str]:
-    """Flow-i 턴을 운영 즉답(light)과 개발 worker 우선(heavy)으로 나눈다."""
-    text = re.sub(r"\s+", " ", str(prompt or "")).strip()
-    low = text.lower()
-    anchor = _flowi_recent_tool_anchor(agent_context)
-    if _flowi_raw_table_followup_intent(text, anchor):
-        return "light", "직전 결과 재표시"
-    if _is_teg_position_prompt(text):
-        return "light", "TEG 탭 Shot 설정 조회"
-    if _is_et_download_prompt(text):
-        return "light", "ET 다운로드 대기열 등록"
-    if _is_et_time_prompt(text):
-        return "heavy", "DB ET 측정시간 집계"
-    if _flowi_explicit_splittable_view_prompt(text) or any(term in low or term in text for term in (
-        "스플릿테이블", "스플릿 테이블", "split table", "splittable",
-    )):
-        return "light", "SplitTable 조회/보기"
-    try:
-        from core import lot_wip
-        if lot_wip.is_wip_prompt(text):
-            return "light", "latest lot cache 현재위치 조회"
-    except Exception:
-        pass
-    heavy_terms = (
-        "분석", "원인", "진단", "rca", "상관", "correlation", "추이", "trend",
-        "차트", "chart", "plot", "scatter", "dashboard", "대시보드", "sql",
-        "parquet", "csv 다운로드", "전체 스캔", "raw db", "원본 db", "대용량",
-        "비교해", "예측", "시뮬레이션",
-    )
-    if any(term in low or term in text for term in heavy_terms):
-        return "heavy", "분석/원본 데이터 처리"
-    light_actions = ("어디", "찾아", "검색", "조회", "보여", "알려", "목록", "step", "스텝", "schema", "스키마")
-    if any(term in low or term in text for term in light_actions):
-        return "light", "결정적 검색/조회"
-    return "heavy", "오케스트레이션/LLM 처리"
 
 
 def _run_flowi_chat(

@@ -16,6 +16,7 @@ v8.4.6 보안 패치:
   - /change-password 는 X-Session-Token 의 소유자만 본인 비번 변경 가능.
 """
 import csv, datetime, html, io, secrets, threading
+from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from core.paths import PATHS
@@ -240,6 +241,50 @@ def login(req: LoginReq):
     return auth_providers.login_with("password", req)
 
 
+class WsLoginReq(BaseModel):
+    # 인증서버가 브라우저에 보낸 메시지 원문(JSON 문자열 또는 객체).
+    message: Any = None
+
+
+@router.post("/sso/ws/login")
+def websocket_login(req: WsLoginReq):
+    """websocket 인증서버 메시지로 로그인. 서버가 토큰을 인증서버에 다시 확인한다."""
+    return auth_providers.login_with("websocket", req.message)
+
+
+@router.post("/sso/ip/login")
+def ip_login(request: Request):
+    """접속 IP 로그인(FLOW_IP_LOGIN_MAP). 요청 헤더가 아니라 TCP 접속 주소만 본다."""
+    client_ip = request.client.host if request.client else ""
+    return auth_providers.login_with("ip", client_ip)
+
+
+@router.get("/people")
+def manager_people(request: Request):
+    """관리자·대리인 이름·메일·부서(암호화 저장본을 로그인 사용자에게만 풀어 준다)."""
+    auth_core.current_user(request)
+    return {"people": auth_providers.read_people()}
+
+
+@router.get("/department-rules")
+def get_department_rules(request: Request):
+    auth_core.require_admin(request)
+    return {"rules": auth_providers.read_department_rules(),
+            "tab_ids": sorted(auth_core.GRANTABLE_TAB_IDS)}
+
+
+class DepartmentRulesReq(BaseModel):
+    rules: list[dict] = []
+
+
+@router.post("/department-rules")
+def save_department_rules(req: DepartmentRulesReq, request: Request):
+    me = auth_core.require_admin(request)
+    rules = auth_providers.write_department_rules(req.rules)
+    _audit_user(me.get("username", ""), "auth:department-rules", detail=f"rules={len(rules)}", tab="admin")
+    return {"rules": rules}
+
+
 @router.post("/logout")
 def logout(request: Request):
     token = request.headers.get("x-session-token") or request.headers.get("X-Session-Token")
@@ -306,9 +351,11 @@ def set_name(req: SetNameReq, request: Request):
     for u in users:
         if u["username"] != username:
             continue
-        u["name"] = (req.name or "").strip()
-        write_users(users)
-        return {"ok": True, "name": u["name"]}
+        name = (req.name or "").strip()
+        if not auth_providers.update_manual_contact(username, "name", name):
+            u["name"] = name
+            write_users(users)
+        return {"ok": True, "name": name}
     raise HTTPException(404, "User not found")
 
 
@@ -319,6 +366,7 @@ def me(request: Request):
     me = auth_core.validate_token(token or "")
     if not me:
         return {"authenticated": False}
+    profile = auth_providers.read_people().get(me["username"], {})
     users = read_users()
     for u in users:
         if u["username"] == me["username"]:
@@ -326,18 +374,38 @@ def me(request: Request):
                 "authenticated": True,
                 "username": u["username"],
                 "role": u.get("role", "user"),
-                "name": u.get("name", ""),
-                "email": u.get("email", ""),
+                "name": profile.get("name", u.get("name", "")),
+                "email": profile.get("email", u.get("email", "")),
                 "sso_id": u.get("sso_id", ""),
                 "department": u.get("department", ""),
                 "permission_source": u.get("permission_source", ""),
                 "tabs": "__all__" if u.get("role") == "admin" else u.get("tabs", ""),
             }
+    if me.get("auth_method") == "websocket":
+        # websocket 사용자는 users.csv 에 저장하지 않는다 — 세션 토큰의 역할·탭을 쓴다.
+        claims = me.get("claims") or {}
+        return {
+            "authenticated": True,
+            "username": me["username"],
+            "role": me.get("role", "user"),
+            "name": profile.get("name", ""),
+            "email": profile.get("email", ""),
+            "sso_id": str(claims.get("ws_user") or ""),
+            "department": str(claims.get("department") or ""),
+            "permission_source": "department",
+            "tabs": "__all__" if me.get("role") == "admin" else me.get("tabs", ""),
+        }
     return {"authenticated": False}
+
+
+def _require_password_recovery():
+    if auth_providers._ws_auth_url() or not auth_providers.PasswordAuthProvider().enabled():
+        raise HTTPException(403, "Password recovery is unavailable with company login.")
 
 
 @router.post("/reset-request")
 def reset_request(req: ResetReq):
+    _require_password_recovery()
     users = read_users()
     u = _find_user_by_username(users, req.username)
     if u is None:
@@ -351,6 +419,7 @@ def reset_request(req: ResetReq):
 
 @router.post("/forgot-password")
 def forgot_password(req: ForgotPasswordReq):
+    _require_password_recovery()
     username_input = _sanitize_username(req.username)
     if not username_input:
         raise HTTPException(400, "Username required")

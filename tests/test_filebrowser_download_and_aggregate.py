@@ -74,3 +74,12 @@ def test_admin_csv_row_setting_can_exceed_legacy_500k_limit():
 
     assert settings["csv_download_max_rows"] == 2_000_000
     assert clamped["csv_download_max_rows"] == filebrowser.MAX_CSV_DOWNLOAD_MAX_ROWS
+
+
+def test_truncated_csv_response_carries_limit_headers():
+    resp = filebrowser._limited_csv_response(b"a\n1\n", "x.csv", True, 500, 500)
+    assert resp.headers["X-Flow-Download-Truncated"] == "1"
+    assert resp.headers["X-Flow-Download-Row-Limit"] == "500"
+    assert "X-Flow-Download-Truncated" in resp.headers["Access-Control-Expose-Headers"]
+    full = filebrowser._limited_csv_response(b"a\n1\n", "x.csv", False, 500, 1)
+    assert full.headers["X-Flow-Download-Truncated"] == "0"

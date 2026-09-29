@@ -3,7 +3,7 @@ Designed for 2-core / 6GB with 30-50GB parquet datasets.
 Charts are pre-computed every 10 min by a daemon thread; frontend fetches snapshots.
 v6: spec lines (USL/LSL/Target), SPC control limits (UCL/LCL/CL), OOS alerts.
 """
-import datetime, threading, time, logging, statistics, re, math
+import datetime, threading, time, logging, statistics, re, math, os
 from pathlib import Path
 import sys
 
@@ -2881,7 +2881,120 @@ def _wip_split_catalog(fp: Path) -> tuple[list[str], list[str]]:
         return names, values
 
 
+# ── WIP 대시보드 결과 메모 ─────────────────────────────────────────
+# 대시보드 진입 한 번에 wip-split·물량 분포 2건이 같은 latest cache 를 각자 읽고,
+# 드릴다운 클릭마다 ML_TABLE 전체를 다시 정규화·조인했다(20만 wafer·75만 행
+# ML_TABLE 기준 진입 CPU 1.1초, 클릭당 0.7초). 입력 파일(latest cache·ML_TABLE·
+# 매칭 캐시·step 매칭 CSV)의 경로·mtime·크기가 키라서 파일이 바뀌면 자동으로
+# 새로 계산한다. 결과 DataFrame 은 읽기 전용으로만 쓴다(with_columns/filter 는
+# 새 프레임을 만든다). 메모리 워치독 긴급 축출 대상(`emergency_evict`).
+from collections import OrderedDict as _OrderedDict
+
+_WIP_MEMO_LOCK = threading.Lock()
+_WIP_MEMO: "_OrderedDict[tuple, tuple[Any, int]]" = _OrderedDict()
+_WIP_MEMO_MAX_ENTRIES = 24
+
+
+def _wip_memo_budget_bytes() -> int:
+    """호스트 RAM 의 1% (64MB~384MB). FLOW_DASHBOARD_MEMO_MB 로 덮어쓸 수 있다(0=끔)."""
+    raw = os.environ.get("FLOW_DASHBOARD_MEMO_MB", "").strip()
+    if raw:
+        try:
+            return max(0, int(float(raw) * 1024 * 1024))
+        except ValueError:
+            pass
+    try:
+        import psutil
+        total = int(psutil.virtual_memory().total)
+    except Exception:
+        total = 16 * 1024 ** 3
+    return max(64 * 1024 ** 2, min(384 * 1024 ** 2, total // 100))
+
+
+def _wip_file_sig(fp) -> tuple | None:
+    """(경로, mtime_ns, 크기). 실제 파일이 아니면 None — 그런 입력은 메모하지 않는다."""
+    if fp is None:
+        return ("", None, None)
+    try:
+        st = Path(fp).stat()
+    except (OSError, TypeError):
+        return None
+    return (str(fp), st.st_mtime_ns, st.st_size)
+
+
+def _wip_memo_get(key):
+    if key is None:
+        return None
+    with _WIP_MEMO_LOCK:
+        hit = _WIP_MEMO.get(key)
+        if hit is None:
+            return None
+        _WIP_MEMO.move_to_end(key)
+        return hit[0]
+
+
+def _wip_value_bytes(value) -> int:
+    if isinstance(value, pl.DataFrame):
+        return int(value.estimated_size())
+    if isinstance(value, tuple):
+        return sum(_wip_value_bytes(v) for v in value)
+    if isinstance(value, dict):
+        return sum(_wip_value_bytes(v) for v in value.values()) + 1024
+    return 256
+
+
+def _wip_memo_put(key, value) -> None:
+    if key is None:
+        return
+    budget = _wip_memo_budget_bytes()
+    nbytes = _wip_value_bytes(value)
+    if budget <= 0 or nbytes > budget // 2:
+        return
+    with _WIP_MEMO_LOCK:
+        _WIP_MEMO[key] = (value, nbytes)
+        _WIP_MEMO.move_to_end(key)
+        total = sum(v[1] for v in _WIP_MEMO.values())
+        while _WIP_MEMO and (len(_WIP_MEMO) > _WIP_MEMO_MAX_ENTRIES or total > budget):
+            _old, (_v, n) = _WIP_MEMO.popitem(last=False)
+            total -= n
+
+
+def emergency_evict(max_bytes: int) -> int:
+    """메모리 워치독 긴급 축출 — 오래된 메모부터 비운다. 다음 조회가 다시 계산할 뿐이다."""
+    freed = 0
+    with _WIP_MEMO_LOCK:
+        while _WIP_MEMO and freed < max_bytes:
+            _key, (_v, n) = _WIP_MEMO.popitem(last=False)
+            freed += int(n)
+    return freed
+
+
+def _wip_step_matching_sig() -> tuple:
+    try:
+        from core import lot_progress_cache
+        return tuple(_wip_file_sig(p) for p in lot_progress_cache._step_matching_paths() if Path(p).is_file())
+    except Exception:
+        return ("step-matching-unknown",)
+
+
 def _wip_split_latest_cache(product: str = "") -> tuple[pl.DataFrame, str, list[str], Path]:
+    """Load the canonical latest-step cache, memoized per file generation."""
+    from core import lot_progress_cache
+
+    fp = Path(lot_progress_cache.filebrowser_cache_parquet_file())
+    sig = _wip_file_sig(fp) if fp.is_file() else None
+    key = ("latest", sig, str(product or "").strip().upper()) if sig else None
+    hit = _wip_memo_get(key)
+    if hit is not None:
+        return hit
+    result = _wip_split_latest_cache_fresh(product)
+    # 읽는 사이 파일이 바뀌었으면 저장하지 않는다(다음 조회가 새 세대를 읽는다).
+    if key is not None and _wip_file_sig(fp) == sig:
+        _wip_memo_put(key, result)
+    return result
+
+
+def _wip_split_latest_cache_fresh(product: str = "") -> tuple[pl.DataFrame, str, list[str], Path]:
     """Load only the current SplitTable-owned canonical latest-step cache."""
     from core import lot_progress_cache
 
@@ -2952,6 +3065,34 @@ def _wip_split_latest_cache(product: str = "") -> tuple[pl.DataFrame, str, list[
 
 def _wip_split_prepare(product: str, bin_size: int, split_col: str, axis: str,
                        exclude_root_prefix: str = "", lot_type: str = "") -> dict:
+    """_wip_split_prepare_fresh 의 메모 — 같은 입력 파일·같은 조건이면 재사용.
+
+    요약(wip-split)과 드릴다운(wip-split/lots)이 같은 키로 같은 슬라이스를 본다."""
+    loaded = _wip_split_latest_cache(product)
+    key = None
+    latest_sig = _wip_file_sig(loaded[3])
+    if latest_sig is not None:
+        selected = loaded[1]
+        if _wip_split_is_all(selected):
+            input_sigs: tuple = ()
+        else:
+            input_sigs = (_wip_file_sig(_wip_split_ml_table_path(selected)),
+                          _wip_file_sig(_wip_split_cache_path(selected)))
+        if None not in input_sigs:
+            key = ("prepare", latest_sig, selected, input_sigs, _wip_step_matching_sig(),
+                   str(bin_size), str(split_col or ""), str(axis or ""),
+                   str(exclude_root_prefix or "").strip().upper(), str(lot_type or "").strip().casefold())
+    hit = _wip_memo_get(key)
+    if hit is not None:
+        return dict(hit)
+    ctx = _wip_split_prepare_fresh(loaded, bin_size, split_col, axis, exclude_root_prefix, lot_type)
+    ctx["_memo_key"] = key
+    _wip_memo_put(key, ctx)
+    return dict(ctx)
+
+
+def _wip_split_prepare_fresh(loaded: tuple, bin_size: int, split_col: str, axis: str,
+                             exclude_root_prefix: str = "", lot_type: str = "") -> dict:
     """wip-split 계열 공통 전처리 — latest cache 로드 → product 필터 →
     root_lot_id prefix 제외 → 축 binning → ML_TABLE split 조인. summary 와
     lots(드릴다운)가 반드시 같은 슬라이스를 보도록 한 곳에서 만든다.
@@ -2961,7 +3102,7 @@ def _wip_split_prepare(product: str, bin_size: int, split_col: str, axis: str,
     호출자까지 조용히 필터되기 때문이다."""
     from core import lot_progress_cache
 
-    cur, product, products, cache_fp = _wip_split_latest_cache(product)
+    cur, product, products, cache_fp = loaded
     if cur.is_empty():
         raise HTTPException(404, "latest cache가 비어 있습니다.")
 
@@ -3158,7 +3299,14 @@ def _wip_split_prepare(product: str, bin_size: int, split_col: str, axis: str,
                 ]
                 if ts_col:
                     sel.append(pl.col(ts_col).cast(_STR, strict=False).alias("_ts"))
-                q = lf.select(sel)
+                cur = cur.with_columns([
+                    pl.col("root_lot_id").cast(_STR, strict=False).str.to_uppercase().alias("_root"),
+                    pl.col("wafer_id").cast(_STR, strict=False).str.strip_chars().alias("_wf"),
+                ])
+                # 매칭 캐시는 wafer×step 행이라 크다 — 현재 WIP wafer 로 먼저 좁힌 뒤
+                # 정렬한다(전체 정렬 대비 같은 결과, 훨씬 적은 행).
+                q = lf.select(sel).join(cur.select("_root", "_wf").unique().lazy(),
+                                        on=["_root", "_wf"], how="semi")
                 if ts_col:
                     q = q.sort("_ts", descending=True, nulls_last=True)
                 # maintain_order=True 가 없으면 polars 의 unique 는 정렬 결과를
@@ -3168,11 +3316,7 @@ def _wip_split_prepare(product: str, bin_size: int, split_col: str, axis: str,
                 ml = (q.unique(subset=["_root", "_wf"], keep="first", maintain_order=True)
                        .select(["_root", "_wf", "_split"])
                        .collect())
-                cur = (cur.with_columns([
-                            pl.col("root_lot_id").cast(_STR, strict=False).str.to_uppercase().alias("_root"),
-                            pl.col("wafer_id").cast(_STR, strict=False).str.strip_chars().alias("_wf"),
-                        ])
-                        .join(ml, on=["_root", "_wf"], how="left"))
+                cur = cur.join(ml, on=["_root", "_wf"], how="left")
                 split_join_ok = True
         except Exception:
             logger.warning("wip-split match cache join failed", exc_info=True)
@@ -3187,10 +3331,15 @@ def _wip_split_prepare(product: str, bin_size: int, split_col: str, axis: str,
         def wafer_key(name):
             return (pl.col(name).cast(_STR, strict=False).str.strip_chars().str.to_uppercase()
                     .str.replace(r"^(?:WF|W)", "").str.replace(r"^0+(\d+)$", "${1}").alias("_wf"))
-        ml = pl.scan_parquet(ml_fp).select(root_key(root_col), wafer_key(wafer_col),
-            pl.col(split_col).cast(_STR, strict=False).alias("_split")).unique().collect()
         cur = cur.with_columns(root_key("root_lot_id"), wafer_key("wafer_id"))
-        ml = ml.join(cur.select("_root", "_wf").unique(), on=["_root", "_wf"], how="semi")
+        # 현재 WIP 에 있는 wafer 로 먼저 좁힌 뒤 unique — ML_TABLE 전체 행을
+        # unique 하던 것보다 싸고 결과 집합은 같다.
+        ml = (pl.scan_parquet(ml_fp)
+              .select(root_key(root_col), wafer_key(wafer_col),
+                      pl.col(split_col).cast(_STR, strict=False).alias("_split"))
+              .join(cur.select("_root", "_wf").unique().lazy(), on=["_root", "_wf"], how="semi")
+              .unique()
+              .collect())
         if ml.group_by("_root", "_wf").len().filter(pl.col("len") > 1).height:
             raise HTTPException(409, "같은 Root Lot·Wafer에 서로 다른 Split 값이 있어 물량을 중복 집계할 수 없습니다. ML_TABLE을 확인해 주세요.")
         cur = cur.join(ml, on=["_root", "_wf"], how="left")
@@ -3255,6 +3404,24 @@ def wip_split_summary(
         (대소문자 무관, 콤마로 여러 개). 비우면 제외하지 않는다."""
     _require_dashboard_section(request, "charts")
     ctx = _wip_split_prepare(product, bin_size, split_col, axis, exclude_root_prefix, lot_type)
+    summary_key = ("summary", ctx["_memo_key"]) if ctx.get("_memo_key") else None
+    body = _wip_memo_get(summary_key)
+    if body is None:
+        body = _wip_split_summary_body(ctx, lot_type)
+        _wip_memo_put(summary_key, body)
+    # 활동 대시보드: 어떤 제품을 어떤 split 열(KNOB/MASK/FAB)로 분류해서 봤는지.
+    from core.audit import record as _audit_record
+    _audit_record(request, "dashboard:wip_split",
+                  detail=f"product={body['product']} split_col={body['split_col'] or '(none)'} axis={body['axis']} "
+                         f"bin_size={body['bin_size']} wafers={body['total_wafers']} "
+                         f"exclude_root={body['exclude_root_prefix'] or '(none)'}",
+                  tab="dashboard")
+    return dict(body)
+
+
+def _wip_split_summary_body(ctx: dict, lot_type: str) -> dict:
+    from core import lot_progress_cache
+
     cur = ctx["cur"]
     product, products = ctx["product"], ctx["products"]
     bin_size, axis = ctx["bin_size"], ctx["axis"]
@@ -3289,7 +3456,7 @@ def wip_split_summary(
 
     # split 값 순서: 물량 많은 순, (미지정) 은 항상 마지막.
     split_values = sorted((v for v in total_by_split if v != UNASSIGNED),
-                          key=lambda v: -total_by_split[v])
+                          key=lambda v: (-total_by_split[v], v))  # 동률은 이름순 — 새로고침마다 색이 바뀌지 않게
     if UNASSIGNED in total_by_split:
         split_values.append(UNASSIGNED)
 
@@ -3314,13 +3481,6 @@ def wip_split_summary(
     except Exception:
         pass
     matched = int(cur.filter(pl.col("_split") != UNASSIGNED).height) if split_join_ok else 0
-    # 활동 대시보드: 어떤 제품을 어떤 split 열(KNOB/MASK/FAB)로 분류해서 봤는지.
-    from core.audit import record as _audit_record
-    _audit_record(request, "dashboard:wip_split",
-                  detail=f"product={product} split_col={split_col or '(none)'} axis={axis} "
-                         f"bin_size={bin_size} wafers={int(cur.height)} "
-                         f"exclude_root={ctx['exclude_root_prefix'] or '(none)'}",
-                  tab="dashboard")
     return {
         "ok": True,
         "product": product,
@@ -3356,6 +3516,21 @@ def volume_distribution(request: Request, product: str = Query("ALL"),
     if group_by == "lot_type" and (not product or _wip_split_is_all(product)):
         raise HTTPException(400, "Lot type 분포를 볼 제품을 선택해 주세요.")
     frame, selected, products, fp = _wip_split_latest_cache(product or "ALL")
+    sig = _wip_file_sig(fp)
+    memo_key = (("volume", sig, selected, group_by, str(exclude_root_prefix or "").strip().upper())
+                if sig is not None else None)
+    body = _wip_memo_get(memo_key)
+    if body is None:
+        body = _volume_distribution_body(frame, selected, products, group_by, exclude_root_prefix)
+        _wip_memo_put(memo_key, body)
+    from core.audit import record as _audit_record
+    _audit_record(request, "dashboard:volume_distribution",
+                  detail=f"product={selected} group_by={group_by} wafers={body['total_wafers']}", tab="dashboard")
+    return dict(body)
+
+
+def _volume_distribution_body(frame: pl.DataFrame, selected: str, products: list[str],
+                              group_by: str, exclude_root_prefix: str) -> dict:
     required = {"product", "root_lot_id", "wafer_id"}
     if not required.issubset(frame.columns):
         raise HTTPException(409, "현재 물량 캐시에 제품·Root Lot·Wafer 키가 필요합니다.")
@@ -3384,9 +3559,6 @@ def volume_distribution(request: Request, product: str = Query("ALL"),
     rows = [{"label": r["_label"], "wafer_count": r["wafer_count"], "lot_count": r["lot_count"],
              "share_pct": 100 * r["wafer_count"] / total if total else 0} for r in grouped.to_dicts()]
     rows.sort(key=lambda r: (-r["wafer_count"], r["label"]))
-    from core.audit import record as _audit_record
-    _audit_record(request, "dashboard:volume_distribution",
-                  detail=f"product={selected} group_by={group_by} wafers={total}", tab="dashboard")
     return {"ok": True, "product": selected, "products": products, "group_by": group_by,
             "unit": "wafer", "total_wafers": total,
             "total_lots": frame.select(pl.struct("_product", "_root").n_unique()).item() if total else 0,

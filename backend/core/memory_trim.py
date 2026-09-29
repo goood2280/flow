@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import ctypes
 import gc
+import sys
 import logging
 import platform
 import threading
@@ -134,6 +135,15 @@ def trim(reason: str = "", *, collect: bool = True) -> dict:
                 out["jemalloc_purge"] = True
         except Exception as exc:
             logger.debug("memory_trim: jemalloc purge failed: %s", exc)
+    # pyarrow 메모리 풀(jemalloc/mimalloc)은 free 한 버퍼를 풀에 쥐고 있다 — 이미
+    # import 된 경우에만 비운다(여기서 새로 import 해 메모리를 늘리지 않는다).
+    pa = sys.modules.get("pyarrow")
+    if pa is not None:
+        try:
+            pa.default_memory_pool().release_unused()
+            out["pyarrow_release"] = True
+        except Exception as exc:
+            logger.debug("memory_trim: pyarrow release_unused failed: %s", exc)
     after = _rss_bytes()
     out["rss_after"] = after
     if before > 0 and after > 0:

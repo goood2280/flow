@@ -23,12 +23,8 @@
                                     (기본 0.80, 0.5~1.0 클램프). 기존 캐시
                                     용량의 약 80%를 유지해 프로세스·요청 순간
                                     메모리용 headroom을 남긴다.
-  FLOW_WORKER_CACHE_BUDGET_FACTOR   worker(개발서버) 역할일 때 풀에 곱하는
-                                    축소 계수 (기본 0.25 = 1/4). 개발서버는
-                                    스플릿테이블 조회가 적어 캐시를 많이 들고
-                                    있을 이유가 없다 — 운영 연결 시에는
-                                    upstream_proxy 캐시를 우선 활용하고,
-                                    로컬 폴백 시에도 이 축소 예산 안에서 검색한다.
+  FLOW_DEV_CACHE_BUDGET_FACTOR      비운영 개발 PC 에서 풀에 곱하는 축소 계수
+                                    (기본 0.35). 운영 서버에는 적용되지 않는다.
 """
 from __future__ import annotations
 
@@ -37,6 +33,7 @@ import threading
 import time
 
 _POOL_FRACTION_DEFAULT = 0.45
+_LARGE_POOL_FRACTION_DEFAULT = 0.6
 _MEMORY_TARGET_RATIO_DEFAULT = 0.80
 _POOL_MEMO_TTL_SEC = 60.0
 _POOL_MEMO_LOCK = threading.Lock()
@@ -58,18 +55,11 @@ SHARES: dict[str, float] = {
 }
 
 
-_WORKER_FACTOR_DEFAULT = 0.25
 _DEV_FACTOR_DEFAULT = 0.35  # 비운영 개발 환경 캐시 풀 축소 계수
 
 
 def _is_dev() -> bool:
-    """개발서버(worker 또는 비운영 개발 환경) 여부."""
-    try:
-        from core.worker_dispatch import server_role
-        if server_role() == "worker":
-            return True
-    except Exception:
-        pass
+    """비운영 개발 환경(개발 PC) 여부."""
     try:
         from core.paths import PATHS
         return not bool(PATHS.is_prod)
@@ -93,6 +83,13 @@ def _pool_fraction() -> float:
             return max(0.1, min(0.8, v))
     except Exception:
         pass
+    try:
+        from core.runtime_limits import is_large_profile
+        if is_large_profile():
+            # 전용 대형 서버: 메모리 대부분을 캐시에 쓴다(128GB 기준 ~77GB).
+            return _LARGE_POOL_FRACTION_DEFAULT
+    except Exception:
+        pass
     return _POOL_FRACTION_DEFAULT
 
 
@@ -112,19 +109,11 @@ def memory_target_ratio() -> float:
 
 
 def worker_budget_factor() -> float:
-    """서버 역할별 캐시 풀 추가 축소 계수.
+    """캐시 풀 추가 축소 계수 (이름은 호환용으로 유지).
 
-    - 운영(prod) api: 1.0 (축소 없음)
-    - 개발(worker/비운영 개발 환경): 개발 풀 비율(pool_fraction_dev)이 **명시되면
-      1.0**(그 값이 이미 최종이라 중복 축소 안 함). 미설정이면 역할별 기본 축소
-      계수(worker 0.25 / dev 0.35, env·톱니바퀴 dev_factor 로 조정).
-
-    역할은 런타임에 바뀔 수 있다 — pool memo TTL(60s) 안에 자동 반영된다."""
-    try:
-        from core.worker_dispatch import server_role
-        role = server_role()
-    except Exception:
-        role = "api"
+    - 운영(prod): 1.0 (축소 없음)
+    - 비운영 개발 PC: 개발 풀 비율(pool_fraction_dev)이 **명시되면 1.0**(그 값이
+      이미 최종이라 중복 축소 안 함). 미설정이면 기본 0.35(env·톱니바퀴 dev_factor 로 조정)."""
     if not _is_dev():
         return 1.0
     # 개발 풀 비율이 명시되면 추가 축소를 곱하지 않는다(중복 축소 방지).
@@ -134,13 +123,6 @@ def worker_budget_factor() -> float:
             return 1.0
     except Exception:
         pass
-    if role == "worker":
-        raw = os.environ.get("FLOW_WORKER_CACHE_BUDGET_FACTOR", "")
-        try:
-            return max(0.05, min(1.0, float(raw))) if raw not in (None, "") else _WORKER_FACTOR_DEFAULT
-        except Exception:
-            return _WORKER_FACTOR_DEFAULT
-    # worker 마커 없이 실행한 비운영 개발 환경
     raw = os.environ.get("FLOW_DEV_CACHE_BUDGET_FACTOR", "")
     if raw not in (None, ""):
         try:
@@ -219,6 +201,28 @@ def capped(name: str, own_budget_bytes: int, *, explicit: bool = False) -> int:
     if cap <= 0:
         return own_budget_bytes
     return min(int(own_budget_bytes), cap)
+
+
+def large_host() -> bool:
+    """전용 대형 서버(운영) 여부 — 개발/worker 는 대형이어도 기존 작은 기본값을 쓴다."""
+    try:
+        from core.runtime_limits import is_large_profile
+        return bool(is_large_profile()) and not _is_dev()
+    except Exception:
+        return False
+
+
+def default_bytes(name: str, small_default_bytes: int) -> int:
+    """캐시 name 의 **자동** 기본 예산. 대형 서버면 풀 지분 전체, 아니면 기존 작은 값.
+
+    소형 서버용 기본값(수백 MB~2GB)은 128GB 서버에서 캐시 히트율을 스스로 막는다.
+    대형 서버에서는 지분 상한까지 쓰게 해 재조회(디스크·원천 재스캔)를 줄인다.
+    운영자 명시값(env·⚙)은 이 함수를 거치지 않는다."""
+    if large_host():
+        cap = cap_bytes(name)
+        if cap > small_default_bytes:
+            return cap
+    return int(small_default_bytes)
 
 
 def overview() -> dict:

@@ -1,4 +1,4 @@
-"""Admin-owned domain wiki. Private content lives only in operator data_root."""
+"""Admin-owned domain wiki with an optional installation-local knowledge seed."""
 from __future__ import annotations
 
 import json
@@ -52,7 +52,27 @@ def _empty():
             "editing_guidelines": DEFAULT_GUIDELINES, "version": 0, "updated_at": "", "updated_by": ""}
 
 
+def _seed_path():
+    from pathlib import Path
+    from core.domain_knowledge_seed import SEED_RELATIVE_PATH
+    # Use this installed code's directory, even when app/data roots are shared.
+    return Path(__file__).resolve().parents[2] / SEED_RELATIVE_PATH
+
+
+def _ensure_install_seed():
+    from core.domain_knowledge_seed import seed_database
+    seed_path = _seed_path()
+    if not seed_path.is_file():
+        return
+    if _path().is_file():
+        with closing(_connect()) as db:
+            if db.execute("SELECT 1 FROM revisions LIMIT 1").fetchone():
+                return
+    seed_database(_path(), json.loads(seed_path.read_text(encoding="utf-8")))
+
+
 def read_document(version=None):
+    _ensure_install_seed()
     if not _path().exists():
         if version is not None:
             raise KeyError(version)
@@ -78,6 +98,7 @@ def validate(title, body, editing_guidelines):
 
 def save_document(*, title, body, editing_guidelines, base_version, actor):
     validate(title, body, editing_guidelines)
+    _ensure_install_seed()
     with closing(_connect()) as db, db:
         db.execute("BEGIN IMMEDIATE")
         current = db.execute("SELECT COALESCE(MAX(version), 0) FROM revisions").fetchone()[0]
@@ -90,6 +111,7 @@ def save_document(*, title, body, editing_guidelines, base_version, actor):
 
 
 def history():
+    _ensure_install_seed()
     if not _path().exists():
         return []
     with closing(_connect()) as db:

@@ -174,7 +174,7 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     ...(authMode==="dep_ticket"&&cfg.admin_token?{"x-dep-ticket":"<credential_key>"}:{}),
     ...(isPlayground?{
       "Send-System-Name":cfg.system_name||"playground",
-      "User-Id":cfg.user_id||"<로그인 사용자>",
+      "User-Id":`<로그인한 Flow 아이디> (hol 계정: ${cfg.user_id||"로그인 아이디"})`,
       "User-Type":cfg.user_type||"admin",
       "Prompt-Msg-Id":"<uuid4>",
       "Completion-Msg-Id":"<uuid4>",
@@ -197,17 +197,17 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
     auth_mode:authMode,
     headers:previewHeaders,
     body:previewBody,
-    access:policy.admin_only?"POC admin only":"configured access policy",
+    access:policy.admin_only?"POC admin only":"페이지·Flow-i 권한 보유 사용자",
     error_explanation:policy.error_explanation_enabled?"enabled":"disabled",
     minute_call_limit:policy.minute_call_limit,
   };
   return(<div className="llm-cfg-panel" style={{background:"transparent",border:"0",padding:0,maxWidth:"none",opacity:readOnly?0.58:1,pointerEvents:readOnly?"none":"auto"}}>
     <div style={{fontSize:14,fontWeight:700,marginBottom:4}}>Flowi LLM 설정</div>
     <div style={{fontSize:14,color:"var(--text-secondary)",marginBottom:10,lineHeight:1.6}}>
-      POC 동안 LLM 실행은 관리자 요청에만 허용됩니다. 번역·런타임 오류 해석에는 LLM을 사용하지 않습니다. 데이터 검색·랏 위치·차트·SQL·추출에만 사용합니다. 연결 정보가 없는 provider는 계속 비활성 상태입니다.
+      LLM은 각 기능의 페이지 권한(홈 AI는 Flow-i 권한)이 있는 로그인 사용자가 쓸 수 있습니다. 번역·런타임 오류 해석에는 LLM을 사용하지 않습니다. 데이터 검색·랏 위치·차트·SQL·추출에만 사용합니다. 연결 정보가 없는 provider는 계속 비활성 상태입니다.
     </div>
     <div style={{padding:"8px 10px",marginBottom:10,borderRadius:6,border:"1px solid var(--border)",background:"var(--bg-card)",fontSize:13,color:"var(--text-secondary)"}}>
-      정책 · 관리자 전용 · 오류 해석 꺼짐 · 최근 60초 공용 한도 {policy.minute_call_limit ?? 25}회
+      정책 · {policy.admin_only?"관리자 전용":"권한 보유 사용자"} · 오류 해석 꺼짐 · 최근 60초 공용 한도 {policy.minute_call_limit ?? 25}회
       {policy.minute_calls_used!=null&&` · 최근 60초 ${policy.minute_calls_used}회 사용 / ${policy.minute_calls_remaining}회 남음`}
       {" · Sliding Window · 연결 확인·재시도도 횟수에 포함"}
     </div>
@@ -295,8 +295,8 @@ export default function LlmCfgPanel({ readOnly = false } = {}){
         <input value={cfg.system_name} onChange={e=>patch({system_name:e.target.value})} placeholder="playground" style={I}/>
       </div>
       <div>
-        <div style={L}>User-Id</div>
-        <input value={cfg.user_id} onChange={e=>patch({user_id:e.target.value})} placeholder="Knox ID" style={I}/>
+        <div style={L}>User-Id (hol 계정 기본값)</div>
+        <input value={cfg.user_id} onChange={e=>patch({user_id:e.target.value})} placeholder="Knox ID" title="기본 관리자 hol 계정의 호출에만 쓰입니다. 다른 사용자(admin 권한자 포함)는 자기 Flow 아이디가 User-Id로 들어갑니다." style={I}/>
       </div>
       <div>
         <div style={L}>User-Type</div>

@@ -401,47 +401,6 @@ class BackupScheduleReq(BaseModel):
 class BackupRestoreReq(BaseModel):
     filename: str
     restore_db_root_files: bool = False
-# ── 워커 분산 (v9.4.x) ───────────────────────────────────────────────────────
-# 관리자 탭(모니터 → 워커 서버)에서 역할 확인/변경, 개발서버 신호등, 원격 기동.
-
-class WorkerRoleReq(BaseModel):
-    role: str  # api | worker
-
-
-@router.get("/worker")
-def worker_status(_admin=Depends(require_admin)):
-    """워커 분산 상태 — 역할(+출처), 워커/워치독 생존, 큐 깊이, 오프로드 통계."""
-    from core import worker_dispatch
-    return worker_dispatch.status()
-
-
-@router.post("/worker/role")
-def worker_set_role(req: WorkerRoleReq, request: Request, _admin=Depends(require_admin)):
-    """이 서버의 역할을 마커 파일 + server_role.json 에 저장 — 재시작 없이 즉시 반영.
-
-    개발은 shared data root의 호스트별 worker 마커를 만들고, 운영은 역할 마커를
-    지운다 — 마커가 없는 서버는 항상 운영(api)으로 뜬다.
-    FLOW_SERVER_ROLE env 로 고정된 배포에서는 UI 변경을 거부한다 (env 우선)."""
-    from core import worker_dispatch
-    out = worker_dispatch.set_role(req.role)
-    if not out.get("ok"):
-        status = 500 if out.get("code") in {"write_failed", "marker_locked"} else 400
-        raise HTTPException(status, out.get("error") or "role change failed")
-    _audit(request, "admin:worker-role-set", detail=str(req.role), tab="admin")
-    return worker_dispatch.status()
-
-
-@router.post("/worker/start")
-def worker_remote_start(request: Request, _admin=Depends(require_admin)):
-    """개발서버(워커) 원격 기동 요청 — shared workspace 의 start_request 파일을
-    개발서버 상주 워치독(scripts/worker_watchdog.py)이 소비해 uvicorn 을 띄운다."""
-    from core import worker_dispatch
-    me = current_user(request)
-    out = worker_dispatch.request_worker_start(requested_by=(me or {}).get("username") or "")
-    _audit(request, "admin:worker-start", detail=str(out.get("ok")), tab="admin")
-    return {**out, "status": worker_dispatch.status()}
-
-
 @router.post("/tracker-schema-migrate")
 def tracker_schema_migrate(request: Request, _admin=Depends(require_admin)):
     result = migrate_tracker_issues_file(reason="admin_button", actor=(current_user(request).get("username") or "admin"))
@@ -454,6 +413,10 @@ def tracker_schema_migrate(request: Request, _admin=Depends(require_admin)):
 def list_users(_admin=Depends(require_admin)):
     """v8.4.6: admin only. password_hash 는 응답에서 제거."""
     users = read_users()
+    from core.auth_providers import read_people
+    people = read_people()
+    users = [{**u, **{k: people[u["username"]][k] for k in ("name", "email")
+                      if k in people[u["username"]]}} if u.get("username") in people else u for u in users]
     permissions = effective_permissions_bulk(users)
     return {"users": [
         {**{k: v for k, v in user.items() if k != "password_hash"}, "effective_permissions": permission}
@@ -592,8 +555,10 @@ def set_email(req: EmailReq, request: Request, _admin=Depends(require_admin)):
     users = read_users()
     for u in users:
         if u["username"] == req.username:
-            u["email"] = email
-            write_users(users)
+            from core.auth_providers import update_manual_contact
+            if not update_manual_contact(req.username, "email", email):
+                u["email"] = email
+                write_users(users)
             _audit(request, "admin:set-email", detail=f"user={req.username} email={email or '(clear)'}", tab="admin")
             return {"ok": True}
     raise HTTPException(404)
@@ -612,8 +577,10 @@ def set_name(req: NameReq, request: Request, _admin=Depends(require_admin)):
     users = read_users()
     for u in users:
         if u["username"] == req.username:
-            u["name"] = nm
-            write_users(users)
+            from core.auth_providers import update_manual_contact
+            if not update_manual_contact(req.username, "name", nm):
+                u["name"] = nm
+                write_users(users)
             _audit(request, "admin:set-name", detail=f"user={req.username} name={nm or '(clear)'}", tab="admin")
             return {"ok": True}
     raise HTTPException(404)
@@ -1154,10 +1121,21 @@ def write_log(entry: LogEntry, request: Request):
     return {"ok": True}
 
 
+def _activity_admin_usernames() -> List[str]:
+    """role=admin 계정(기본 hol). 활동 현황에서 운영자 본인 활동을 빼고 볼 때 쓴다."""
+    try:
+        return sorted({str(row.get("username") or "").strip() for row in read_users()
+                       if str(row.get("role") or "").strip() == "admin" and str(row.get("username") or "").strip()})
+    except Exception:
+        return []
+
+
 @router.get("/logs")
-def get_logs(request: Request, limit: int = 100, username: str = "", action: str = "", tab: str = "", offset: int = 0, days: int = 0):
+def get_logs(request: Request, limit: int = 100, username: str = "", action: str = "", tab: str = "", offset: int = 0, days: int = 0,
+             exclude_admins: bool = False):
     """v8.4.6: 전체 로그 열람은 admin. 본인 로그는 누구나.
-    v8.7.1: action/tab 키워드 부분일치 필터 추가 (admin activity log UI 용)."""
+    v8.7.1: action/tab 키워드 부분일치 필터 추가 (admin activity log UI 용).
+    exclude_admins=true 면 관리자(role=admin) 계정 이벤트를 뺀다 (admin 조회 전용)."""
     me = current_user(request)
     is_admin = me.get("role") == "admin"
     if not is_admin:
@@ -1165,6 +1143,7 @@ def get_logs(request: Request, limit: int = 100, username: str = "", action: str
     return activity_index.page(
         ACTIVITY_LOG, limit, offset, username, action, tab, days,
         exact_user=not is_admin,
+        exclude_users=_activity_admin_usernames() if is_admin and exclude_admins else (),
     )
 
 
@@ -1690,6 +1669,125 @@ def backup_schedule(req: BackupScheduleReq, request: Request, _admin=Depends(req
     return {"ok": True, "scheduled_at": at, "reason": bk["scheduled_reason"]}
 
 
+class ManagerProfileReq(BaseModel):
+    username: str
+    name: str
+    email: str
+    role: str = "user"
+    pages: list[str] = []
+    department: str = ""
+
+
+class ManagerProfilesReq(BaseModel):
+    profiles: list[ManagerProfileReq]
+
+
+def _manager_profiles_payload():
+    from core import auth_providers as providers
+    people = providers.read_people(strict=True)
+    users = {u["username"]: u for u in read_users()}
+    pages = get_page_admins()
+    names = {name for name, u in users.items() if u.get("role") == "admin"}
+    names.update(name for members in pages.values() for name in members)
+    profiles = []
+    for name in sorted(names):
+        user, contact = users.get(name, {}), people.get(name, {})
+        profiles.append({
+            "username": name, "name": contact.get("name", user.get("name", "")),
+            "email": contact.get("email", user.get("email", "")),
+            "department": contact.get("department", user.get("department", "")),
+            "role": user.get("role", "user"),
+            "pages": sorted(page for page, members in pages.items() if name in members),
+        })
+    return {"profiles": profiles, "tab_ids": sorted(DELEGABLE_PAGE_IDS)}
+
+
+@router.get("/manager-profiles")
+def manager_profiles_get(_admin=Depends(require_admin)):
+    return _manager_profiles_payload()
+
+
+@router.post("/manager-profiles")
+def manager_profiles_save(req: ManagerProfilesReq, request: Request, actor=Depends(require_admin)):
+    """Explicit manager registration; ordinary SSO users remain unpersisted.
+
+    Upsert submitted rows. Omitted people and unrelated permissions are preserved.
+    Contact information lives in people.enc; users.csv owns role/status and the
+    existing page_admins map owns delegation, so all existing gates still apply.
+    """
+    import re
+    from core import auth as auth_core, auth_providers as providers
+    from routers.auth import USERS_MUTATION_LOCK
+    cleaned = {}
+    if len(req.profiles) > 500:
+        raise HTTPException(400, "At most 500 profiles per save")
+    for item in req.profiles:
+        company_id = item.username.strip()
+        username = providers._ws_user_map().get(company_id.casefold()) or company_id
+        username = auth_core.canonical_username(username)
+        name, email = item.name.strip(), item.email.strip()
+        pages = sorted({canonical_page_id(page) for page in item.pages})
+        if not username or len(username) > 200 or re.search(r"[\s/\\,]", username):
+            raise HTTPException(400, "Valid company account ID required")
+        if username in cleaned:
+            raise HTTPException(400, f"Duplicate account: {username}")
+        if not name or len(name) > 200 or not re.fullmatch(r"[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+", email):
+            raise HTTPException(400, f"Name and valid email required: {username}")
+        if item.role not in {"admin", "user"} or not set(pages).issubset(DELEGABLE_PAGE_IDS):
+            raise HTTPException(400, f"Invalid role or delegated page: {username}")
+        if item.role == "user" and not pages:
+            raise HTTPException(400, f"Select at least one delegated page: {username}")
+        if username == actor.get("username") and item.role != "admin":
+            raise HTTPException(400, "Cannot demote your own administrator account here")
+        cleaned[username] = {"name": name, "email": email, "department": item.department.strip()[:200],
+                             "role": item.role, "pages": pages}
+    with USERS_MUTATION_LOCK, providers.PEOPLE_LOCK:
+        people = providers.read_people(strict=True)
+        users = read_users()
+        before_pages = get_page_admins()
+        pages_map = {page: list(names) for page, names in before_pages.items()}
+        changed_permissions = set()
+        for username, item in cleaned.items():
+            row = next((u for u in users if u["username"] == username), None)
+            old_pages = sorted(page for page, names in before_pages.items() if username in names)
+            if row is None:
+                row = {"username": username, "password_hash": "", "tabs": "",
+                       "created": dt.datetime.now().isoformat(timespec="seconds")}
+                users.append(row)
+                changed_permissions.add(username)
+            role = item["role"]
+            new_pages = [] if role == "admin" else item["pages"]
+            if row.get("role") != role or row.get("status") != "approved" or old_pages != new_pages:
+                changed_permissions.add(username)
+            old_role = row.get("role")
+            row.update(role=role, status="approved")
+            if role == "admin":
+                row.update(tabs="__all__", permission_source="admin")
+            elif old_role == "admin":
+                row.update(tabs="", permission_source="individual")
+            for page in DELEGABLE_PAGE_IDS:
+                names = set(pages_map.get(page, []))
+                names.discard(username)
+                if page in new_pages:
+                    names.add(username)
+                if names:
+                    pages_map[page] = sorted(names)
+                else:
+                    pages_map.pop(page, None)
+            people[username] = {key: item[key] for key in ("name", "email", "department")}
+            people[username].update(manual=True, updated_at=dt.datetime.now().isoformat(timespec="seconds"))
+        # Encrypt first so unavailable keys/dependencies cannot grant permissions.
+        providers._write_people(people)
+        write_users(users)
+        settings = load_json(ADMIN_SETTINGS_FILE, {})
+        settings["page_admins"] = pages_map
+        save_json(ADMIN_SETTINGS_FILE, settings)
+        for username in changed_permissions:
+            auth_core.revoke_user_tokens(username)
+    _audit(request, "admin:manager-profiles", detail=f"accounts={','.join(cleaned)}", tab="admin")
+    return {"ok": True, **_manager_profiles_payload()}
+
+
 # ── v8.8.14: Per-page admin delegation ─────────────────────────────────
 @router.get("/page-admins")
 def page_admins_get(_admin=Depends(require_admin)):
@@ -1788,7 +1886,8 @@ def my_page_admin(request: Request):
 
 # ── v8.8.14: Activity dashboard — 누가 / 어떤 기능을 / 얼마나 썼는지 ──
 @router.get("/activity/summary")
-def activity_summary(days: int = Query(0), _admin=Depends(require_admin), include_recent: bool = True):
+def activity_summary(days: int = Query(0), _admin=Depends(require_admin), include_recent: bool = True,
+                     exclude_admins: bool = False):
     """activity.jsonl 을 집계. ``days=0`` 이면 보존 중인 전체 기록을 조회한다.
     반환:
       - total: 총 이벤트 수
@@ -1800,8 +1899,10 @@ def activity_summary(days: int = Query(0), _admin=Depends(require_admin), includ
       - active_users_by_week: 전체 보존 기간(기간 필터 시 최근 26주)의 주별 순 사용자 수
       - active_users_by_month: 전체 보존 기간(기간 필터 시 최근 12개월)의 월별 순 사용자 수
       - recent:    최근 3000건 (내림차순)
+      - excluded_users / excluded_count: exclude_admins=true 일 때 뺀 관리자 계정과 이벤트 수
     """
-    result = activity_index.summary(ACTIVITY_LOG, days, include_recent)
+    result = activity_index.summary(ACTIVITY_LOG, days, include_recent,
+                                    exclude_users=_activity_admin_usernames() if exclude_admins else ())
     result["activity_storage"] = {
         "path": str(ACTIVITY_LOG),
         "relative_path": "flow-data/logs/activity.jsonl",
@@ -1812,12 +1913,13 @@ def activity_summary(days: int = Query(0), _admin=Depends(require_admin), includ
 
 
 @router.get("/activity/features")
-def activity_features(days: int = Query(0), _admin=Depends(require_admin)):
+def activity_features(days: int = Query(0), _admin=Depends(require_admin), exclude_admins: bool = False):
     """`action` prefix 단위로 기능 사용 현황. 각 기능(=action prefix)의 first_seen /
     last_seen / users(사용한 유저 집합) / count 를 반환. admin 이 "어떤 기능이 활성화
     되어 있는지" 한눈에 파악하는 용도.
     """
-    return activity_index.features(ACTIVITY_LOG, days)
+    return activity_index.features(ACTIVITY_LOG, days,
+                                   exclude_users=_activity_admin_usernames() if exclude_admins else ())
 
 
 # ── Base CSV editor (v8.5.2) ──
@@ -1973,3 +2075,49 @@ def qa_trigger(_admin=Depends(require_admin)):
     if proc.returncode != 0:
         raise HTTPException(500, payload)
     return payload
+
+
+# ── 운영 점검 스캔 (관리자 > 에이전트) ────────────────────────────────────────
+# 파일·서버·라이브러리·운영 상태를 읽기만 해서 규칙 점검 + (연결 시) LLM 추천.
+# 아무 설정도 바꾸지 않는다. core.ops_scan 은 새 모듈이라 지연 import 한다.
+class OpsScanReq(BaseModel):
+    use_ai: bool = True
+
+
+@router.get("/ops-scan")
+def ops_scan_latest(_admin=Depends(require_admin)):
+    from core import ops_scan
+    return ops_scan.latest()
+
+
+@router.post("/ops-scan/run")
+def ops_scan_run(req: OpsScanReq, request: Request, admin=Depends(require_admin)):
+    from core import ops_scan
+    try:
+        report = ops_scan.run(actor=str(admin.get("username") or ""), use_ai=bool(req.use_ai))
+    except RuntimeError as exc:
+        if str(exc) == "scan_in_progress":
+            raise HTTPException(409, "다른 관리자가 스캔 중입니다. 잠시 뒤 다시 눌러 주세요.")
+        raise
+    _audit(request, "admin:ops-scan", detail=f"ai={bool((report.get('ai') or {}).get('used'))} counts={report.get('counts')}", tab="admin")
+    return {"ok": True, "report": report}
+
+
+class OpsScanScheduleReq(BaseModel):
+    enabled: Optional[bool] = None
+    hour: Optional[int] = None
+    use_ai: Optional[bool] = None
+    notify: Optional[str] = None
+
+
+@router.put("/ops-scan/schedule")
+def ops_scan_schedule_save(req: OpsScanScheduleReq, request: Request, _admin=Depends(require_admin)):
+    from core import ops_scan
+    patch = {k: v for k, v in req.model_dump().items() if v is not None}
+    if "hour" in patch and not 0 <= int(patch["hour"]) <= 23:
+        raise HTTPException(400, "시각은 0~23 사이여야 합니다.")
+    if "notify" in patch and patch["notify"] not in ops_scan.NOTIFY_MODES:
+        raise HTTPException(400, "알림 조건은 issues 또는 always 입니다.")
+    schedule = ops_scan.save_schedule(patch)
+    _audit(request, "admin:ops-scan-schedule", detail=" ".join(f"{k}={v}" for k, v in patch.items()), tab="admin")
+    return {"ok": True, "schedule": schedule}

@@ -426,8 +426,15 @@ def _chart_builder_run_data(req: ChartBuilderRunReq, request: Request, me: dict)
 
 
 def _chart_builder_cache_limits() -> tuple[int, int, float]:
+    default_mb = 128
     try:
-        budget_mb = max(0, min(1024, int(os.environ.get("FLOW_CHART_BUILDER_CACHE_MB", "128") or 128)))
+        from core import cache_budget
+        if cache_budget.large_host():
+            default_mb = 1024  # 대형 서버: 같은 조회 결과를 더 많이 재사용
+    except Exception:
+        pass
+    try:
+        budget_mb = max(0, min(4096, int(os.environ.get("FLOW_CHART_BUILDER_CACHE_MB", "") or default_mb)))
     except (TypeError, ValueError):
         budget_mb = 128
     try:
@@ -437,7 +444,7 @@ def _chart_builder_cache_limits() -> tuple[int, int, float]:
     if os.environ.get("PYTEST_CURRENT_TEST"):
         ttl = 0.0
     budget = budget_mb * 1024 * 1024
-    return budget, min(32 * 1024 * 1024, max(0, budget // 2)), ttl
+    return budget, min(max(32 * 1024 * 1024, budget // 8), max(0, budget // 2)), ttl
 
 
 def _chart_builder_cache_key(req: ChartBuilderRunReq) -> str:
@@ -495,74 +502,9 @@ def _chart_builder_cache_put(key: str, result: dict) -> None:
         _CHART_BUILDER_RESULT_CACHE[key] = (time.monotonic(), payload)
 
 
-def _chart_builder_request_payload(req: ChartBuilderRunReq) -> dict:
-    if hasattr(req, "model_dump"):
-        return req.model_dump(mode="json")
-    return json.loads(req.json())
-
-
-def _chart_builder_run_data_offloaded(req: ChartBuilderRunReq, request: Request, me: dict):
-    """Prefer the development worker for the raw-data phase; run locally otherwise.
-
-    ChartBuilder, Template Report (one run per chart) and home-agent charts all
-    land here. The data phase reads only the request definition, so the worker
-    rebuilds the same request and returns the JSON result. Worker offline,
-    overloaded, on another code version, or failing all fall back to the same
-    local computation, so production alone keeps full functionality."""
-    def _local():
-        return {"ok": True, "result": _chart_builder_run_data(req, request, me)}
-
-    disabled = str(os.environ.get("FLOW_CHART_BUILDER_OFFLOAD", "1")).strip().lower() in {"0", "false", "no", "off"}
-    try:
-        from core import worker_dispatch as _wd
-        from core.home_agent_offload import code_version as _code_version
-        role = _wd.server_role()
-    except Exception:
-        return _chart_builder_run_data(req, request, me)
-    if disabled or role != "api":
-        return _chart_builder_run_data(req, request, me)
-    envelope = _wd.run_heavy(
-        "chart_builder_run",
-        {
-            "req": _chart_builder_request_payload(req),
-            "user": {key: value for key, value in (me or {}).items()
-                     if key in {"username", "role", "tabs", "groups", "auth_method"}},
-            "code_version": _code_version(),
-        },
-        _local,
-        timeout_sec=max(60.0, min(1800.0, float(os.environ.get("FLOW_CHART_BUILDER_OFFLOAD_TIMEOUT_SEC", "") or 600.0))),
-        label="ChartBuilder data",
-        priority="interactive",
-    ) or {}
-    http_error = envelope.get("http_error") if isinstance(envelope, dict) else None
-    if isinstance(http_error, dict) and http_error.get("status"):
-        raise HTTPException(int(http_error["status"]), http_error.get("detail"))
-    result = envelope.get("result") if isinstance(envelope, dict) else None
-    if isinstance(result, dict):
-        return result
-    return _chart_builder_run_data(req, request, me)
-
-
-def chart_builder_run_data_for_worker(payload: dict) -> dict:
-    """Worker-side entry for `chart_builder_run` tasks."""
-    from core.home_agent_offload import code_version as _code_version
-
-    if str(payload.get("code_version") or "") != _code_version():
-        return {"ok": False, "error": "version_mismatch"}
-    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
-    try:
-        req = ChartBuilderRunReq(**(payload.get("req") or {}))
-        result = _chart_builder_run_data(req, None, user)
-    except HTTPException as exc:
-        return {"ok": True, "http_error": {"status": int(exc.status_code), "detail": exc.detail}}
-    result = json.loads(json.dumps(result, ensure_ascii=False, default=str))
-    result["execution_server"] = "development_worker"
-    return {"ok": True, "result": result}
-
-
 @router.post("/chart-builder/run")
 def chart_builder_run(req: ChartBuilderRunReq, request: Request):
-    """Run ChartBuilder with a small shared cache, admission control and worker offload."""
+    """Run ChartBuilder with a small shared cache and admission control."""
     started = time.monotonic()
     me = current_user(request)
     for source in req.sources or []:
@@ -580,7 +522,7 @@ def chart_builder_run(req: ChartBuilderRunReq, request: Request):
             result = _chart_builder_cache_get(cache_key)
             cache_hit = result is not None
             if result is None:
-                result = _chart_builder_run_data_offloaded(req, request, me)
+                result = _chart_builder_run_data(req, request, me)
                 _chart_builder_cache_put(cache_key, result)
         finally:
             _CHART_BUILDER_QUERY_GATE.release()
@@ -595,8 +537,7 @@ def chart_builder_run(req: ChartBuilderRunReq, request: Request):
         tab="chartbuilder",
     )
     result["performance"] = {
-        "profile": "5-core API + development worker",
-        "execution_server": result.get("execution_server") or "production_api",
+        "profile": "single production server",
         "cache_hit": bool(cache_hit),
         "wait_ms": wait_ms,
         "elapsed_ms": round((time.monotonic() - started) * 1000),
@@ -779,13 +720,15 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
         else:
             raise HTTPException(400, "Specify file or root+product")
 
+        # 한도에서 잘렸는지 알려면 한 행 더 읽어 본다(잘렸으면 응답 헤더로 알린다).
+        probe_rows = max_rows + 1
         if lazy_lf is not None:
             try:
                 df, csv_bytes = _download_lazy_csv(
                     lazy_lf,
                     sql,
                     select_cols,
-                    max_rows,
+                    probe_rows,
                     max_bytes,
                     source_size=duckdb_engine.total_size(source_files),
                     settings=settings,
@@ -802,11 +745,15 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                     source_files,
                     sql,
                     select_cols,
-                    max_rows,
+                    probe_rows,
                     max_bytes,
                     settings=settings,
                     sort_spec=sort_spec,
                 )
+            truncated = df.height > max_rows
+            if truncated:
+                df = df.head(max_rows)
+                csv_bytes = _csv_bytes_checked(df, max_bytes)
             _log_dl(username, label, sql, df.height, df.width,
                     select_cols=select_cols, size_bytes=len(csv_bytes))
             # 활동 대시보드: 무엇을 어떤 조건으로 CSV 다운로드했는지 (DL_LOG 와 별도).
@@ -816,7 +763,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                                   f"size_mb={round(len(csv_bytes) / 1e6, 2)} "
                                   f"select_cols={select_cols or 'all'} sql={sql.strip()}",
                            tab="filebrowser")
-            return csv_response(csv_bytes, _response_name(label))
+            return _limited_csv_response(csv_bytes, _response_name(label), truncated, max_rows, df.height)
 
         # v7.2: Apply reformatter rules BEFORE select/sql so derived cols can be selected/filtered.
         # This dataframe path is retained for reformatter-derived columns and small config files.
@@ -876,6 +823,7 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
             sel = [c.strip() for c in select_cols.split(",") if c.strip() in set(df.columns)]
             if sel:
                 df = df.select(sel)
+        truncated = df.height > max_rows
         df = df.head(max_rows)
         csv_bytes = _csv_bytes_checked(df, max_bytes)
         _log_dl(username, label, sql, df.height, df.width,
@@ -887,11 +835,23 @@ def download_csv(request: Request, root: str = Query(""), product: str = Query("
                               f"size_mb={round(len(csv_bytes) / 1e6, 2)} "
                               f"select_cols={select_cols or 'all'} sql={sql.strip()}",
                        tab="filebrowser")
-        return csv_response(csv_bytes, _response_name(label))
+        return _limited_csv_response(csv_bytes, _response_name(label), truncated, max_rows, df.height)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(500, f"Download failed: {str(e)}")
+
+
+def _limited_csv_response(csv_bytes: bytes, filename: str, truncated: bool, max_rows: int, rows: int):
+    """CSV 응답 + 행 수 한도에서 잘렸는지 헤더. 화면이 이걸 보고 "조건을 좁혀 다시 받으라"는 팝업을 띄운다."""
+    response = csv_response(csv_bytes, filename)
+    response.headers["X-Flow-Download-Truncated"] = "1" if truncated else "0"
+    response.headers["X-Flow-Download-Row-Limit"] = str(int(max_rows))
+    response.headers["X-Flow-Download-Rows"] = str(int(rows))
+    response.headers["Access-Control-Expose-Headers"] = (
+        "Content-Disposition, X-Flow-Download-Truncated, X-Flow-Download-Row-Limit, X-Flow-Download-Rows"
+    )
+    return response
 
 
 @router.get("/download-history")

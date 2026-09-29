@@ -5,7 +5,8 @@
   - DB/Base/Fab/wafer_maps 같은 원천 데이터 루트는 백업하지 않는다.
   - 제외: `*.parquet`, `*.pyc`, `__pycache__`, `_backups`, `cache`, `tmp`, `node_modules`.
   - logs/uploads 는 포함 (운영 기록 + 인폼 이미지 보존 필요).
-  - 백업 경로: admin_settings.json `backup.path` (없으면 /config/work/sharedworkspace).
+  - 백업 경로: admin_settings.json `backup.path` (없으면 Linux /config/work/sharedworkspace,
+    Windows 는 flow-data 옆 flow-backups — 예: D:/flow-backups).
   - 보관 정책: 최신 N 개 유지 (기본 5, 상한 5 — v8.8.3 부터 축소).
   - 주기: 서버 기동 시 1회 + 스케줄 스레드 (기본 24h). admin_settings.json
     `backup.interval_hours` 로 런타임 조절.
@@ -87,6 +88,8 @@ def get_settings() -> dict:
         "scheduled_at": (bk.get("scheduled_at") or "").strip(),
         "scheduled_reason": (bk.get("scheduled_reason") or "").strip(),
         "last": _last_backup,
+        # 경로를 비워 둘 때 실제로 쓰는 위치 — 관리자 화면 안내용.
+        "default_path": str(_default_backup_root()),
     }
 
 
@@ -108,12 +111,25 @@ def set_settings(path: Optional[str] = None, interval_hours: Optional[int] = Non
     return get_settings()
 
 
+def _default_backup_root() -> Path:
+    """설정이 비었을 때의 백업 위치.
+
+    Windows 에서 "/config/work/sharedworkspace" 는 현재 드라이브의 config 폴더로 풀려
+    엉뚱한 곳(D:/config/work/sharedworkspace)에 zip 이 쌓였다. Windows 는 flow-data 옆
+    `flow-backups` 폴더(예: D:/flow-backups)를 쓴다 — flow-data 안에 두면 백업이 다음
+    백업에 다시 들어가고, 같은 폴더를 지우는 사고에 함께 사라진다.
+    """
+    if os.name == "nt":
+        return PATHS.data_root.parent / "flow-backups"
+    return _DEFAULT_BACKUP_ROOT
+
+
 def _resolve_backup_root() -> Path:
     cfg = get_settings()
     override = cfg["path"]
     if override:
         return Path(override)
-    return _DEFAULT_BACKUP_ROOT
+    return _default_backup_root()
 
 
 def _iter_files(src: Path):

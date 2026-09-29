@@ -319,3 +319,57 @@ def product_structure_history(product: str = Query(..., min_length=1, max_length
         return {"history": structure.history(product)}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+
+
+# ── Knob 레지스트리 · LOT 목적 테이블 ─────────────────────────────────────
+# 위키 접근 권한이 있는 사용자는 누구나 갱신할 수 있고, 저장마다 revision 이력이 남는다.
+class KnobsRequest(BaseModel):
+    product: str = Field(..., min_length=1, max_length=200)
+    expected_revision: int = Field(..., ge=0)
+    knobs: list[dict] = Field(default_factory=list, max_length=500)
+
+
+class LotsRequest(BaseModel):
+    product: str = Field(..., min_length=1, max_length=200)
+    expected_revision: int = Field(..., ge=0)
+    lots: list[dict] = Field(default_factory=list, max_length=3000)
+
+
+def _registry_call(fn, *args):
+    try:
+        return fn(*args)
+    except wiki.Conflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/knobs")
+def product_knobs(product: str = Query(..., min_length=1, max_length=200)):
+    from core import product_wiki_structure as structure
+    return _registry_call(structure.knobs_document, product)
+
+
+@router.post("/knobs")
+def save_product_knobs(req: KnobsRequest, user=Depends(require_access)):
+    from core import product_wiki_structure as structure
+    return _registry_call(structure.save_knobs, req.product, req.expected_revision, req.knobs, user["username"])
+
+
+@router.get("/lots")
+def product_lots(product: str = Query(..., min_length=1, max_length=200)):
+    from core import product_wiki_structure as structure
+    return _registry_call(structure.lots_document, product)
+
+
+@router.post("/lots")
+def save_product_lots(req: LotsRequest, user=Depends(require_access)):
+    from core import product_wiki_structure as structure
+    return _registry_call(structure.save_lots, req.product, req.expected_revision, req.lots, user["username"])
+
+
+@router.get("/registry/history")
+def product_registry_history(product: str = Query(..., min_length=1, max_length=200),
+                             kind: Literal["knobs", "lots"] = Query("knobs")):
+    from core import product_wiki_structure as structure
+    return {"history": _registry_call(structure.registry_history, product, kind)}

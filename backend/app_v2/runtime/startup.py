@@ -32,53 +32,28 @@ def _start_many(starters, logger) -> None:
 
 
 def start_background_services(logger) -> None:
-    """Start local guards and one cross-process owner for shared schedulers."""
+    """Start local guards and one cross-process owner for shared schedulers.
+
+    Flow runs on a single production server (2026-09-29): every recurring job,
+    including the former development-worker jobs (FAB matching scan, Auto
+    report generation/history, ET tracker scans), starts in the elected
+    background owner process and runs heavy work through core.heavy_jobs.
+    """
     SCHEDULER_ERRORS.clear()
 
     # These services protect or serve one process and must exist in every
     # process.  They do not own recurring shared-data jobs.
     process_starters = [
-        ("worker dispatch", "core.worker_dispatch", "start_services"),
         ("memory watchdog", "core.memory_watchdog", "start_background"),
-        # Both starters are role-gated internally and run only on the
-        # development worker. Their heavy work shares core.scan_gate with
-        # cache builds received through worker_dispatch.
-        ("FAB matching alert scanner", "core.fab_matching_alerts", "start_scheduler"),
-        ("Auto report history scheduler", "core.auto_report_history", "start_scheduler"),
+        ("filebrowser cache cleanup", "routers.filebrowser", "cleanup_legacy_cache_roots"),
+        ("download queue orphan sweep", "core.download_queue", "start_orphan_sweeper"),
+        # These warm process RAM and therefore intentionally run per API
+        # process; shared cache creation is owned below.
+        ("splittable candidate list prewarmer", "routers.splittable", "start_candidate_list_prewarmer"),
+        ("splittable KNOB prewarmer", "routers.splittable", "start_knob_prewarmer"),
     ]
 
-    from core.worker_dispatch import (
-        external_services_enabled,
-        marker_path,
-        marker_role,
-        role_source,
-        server_role,
-    )
-
-    try:
-        marker = marker_role()
-        logger.info(
-            "server role at startup: %s (source=%s, %s)",
-            server_role(), role_source(),
-            str(marker[1]) if marker else f"default api role; worker marker: {marker_path('worker')}",
-        )
-    except Exception:
-        logger.debug("server role log skipped", exc_info=True)
-
-    local_services_enabled = external_services_enabled()
-    if local_services_enabled:
-        process_starters.extend([
-            ("filebrowser cache cleanup", "routers.filebrowser", "cleanup_legacy_cache_roots"),
-            ("download queue orphan sweep", "core.download_queue", "start_orphan_sweeper"),
-            # These warm process RAM and therefore intentionally run per API
-            # process; shared cache creation is owned below.
-            ("splittable candidate list prewarmer", "routers.splittable", "start_candidate_list_prewarmer"),
-            ("splittable KNOB prewarmer", "routers.splittable", "start_knob_prewarmer"),
-        ])
-    else:
-        logger.info("API-local RAM warmers disabled on worker role")
-
-    if local_services_enabled and splittable_product_ram_cache_scheduler_enabled():
+    if splittable_product_ram_cache_scheduler_enabled():
         process_starters.append(
             ("splittable product RAM cache scheduler", "routers.splittable", "start_product_ram_cache_scheduler")
         )
@@ -92,7 +67,7 @@ def start_background_services(logger) -> None:
     else:
         logger.info("SplitTable root lot RAM warmup retired (always disabled)")
 
-    if local_services_enabled and tracker_et_lot_cache_enabled():
+    if tracker_et_lot_cache_enabled():
         process_starters.append(
             ("tracker ET lot cache scheduler", "core.lot_step", "start_et_lot_cache_scheduler")
         )
@@ -115,6 +90,11 @@ def start_background_services(logger) -> None:
         ("mapfile traffic scheduler", "core.mapfile_traffic_scheduler", "start_scheduler"),
         ("S3 ingest scheduler", "routers.s3_ingest", "start_scheduler"),
         ("dashboard chart scheduler", "routers.dashboard", "start_chart_scheduler"),
+        ("ops scan daily scheduler", "core.ops_scan", "start_scheduler"),
+        # Former development-worker jobs; heavy work goes through core.heavy_jobs.
+        ("FAB matching alert scanner", "core.fab_matching_alerts", "start_scheduler"),
+        ("Auto report runner", "core.auto_report", "start_runner"),
+        ("Auto report history scheduler", "core.auto_report_history", "start_scheduler"),
     ]
     if splittable_match_cache_enabled():
         owner_starters.append(
@@ -136,17 +116,14 @@ def start_background_services(logger) -> None:
         except Exception:
             logger.warning("scheduler health monitor wiring failed", exc_info=True)
 
-    if local_services_enabled:
-        try:
-            from core.background_owner import start as start_owner_election
-            start_owner_election(_start_owned, logger)
-        except Exception as exc:
-            logger.error("background scheduler owner init failed: %s: %s", type(exc).__name__, exc)
-            SCHEDULER_ERRORS.append(
-                {"service": "background scheduler owner", "error": f"{type(exc).__name__}: {exc}"}
-            )
-    else:
-        logger.info("shared background owner election disabled on worker role")
+    try:
+        from core.background_owner import start as start_owner_election
+        start_owner_election(_start_owned, logger)
+    except Exception as exc:
+        logger.error("background scheduler owner init failed: %s: %s", type(exc).__name__, exc)
+        SCHEDULER_ERRORS.append(
+            {"service": "background scheduler owner", "error": f"{type(exc).__name__}: {exc}"}
+        )
 
 
 def ensure_seed_admin(logger) -> None:

@@ -16,6 +16,7 @@ import PageGear from "../../components/PageGear";
 import usePolling from "../../hooks/usePolling";
 import { Banner, Button, EmptyState, PageShell, Pill } from "../../components/UXKit";
 import { canManagePage } from "../../lib/permissions";
+import { isDownloadLimitError, limitErrorInfo, useDownloadLimitDialog } from "../../components/DownloadLimitDialog";
 import { copyHistoryShareLink, historyIdFromLocation, historyShareUrl, setCachedShareBaseUrl } from "../../lib/historyShare";
 
 const API = "/api/reformatize";
@@ -172,7 +173,9 @@ function dlPost(url, body, filename) {
     if (!r.ok) {
       let detail = "다운로드 실패 (HTTP " + r.status + ")";
       try { const b = await r.json(); detail = b.detail || detail; } catch (_) {}
-      throw new Error(detail);
+      const err = new Error(detail);
+      err.status = r.status;
+      throw err;
     }
     const blob = await r.blob();
     const a = document.createElement("a");
@@ -618,6 +621,7 @@ function PythonLabPanel({ product, filters, pageRows, agg }) {
   const [busy, setBusy] = useState(false);
   const [dlBusy, setDlBusy] = useState(false);
 
+  const [downloadLimitDialog, showDownloadLimit] = useDownloadLimitDialog();
   useEffect(() => { setResult(null); setOffset(0); setRef(null); }, [product, agg]);
 
   const loadRef = () => {
@@ -647,7 +651,7 @@ function PythonLabPanel({ product, filters, pageRows, agg }) {
     setDlBusy(true);
     dlPost(API + "/test/python/download", { product, python_code: code, ...filterBody(filters), agg }, `${product}_python_test.csv`)
       .then(() => toast.ok("Python 테스트 CSV 다운로드 완료"))
-      .catch(e => toast.error(e.message || "다운로드 실패"))
+      .catch(e => isDownloadLimitError(e) ? showDownloadLimit(limitErrorInfo(e, "Python 테스트 CSV")) : toast.error(e.message || "다운로드 실패"))
       .finally(() => setDlBusy(false));
   };
   const saveSnip = () => {
@@ -670,6 +674,7 @@ function PythonLabPanel({ product, filters, pageRows, agg }) {
 
   return (
     <div>
+      {downloadLimitDialog}
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, flexWrap: "wrap" }}>
         <Button variant="primary" disabled={busy || !product} onClick={() => run(0)}>{busy ? "계산 중…" : "Python 테스트 실행"}</Button>
         <Button disabled={dlBusy || !product} onClick={download}>{dlBusy ? "다운로드 중…" : <IconLabel icon="download">Python CSV</IconLabel>}</Button>
@@ -757,6 +762,7 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
   const [busy, setBusy] = useState(false);
   const [dlBusy, setDlBusy] = useState(false);
 
+  const [downloadLimitDialog, showDownloadLimit] = useDownloadLimitDialog();
   useEffect(() => { setResult(null); setOffset(0); setHelp(null); }, [product, agg]);
   useEffect(() => {
     if (!open || !product || help) return;
@@ -781,7 +787,7 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
     setDlBusy(true);
     dlPost(API + "/test/download", { product, items: validItems, ...filterBody(filters), agg }, `${product}_addp_test.csv`)
       .then(() => toast.ok("테스트 CSV 다운로드 완료 — 이력은 관리자 > 다운로드 탭에 기록됩니다"))
-      .catch(e => toast.error(e.message || "다운로드 실패"))
+      .catch(e => isDownloadLimitError(e) ? showDownloadLimit(limitErrorInfo(e, "테스트 CSV")) : toast.error(e.message || "다운로드 실패"))
       .finally(() => setDlBusy(false));
   };
 
@@ -790,6 +796,7 @@ function AddpTestPanel({ product, filters, pageRows, agg }) {
 
   return (
     <div style={{ border: "1px dashed var(--accent)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, background: "var(--bg-secondary)" }}>
+      {downloadLimitDialog}
       <div style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }} onClick={() => setOpen(o => !o)}>
         <span style={{ fontSize: 14, fontWeight: 800, color: "var(--accent)" }}><IconLabel icon="flask">ADDP 수식 테스트 · Python Lab</IconLabel></span>
         <Pill tone="warn">관리자 전용</Pill>
@@ -1418,6 +1425,10 @@ export default function My_Reformatize({ user }) {
   const [hiddenItems, setHiddenItems] = useState(new Set()); // (admin) 유저 비공개 alias
   const [agg, setAgg] = useState("");                    // ""=shot raw, 단순 집계 또는 인코딩 집계(pct:20, below:0.5, cpk:0.2,0.8)
   const [dlJob, setDlJob] = useState(null);              // 진행 중인 다운로드 작업(대기열)
+  const [downloadLimitDialog, showDownloadLimit] = useDownloadLimitDialog();
+  const downloadFailed = (e, fallback) => (isDownloadLimitError(e)
+    ? showDownloadLimit(limitErrorInfo(e, "ET 다운로드"))
+    : toast.error((e && e.message) || fallback));
   const [runPhase, setRunPhase] = useState(null);        // 조회 진행 상황 {phase, done, total}
   const [history, setHistory] = useState([]);
   const [historySearch, setHistorySearch] = useState("");
@@ -1690,7 +1701,7 @@ export default function My_Reformatize({ user }) {
         toast.ok(`다운로드 완료 — ${(job.rows || 0).toLocaleString()}행 · 이력은 관리자 > 다운로드 탭에 기록됩니다`);
         setTimeout(() => loadHistory(historySearch), 500);
       })
-      .catch(e => toast.error(e.message || "다운로드 실패"))
+      .catch(e => downloadFailed(e, "다운로드 실패"))
       .finally(clearJob);
   };
 
@@ -1701,7 +1712,7 @@ export default function My_Reformatize({ user }) {
       onData: (d) => {
         setDlJob(d);
         if (d.state === "ready") { poll.stop(); fetchResult(d); }
-        else if (d.state === "error") { clearJob(); toast.error(d.error || "다운로드 실패"); }
+        else if (d.state === "error") { clearJob(); downloadFailed({ message: d.error, status: d.error_status }, "다운로드 실패"); }
         else if (d.state !== "queued" && d.state !== "running") {
           clearJob();
           if (d.state === "expired") toast.warn("결과가 만료되었습니다 — 다시 시도해 주세요");
@@ -1952,7 +1963,7 @@ export default function My_Reformatize({ user }) {
       })
       .catch(e => {
         clearJob();
-        toast.error(e.message || "다운로드 요청 실패");
+        downloadFailed(e, "다운로드 요청 실패");
         loadHistory(historySearch);
       });
   };
@@ -1987,6 +1998,7 @@ export default function My_Reformatize({ user }) {
 
   return (
     <PageShell>
+      {downloadLimitDialog}
       <Banner tone="warn" style={{ borderRadius: 0, borderBottom: "1px solid var(--warn-line)", lineHeight: 1.45 }}>
         <b>주의사항</b> · 최근 N일을 필요한 만큼 작게 줄이고
         root_lot_id로 랏을 검색하면 읽는 parquet 수와 계산 행이 크게 줄어 훨씬 빨라집니다.

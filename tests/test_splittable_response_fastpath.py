@@ -94,9 +94,9 @@ def test_cache_first_retry_consumes_ready_pivot_without_raw_scan(monkeypatch, tm
 
 
 @pytest.mark.parametrize("kind", ["pivot", "fab"])
-def test_remote_submission_is_not_cache_completion_and_allows_offline_fallback(monkeypatch, tmp_path, kind):
+def test_automatic_rebuild_waits_for_idle_and_failure_keeps_view_cache(monkeypatch, tmp_path, kind):
     from routers import splittable
-    from core import worker_dispatch
+    from core import heavy_jobs
 
     options = []
     class InlineThread:
@@ -114,15 +114,15 @@ def test_remote_submission_is_not_cache_completion_and_allows_offline_fallback(m
         monkeypatch.setattr(splittable, name, {})
     monkeypatch.setattr(splittable, "_fab_lot_index_enabled", lambda: True)
     monkeypatch.setattr(splittable, "_is_fab_lot_index_staging_product", lambda *_a: False)
-    def queued(*args, **kwargs):
-        options.append(kwargs)
-        return {"ok": True, "queued": True}
-    monkeypatch.setattr(worker_dispatch, "run_heavy", queued)
+    def deferred(kind_name, fn, **kwargs):
+        options.append((kind_name, kwargs))
+        return {"ok": False, "error": "local_heavy_waiting_for_idle"}
+    monkeypatch.setattr(heavy_jobs, "run_heavy", deferred)
     monkeypatch.setattr(splittable, "_clear_split_view_cache_product",
-                        lambda *_a: pytest.fail("queued job must retain ready view cache"))
+                        lambda *_a: pytest.fail("a build that did not finish must retain the ready view cache"))
     enqueue = splittable._enqueue_pivot_cache_build if kind == "pivot" else splittable._enqueue_fab_lot_index_build
     assert enqueue("P", reason="cache_miss")
-    assert len(options) == 1 and options[0]["local_fallback"] is True
+    assert len(options) == 1 and options[0][1]["idle_only"] is True
 
 
 @pytest.fixture

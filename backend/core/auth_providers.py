@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -78,6 +79,8 @@ class AuthIdentity:
     # provider 가 넘겨준 원본 클레임(OIDC id_token, SAML assertion attribute 등).
     # 세션 메타에 그대로 저장되므로 비밀/토큰 값을 넣지 않는다.
     claims: dict = field(default_factory=dict)
+    # users.csv 에 행이 없는(저장하지 않는) 사용자면 True — 탭 권한을 세션 토큰에 담는다.
+    ephemeral: bool = False
 
 
 class AuthProvider:
@@ -216,8 +219,12 @@ class PasswordAuthProvider(AuthProvider):
     label = "ID / PW"
 
     def enabled(self) -> bool:
-        raw = str(os.environ.get("FLOW_PASSWORD_LOGIN_ENABLED", "true") or "").strip().lower()
-        return raw not in {"0", "false", "no", "off"}
+        raw = os.environ.get("FLOW_PASSWORD_LOGIN_ENABLED")
+        if raw is None or str(raw).strip() == "":
+            # websocket 로그인으로 전환하면 ID/PW 로그인은 기본으로 끈다.
+            # 비상시 FLOW_PASSWORD_LOGIN_ENABLED=1 로 다시 켠다.
+            return not (_ws_auth_url() or _ip_login_map())
+        return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
     def authenticate(self, credential: Any) -> AuthIdentity:
         from routers import auth as auth_router
@@ -282,6 +289,472 @@ def describe_providers() -> list[dict]:
 register_provider(PasswordAuthProvider())
 
 
+# ── websocket 로그인 ──────────────────────────────────────────────────
+# 브라우저가 사내 websocket 인증서버(FLOW_WS_AUTH_URL)에 직접 접속해 받은 메시지를
+# /api/auth/sso/ws/login 으로 넘긴다. Flow 는 메시지의 사내 ID·토큰을 꺼내
+# **서버 쪽에서 인증서버에 다시 확인**한 뒤에만 세션을 연다 — 브라우저가 보낸
+# ID 를 그대로 믿으면 누구나 관리자 ID 를 적어 들어올 수 있다.
+#
+# 설정(모두 환경변수, 기본값은 코드):
+#   FLOW_WS_AUTH_URL            브라우저가 접속할 ws(s):// 주소. 비우면 websocket 로그인 꺼짐.
+#   FLOW_WS_AUTH_SEND           접속 직후 브라우저가 보낼 메시지(문자열/JSON). 비우면 보내지 않음.
+#   FLOW_WS_AUTH_USER_FIELDS    메시지에서 사내 ID 를 찾을 필드(쉼표, 점 경로 가능)
+#   FLOW_WS_AUTH_TOKEN_FIELDS   메시지에서 토큰을 찾을 필드
+#   FLOW_WS_AUTH_VERIFY         ws | http | none  (기본: VERIFY_URL 이 있으면 ws/http, 없으면 거부)
+#   FLOW_WS_AUTH_VERIFY_URL     서버 검증 주소(ws:// 또는 http(s)://). 비우면 ws 검증은 FLOW_WS_AUTH_URL.
+#   FLOW_WS_AUTH_VERIFY_SEND    서버 검증 때 보낼 메시지 템플릿. {token}·{user} 치환. 기본 {"token": "{token}"}
+#   FLOW_WS_AUTH_TRUST_CLIENT   1 이면 검증 없이 브라우저 메시지를 믿는다(폐쇄망 임시용, 권장하지 않음)
+#   FLOW_WS_AUTH_USER_MAP       사내 ID → Flow 계정 매핑 JSON. 예) {"example.user": "hol"}. 기본 없음 —
+#                               실제 사번은 현장 설정(flow_env.local.bat)에만 둔다(공개 저장소).
+#   FLOW_WS_AUTH_DEFAULT_TABS   users.csv 에 없는 사용자의 탭 권한. 기본 __all_user__(관리자 탭 제외 전부)
+_WS_DEFAULT_USER_FIELDS = "user_id,userId,userid,username,user_name,user,loginId,login_id,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id"
+_WS_DEFAULT_TOKEN_FIELDS = "token,access_token,accessToken,ticket,session,sessionId,session_id,data.token,data.ticket"
+_WS_DEFAULT_USER_MAP: dict[str, str] = {}
+_WS_DEFAULT_DEPT_FIELDS = "department,dept,deptName,dept_name,deptNm,orgName,org_name,org,team,data.department,data.dept,user.department"
+_WS_DEFAULT_NAME_FIELDS = "name,userName,user_name,displayName,display_name,korName,kor_name,data.name,user.name"
+_WS_DEFAULT_EMAIL_FIELDS = "email,mail,emailAddress,email_address,data.email,user.email"
+
+
+# ── 부서별 로그인·권한 규칙 (관리자 편집, flow-data/auth/department_rules.json) ──
+# [{department, match: exact|prefix, allow_login: bool, tabs: "a,b" | "__all_user__"}]
+# 규칙이 하나도 없으면(이사 직후) 모두 기본 탭으로 로그인된다. 하나라도 있으면
+# 허용 규칙에 맞는 부서만 로그인된다. 여러 규칙이 맞으면 탭은 합친다.
+def _department_rules_path():
+    return auth_core.PATHS.data_root / "auth" / "department_rules.json"
+
+
+def read_department_rules() -> list[dict]:
+    import json
+
+    fp = _department_rules_path()
+    try:
+        data = json.loads(fp.read_text("utf-8")) if fp.is_file() else []
+    except Exception:
+        data = []
+    return [r for r in data if isinstance(r, dict)] if isinstance(data, list) else []
+
+
+def write_department_rules(rules: list[dict]) -> list[dict]:
+    import json
+
+    cleaned = []
+    seen = set()
+    for raw in rules or []:
+        if not isinstance(raw, dict):
+            continue
+        dept = str(raw.get("department") or "").strip()
+        if not dept:
+            continue
+        match = str(raw.get("match") or "exact").strip().lower()
+        match = match if match in {"exact", "prefix"} else "exact"
+        key = (dept.casefold(), match)
+        if key in seen:
+            raise HTTPException(400, f"부서 규칙이 중복됩니다: {dept}")
+        seen.add(key)
+        allow = raw.get("allow_login", True)
+        allow = allow if isinstance(allow, bool) else str(allow).strip().lower() not in {"0", "false", "no", "n", "x", "거부", "불가"}
+        tabs = str(raw.get("tabs") or "").strip()
+        cleaned.append({"department": dept[:200], "match": match, "allow_login": allow, "tabs": tabs[:2000]})
+    fp = _department_rules_path()
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    tmp = fp.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cleaned, ensure_ascii=False, indent=2), "utf-8")
+    tmp.replace(fp)
+    return cleaned
+
+
+def _normalize_tab_list(raw: str) -> list[str]:
+    if raw.strip() in {"", "__all_user__"}:
+        return sorted(auth_core.GRANTABLE_TAB_IDS)
+    tabs, _ = auth_core.parse_tab_tokens(raw)
+    return tabs
+
+
+def department_access(department: str) -> tuple[bool, str]:
+    """(로그인 허용, 탭 권한) — 부서 규칙으로 정한다."""
+    rules = read_department_rules()
+    if not rules:
+        return True, _ws_default_tabs()
+    dept = str(department or "").strip().casefold()
+    hits = []
+    for rule in rules:
+        target = str(rule.get("department") or "").strip().casefold()
+        if not target or not dept:
+            continue
+        if (rule.get("match") == "prefix" and dept.startswith(target)) or dept == target:
+            hits.append(rule)
+    if any(r.get("allow_login") is False for r in hits):
+        return False, ""
+    allowed = [r for r in hits if r.get("allow_login", True)]
+    if not allowed:
+        return False, ""
+    tabs: list[str] = []
+    for rule in allowed:
+        for tab in _normalize_tab_list(str(rule.get("tabs") or "")):
+            if tab not in tabs:
+                tabs.append(tab)
+    return True, ",".join(tabs)
+
+
+# ── 관리자·대리인 프로필 (이름·메일·부서) — 암호화 저장 ─────────────────
+# flow-data/auth/people.enc (Fernet). 키는 데이터 폴더 밖: FLOW_DATA_KEY 환경변수,
+# 없으면 앱 폴더의 .flow_data.key(처음 한 번 생성). 데이터 폴더만 복사해 가도
+# 키 없이는 읽을 수 없고, 복호화는 로그인한 사용자의 API 요청으로만 한다.
+def _people_path():
+    return auth_core.PATHS.data_root / "auth" / "people.enc"
+
+
+def _data_key() -> bytes:
+    from cryptography.fernet import Fernet
+
+    env = str(os.environ.get("FLOW_DATA_KEY", "") or "").strip()
+    if env:
+        return env.encode("ascii")
+    from pathlib import Path
+
+    key_file = Path(str(os.environ.get("FLOW_DATA_KEY_FILE", "") or "").strip() or (auth_core.PATHS.app_root / ".flow_data.key"))
+    if key_file.is_file():
+        return key_file.read_bytes().strip()
+    key = Fernet.generate_key()
+    key_file.parent.mkdir(parents=True, exist_ok=True)
+    key_file.write_bytes(key)
+    return key
+
+
+PEOPLE_LOCK = threading.RLock()
+
+
+def read_people(*, strict: bool = False) -> dict:
+    import json
+
+    fp = _people_path()
+    if not fp.is_file():
+        return {}
+    try:
+        from cryptography.fernet import Fernet
+
+        people = json.loads(Fernet(_data_key()).decrypt(fp.read_bytes()).decode("utf-8"))
+        if not isinstance(people, dict):
+            raise ValueError("Invalid people store")
+        return people
+    except Exception:
+        if strict:
+            raise HTTPException(503, "관리자 연락처를 읽을 수 없습니다. 암호화 키를 확인하세요.")
+        return {}
+
+
+def _write_people(people: dict) -> None:
+    import json
+    from cryptography.fernet import Fernet
+
+    fp = _people_path()
+    fp.parent.mkdir(parents=True, exist_ok=True)
+    token = Fernet(_data_key()).encrypt(json.dumps(people, ensure_ascii=False).encode("utf-8"))
+    tmp = fp.with_suffix(".tmp")
+    tmp.write_bytes(token)
+    tmp.replace(fp)
+
+
+def update_manual_contact(username: str, field_name: str, value: str) -> bool:
+    """Keep legacy contact editors connected to explicitly registered profiles."""
+    if field_name not in {"name", "email"}:
+        raise ValueError("Unknown contact field")
+    with PEOPLE_LOCK:
+        people = read_people(strict=True)
+        profile = people.get(username, {})
+        if not profile.get("manual"):
+            return False
+        profile[field_name] = value
+        profile["updated_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        _write_people(people)
+        return True
+
+
+def _is_manager(username: str, role: str) -> bool:
+    if role == "admin":
+        return True
+    try:
+        admins = auth_core.get_page_admins() or {}
+    except Exception:
+        admins = {}
+    return any(username in (users or []) for users in admins.values())
+
+
+def _remember_manager_profile(identity: "AuthIdentity", department: str) -> None:
+    """관리자·페이지 대리인만 이름·메일·부서를 암호화해 남긴다(일반 사용자는 저장 안 함)."""
+    if not _is_manager(identity.username, identity.role):
+        return
+    if not (identity.name or identity.email or department):
+        return
+    try:
+        with PEOPLE_LOCK:
+            people = read_people(strict=True)
+            previous = people.get(identity.username, {})
+            # Explicit administrator contact edits survive later SSO logins.
+            if previous.get("manual"):
+                return
+            people[identity.username] = {
+                "name": identity.name or previous.get("name", ""),
+                "email": identity.email or previous.get("email", ""),
+                "department": department or previous.get("department", ""),
+                "updated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            }
+            _write_people(people)
+    except Exception:
+        pass
+
+
+def _ws_auth_url() -> str:
+    return str(os.environ.get("FLOW_WS_AUTH_URL", "") or "").strip()
+
+
+def _ws_env_list(name: str, default: str) -> list[str]:
+    raw = str(os.environ.get(name, "") or "").strip() or default
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _ws_user_map() -> dict[str, str]:
+    import json
+
+    raw = str(os.environ.get("FLOW_WS_AUTH_USER_MAP", "") or "").strip()
+    if not raw:
+        return dict(_WS_DEFAULT_USER_MAP)
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return dict(_WS_DEFAULT_USER_MAP)
+    return {str(k).strip().casefold(): str(v).strip() for k, v in (data or {}).items() if str(k).strip() and str(v).strip()}
+
+
+def _ws_parse(message: Any) -> Any:
+    import json
+
+    if isinstance(message, (dict, list)):
+        return message
+    text = str(message or "").strip()
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _ws_pick(data: Any, fields: list[str]) -> str:
+    """메시지에서 필드 값을 찾는다(점 경로 지원). 문자열 메시지면 그 자체를 값으로 본다."""
+    if isinstance(data, str):
+        return data.strip()
+    if not isinstance(data, dict):
+        return ""
+    for path in fields:
+        cur: Any = data
+        for part in path.split("."):
+            if isinstance(cur, dict):
+                hit = next((v for k, v in cur.items() if str(k).casefold() == part.casefold()), None)
+                cur = hit
+            else:
+                cur = None
+                break
+        if isinstance(cur, (str, int)) and str(cur).strip():
+            return str(cur).strip()
+    return ""
+
+
+def _ws_verify(user_id: str, token: str) -> tuple[str, Any]:
+    """인증서버에 토큰을 다시 확인하고 (사내 ID, 인증서버 확인 응답)을 돌려준다."""
+    import json
+
+    mode = str(os.environ.get("FLOW_WS_AUTH_VERIFY", "") or "").strip().lower()
+    verify_url = str(os.environ.get("FLOW_WS_AUTH_VERIFY_URL", "") or "").strip()
+    trust = str(os.environ.get("FLOW_WS_AUTH_TRUST_CLIENT", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not mode:
+        mode = ("http" if verify_url.lower().startswith("http") else "ws") if verify_url else ("none" if trust else "")
+    if mode == "none":
+        if not trust:
+            raise HTTPException(403, "websocket 로그인 검증이 꺼져 있습니다. FLOW_WS_AUTH_VERIFY_URL 을 설정하세요.")
+        return user_id, None
+    if not mode:
+        raise HTTPException(503, "websocket 로그인 서버 검증 설정(FLOW_WS_AUTH_VERIFY_URL)이 없습니다.")
+    if not token:
+        raise HTTPException(401, "인증서버 응답에 토큰이 없습니다.")
+    template = str(os.environ.get("FLOW_WS_AUTH_VERIFY_SEND", "") or "").strip() or '{"token": "{token}"}'
+    payload = template.replace("{token}", token).replace("{user}", user_id)
+    timeout = float(os.environ.get("FLOW_WS_AUTH_VERIFY_TIMEOUT_SEC", "") or 10.0)
+    try:
+        if mode == "http":
+            import urllib.request
+
+            req = urllib.request.Request(verify_url, data=payload.encode("utf-8"),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+        else:
+            from websockets.sync.client import connect
+
+            with connect(verify_url or _ws_auth_url(), open_timeout=timeout, close_timeout=2) as ws:
+                ws.send(payload)
+                body = ws.recv(timeout=timeout)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(502, f"인증서버 확인 실패: {type(exc).__name__}: {exc}") from exc
+    data = _ws_parse(body)
+    if isinstance(data, dict):
+        ok = data.get("ok", data.get("success", data.get("result", True)))
+        if ok is False or str(ok).strip().lower() in {"false", "fail", "error", "0"}:
+            raise HTTPException(401, "인증서버가 토큰을 거부했습니다.")
+    verified = _ws_pick(data, _ws_env_list("FLOW_WS_AUTH_USER_FIELDS", _WS_DEFAULT_USER_FIELDS))
+    if not verified:
+        raise HTTPException(401, "인증서버 확인 응답에 사용자 ID 가 없습니다.")
+    if user_id and verified.casefold() != user_id.casefold():
+        raise HTTPException(401, "인증서버가 확인한 사용자와 로그인 사용자가 다릅니다.")
+    return verified, data
+
+
+def _ws_default_tabs() -> str:
+    raw = str(os.environ.get("FLOW_WS_AUTH_DEFAULT_TABS", "") or "").strip()
+    if raw and raw != "__all_user__":
+        return raw
+    return ",".join(sorted(auth_core.GRANTABLE_TAB_IDS))
+
+
+class WebsocketAuthProvider(AuthProvider):
+    """사내 websocket 인증서버 로그인. 사용자 정보는 저장하지 않는다."""
+
+    name = "websocket"
+    kind = "websocket"
+    label = "사내 로그인"
+
+    def enabled(self) -> bool:
+        return bool(_ws_auth_url())
+
+    def describe(self) -> dict:
+        out = super().describe()
+        out.update({
+            "ws_url": _ws_auth_url(),
+            "send": str(os.environ.get("FLOW_WS_AUTH_SEND", "") or ""),
+            "login_url": "/api/auth/sso/ws/login",
+            "auto": str(os.environ.get("FLOW_WS_AUTH_AUTO", "1") or "").strip().lower() not in {"0", "false", "no", "off"},
+        })
+        return out
+
+    def authenticate(self, credential: Any) -> AuthIdentity:
+        from routers import auth as auth_router
+
+        data = _ws_parse(credential)
+        user_id = _ws_pick(data, _ws_env_list("FLOW_WS_AUTH_USER_FIELDS", _WS_DEFAULT_USER_FIELDS))
+        token = "" if isinstance(data, str) else _ws_pick(data, _ws_env_list("FLOW_WS_AUTH_TOKEN_FIELDS", _WS_DEFAULT_TOKEN_FIELDS))
+        if not user_id and not token:
+            raise HTTPException(400, "인증서버 메시지에서 사용자 ID/토큰을 찾지 못했습니다.")
+        user_id, verified = _ws_verify(user_id, token)
+        # 부서·이름·메일은 인증서버가 확인해 준 응답에서만 믿는다. 브라우저가 보낸
+        # 부서를 쓰면 부서를 속여 로그인·권한을 얻을 수 있다(신뢰 모드만 예외).
+        profile_src = verified if isinstance(verified, dict) else (data if verified is None else {})
+        department = _ws_pick(profile_src, _ws_env_list("FLOW_WS_AUTH_DEPT_FIELDS", _WS_DEFAULT_DEPT_FIELDS))
+        name = _ws_pick(profile_src, _ws_env_list("FLOW_WS_AUTH_NAME_FIELDS", _WS_DEFAULT_NAME_FIELDS))
+        email = _ws_pick(profile_src, _ws_env_list("FLOW_WS_AUTH_EMAIL_FIELDS", _WS_DEFAULT_EMAIL_FIELDS))
+        return _identity_for_company_user(user_id, self.name, department=department, name=name, email=email)
+
+
+def _identity_for_company_user(user_id: str, provider: str, *, department: str = "",
+                               name: str = "", email: str = "") -> AuthIdentity:
+    """확인된 사내 ID → Flow identity. websocket 로그인과 IP 로그인이 같은 규칙을 쓴다.
+
+    FLOW_WS_AUTH_USER_MAP 매핑 → 기존 계정 → 부서 규칙 순."""
+    from routers import auth as auth_router
+
+    mapped = _ws_user_map().get(user_id.casefold())
+    username = mapped or user_id
+    claims = {"ws_user": user_id, "department": department}
+    rows = auth_router.find_user_rows(auth_router.read_users(), username)
+    row = rows[0] if rows else None
+    profile = read_people().get((row or {}).get("username") or username, {})
+    if profile.get("manual"):
+        name, email = profile.get("name", ""), profile.get("email", "")
+    if row is not None:
+        # 기존 계정(매핑된 hol 등)은 그 계정의 역할·탭을 그대로 쓴다.
+        identity = AuthIdentity(
+            username=row["username"], provider=provider,
+            role=row.get("role", "user") or "user", status="approved",
+            tabs=row.get("tabs", "") or "", name=name or row.get("name", "") or "",
+            email=email or row.get("email", "") or "", claims=claims,
+        )
+    elif mapped:
+        # 매핑 대상 계정이 아직 없으면(새 서버) 관리자로 연다 — 매핑은 관리자 지정용이다.
+        identity = AuthIdentity(username=username, provider=provider, role="admin",
+                                status="approved", tabs="__all__", name=name, email=email,
+                                claims=claims, ephemeral=True)
+    else:
+        allowed, tabs = department_access(department)
+        if not allowed:
+            raise HTTPException(403, f"'{department or '부서 정보 없음'}' 부서는 Flow 로그인 대상이 아닙니다. 관리자에게 문의하세요.")
+        identity = AuthIdentity(username=username, provider=provider, role="user", status="approved",
+                                tabs=tabs, name=name, email=email, claims=claims, ephemeral=True)
+    _remember_manager_profile(identity, department)
+    return identity
+
+
+register_provider(WebsocketAuthProvider())
+
+
+# ── 접속 IP 로그인 ────────────────────────────────────────────────────
+# 지정한 PC(접속 IP)에서 [로그인] 을 누르면 그 IP 에 묶인 사내 ID 로 들어온다.
+# 사내 인증서버를 아직 붙이지 못한 설치·개인 서버용이다. 기본은 꺼져 있다.
+#
+#   FLOW_IP_LOGIN_MAP   {"접속 IP": "사내 ID"} JSON. 예) {"127.0.0.1": "example.user"}
+#                       비우면 IP 로그인 꺼짐. 켜지면 ID/PW 로그인은 기본으로 꺼진다.
+#
+# IP 는 TCP 접속 주소(request.client.host)만 본다. X-Forwarded-For 같은 헤더는
+# 브라우저가 마음대로 적을 수 있어 믿지 않는다 — 프록시 뒤에 두면 쓰지 말 것.
+def _ip_login_map() -> dict[str, str]:
+    import json
+
+    raw = str(os.environ.get("FLOW_IP_LOGIN_MAP", "") or "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k).strip(): str(v).strip() for k, v in data.items() if str(k).strip() and str(v).strip()}
+
+
+def _normalize_ip(value: str) -> str:
+    ip = str(value or "").strip()
+    if ip.startswith("::ffff:"):
+        ip = ip[7:]
+    return ip
+
+
+class IpLoginAuthProvider(AuthProvider):
+    """접속 IP → 사내 ID. 버튼 하나로 로그인한다."""
+
+    name = "ip"
+    kind = "ip"
+    label = "로그인"
+
+    def enabled(self) -> bool:
+        return bool(_ip_login_map())
+
+    def describe(self) -> dict:
+        out = super().describe()
+        out["login_url"] = "/api/auth/sso/ip/login"
+        return out
+
+    def authenticate(self, credential: Any) -> AuthIdentity:
+        client_ip = _normalize_ip(credential)
+        mapping = {_normalize_ip(k): v for k, v in _ip_login_map().items()}
+        user_id = mapping.get(client_ip)
+        if not user_id:
+            raise HTTPException(403, f"이 PC({client_ip or '알 수 없음'})는 로그인 대상으로 등록되어 있지 않습니다.")
+        return _identity_for_company_user(user_id, self.name)
+
+
+register_provider(IpLoginAuthProvider())
+
+
 # ── 세션 시작 — 로그인 방식과 무관한 유일한 경로 ────────────────────────
 def effective_tabs(identity: AuthIdentity) -> str:
     if identity.role == "admin":
@@ -304,6 +777,7 @@ def start_session(identity: AuthIdentity, *, audit: bool = True) -> dict:
         identity.role,
         auth_method=identity.provider,
         claims=identity.claims,
+        tabs=identity.tabs if identity.ephemeral else None,
     )
     # Password and SSO must advance the same inactivity clock. Failure to write
     # this auxiliary timestamp must not invalidate an authenticated session;
@@ -326,6 +800,8 @@ def start_session(identity: AuthIdentity, *, audit: bool = True) -> dict:
     return {
         "ok": True,
         "username": identity.username,
+        "name": identity.name,
+        "email": identity.email,
         "role": identity.role,
         "tabs": effective_tabs(identity),
         "token": token,

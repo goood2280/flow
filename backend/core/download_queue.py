@@ -77,13 +77,26 @@ def _env_float(name: str, default: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
+def _large_host() -> bool:
+    try:
+        from core import cache_budget
+        return bool(cache_budget.large_host())
+    except Exception:
+        return False
+
+
 def worker_count() -> int:
-    """동시에 도는 작업 수. 기본 1 = 완전 직렬."""
-    return _env_int("FLOW_DOWNLOAD_JOB_WORKERS", 1, 1, 4)
+    """동시에 도는 작업 수. 기본 1 = 완전 직렬, 전용 대형 서버는 2.
+
+    계산은 작업마다 별도 자식 프로세스(스레드 상한 있음)에서 돌아 SplitTable 조회와
+    GIL·Polars 풀을 나눠 쓰지 않는다. 20~30명이 쓰는 128GB 서버에서 1건씩이면 앞 사람의
+    큰 다운로드 뒤에서 나머지가 몇 분씩 기다린다. 메모리 가드는 작업마다 그대로다."""
+    return _env_int("FLOW_DOWNLOAD_JOB_WORKERS", 2 if _large_host() else 1, 1, 4)
 
 
 def max_pending() -> int:
-    return _env_int("FLOW_DOWNLOAD_JOB_MAX_PENDING", MAX_PENDING_DEFAULT, 1, 128)
+    default = 48 if _large_host() else MAX_PENDING_DEFAULT
+    return _env_int("FLOW_DOWNLOAD_JOB_MAX_PENDING", default, 1, 128)
 
 
 def user_limit() -> int:
@@ -413,6 +426,13 @@ def _run_job(job: dict[str, Any]) -> None:
                 job["phase"] = "취소됨"
                 _delete_file(job)
                 _COND.notify_all()
+        # 다운로드 계산이 쓴 메모리를 OS 에 돌려준다(작업마다 RSS 가 쌓이지 않게).
+        try:
+            from core import memory_trim
+
+            memory_trim.trim(reason="download_job_done")
+        except Exception:
+            pass
 
 
 def _worker_loop() -> None:

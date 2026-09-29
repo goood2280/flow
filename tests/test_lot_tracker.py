@@ -20,7 +20,7 @@ def test_lot_tracker_exact_lot_history_dpml_and_reference_eta(monkeypatch):
     ]
     desc = {"S0": "00.0 PHOTO START", "S1": "01.0 LITHO MASK", "S2": "02.0 ET"}
     monkeypatch.setattr(lot_tracker, "_product_candidates", lambda lot_id, product: ["P"])
-    monkeypatch.setattr(lot_tracker, "scan_long_fab", lambda *args: pl.DataFrame(rows).lazy())
+    monkeypatch.setattr(lot_tracker, "_scan_fab", lambda *args: pl.DataFrame(rows).lazy())
     monkeypatch.setattr(lot_tracker, "lookup_lot_progress", lambda **kw: [])
     monkeypatch.setattr(lot_tracker, "describe_step", lambda sid, product: {"step_desc": desc[sid]})
 
@@ -47,7 +47,7 @@ def test_lot_tracker_unmatched_reference_step_has_no_eta(monkeypatch):
 
 def test_history_retains_real_tkin_for_arrival(monkeypatch):
     rows = [{"lot_id": "AZCVC.1", "step_id": "CS100000", "tkout_time": dt.datetime(2026, 9, 13), "tkin_time": dt.datetime(2026, 9, 12)}]
-    monkeypatch.setattr(lot_tracker, "scan_long_fab", lambda *a: pl.DataFrame(rows).lazy())
+    monkeypatch.setattr(lot_tracker, "_scan_fab", lambda *a: pl.DataFrame(rows).lazy())
     monkeypatch.setattr(lot_tracker, "describe_step", lambda *a: {})
     product, history = lot_tracker._history("AZCVC.1", ["PRODC1"])
     assert lot_tracker.build_timeline(history, product)[0]["tkin_time"] == "2026-09-12T00:00:00"
@@ -199,3 +199,45 @@ def test_preset_steps_permissions_and_validation(monkeypatch, tmp_path):
         assert getattr(exc, "status_code", None) == 400
     else:
         raise AssertionError("empty product must be rejected")
+
+
+def test_fab_source_uses_standard_fab_folder_before_legacy(tmp_path, monkeypatch):
+    """1.RAWDATA_DB_FAB 가 있으면 찾는다 — v10.4.304 는 1.RAWDATA_DB 만 봐서 제품·이력이 비었다."""
+    db_root = tmp_path / "db"
+    data_root = tmp_path / "data"
+    (db_root / "1.RAWDATA_DB_FAB" / "PRODA").mkdir(parents=True)
+    (db_root / "1.RAWDATA_DB" / "PRODX").mkdir(parents=True)
+    data_root.mkdir()
+    monkeypatch.setattr(lot_tracker, "PATHS", SimpleNamespace(db_root=db_root, data_root=data_root))
+
+    assert lot_tracker._fab_source_roots() == ["1.RAWDATA_DB_FAB", "1.RAWDATA_DB"]
+    assert lot_tracker.fab_products() == ["PRODA", "PRODX"]
+
+
+def test_partition_type_drift_is_read_and_same_product_in_two_folders_is_one_match(tmp_path, monkeypatch):
+    db_root = tmp_path / "db"
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    for i, tk in enumerate(["2026-09-01 10:00:00", dt.datetime(2026, 9, 2, 10)]):
+        d = db_root / "1.RAWDATA_DB_FAB" / "PRODA" / f"date=2026090{i + 1}"
+        d.mkdir(parents=True)
+        pl.DataFrame({"lot_id": ["A1001.1"], "step_id": [f"S{i}"], "tkout_time": [tk]}).write_parquet(d / "part.parquet")
+    legacy = db_root / "1.RAWDATA_DB" / "PRODA" / "date=20260901"
+    legacy.mkdir(parents=True)
+    pl.DataFrame({"lot_id": ["A1001.1"], "step_id": ["S0"], "tkout_time": ["2026-09-01 10:00:00"]}).write_parquet(legacy / "part.parquet")
+    monkeypatch.setattr(lot_tracker, "PATHS", SimpleNamespace(db_root=db_root, data_root=data_root))
+
+    product, rows = lot_tracker._history("a1001.1", ["PRODA"])
+    assert product == "PRODA"
+    assert sorted(r["step_id"] for r in rows) == ["S0", "S1"]
+
+
+def test_unreadable_fab_returns_note_instead_of_http_500(monkeypatch):
+    def boom(*a):
+        raise RuntimeError("schema mismatch")
+
+    monkeypatch.setattr(lot_tracker, "_fab_source_roots", lambda: ["1.RAWDATA_DB_FAB"])
+    monkeypatch.setattr(lot_tracker, "_scan_fab", boom)
+    out = lot_tracker.track_lot("A1001.1", product="PRODA")
+    assert out["ok"] is False
+    assert "FAB DB를 읽지 못했습니다" in out["note"] and "schema mismatch" in out["note"]

@@ -1,4 +1,8 @@
-"""Development-worker scheduler for rolling Auto report ET history."""
+"""Scheduler for the rolling Auto report ET history (background owner process).
+
+Each due tick submits one refresh to the server scan gate, so it never overlaps
+another cache scan.  Until 2026-09-29 this ran only on the development worker.
+"""
 from __future__ import annotations
 
 import logging
@@ -43,24 +47,16 @@ def request_refresh() -> dict:
 def _loop() -> None:
     while True:
         try:
-            from core.worker_dispatch import server_role
-
-            if server_role() == "worker" and _due():
+            if _due():
                 request_refresh()
         except Exception:
             logger.warning("Auto report history scheduler tick failed", exc_info=True)
-        # Wake often enough to notice a live role change without spawning
-        # duplicate work; scan_gate dedupe provides the second guard.
+        # scan_gate dedupe keeps a long refresh from stacking duplicate ticks.
         time.sleep(60.0)
 
 
 def start_scheduler() -> bool:
     global _THREAD
-    from core.worker_dispatch import server_role
-
-    if server_role() != "worker":
-        logger.info("Auto report history scheduler not started: development worker role required")
-        return False
     if _STARTED.is_set() and _THREAD is not None and _THREAD.is_alive():
         return False
     _THREAD = threading.Thread(target=_loop, name="auto-report-history", daemon=True)

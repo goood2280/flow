@@ -38,7 +38,8 @@ class LoadScheduleReq(BaseModel):
 
 @mon_router.get("/system")
 def system_info():
-    return sysmon.collect_once()
+    # 관리자 모니터 탭이 2초마다 부른다 — 현재 값만 읽고 resource_log 에는 쓰지 않는다.
+    return sysmon.live_snapshot()
 
 
 @mon_router.get("/history")
@@ -51,11 +52,11 @@ def system_state():
     return sysmon.get_state()
 
 
-@mon_router.get("/worker")
-def worker_status():
-    """워커 분산 상태 — 역할, 개발서버(워커) 생존 여부, 큐 깊이, 오프로드 통계."""
-    from core import worker_dispatch
-    return worker_dispatch.status()
+@mon_router.get("/heavy-jobs")
+def heavy_jobs_status():
+    """지금 도는 무거운 작업(캐시 빌드·스캔·Auto report)과 누적 카운터."""
+    from core import heavy_jobs
+    return heavy_jobs.status()
 
 
 @mon_router.post("/load/start")

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import { PixelGlyph, FlowWordmark } from "../../components/BrandLogo";
+import { FlowWordmark } from "../../components/BrandLogo";
+import "./My_Login.css";
 
 /* ═══ Matrix Rain — semiconductor keywords ═══ */
 function MatrixRain() {
@@ -35,103 +36,6 @@ function MatrixRain() {
   return <canvas ref={ref} style={{ position: "fixed", inset: 0, width: "100%", height: "100%", zIndex: 0 }} />;
 }
 
-/* Pixel glyphs live in components/BrandLogo.jsx (GLYPHS/PixelGlyph/FlowWordmark). */
-
-// v8.4.3: auto 4-phase brand reveal. 클릭 필요 없음.
-//   typing   — `>FLOW` 한 글자씩 찍힘 (dot pixel)
-//   hold     — `>FLOW_` 캐럿 블링크 잠시 (500ms)
-//   pulse    — 엔터 친 효과: flash + scale burst (450ms)
-//   brand    — clean sans-serif `flow` (lowercase, 최종 상태)
-const TERMINAL_SEQ = [">", "F", "L", "O", "W"];
-const TYPE_MS = 130;
-const HOLD_MS = 500;
-const PULSE_MS = 450;
-
-function BrandReveal() {
-  const [mode, setMode] = useState("typing");   // typing | hold | pulse | brand
-  const [len, setLen] = useState(0);
-  const [curOn, setCurOn] = useState(true);
-
-  useEffect(() => {
-    if (mode === "typing") {
-      if (len < TERMINAL_SEQ.length) {
-        const t = setTimeout(() => setLen((n) => n + 1), TYPE_MS);
-        return () => clearTimeout(t);
-      }
-      const t = setTimeout(() => setMode("hold"), 60);
-      return () => clearTimeout(t);
-    }
-    if (mode === "hold") {
-      const t = setTimeout(() => setMode("pulse"), HOLD_MS);
-      return () => clearTimeout(t);
-    }
-    if (mode === "pulse") {
-      const t = setTimeout(() => setMode("brand"), PULSE_MS);
-      return () => clearTimeout(t);
-    }
-  }, [mode, len]);
-
-  // 캐럿 블링크 — typing/hold 에서만
-  useEffect(() => {
-    if (mode !== "typing" && mode !== "hold") return;
-    const iv = setInterval(() => setCurOn((v) => !v), 530);
-    return () => clearInterval(iv);
-  }, [mode]);
-
-  if (mode === "brand") {
-    return (
-      <div style={{ marginBottom: 32, display: "flex", justifyContent: "center", animation: "brandReveal 0.55s cubic-bezier(0.34,1.56,0.64,1) both" }}>
-        <FlowWordmark size="login" />
-        <style>{`
-          @keyframes brandReveal {
-            0%   { transform: scale(0.78); opacity: 0; filter: blur(4px); }
-            60%  { transform: scale(1.08); opacity: 1; filter: blur(0); }
-            100% { transform: scale(1.0);  opacity: 1; filter: blur(0); }
-          }
-        `}</style>
-      </div>
-    );
-  }
-
-  // typing / hold / pulse — dot pixel glyphs with enter-pulse animation.
-  const sz = 10;
-  const lgp = 6;
-  const shown = TERMINAL_SEQ.slice(0, len);
-  const pulseAnim = mode === "pulse"
-    ? "enterKeyPulse 0.45s cubic-bezier(0.34,1.56,0.64,1) both"
-    : "none";
-  return (
-    <div
-      style={{
-        marginBottom: 32,
-        display: "flex",
-        justifyContent: "center",
-        alignItems: "flex-end",
-        gap: lgp,
-        minHeight: 7 * 12 + 6 * 2,  // reserve height so card doesn't jump
-        animation: pulseAnim,
-      }}
-    >
-      {shown.map((ch, i) => (
-        <PixelGlyph key={i} ch={ch} sz={sz} strong={mode === "pulse"} />
-      ))}
-      {(mode === "typing" || mode === "hold") && (
-        <div style={{ opacity: curOn ? 1 : 0, transition: "opacity 0.08s" }}>
-          <PixelGlyph ch="_" sz={sz} />
-        </div>
-      )}
-      <style>{`
-        @keyframes enterKeyPulse {
-          0%   { transform: scale(1.0);  filter: brightness(1.0) drop-shadow(0 0 2px #f9731633); }
-          30%  { transform: scale(1.22); filter: brightness(1.9) drop-shadow(0 0 18px #f97316dd); }
-          65%  { transform: scale(0.96); filter: brightness(1.3) drop-shadow(0 0 8px #f9731699); }
-          100% { transform: scale(1.0);  filter: brightness(1.0) drop-shadow(0 0 6px #f9731688); }
-        }
-      `}</style>
-    </div>
-  );
-}
-
 /* ═══ Login ═══ */
 // 아이디 저장: 비밀번호는 저장하지 않고 아이디만 이 브라우저에 남긴다.
 const SAVED_USERNAME_KEY = "flow_saved_username";
@@ -157,7 +61,6 @@ export default function My_Login({ onLogin }) {
   const [mode, setMode] = useState("login");
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
-  const [formIn, setFormIn] = useState(true);  // v8.2.0: show form immediately
   const [authProviders, setAuthProviders] = useState(null);
 
   useEffect(() => {
@@ -194,6 +97,79 @@ export default function My_Login({ onLogin }) {
   const uid = u.trim();
   const passwordEnabled = authProviders === null || authProviders.some((provider) => provider?.name === "password");
   const ssoProviders = (authProviders || []).filter((provider) => provider?.kind === "sso" && provider?.start_url);
+  const wsProvider = (authProviders || []).find((provider) => provider?.kind === "websocket" && provider?.ws_url);
+  const recoveryEnabled = passwordEnabled && !wsProvider;
+  useEffect(() => {
+    if (!recoveryEnabled && mode === "reset") setMode("login");
+  }, [recoveryEnabled, mode]);
+  // 접속 IP 로그인 — 등록된 PC 에서 버튼 하나로 들어온다(서버가 접속 주소로 사용자를 정한다).
+  const ipProvider = (authProviders || []).find((provider) => provider?.kind === "ip");
+  const ipLogin = async () => {
+    setLoading(true); setMsg("");
+    try {
+      const r = await fetch(ipProvider?.login_url || "/api/auth/sso/ip/login", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) { setMsg(d.detail || "로그인에 실패했습니다."); setLoading(false); return; }
+      setLoading(false);
+      onLogin(d);
+    } catch (_) {
+      setMsg("서버에 연결하지 못했습니다."); setLoading(false);
+    }
+  };
+
+  // 사내 websocket 인증서버에 브라우저가 직접 접속한다. 받은 메시지를 Flow 에 넘기면
+  // 서버가 인증서버에 토큰을 다시 확인한 뒤 세션을 연다(사용자 정보는 저장하지 않음).
+  const wsLogin = (provider, { silent = false } = {}) => {
+    if (!provider?.ws_url) return;
+    setLoading(true);
+    if (!silent) setMsg("");
+    let done = false;
+    let socket;
+    const finish = (text) => {
+      if (done) return;
+      done = true;
+      setLoading(false);
+      if (text && !silent) setMsg(text);
+      try { socket?.close(); } catch (_) { /* already closed */ }
+    };
+    const timer = window.setTimeout(() => finish("사내 인증서버 응답이 없습니다. 잠시 후 다시 시도하세요."), 60000);
+    try {
+      socket = new WebSocket(provider.ws_url);
+    } catch (_) {
+      window.clearTimeout(timer);
+      finish("사내 인증서버에 연결하지 못했습니다.");
+      return;
+    }
+    socket.onopen = () => { if (provider.send) socket.send(provider.send); };
+    socket.onerror = () => { window.clearTimeout(timer); finish("사내 인증서버에 연결하지 못했습니다."); };
+    socket.onmessage = async (event) => {
+      if (done) return;
+      try {
+        const r = await fetch(provider.login_url || "/api/auth/sso/ws/login", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: event.data }),
+        });
+        const d = await r.json();
+        // 인증 정보가 아직 없는 중간 메시지(400)는 다음 메시지를 기다린다.
+        if (r.status === 400) return;
+        window.clearTimeout(timer);
+        if (!r.ok) { finish(d.detail || "사내 로그인에 실패했습니다."); return; }
+        finish("");
+        onLogin(d);
+      } catch (_) {
+        window.clearTimeout(timer);
+        finish("로그인 처리 중 오류가 발생했습니다.");
+      }
+    };
+  };
+
+  // websocket 이 유일한(또는 자동) 로그인 수단이면 화면을 열자마자 한 번 시도한다.
+  const wsAutoTried = useRef(false);
+  useEffect(() => {
+    if (!wsProvider || wsAutoTried.current || !wsProvider.auto) return;
+    wsAutoTried.current = true;
+    wsLogin(wsProvider, { silent: passwordEnabled });
+  }, [wsProvider]);
 
   const submit = async () => {
     setLoading(true); setMsg("");
@@ -211,6 +187,7 @@ export default function My_Login({ onLogin }) {
         if (!r.ok) { setMsg(d.detail || "Registration failed"); setLoading(false); return; }
         setMsg("Registered! Waiting for admin approval."); setMode("login"); setP(""); setNm("");
       } else if (mode === "reset") {
+        if (!recoveryEnabled) { setMode("login"); setLoading(false); return; }
         if (!uid) { setMsg("Enter username first"); setLoading(false); return; }
         const r = await fetch("/api/auth/forgot-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: uid }) });
         const d = await r.json();
@@ -222,177 +199,107 @@ export default function My_Login({ onLogin }) {
 
   const isOk = msg.includes("Wait") || msg.includes("sent");
 
-  const inputStyle = {
-    width: "100%", padding: "11px 14px", borderRadius: 3,
-    border: "1px solid #2a2a2a", background: "rgba(0,0,0,0.5)", color: "#d4d4d4",
-    fontSize: 14, outline: "none", marginBottom: 14,
-    fontFamily: "'JetBrains Mono',monospace", letterSpacing: .5, caretColor: "#f97316",
-    transition: "border-color 0.2s, box-shadow 0.2s",
-    boxSizing: "border-box",
-  };
-  const onF = e => { e.target.style.borderColor = "#f97316"; e.target.style.boxShadow = "0 0 8px rgba(249,115,22,0.15)"; };
-  const onB = e => { e.target.style.borderColor = "#2a2a2a"; e.target.style.boxShadow = "none"; };
+  const title = mode === "register" ? "회원가입" : mode === "reset" ? "비밀번호 재설정" : "로그인";
 
   return (
-    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#050508", overflow: "hidden", position: "relative" }}>
+    <main className="flow-login">
       <MatrixRain />
-      {/* scanlines */}
-      <div style={{ position: "fixed", inset: 0, background: "repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,0.05) 2px,rgba(0,0,0,0.05) 4px)", pointerEvents: "none", zIndex: 3 }} />
-      {/* vignette */}
-      <div style={{ position: "fixed", inset: 0, background: "radial-gradient(ellipse at center,transparent 40%,rgba(0,0,0,0.65) 100%)", pointerEvents: "none", zIndex: 2 }} />
+      <div className="flow-login__vignette" aria-hidden="true" />
+      <div className="flow-login__content">
+        <div className="flow-login__brand" aria-label="flow">
+          <FlowWordmark size="login" />
+        </div>
 
-      <div style={{ position: "relative", zIndex: 4, display: "flex", flexDirection: "column", alignItems: "center" }}>
-        <BrandReveal />
+        <section className="flow-login__card" aria-label={title}>
+          {mode !== "login" && <header className="flow-login__header">
+            <h1 id="flow-login-title">{title}</h1>
+            <p>{mode === "register" ? "사용할 계정 정보를 입력해 주세요." : "가입한 아이디로 임시 비밀번호를 받으세요."}</p>
+          </header>}
 
-        {/* Card */}
-        <div style={{
-          width: 360, background: "rgba(12,12,15,0.9)", borderRadius: 10,
-          padding: "28px 30px 22px", border: "1px solid #1a1a1e",
-          boxShadow: "0 0 60px rgba(249,115,22,0.04), 0 20px 80px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.02)",
-          backdropFilter: "blur(16px)",
-          opacity: formIn ? 1 : 0, transform: formIn ? "translateY(0)" : "translateY(10px)",
-          transition: "opacity 0.5s ease, transform 0.5s ease",
-        }}>
-          {mode === "login" && ssoProviders.map((provider) => (
-            <button
-              key={provider.name}
-              type="button"
-              onClick={() => window.location.assign(provider.start_url)}
-              style={{
-                width: "100%", padding: "12px", borderRadius: 3,
-                border: "1px solid #f97316", background: "rgba(249,115,22,0.08)",
-                color: "#f97316", fontSize: 14, fontWeight: 800, cursor: "pointer",
-                fontFamily: "'JetBrains Mono',monospace", letterSpacing: 1.2,
-              }}
-            >
-              {provider.label || "SSO"} Login
-            </button>
-          ))}
-
-          {mode === "login" && passwordEnabled && ssoProviders.length > 0 && (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "18px 0", color: "#444", fontSize: 11 }}>
-              <span style={{ flex: 1, borderTop: "1px solid #242424" }} />
-              OR
-              <span style={{ flex: 1, borderTop: "1px solid #242424" }} />
+          {mode === "login" && (ipProvider || wsProvider || ssoProviders.length > 0) && (
+            <div className="flow-login__providers">
+              {ipProvider && (
+                <button type="button" className="flow-login__provider" disabled={loading} onClick={ipLogin}>
+                  {loading ? "로그인 중…" : (ipProvider.label || "로그인")}
+                </button>
+              )}
+              {wsProvider && (
+                <button type="button" className="flow-login__provider" disabled={loading} onClick={() => wsLogin(wsProvider)}>
+                  {loading ? "사내 인증 확인 중…" : (wsProvider.label || "사내 로그인")}
+                </button>
+              )}
+              {ssoProviders.map((provider) => (
+                <button key={provider.name} type="button" className="flow-login__provider" disabled={loading} onClick={() => window.location.assign(provider.start_url)}>
+                  {provider.label || "SSO"} 로그인
+                </button>
+              ))}
             </div>
           )}
 
-          {passwordEnabled && <>
-          {/* v8.8.27: register 모드면 NAME 을 맨 위에 배치 — 이름·아이디·비번 순으로 수집. */}
-          {mode === "register" && <>
-            <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>NAME</div>
-            <input value={nm} onChange={e => setNm(e.target.value)} style={inputStyle} onFocus={onF} onBlur={onB} onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}} autoComplete="name" placeholder="이름" />
-          </>}
-
-          <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>
-            {mode === "register" ? "USERNAME (ID)" : mode === "reset" ? "USERNAME (ID)" : "USERNAME"}
-          </div>
-          <input
-            value={u}
-            onChange={e => setU(e.target.value)}
-            style={inputStyle}
-            onFocus={onF}
-            onBlur={onB}
-            onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}}
-            autoComplete="username"
-            placeholder={mode === "register" ? "knox id" : mode === "reset" ? "knox id" : ""}
-          />
-          {/* 가입 시 `hong` 과 `hong@사내도메인` 이 섞여 들어와 계정이 갈라지던 문제 —
-              서버가 같은 계정으로 보므로 어느 쪽으로 적어도 된다고 알려 준다. */}
-          {(mode === "register" || mode === "reset") && (
-            <div style={{ fontSize: 11, color: "#5a5a5a", fontFamily: "'JetBrains Mono',monospace", marginTop: -10, marginBottom: 14, lineHeight: 1.5 }}>
-              아이디만 적어도 되고 <span style={{ color: "#8a8a8a" }}>id@메일도메인</span> 으로 적어도 같은 계정입니다.
-            </div>
-          )}
-
-          {(mode === "login" || mode === "register") && <>
-            <div style={{ fontSize: 14, color: "#555", fontFamily: "'JetBrains Mono',monospace", marginBottom: 5, letterSpacing: 1.5, fontWeight: 600 }}>PASSWORD</div>
-            <input value={p} onChange={e => setP(e.target.value)} type="password" autoFocus={mode === "login" && rememberId && !!uid} style={inputStyle} onFocus={onF} onBlur={onB} onKeyDown={e => {if(e.key === "Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;submit();}}} autoComplete="current-password" />
-          </>}
-
-          {mode === "login" && (
-            <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: -4, marginBottom: 14, cursor: "pointer", userSelect: "none", fontFamily: "'JetBrains Mono',monospace", fontSize: 13, color: rememberId ? "#a3a3a3" : "#555" }}>
-              <input
-                type="checkbox"
-                checked={rememberId}
-                onChange={e => {
-                  const next = e.target.checked;
-                  setRememberId(next);
-                  // 해제하면 바로 지운다 — 로그인하지 않아도 저장된 아이디가 남지 않게.
-                  if (!next) writeSavedUsername("");
-                }}
-                style={{ width: 14, height: 14, margin: 0, accentColor: "#f97316", cursor: "pointer" }}
-              />
-              아이디 저장
-            </label>
-          )}
-
-          <button onClick={submit} disabled={loading}
-            onMouseEnter={e => { if (!loading) { e.target.style.background = "#ea580c"; e.target.style.boxShadow = "0 0 20px rgba(249,115,22,0.3)"; } }}
-            onMouseLeave={e => { e.target.style.background = "#f97316"; e.target.style.boxShadow = "0 0 10px rgba(249,115,22,0.1)"; }}
-            style={{
-              width: "100%", padding: "12px", borderRadius: 3, border: "none",
-              background: "#f97316", color: "#000", fontSize: 14, fontWeight: 800,
-              cursor: loading ? "wait" : "pointer", opacity: loading ? 0.5 : 1,
-              marginTop: 2, fontFamily: "'JetBrains Mono',monospace",
-              letterSpacing: 2, textTransform: "uppercase",
-              boxShadow: "0 0 10px rgba(249,115,22,0.1)", transition: "all 0.2s",
-            }}>
-            {loading ? "..." : mode === "login" ? "Sign In" : mode === "register" ? "Create Account" : "Send"}
-          </button>
-          </>}
-
-          {msg && <div style={{
-            marginTop: 12, fontSize: 14, textAlign: "center", lineHeight: 1.6, padding: "8px 12px", borderRadius: 4,
-            fontFamily: "'JetBrains Mono',monospace",
-            color: isOk ? "#4ade80" : "#fb7185",
-            background: isOk ? "rgba(34,197,94,0.06)" : "rgba(248,113,113,0.06)",
-            border: `1px solid ${isOk ? "rgba(34,197,94,0.12)" : "rgba(248,113,113,0.12)"}`,
-          }}>{msg}</div>}
-
-          {passwordEnabled && <>
-          <div style={{ margin: "18px 0 14px", borderTop: "1px solid #1a1a1e" }} />
-
-          {mode === "login" ? (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span onClick={() => { setMode("register"); setMsg(""); }}
-                onMouseEnter={e => e.target.style.color = "#f97316"}
-                onMouseLeave={e => e.target.style.color = "#555"}
-                style={{ cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, color: "#555", transition: "color 0.2s" }}>
-                Create Account
-              </span>
-              <span onClick={() => { setMode("reset"); setMsg(""); }}
-                onMouseEnter={e => e.target.style.color = "#f97316"}
-                onMouseLeave={e => e.target.style.color = "#555"}
-                style={{ cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, color: "#555", transition: "color 0.2s" }}>
-                Forgot Password?
-              </span>
-            </div>
-          ) : (
-            <div style={{ textAlign: "center" }}>
-              <span onClick={() => { setMode("login"); setMsg(""); }}
-                onMouseEnter={e => e.target.style.color = "#f97316"}
-                onMouseLeave={e => e.target.style.color = "#555"}
-                style={{ cursor: "pointer", fontFamily: "'JetBrains Mono',monospace", fontSize: 14, color: "#555", transition: "color 0.2s" }}>
-                Back to Sign In
-              </span>
-            </div>
-          )}
-          </>}
-
-          {authProviders !== null && !passwordEnabled && ssoProviders.length === 0 && (
-            <div style={{ color: "#fb7185", textAlign: "center", lineHeight: 1.6 }}>
-              사용할 수 있는 로그인 방식이 없습니다. 관리자에게 문의하세요.
-            </div>
+          {mode === "login" && passwordEnabled && (ssoProviders.length > 0 || wsProvider || ipProvider) && (
+            <div className="flow-login__divider"><span>또는 아이디로 로그인</span></div>
           )}
 
           {passwordEnabled && (
-            <div style={{ marginTop: 14, textAlign: "center", fontSize: 14, fontFamily: "'JetBrains Mono',monospace", color: "#1e1e1e", letterSpacing: 1 }}>
-              flow{releaseVersion ? ` · v${releaseVersion}` : ""}
-            </div>
+            <form className="flow-login__form" onSubmit={e => { e.preventDefault(); if (!loading) submit(); }}
+              onKeyDown={e => { if (e.key === "Enter" && (e.nativeEvent?.isComposing || e.keyCode === 229)) e.preventDefault(); }}>
+              {mode === "register" && (
+                <div className="flow-login__field">
+                  <label htmlFor="flow-login-name">이름</label>
+                  <input id="flow-login-name" value={nm} onChange={e => setNm(e.target.value)} autoComplete="name" placeholder="이름을 입력하세요" />
+                </div>
+              )}
+              <div className="flow-login__field">
+                <label htmlFor="flow-login-username">아이디</label>
+                <input id="flow-login-username" value={u} onChange={e => setU(e.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false}
+                  placeholder={mode === "login" ? "아이디를 입력하세요" : "Knox ID"}
+                  aria-describedby={mode !== "login" ? "flow-login-id-hint" : undefined} />
+                {mode !== "login" && (
+                  <p id="flow-login-id-hint" className="flow-login__hint">아이디 또는 id@메일도메인으로 입력해 주세요. 둘 다 같은 계정으로 인식합니다.</p>
+                )}
+              </div>
+              {(mode === "login" || mode === "register") && (
+                <div className="flow-login__field">
+                  <label htmlFor="flow-login-password">비밀번호</label>
+                  <input id="flow-login-password" value={p} onChange={e => setP(e.target.value)} type="password"
+                    autoFocus={mode === "login" && rememberId && !!uid}
+                    autoComplete={mode === "register" ? "new-password" : "current-password"} placeholder="비밀번호를 입력하세요" />
+                </div>
+              )}
+              {mode === "login" && (
+                <label className="flow-login__remember">
+                  <input type="checkbox" checked={rememberId} onChange={e => {
+                    const next = e.target.checked;
+                    setRememberId(next);
+                    if (!next) writeSavedUsername("");
+                  }} />
+                  아이디 저장
+                </label>
+              )}
+              <button type="submit" className="flow-login__submit" disabled={loading}>
+                {loading ? "처리 중…" : mode === "login" ? "로그인" : mode === "register" ? "가입 신청" : "임시 비밀번호 받기"}
+              </button>
+            </form>
           )}
-        </div>
+
+          {msg && <div role="status" className={`flow-login__message${isOk ? " flow-login__message--success" : ""}`}>{msg}</div>}
+
+          {passwordEnabled && (
+            <nav className="flow-login__links" aria-label="계정 도움말">
+              {mode === "login" ? <>
+                <button type="button" onClick={() => { setMode("register"); setMsg(""); }}>회원가입</button>
+                {recoveryEnabled && <button type="button" onClick={() => { setMode("reset"); setMsg(""); }}>비밀번호 찾기</button>}
+              </> : (
+                <button type="button" onClick={() => { setMode("login"); setMsg(""); }}>로그인으로 돌아가기</button>
+              )}
+            </nav>
+          )}
+          {authProviders !== null && !passwordEnabled && ssoProviders.length === 0 && !wsProvider && !ipProvider && (
+            <div role="status" className="flow-login__message">사용할 수 있는 로그인 방식이 없습니다. 관리자에게 문의하세요.</div>
+          )}
+        </section>
+        {releaseVersion && <div className="flow-login__version">flow · v{releaseVersion}</div>}
       </div>
-    </div>
+    </main>
   );
 }

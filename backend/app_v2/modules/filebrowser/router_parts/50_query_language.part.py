@@ -1832,7 +1832,8 @@ def _merge_ai_sql_step_mapping_filter(raw_sql: str, context: dict, warnings: lis
     return f"{sql} AND {clause}"
 
 
-def _fallback_window(prompt: str, column: str) -> str:
+def _fallback_window(prompt: str, column: str, exclude: set[str] | None = None) -> str:
+    exclude = exclude or set()
     aliases = _AI_SQL_COLUMN_ALIASES.get(str(column).casefold(), (str(column),))
     spans = [span for alias in aliases for span in [_alias_span(prompt, alias)] if span is not None]
     if not spans:
@@ -1845,7 +1846,8 @@ def _fallback_window(prompt: str, column: str) -> str:
             tail = tail[:cut.start()]
         prefix = prompt[max(0, start - 80):start] if _looks_date_like_column(column) else ""
         window = prefix + prompt[start:end] + tail
-        score = 1 if _fallback_values(window, [column]) or (_looks_date_like_column(column) and _extract_ai_sql_datetime_values(window)) else 0
+        free_values = [v for v in _fallback_values(window, [column]) if v.casefold() not in exclude]
+        score = 1 if free_values or (_looks_date_like_column(column) and _extract_ai_sql_datetime_values(window)) else 0
         candidates.append((-score, start, window))
     return min(candidates, key=lambda item: (item[0], item[1]))[2]
 
@@ -1895,6 +1897,33 @@ def _ai_sql_contains_clause(prompt: str, columns: list[str]) -> str:
     return ""
 
 
+_AI_SQL_GROUP_BY_SUFFIX_RE = re.compile(r"\s*(?:별|마다)")
+_AI_SQL_GROUP_BY_PREFIX_RE = re.compile(r"(?:\bgroup\s+by|\bby|\bper|\beach)\s*$", re.I)
+
+
+def _fallback_group_by_only_mention(prompt: str, column: str) -> bool:
+    """True when every mention of the column is a grouping hint ('웨이퍼별', 'by wafer')."""
+    aliases = _AI_SQL_COLUMN_ALIASES.get(str(column).casefold(), (str(column),))
+    text = str(prompt or "")
+    seen = False
+    for alias in aliases:
+        alias = str(alias or "")
+        if not alias:
+            continue
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_ ]*", alias):
+            pattern = r"(?<![A-Za-z0-9_])" + re.escape(alias) + r"(?![A-Za-z0-9_])"
+        else:
+            pattern = re.escape(alias)
+        for match in re.finditer(pattern, text, flags=re.I):
+            seen = True
+            if _AI_SQL_GROUP_BY_SUFFIX_RE.match(text, match.end()):
+                continue
+            if _AI_SQL_GROUP_BY_PREFIX_RE.search(text[max(0, match.start() - 12):match.start()]):
+                continue
+            return False
+    return seen
+
+
 def _fallback_ai_sql(prompt: str, columns: list[str], product: str = "", step_mapping_context: dict | None = None) -> str:
     prompt = str(prompt or "").strip()
     if not prompt or not columns:
@@ -1902,9 +1931,14 @@ def _fallback_ai_sql(prompt: str, columns: list[str], product: str = "", step_ma
     if _ai_sql_projection_only_prompt(prompt, columns):
         return ""
     hits = _fallback_column_hits(prompt, columns)
-    item_clause = _fallback_item_id_clause(prompt, columns)
+    item_value = _fallback_item_id_value(prompt, columns)
+    item_clause = _fallback_item_id_clause(prompt, columns, item_value)
+    # A value already bound to item_id must not be re-bound to wafer_id/lot_id.
+    consumed = {item_value.casefold()} if item_value else set()
     if item_clause:
         hits = [col for col in hits if col.casefold() != "item_id"]
+    # "웨이퍼별"/"랏별" are group-by hints for the aggregate, not row filters.
+    hits = [col for col in hits if not _fallback_group_by_only_mention(prompt, col)]
     low = prompt.casefold()
     clauses: list[str] = []
     recent_clause = _ai_sql_recent_days_clause(prompt, columns)
@@ -1924,6 +1958,13 @@ def _fallback_ai_sql(prompt: str, columns: list[str], product: str = "", step_ma
     if hash_wafer:
         clauses.append(hash_wafer)
         hits = [col for col in hits if col.casefold() not in {"wafer_id", "wf_id"}]
+    # "A1000 랏 ..." puts the lot token before the alias; a lot hit whose window
+    # has no unbound value yields to the lot-token scan (root_lot_id first).
+    hits = [
+        col for col in hits
+        if col.casefold() not in {"lot_id", "root_lot_id"}
+        or [v for v in _fallback_values(_fallback_window(prompt, col, consumed), columns) if v.casefold() not in consumed]
+    ]
     if not any(col.casefold() in {"lot_id", "root_lot_id"} for col in hits):
         lot_clause = _fallback_lot_clause(prompt, columns)
         if lot_clause:
@@ -1935,10 +1976,10 @@ def _fallback_ai_sql(prompt: str, columns: list[str], product: str = "", step_ma
     if item_clause:
         clauses.append(item_clause)
     for col in hits:
-        window = _fallback_window(prompt, col)
+        window = _fallback_window(prompt, col, consumed)
         wlow = window.casefold()
         date_values = _extract_ai_sql_datetime_values(window) if _looks_date_like_column(col) else []
-        values = date_values or _fallback_values(window, columns)
+        values = date_values or [v for v in _fallback_values(window, columns) if v.casefold() not in consumed]
         less_match = re.search(r"(-?\d+(?:\.\d+)?)\s*보다\s*(?:작|낮)", window)
         greater_match = re.search(r"(-?\d+(?:\.\d+)?)\s*보다\s*(?:큰|크|높)", window)
         le_match = re.search(r"(-?\d+(?:\.\d+)?)\s*이하", window)
@@ -2016,10 +2057,17 @@ def _fallback_ai_sql(prompt: str, columns: list[str], product: str = "", step_ma
     return joiner.join(unique)
 
 
-def _fallback_item_id_clause(prompt: str, columns: list[str]) -> str:
-    lookup = _column_lookup(columns)
-    item_col = lookup.get("item_id")
+def _fallback_item_id_clause(prompt: str, columns: list[str], value: str | None = None) -> str:
+    item_col = _column_lookup(columns).get("item_id")
     if not item_col:
+        return ""
+    if value is None:
+        value = _fallback_item_id_value(prompt, columns)
+    return f"{item_col} = {_sql_literal_for_filter(value, columns)}" if value else ""
+
+
+def _fallback_item_id_value(prompt: str, columns: list[str]) -> str:
+    if not _column_lookup(columns).get("item_id"):
         return ""
     text = str(prompt or "")
     patterns = (
@@ -2038,7 +2086,7 @@ def _fallback_item_id_clause(prompt: str, columns: list[str]) -> str:
             continue
         if _looks_numeric_like_value(value) or _looks_datetime_like_value(value):
             continue
-        return f"{item_col} = {_sql_literal_for_filter(value, columns)}"
+        return value
     for value in _fallback_values(text, columns):
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{1,}", value):
             continue
@@ -2048,7 +2096,7 @@ def _fallback_item_id_clause(prompt: str, columns: list[str]) -> str:
             continue
         if value.casefold() in {str(alias).casefold() for aliases in _AI_SQL_AGG_FUNCTION_ALIASES.values() for alias in aliases}:
             continue
-        return f"{item_col} = {_sql_literal_for_filter(value, columns)}"
+        return value
     return ""
 
 
@@ -4716,59 +4764,6 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 )
             return _compute_body()
 
-        def _offload_or_local() -> dict:
-            # Shared preview cache is checked before dispatch so a warm query never
-            # pays the filesystem queue round trip to the development server.
-            cache_context = _preview_cache_context()
-            if cache_context is not None:
-                cached = _fbcache.get_cached(
-                    endpoint="view", source=cache_context[0], key_payload=cache_context[1])
-                if cached is not None:
-                    return cached
-
-            files, total_bytes = _ensure_source_info()
-            if not _should_offload_filebrowser_sql(
-                source_size=total_bytes,
-                all_partitions=bool(all_partitions),
-                aggregate=bool(aggregate_spec),
-            ):
-                return _cached_or_compute()
-
-            from core import worker_dispatch
-            payload = {
-                "root": str(root), "product": str(product), "sql": str(sql or ""),
-                "rows": int(rows), "cols": int(cols), "select_cols": str(select_cols or ""),
-                "sort_column": str(sort_column or ""), "sort_direction": str(sort_direction or "asc"),
-                "sort_nulls": str(sort_nulls or "last"),
-                "sort_cast": sort_cast if isinstance(sort_cast, str) else "",
-                "agg_func": str(agg_func or ""),
-                "agg_column": str(agg_column or ""), "agg_group_by": str(agg_group_by or ""),
-                "all_partitions": bool(all_partitions), "engine": str(engine or "auto"),
-                "page": int(page), "page_size": int(page_size), "source_file_count": len(files),
-                "source_size": int(total_bytes),
-            }
-            result = worker_dispatch.run_heavy(
-                "filebrowser_sql_query",
-                payload,
-                _cached_or_compute,
-                timeout_sec=_sql_queue.max_runtime_seconds(),
-                label=f"FileBrowser SQL {root}/{product}",
-                local_fallback=True,
-                priority="interactive",
-            )
-            if isinstance(result, dict) and isinstance(result.get("response"), dict):
-                response = result["response"]
-                # API/worker mount paths may differ. Publish the returned result
-                # again under the operating server's logical source signature so
-                # the next identical request is served locally without a queue hop.
-                if cache_context is not None:
-                    _fbcache.put_cached(
-                        endpoint="view", source=cache_context[0],
-                        key_payload=cache_context[1], response=response,
-                    )
-                return response
-            return result
-
         if not queue_needed:
             return _cached_or_compute()
         try:
@@ -4780,7 +4775,7 @@ def view_product(root: str = Query(...), product: str = Query(...),
                 query_id=query_id,
                 query_key=query_key,
             ):
-                return _offload_or_local()
+                return _cached_or_compute()
         except _sql_queue.QueryQueueCanceled as exc:
             raise HTTPException(409, f"SQL query canceled: {exc}")
         except _sql_queue.QueryQueueExpired as exc:

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import ProductSemanticPanel from "./ProductSemanticPanel";
+import ProductKnobLotPanel from "./ProductKnobLotPanel";
 import RichBoardEditor, { RichBoardContent } from "../../components/RichBoardEditor";
 import { Banner, Button, Input, PageShell, Select } from "../../components/ui";
 import { Icon, IconLabel } from "../../components/ui/Icon";
@@ -10,6 +10,8 @@ import StructureModelWorkspace from "../structure/StructureModelWorkspace";
 import "./My_ProductWiki.css";
 
 const API = "/api/product-wiki";
+const KNOB_SECTION_ID = "knob-lot";
+const KNOB_SECTION_TITLE = "개선 knob · LOT 목적";
 
 function formatDateTime(val) {
   if (!val) return "—";
@@ -226,7 +228,6 @@ export default function My_ProductWiki({ user }) {
 
   const mounted = useRef(true);
   const loadGeneration = useRef(0);
-  const [semanticRefresh, setSemanticRefresh] = useState(0);
 
   // Load products list on mount
   useEffect(() => {
@@ -317,8 +318,7 @@ export default function My_ProductWiki({ user }) {
       });
       setDoc(updatedDoc);
       const warnings = [updatedDoc.intake_warning, updatedDoc.compile_warning, updatedDoc.semantic_proposal?.warning].filter(Boolean);
-      setNotice(warnings.length ? `원문을 저장했습니다. ${warnings.join(" ")}` : "이슈를 구조화하고 위키에 반영했습니다. 아래에서 제안된 Step·Item 연결을 확인해 주세요.");
-      setSemanticRefresh((value) => value + 1);
+      setNotice(warnings.length ? `원문을 저장했습니다. ${warnings.join(" ")}` : "이슈를 구조화하고 위키에 반영했습니다.");
       setEditingEntry(null);
       setIssueTitle("");
       setIssueBody("");
@@ -387,9 +387,8 @@ export default function My_ProductWiki({ user }) {
           text: entry.source_text || entry.body || entry.title }),
       });
       setDoc(res);
-      setSemanticRefresh((value) => value + 1);
       const warnings = [res.intake_warning, res.compile_warning, res.semantic_proposal?.warning].filter(Boolean);
-      setNotice(warnings.length ? `원문을 보존했습니다. ${warnings.join(" ")}` : "최신 제품 연결표로 이슈를 다시 정리했습니다. 제안된 연결을 확인해 주세요.");
+      setNotice(warnings.length ? `원문을 보존했습니다. ${warnings.join(" ")}` : "최신 제품 연결표로 이슈를 다시 정리했습니다.");
     } catch (err) { setError(err.message || "이슈 재정리에 실패했습니다."); }
     finally { setBusy(false); }
   };
@@ -428,7 +427,16 @@ export default function My_ProductWiki({ user }) {
     return markdownToHtml(doc?.wiki_document || "");
   }, [doc?.wiki_document]);
 
-  const tocList = doc?.wiki_toc || [];
+  // 개선 knob · LOT 목적은 저장 문서가 아니라 화면 편집 표라 목차 끝에 따로 붙인다.
+  // 문서 절 번호("8. …")를 이어 받아 본문의 한 절처럼 보이게 한다.
+  const knobHeading = useMemo(() => {
+    const numbered = (doc?.wiki_toc || []).filter((item) => item.level === 2 && /^\d+\./.test(String(item.title || "")));
+    return numbered.length ? `${numbered.length + 1}. ${KNOB_SECTION_TITLE}` : KNOB_SECTION_TITLE;
+  }, [doc?.wiki_toc]);
+  const tocList = useMemo(
+    () => [...(doc?.wiki_toc || []), { level: 2, title: knobHeading, id: KNOB_SECTION_ID }],
+    [doc?.wiki_toc, knobHeading],
+  );
   const activeEntries = useMemo(() => (doc?.entries || []).filter((e) => !e.deleted), [doc?.entries]);
   const wikiBodyRef = useRef(null);
 
@@ -849,7 +857,7 @@ export default function My_ProductWiki({ user }) {
 
       {product && <details className="pw-structure-model" onToggle={(event) => setModelOpen(event.currentTarget.open)}>
         <summary>{product} · GAA 구조 3D</summary>
-        {modelOpen && <StructureModelWorkspace fixedProduct={product} admin={user?.role === "admin"}/>}
+        {modelOpen && <StructureModelWorkspace fixedProduct={product} admin={user?.role === "admin"} stacked/>}
       </details>}
 
       {/* ── Direct Issue Registration Box ── */}
@@ -909,7 +917,7 @@ export default function My_ProductWiki({ user }) {
 
               <div className="pw-form-footer">
                 <div className="pw-hint">
-                  원문을 보존하고, 연결된 AI가 이 이슈를 요약·태그·조건표로 정리해 위키에 넣습니다. 홈 화면 AI에게 “{product} 위키 요약해줘”처럼 물어볼 수 있습니다.
+                  원문을 보존하고, 연결된 AI가 이 이슈를 요약·태그·조건표로 정리해 위키에 넣습니다. 홈 화면 AI에게 “{product} 위키 요약해줘”처럼 물어볼 수 있습니다. 등록한 기록은 변경점 관리 달력에도 "{product} 위키" 이름으로 올라갑니다(발생일, 없으면 등록일).
                 </div>
                 <div className="pw-form-buttons">
                   {editingEntry && (
@@ -931,11 +939,6 @@ export default function My_ProductWiki({ user }) {
         </section>
       )}
 
-      {product && <details className="pw-issue-card">
-        <summary>이슈의 제품 용어 · Step / Item 연결 검토</summary>
-        <ProductSemanticPanel key={product} product={product} user={user} reviewOnly refreshKey={semanticRefresh} />
-      </details>}
-
       {/* ── Main Wiki Document View (Namuwiki / Wikipedia style) ── */}
       {loading ? (
         <div className="pw-loading-state">
@@ -954,7 +957,6 @@ export default function My_ProductWiki({ user }) {
             <div className="pw-wiki-meta-header">
               <div className="pw-wiki-doc-title">
                 <h1>{product}</h1>
-                <span className="pw-wiki-badge">위키 문서</span>
               </div>
               <div className="pw-wiki-byline">
                 <span>최근 갱신: {formatDateTime(doc?.wiki_updated_at)}</span>
@@ -997,6 +999,12 @@ export default function My_ProductWiki({ user }) {
                 __html: compiledHtml || "<p>등록된 위키 본문이 없습니다.</p>",
               }}
             />
+
+            {/* 개선 knob(소구조물 → Step set, 목적·영향·POR/SOP·PPID 등록·보상 흐름)과 LOT 목적 표 */}
+            <section className="pw-wiki-appendix" id={KNOB_SECTION_ID} aria-label={KNOB_SECTION_TITLE}>
+              <h2 className="pw-wiki-h2"><span className="pw-heading-anchor">§</span> {knobHeading}</h2>
+              <ProductKnobLotPanel key={product} product={product} />
+            </section>
           </article>
         </div>
       )}

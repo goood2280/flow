@@ -32,6 +32,7 @@ _DEFAULT_RULES = {
     "watched_lot_management_updated": True,
     "lot_step_threshold_reached": True,
     "teg_mapfile_abnormal": True,
+    "ops_scan_daily": True,
 }
 
 _EVENT_META = {
@@ -49,6 +50,7 @@ _EVENT_META = {
     "watched_lot_management_updated": ("관심랏 랏관리 갱신", "info"),
     "lot_step_threshold_reached": ("기준 Step 도달", "neutral"),
     "teg_mapfile_abnormal": ("TEG Mapfile 이상", "critical"),
+    "ops_scan_daily": ("운영 점검 결과", "info"),
 }
 
 
@@ -216,11 +218,12 @@ def dismiss_by_ids(username: str, ids: list):
 # ─────────────────────────────────────────────────────────
 def emit_event(event_type: str, actor: str = "", target_user: str = "",
                title: str = "", body: str = "", payload: dict | None = None,
-               allow_self: bool = False, notification_id: str = "") -> bool:
+               allow_self: bool = False, notification_id: str = "", tone: str = "") -> bool:
     """이벤트 단일 진입점.
     - target_user 가 비어있으면 no-op
     - actor 와 target_user 가 같을 때: allow_self 또는 watched_lot_ 이벤트가 아니면 no-op
     - 유저 구독 룰에서 off 면 no-op
+    - tone 을 주면 _EVENT_META 기본 tone 대신 쓴다(결과에 따라 경고/정보가 갈리는 이벤트)
     - 성공 시 bell 알림 생성, return True
     """
     if not target_user or not event_type:
@@ -229,7 +232,8 @@ def emit_event(event_type: str, actor: str = "", target_user: str = "",
         return False
     if not _is_event_enabled(target_user, event_type):
         return False
-    meta_title, tone = _EVENT_META.get(event_type, (event_type, "info"))
+    meta_title, default_tone = _EVENT_META.get(event_type, (event_type, "info"))
+    tone = str(tone or "").strip() or default_tone
     final_title = title or f"[{meta_title}]"
     if not body:
         if actor and payload:

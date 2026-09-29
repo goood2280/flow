@@ -20,6 +20,44 @@ DEFAULT_PROD_APP_CANDIDATES = [
     Path("/config/work/flow-fast-api"),
 ]
 VALID_MODES = {"auto", "local", "shared", "custom"}
+# Windows 전용 서버의 기본 저장소 — 이 드라이브 아래 DB/ 와 flow-data/ 를 쓴다
+# (Linux 운영의 /config/work/sharedworkspace/{DB,flow-data} 와 같은 구조).
+WINDOWS_STORAGE_DEFAULT = "D:\\"
+
+
+def windows_storage_root() -> Path | None:
+    """Windows 기본 저장소 루트(FLOW_STORAGE_ROOT, 기본 D: 드라이브). Windows 가 아니면 None."""
+    if not sys.platform.startswith("win"):
+        return None
+    raw = str(os.environ.get("FLOW_STORAGE_ROOT", "") or "").strip() or WINDOWS_STORAGE_DEFAULT
+    return Path(raw)
+
+
+def is_source_checkout() -> bool:
+    """개발용 git 체크아웃인가. setup.py 로 푼 설치본에는 .git 이 없다."""
+    return (PROJECT_ROOT / ".git").exists()
+
+
+def windows_storage_default_active() -> bool:
+    """Windows 에서 D:\\DB·D:\\flow-data 를 기본 저장소로 쓸지.
+
+    - 설치본(바탕화면 flow 폴더 등에 setup.py 로 푼 폴더): 폴더가 아직 없어도 D: 가 기본.
+      첫 기동에 flow-data 는 앱이 만들고, DB 는 운영자가 채운다(비어 있으면 화면이 비어 보여
+      설정 누락을 바로 알 수 있다 — 프로젝트 안 샘플 DB 로 조용히 떨어지지 않는다).
+    - 개발 체크아웃(.git 있음): 예전처럼 D:\\DB 또는 D:\\flow-data 가 있거나 FLOW_PROD=1 일 때만.
+    - FLOW_STORAGE_DEFAULT=0 이면 끈다(프로젝트 안 data/ 사용).
+    """
+    if windows_storage_root() is None:
+        return False
+    flag = str(os.environ.get("FLOW_STORAGE_DEFAULT", "") or "").strip().lower()
+    if flag in {"0", "false", "no", "off"}:
+        return False
+    if flag in {"1", "true", "yes", "on"} or os.environ.get("FLOW_PROD") == "1":
+        return True
+    if not is_source_checkout():
+        return True
+    win = windows_storage_root()
+    return any((win / child).exists() for child in ("DB", "flow-data"))
 
 
 def _same_path(a: Path, b: Path) -> bool:
@@ -86,7 +124,8 @@ def write_profile(update: dict) -> dict:
 
 def prod_app_candidates(profile: dict | None = None) -> list[Path]:
     profile = profile or read_profile()
-    out = list(DEFAULT_PROD_APP_CANDIDATES)
+    # Windows 에서 /config/... 는 현재 드라이브 기준으로 풀린다 — Linux 운영 경로는 쓰지 않는다.
+    out = [] if sys.platform.startswith("win") else list(DEFAULT_PROD_APP_CANDIDATES)
     for raw in profile.get("prod_app_roots") or []:
         p = Path(str(raw)).expanduser()
         if p not in out:
@@ -103,16 +142,32 @@ def _is_linux_host() -> bool:
     return sys.platform.startswith("linux")
 
 
+def prod_shared_available() -> bool:
+    """Linux 운영의 /config/work/sharedworkspace 를 쓸 수 있는가.
+
+    Windows 에서 "/config/..." 는 현재 드라이브 기준 경로(D:/config/work/...)로 풀려,
+    예전에는 그런 폴더가 우연히 있으면 DB·백업이 그쪽으로 샜다. Windows 는 D: 저장소만 쓴다.
+    """
+    if sys.platform.startswith("win"):
+        return False
+    return PROD_SHARED.exists()
+
+
 def _shared_default_root(profile: dict | None, child: str) -> Path | None:
     profile = profile or read_profile()
     mode = _clean_mode(profile.get("mode"))
-    if mode == "local":
+    if mode in {"local", "custom"}:
+        return None
+    win = windows_storage_root()
+    if win is not None:
+        # Windows 서버: D:\DB, D:\flow-data (드라이브는 FLOW_STORAGE_ROOT). 두 폴더는 한 쌍으로
+        # 움직인다 — 한쪽만 D: 로 가고 다른 쪽이 프로젝트 안 data/ 로 남는 조합을 만들지 않는다.
+        if mode == "shared" or windows_storage_default_active():
+            return win / child
         return None
     if mode == "shared":
-        return PROD_SHARED / child if PROD_SHARED.exists() else None
-    if mode == "custom":
-        return None
-    if not PROD_SHARED.exists():
+        return PROD_SHARED / child if prod_shared_available() else None
+    if not prod_shared_available():
         return None
     shared_child = PROD_SHARED / child
     if project_is_prod_app(profile) or os.environ.get("FLOW_PROD") == "1":
@@ -122,8 +177,6 @@ def _shared_default_root(profile: dict | None, child: str) -> Path | None:
         # without the Flow DB mounted. Only adopt the shared default implicitly
         # when that child exists; prod app root/FLOW_PROD above still keeps a
         # stable operator-owned path even if the mount arrives later.
-        if child == "DB" and shared_child.exists():
-            return shared_child
         if shared_child.exists():
             return shared_child
     return None
@@ -181,7 +234,9 @@ def snapshot() -> dict:
         "data_root": str(profile.get("data_root") or ""),
         "db_root": str(profile.get("db_root") or ""),
         "prod_app_roots": list(profile.get("prod_app_roots") or []),
-        "shared_exists": PROD_SHARED.exists(),
+        "shared_exists": prod_shared_available(),
+        "windows_storage_root": str(windows_storage_root() or ""),
+        "windows_storage_default": windows_storage_default_active(),
         "project_is_prod_app": project_is_prod_app(profile),
         "shared_defaults": use_shared_defaults(profile),
     }

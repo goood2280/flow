@@ -43,6 +43,19 @@ def test_mol_levels_change_on_epi_side(isolated):
         assert source_lines == set(range(1, levels + 1))
 
 
+def test_default_mol_is_direct_for_epi_and_gate(isolated):
+    scene = model.build_scene(isolated)
+    assert scene["mol_connection"] == "direct"
+    mol = [part for part in scene["parts"] if part["role"] == "mol"]
+    assert mol and all(part["metadata"].get("connection") == "direct" for part in mol)
+    assert {name for name in ("소스", "게이트", "드레인") if any(name in part["name"] for part in mol)} == {
+        "소스", "게이트", "드레인"}
+    result = _suggest(isolated, "epi MOL 네모 패드 다시 살려줘")
+    padded = model.build_scene(_apply(isolated, result))
+    assert padded["mol_connection"] == "landing_pad"
+    assert any(part["metadata"].get("mol_kind") == "via" for part in padded["parts"] if part["role"] == "mol")
+
+
 def test_direct_mol_and_contact_fill_recipe(isolated):
     result = _suggest(isolated, "epi MOL 연결부위에 네모로 구분있는거 없애고 바로 연결해줘. "
                                 "MOL 사이드에 물질A 얇게 넣어줘 B는 아래에 약간 넣어주고 그 위는 C로 채워줘")

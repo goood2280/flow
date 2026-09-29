@@ -1,4 +1,22 @@
 /* Flow design tokens — the only source for visual design values. */
+/* The entry screen retains its dark brand surface in either app theme. */
+:root {
+  --login-page: #050508;
+  --login-panel: #141417;
+  --login-input: #1c1c20;
+  --login-border: #343439;
+  --login-input-border: #66666e;
+  --login-text: #f5f5f7;
+  --login-label: #dedee3;
+  --login-muted: #a6a6b0;
+  --login-accent: #ff5e00;
+  --login-accent-hover: #ff7829;
+  --login-accent-surface: #2a1c15;
+  --login-accent-surface-hover: #3d261a;
+  --login-on-accent: #111114;
+  --login-error: #fda4af;
+  --login-success: #86efac;
+}
 :root,
 :root[data-theme="light"] {
   color-scheme: light;

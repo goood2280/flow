@@ -4,6 +4,14 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def reset_auto_resource_profile(monkeypatch):
+    """The host-size profile is memoized per process; a test that mocks a large
+    host must not leave `large` behind for later tests."""
+    from core import runtime_limits
+    monkeypatch.setattr(runtime_limits, "_AUTO_PROFILE", None)
+
+
+@pytest.fixture(autouse=True)
 def isolate_chat_success_prompts(monkeypatch, tmp_path):
     """Home turns record successful origins server-side; never alter live chips."""
     from core import chat_prompts

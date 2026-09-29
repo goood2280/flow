@@ -119,3 +119,5 @@ def test_chat_prompts_api_endpoints(monkeypatch, tmp_path):
     resp4 = client.get("/api/home-agent/sample-prompts")
     assert not any(s["text"] == "신규 실제 테스트 질의" for s in resp4.json().get("successful", []))
     assert not any(p["text"] == "신규 실제 테스트 질의" for p in resp4.json().get("pinned", []))
+
+

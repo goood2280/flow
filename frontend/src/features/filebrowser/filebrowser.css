@@ -82,7 +82,7 @@
 .fb-body { display: flex; gap: 12px; align-items: stretch; min-height: 0; }
 .fb-body__main { flex: 1; min-width: 0; }
 .fb-colpanel {
-  width: 320px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0;
+  width: min(800px, 60vw); flex-shrink: 0; display: flex; flex-direction: column; min-height: 0;
   max-height: calc(100vh - 230px); position: sticky; top: 0;
   border: 1px solid var(--border-subtle); border-radius: var(--radius-2); background: var(--surface-panel);
 }
@@ -209,7 +209,7 @@
   .fb-settings__grid { grid-template-columns: minmax(0, 1fr); }
   .fb-field-row { grid-template-columns: minmax(0, 1fr); gap: 4px; }
   .fb-field-row > span { padding-top: 0; }
-  .fb-colpanel { width: 260px; }
+  .fb-colpanel { width: min(600px, 70vw); }
 }
 
 /* 업무 탭 공용 버튼 규칙(.flow-connected-page button, 최소 높이 30px)에서 텍스트 링크는 뺀다. */
@@ -217,3 +217,11 @@
 .flow-connected-page .fb-colrow { padding-top: 4px; padding-bottom: 4px; }
 /* 업무 탭 공용 규칙(textarea font-family:inherit)보다 우선해 규칙 입력칸은 고정폭 글꼴로 */
 .flow-connected-page .fb-mono, .fb-settings .fb-mono { font-family: var(--font-mono); }
+
+/* S3 신호등 — 원형 점. 인라인 borderRadius 는 global.css 가 네모로 덮으므로 클래스로 준다. */
+.fb-light {
+  display: inline-block; width: 10px; height: 10px; flex-shrink: 0;
+  box-sizing: content-box; border-radius: 50%; border: 1px solid transparent;
+}
+.fb-light.is-inherited { border: 1px dashed var(--border-strong); }
+.fb-light.is-stale { border: 2px solid var(--danger); }

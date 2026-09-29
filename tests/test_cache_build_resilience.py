@@ -346,20 +346,10 @@ def test_invalid_completion_cannot_fall_back_to_old_fingerprint(cache_env, monke
 
 
 @pytest.mark.parametrize("recovers", [True, False])
-@pytest.mark.parametrize("role", ["api", "worker"])
-def test_pipeline_retries_pivot_only_then_continues(cache_env, monkeypatch, recovers, role):
+def test_pipeline_retries_pivot_only_then_continues(cache_env, monkeypatch, recovers):
     from routers import splittable as route
     lookup, _, source, _ = cache_env
     write_source(source)
-    from core import worker_dispatch, upstream_proxy
-    import json
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: role)
-    remote = []
-    def forward(path, query, token, **kwargs):
-        assert token == "test-session"
-        remote.append(kwargs.get("method", "GET"))
-        return 200, json.dumps({"status":"built","fresh":False}).encode(), "application/json"
-    monkeypatch.setattr(upstream_proxy, "forward", forward)
     calls = []
     attempts = []
     monkeypatch.setattr(route, "_scan_cancel_requested", lambda: False)
@@ -380,8 +370,7 @@ def test_pipeline_retries_pivot_only_then_continues(cache_env, monkeypatch, reco
     monkeypatch.setattr(route, "_fab_lot_index_read_meta", lambda _p: {"built_at": "now", "root_col": "root"})
     monkeypatch.setenv("FLOW_PIVOT_BUILD_RETRY_SEC", "0")
     monkeypatch.setenv("FLOW_PIVOT_BUILD_RETRY_MAX", "2")
-    result = route._enqueue_required_split_caches(source.stem, False, owns_job=False, local_only=True, production_token="test-session")
+    result = route._enqueue_required_split_caches(source.stem, False, owns_job=False, local_only=True)
     assert result["ok"] is recovers
-    assert len(attempts) == (2 if recovers or role=="worker" else 3)
-    assert remote == (["POST","GET"] if role=="worker" and not recovers else [])
+    assert len(attempts) == (2 if recovers else 3)
     assert calls == ["lookup", "latest", "fab"]

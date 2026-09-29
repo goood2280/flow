@@ -34,8 +34,18 @@ _THREAD_ENV = (
 
 
 def download_threads() -> int:
-    """ET 다운로드 계산에 허용할 스레드 수 (기본 1, 최소 1)."""
-    raw = str(os.environ.get("FLOW_REFORMATIZE_THREADS", "") or "1").strip()
+    """ET 다운로드 계산에 허용할 스레드 수 (기본 1, 전용 대형 서버 2, 최소 1).
+
+    대형 서버는 다운로드가 동시에 2건까지 돈다(download_queue.worker_count) — 2×2=4코어로
+    8코어 중 절반을 넘지 않게 해 SplitTable·파일탐색기 조회 몫을 남긴다."""
+    default = "1"
+    try:
+        from core import cache_budget
+        if cache_budget.large_host():
+            default = "2"
+    except Exception:
+        pass
+    raw = str(os.environ.get("FLOW_REFORMATIZE_THREADS", "") or default).strip()
     try:
         return max(1, int(float(raw)))
     except (TypeError, ValueError):

@@ -132,6 +132,7 @@ def memory_cache_budget_bytes() -> int:
     try:
         from core import cache_budget
 
+        budget = cache_budget.default_bytes("filebrowser_preview", budget)
         budget = cache_budget.capped("filebrowser_preview", budget)
     except Exception:
         pass

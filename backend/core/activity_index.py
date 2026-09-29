@@ -6,6 +6,7 @@ The cache lives off shared data roots so SQLite locking never depends on SMB/NFS
 """
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import hashlib
 import json
@@ -13,7 +14,38 @@ import os
 from pathlib import Path
 import sqlite3
 import tempfile
+import threading
+import time
 from contextlib import contextmanager
+
+
+# 관리자 활동 통계(summary/features/users)는 매 요청마다 인덱스 쓰기 락을 잡고
+# 전체 이벤트를 여러 번 집계했다. activity.jsonl 은 모든 API 요청마다 한 줄씩
+# 늘어나므로 mtime 키로는 캐시가 거의 맞지 않는다 — 대신 짧은 TTL 로 같은 화면을
+# 다시 열거나 기간 버튼을 오갈 때의 재집계를 없앤다. 로그 목록(page)은 캐시하지 않는다.
+try:
+    _RESULT_TTL_SEC = max(0.0, float(os.environ.get("FLOW_ACTIVITY_SUMMARY_TTL_SEC", "") or 30.0))
+except ValueError:
+    _RESULT_TTL_SEC = 30.0
+_RESULT_MEMO: dict = {}
+_RESULT_MEMO_LOCK = threading.Lock()
+
+
+def _memoized(name, source, args, compute):
+    if _RESULT_TTL_SEC <= 0:
+        return compute()
+    key = (name, str(source), args, dt.date.today().isoformat())
+    now = time.monotonic()
+    with _RESULT_MEMO_LOCK:
+        hit = _RESULT_MEMO.get(key)
+        if hit is not None and now - hit[0] < _RESULT_TTL_SEC:
+            return copy.deepcopy(hit[1])
+    value = compute()
+    with _RESULT_MEMO_LOCK:
+        for stale in [k for k, v in _RESULT_MEMO.items() if now - v[0] >= _RESULT_TTL_SEC]:
+            _RESULT_MEMO.pop(stale, None)
+        _RESULT_MEMO[key] = (now, value)
+    return copy.deepcopy(value)
 
 
 def _cache_path(source: Path) -> Path:
@@ -121,17 +153,36 @@ def _window(days):
     return (dt.date.today() - dt.timedelta(days=days - 1)).isoformat() if days else ""
 
 
+def _excluded(names):
+    """Normalized, order-stable usernames to leave out of the dashboard aggregates."""
+    return tuple(sorted({str(name).strip().lower() for name in (names or ()) if str(name).strip()}))
+
+
+def _exclude_sql(excluded):
+    # `user` is the stripped username; SQLite lower() is enough for ASCII account ids.
+    if not excluded:
+        return "", ()
+    return f" AND lower(user) NOT IN ({','.join('?' * len(excluded))})", tuple(excluded)
+
+
 def _week_start(value):
     day = value if isinstance(value, dt.date) else dt.date.fromisoformat(str(value))
     return day - dt.timedelta(days=day.weekday())
 
 
-def summary(source, days=0, include_recent=True):
+def summary(source, days=0, include_recent=True, exclude_users=()):
+    excluded = _excluded(exclude_users)
+    return _memoized("summary", source, (_days(days), bool(include_recent), excluded),
+                     lambda: _summary(source, days, include_recent, excluded))
+
+
+def _summary(source, days=0, include_recent=True, excluded=()):
     days = _days(days)
     cutoff = _window(days)
+    skip_sql, skip_args = _exclude_sql(excluded)
     with _snapshot(source) as db:
-        where = "day IS NOT NULL AND day >= ? AND authenticated=1"
-        args = (cutoff,)
+        where = "day IS NOT NULL AND day >= ? AND authenticated=1" + skip_sql
+        args = (cutoff, *skip_args)
         first, last = db.execute("SELECT MIN(day), MAX(day) FROM events").fetchone()
         def counts(column, limit=None):
             expression = {"action": "COALESCE(NULLIF(action,''),'(unknown)')",
@@ -146,19 +197,19 @@ def summary(source, days=0, include_recent=True):
         end_day = dt.date.fromisoformat(last) if not days and last else today
         start_month = start_day.year * 12 + start_day.month - 1 if not days and first else today.year * 12 + today.month - 12
         end_month = end_day.year * 12 + end_day.month - 1
-        daily = dict(db.execute("SELECT day, COUNT(DISTINCT user) FROM events WHERE authenticated=1 AND day BETWEEN ? AND ? GROUP BY day",
-                               (start_day.isoformat(), end_day.isoformat())).fetchall())
+        daily = dict(db.execute("SELECT day, COUNT(DISTINCT user) FROM events WHERE authenticated=1 AND day BETWEEN ? AND ?" + skip_sql + " GROUP BY day",
+                               (start_day.isoformat(), end_day.isoformat(), *skip_args)).fetchall())
         month_start = f"{start_month // 12:04d}-{start_month % 12 + 1:02d}"
         month_end = f"{end_month // 12:04d}-{end_month % 12 + 1:02d}"
-        monthly = dict(db.execute("SELECT substr(day,1,7) m, COUNT(DISTINCT user) FROM events WHERE authenticated=1 AND substr(day,1,7) BETWEEN ? AND ? GROUP BY m",
-                                  (month_start, month_end)).fetchall())
+        monthly = dict(db.execute("SELECT substr(day,1,7) m, COUNT(DISTINCT user) FROM events WHERE authenticated=1 AND substr(day,1,7) BETWEEN ? AND ?" + skip_sql + " GROUP BY m",
+                                  (month_start, month_end, *skip_args)).fetchall())
         end_week = _week_start(end_day) if not days and last else _week_start(today)
         start_week = _week_start(start_day) if not days and first else end_week - dt.timedelta(weeks=25)
         week_sql = "date(day, '-' || ((CAST(strftime('%w', day) AS INTEGER) + 6) % 7) || ' days')"
         weekly = dict(db.execute(
             f"SELECT {week_sql} w, COUNT(DISTINCT user) FROM events "
-            "WHERE authenticated=1 AND day BETWEEN ? AND ? GROUP BY w",
-            (start_week.isoformat(), end_day.isoformat() if not days and last else today.isoformat()),
+            "WHERE authenticated=1 AND day BETWEEN ? AND ?" + skip_sql + " GROUP BY w",
+            (start_week.isoformat(), end_day.isoformat() if not days and last else today.isoformat(), *skip_args),
         ).fetchall())
         by_week = dict(db.execute(
             f"SELECT {week_sql} w, COUNT(*) FROM events WHERE {where} GROUP BY w ORDER BY w",
@@ -171,8 +222,12 @@ def summary(source, days=0, include_recent=True):
         recent = [json.loads(row[0]) for row in db.execute(f"SELECT payload FROM events WHERE {where} ORDER BY timestamp DESC, id LIMIT 3000", args)] if include_recent else []
         result = {
             "window_days": days, "activity_start": first, "activity_end": last,
+            "excluded_users": list(excluded),
+            "excluded_count": db.execute(
+                "SELECT COUNT(*) FROM events WHERE day IS NOT NULL AND day >= ? AND authenticated=1"
+                f" AND lower(user) IN ({','.join('?' * len(excluded))})", (cutoff, *excluded)).fetchone()[0] if excluded else 0,
             "total": db.execute(f"SELECT COUNT(*) FROM events WHERE {where}", args).fetchone()[0],
-            "unattributed_count": db.execute("SELECT COUNT(*) FROM events WHERE day IS NOT NULL AND day >= ? AND authenticated=0", args).fetchone()[0],
+            "unattributed_count": db.execute("SELECT COUNT(*) FROM events WHERE day IS NOT NULL AND day >= ? AND authenticated=0", (cutoff,)).fetchone()[0],
             "by_user": counts("user", 20), "by_action": counts("action", 30),
             "by_tab": counts("tab"), "by_day": counts("day"),
             "by_week": by_week, "by_month": by_month, "recent": recent,
@@ -186,11 +241,17 @@ def summary(source, days=0, include_recent=True):
     return result
 
 
-def features(source, days=0):
+def features(source, days=0, exclude_users=()):
+    excluded = _excluded(exclude_users)
+    return _memoized("features", source, (_days(days), excluded), lambda: _features(source, days, excluded))
+
+
+def _features(source, days=0, excluded=()):
     days = _days(days)
+    skip_sql, skip_args = _exclude_sql(excluded)
     with _snapshot(source) as db:
-        args = (_window(days),)
-        where = "day IS NOT NULL AND day >= ? AND authenticated=1 AND feature!=''"
+        args = (_window(days), *skip_args)
+        where = "day IS NOT NULL AND day >= ? AND authenticated=1 AND feature!=''" + skip_sql
         out = []
         # Group once for all features, rather than rescanning events for each one.
         users, actions = {}, {}
@@ -204,13 +265,18 @@ def features(source, days=0):
             people = users[row[0]]
             out.append(dict(feature=row[0], count=row[1], first_seen=row[2], last_seen=row[3],
                             user_count=len(people), users=people[:20], top_actions=actions[row[0]]))
-        unattributed = db.execute("SELECT COUNT(*) FROM events WHERE day IS NOT NULL AND day >= ? AND authenticated=0", args).fetchone()[0]
-        return dict(window_days=days, features=out, feature_count=len(out), unattributed_count=unattributed)
+        unattributed = db.execute("SELECT COUNT(*) FROM events WHERE day IS NOT NULL AND day >= ? AND authenticated=0", args[:1]).fetchone()[0]
+        return dict(window_days=days, features=out, feature_count=len(out), unattributed_count=unattributed,
+                    excluded_users=list(excluded))
 
 
-def page(source, limit=100, offset=0, username="", action="", tab="", days=0, exact_user=False):
+def page(source, limit=100, offset=0, username="", action="", tab="", days=0, exact_user=False, exclude_users=()):
     limit, offset = max(1, min(500, int(limit))), max(0, int(offset))
     clauses, args = [], []
+    excluded = _excluded(exclude_users)
+    if excluded:
+        clauses.append(f"lower(trim(username)) NOT IN ({','.join('?' * len(excluded))})")
+        args.extend(excluded)
     if days > 0:
         clauses.append("substr(timestamp,1,10) >= ?")
         args.append(_window(_days(days)))
@@ -232,6 +298,10 @@ def page(source, limit=100, offset=0, username="", action="", tab="", days=0, ex
 
 
 def users(source):
+    return _memoized("users", source, (), lambda: _users(source))
+
+
+def _users(source):
     with _snapshot(source) as db:
         return {"users": [dict(username=row[0], count=row[1], last=row[2]) for row in db.execute(
             "SELECT username, COUNT(*), MAX(timestamp) last FROM events WHERE username!='' GROUP BY username ORDER BY last DESC, MIN(id)")]}

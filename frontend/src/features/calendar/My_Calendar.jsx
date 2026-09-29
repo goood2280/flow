@@ -55,6 +55,16 @@ const SOURCE_LABEL = {
   manual: "일반",
   meeting_decision: "결정사항",
   meeting_action: "액션아이템",
+  product_wiki: "제품 위키",
+};
+// 제품 위키 기록은 위키가 원본이다 — 달력에서는 읽기 전용, 위키 링크로 연다.
+const WIKI_COLOR = "var(--violet)";
+const isWikiEvent = (e) => (e?.source_type || "") === "product_wiki";
+const openWikiEntry = (e) => {
+  const ref = e?.wiki_ref || {};
+  if (!ref.product) return;
+  const search = `?product=${encodeURIComponent(ref.product)}${ref.anchor ? `#${ref.anchor}` : ""}`;
+  window.dispatchEvent(new CustomEvent("flow:navigate", { detail: { tab: "productwiki", search } }));
 };
 
 export default function My_Calendar({ user }) {
@@ -62,6 +72,7 @@ export default function My_Calendar({ user }) {
   const [events, setEvents] = useState([]);
   const [cats, setCats] = useState([]);
   const [meetings, setMeetings] = useState([]);
+  const [wikiProducts, setWikiProducts] = useState([]);
   const [meetingFilter, setMeetingFilter] = useState("all"); // "all" | "none-manual" | meeting_id
   const [selected, setSelected] = useState(null);
   const [search, setSearch] = useState("");
@@ -83,7 +94,8 @@ export default function My_Calendar({ user }) {
       .then(d => setEvents(d.events || []))
       .catch(() => setEvents([]))
       .finally(() => setLoading(false));
-    sf(`${API}/meetings`).then(d => setMeetings(d.meetings || [])).catch(() => setMeetings([]));
+    sf(`${API}/meetings`).then(d => { setMeetings(d.meetings || []); setWikiProducts(d.wiki_products || []); })
+      .catch(() => { setMeetings([]); setWikiProducts([]); });
   };
   const reloadCats = () => sf(`${API}/categories`).then(d => setCats(d.categories || [])).catch(() => setCats([]));
 
@@ -94,6 +106,8 @@ export default function My_Calendar({ user }) {
   const filteredEvents = useMemo(() => {
     if (meetingFilter === "all") return events;
     if (meetingFilter === "manual") return events.filter(e => (e.source_type || "manual") === "manual");
+    if (meetingFilter === "wiki") return events.filter(isWikiEvent);
+    if (meetingFilter.startsWith("wiki:")) return events.filter(e => isWikiEvent(e) && (e.wiki_ref || {}).product === meetingFilter.slice(5));
     return events.filter(e => (e.meeting_ref || {}).meeting_id === meetingFilter);
   }, [events, meetingFilter]);
 
@@ -138,7 +152,7 @@ export default function My_Calendar({ user }) {
     const t = (selected.title || "").trim();
     if (!t) { toast.warn("제목을 입력하세요"); return; }
     if ((selected.source_type || "manual") !== "manual" && !selected._new) {
-      toast.warn("회의에서 auto-sync 된 이벤트는 회의관리에서 수정해주세요.");
+      toast.warn(isWikiEvent(selected) ? "제품 위키 기록은 제품 위키에서 수정해주세요." : "회의에서 auto-sync 된 이벤트는 회의관리에서 수정해주세요.");
       return;
     }
     if (selected._new) {
@@ -168,7 +182,7 @@ export default function My_Calendar({ user }) {
   const remove = () => {
     if (!selected?.id) { setSelected(null); return; }
     if ((selected.source_type || "manual") !== "manual") {
-      toast.warn("회의 auto-sync 이벤트는 회의관리에서 해당 결정/액션을 삭제해주세요.");
+      toast.warn(isWikiEvent(selected) ? "제품 위키 기록은 제품 위키에서 삭제해주세요." : "회의 auto-sync 이벤트는 회의관리에서 해당 결정/액션을 삭제해주세요.");
       return;
     }
     if (!confirm("이 이벤트를 삭제하시겠습니까?")) return;
@@ -205,7 +219,7 @@ export default function My_Calendar({ user }) {
     const srcType = e.source_type || "manual";
     // v8.7.9: meeting events use the meeting's unique palette color; manual events fall back to category color.
     const meetingColor = (e.meeting_ref && e.meeting_ref.color) || "";
-    const color = safeEventColor(meetingColor || catColor(e.category));
+    const color = safeEventColor(meetingColor || (isWikiEvent(e) ? WIKI_COLOR : catColor(e.category)));
     const isAction = srcType === "meeting_action";
     const isDecision = srcType === "meeting_decision";
     // v8.7.9: actions = pin on due date (single-day), decisions = filled single-day.
@@ -265,6 +279,10 @@ export default function My_Calendar({ user }) {
                 title="회의별 필터">
                 <option value="all">전체 이벤트</option>
                 <option value="manual">일반 이벤트만</option>
+                {wikiProducts.length > 0 && <option value="wiki">제품 위키 전체 ({wikiProducts.reduce((n, w) => n + w.count, 0)})</option>}
+                {wikiProducts.map(w => (
+                  <option key={`wiki:${w.product}`} value={`wiki:${w.product}`}>제품 위키 · {w.product} ({w.count})</option>
+                ))}
                 {meetings.map(m => (
                   <option key={m.meeting_id} value={m.meeting_id}>{m.color ? "● " : ""}{m.meeting_title || m.meeting_id} ({m.count})</option>
                 ))}
@@ -283,6 +301,7 @@ export default function My_Calendar({ user }) {
               <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--info-50)", border: "1px solid var(--info)", marginRight: 4, verticalAlign: "middle" }} /> 일반</span>
               <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--ok-50)", border: "1px solid var(--ok)", marginRight: 4, verticalAlign: "middle" }} /> 결정사항</span>
               <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--pink-50)", border: "1px solid var(--pink)", borderLeft: "3px solid var(--pink)", marginRight: 4, verticalAlign: "middle" }} /> <Icon name="location" /> 액션아이템</span>
+              <span><span style={{ display: "inline-block", width: 10, height: 10, background: "var(--violet-50)", border: "1px solid var(--violet)", marginRight: 4, verticalAlign: "middle" }} /> 제품 위키 (Inline 변경점·이슈)</span>
             </div>
           </Card>
         </div>
@@ -297,7 +316,7 @@ export default function My_Calendar({ user }) {
                   padding: 10, marginBottom: 6, borderRadius: 6, background: "var(--bg-card)",
                   border: "1px solid var(--border)", cursor: "pointer", display: "flex", gap: 10, alignItems: "center",
                 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: catColor(e.category), flexShrink: 0 }} />
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: isWikiEvent(e) ? WIKI_COLOR : catColor(e.category), flexShrink: 0 }} />
                   <span style={{ fontSize: 14, fontFamily: "monospace", color: "var(--text-secondary)", minWidth: 90 }}>{e.date}{e.end_date && e.end_date !== e.date ? ` ~ ${e.end_date}` : ""}</span>
                   <span style={{ fontSize: 14, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{e.title}</span>
                   <Pill tone="neutral">{SOURCE_LABEL[e.source_type || "manual"]}</Pill>
@@ -382,7 +401,7 @@ export default function My_Calendar({ user }) {
                 })}
               </div>
               <div style={{ marginTop: 10, fontSize: 14, color: "var(--text-secondary)" }}>
-                {loading ? "로딩…" : `${filteredEvents.length}건`} · 셀 클릭 → 신규 등록 · 이벤트 클릭 → 편집 · 회의 이벤트는 회의관리에서만 수정 가능
+                {loading ? "로딩…" : `${filteredEvents.length}건`} · 셀 클릭 → 신규 등록 · 이벤트 클릭 → 편집 · 회의 이벤트는 회의관리, 제품 위키 기록은 제품 위키에서만 수정 가능
               </div>
             </div>
           )}
@@ -407,7 +426,16 @@ export default function My_Calendar({ user }) {
                 </div>
               </div>
             )}
-            {!selected._new && (selected.source_type || "manual") !== "manual" && (
+            {!selected._new && isWikiEvent(selected) && (
+              <div style={{ padding: 8, borderRadius: 4, background: "var(--violet-50)", border: "1px dashed var(--violet-line)", fontSize: 14, color: "var(--text-secondary)" }}>
+                <Icon name="link" style={{ marginRight: 4 }} />제품 위키에 등록된 기록입니다. 수정/삭제는 제품 위키에서 하면 여기에도 반영됩니다.
+                <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontWeight: 600, color: "var(--text-primary)" }}>제품 위키 · {selected.wiki_ref?.product}</span>
+                  <Button variant="ghost" onClick={() => openWikiEntry(selected)}>위키에서 열기</Button>
+                </div>
+              </div>
+            )}
+            {!selected._new && (selected.source_type || "manual") !== "manual" && !isWikiEvent(selected) && (
               <div style={{ padding: 8, borderRadius: 5, background: "var(--info-50)", border: "1px dashed var(--info-line)", fontSize: 14, color: "var(--text-secondary)" }}>
                 <Icon name="link" style={{ marginRight: 4 }} />회의에서 auto-sync 된 이벤트입니다. 수정/삭제는 회의관리의 해당 결정/액션에서.
                 {selected.meeting_ref?.meeting_title && <div style={{ marginTop: 4, fontWeight: 600, color: "var(--accent)" }}><IconLabel icon="calendar">{selected.meeting_ref.meeting_title}</IconLabel></div>}
@@ -431,6 +459,8 @@ export default function My_Calendar({ user }) {
                 disabled={!selected._new && (selected.source_type || "manual") !== "manual"}>
                 <option value="">(없음)</option>
                 {cats.map(c => <option key={c.name} value={c.name}>{c.name}</option>)}
+                {/* 연동 이벤트의 고정 카테고리(예: 제품 위키)는 팔레트에 없어도 보여준다 */}
+                {selected.category && !cats.some(c => c.name === selected.category) && <option value={selected.category}>{selected.category}</option>}
               </select>
             </Field>
             <Field label="내용">

@@ -678,6 +678,18 @@ def _refresh_saved_document(product, actor):
     return {**doc, **{k: result[k] for k in ("compile_mode", "compile_warning")}}
 
 
+def _sync_change_calendar(product):
+    """Mirror the product's records into 변경점 관리 (calendar) after a commit.
+
+    Never fails the save: the calendar also re-syncs on its next read.
+    """
+    try:
+        from routers.calendar import sync_product_wiki_events
+        sync_product_wiki_events([product], cal_dir=PATHS.data_root / "calendar")
+    except Exception:
+        pass
+
+
 def _save_preconditions(doc, expected_revision, entry_id, actor, manager):
     if doc["revision"] != expected_revision:
         raise Conflict("다른 사용자가 수정했습니다. 새로고침 후 변경 내용을 확인하세요.")
@@ -740,6 +752,7 @@ def save_entry(product, expected_revision, entry, actor, manager=False, return_s
         db.execute("INSERT INTO history VALUES(?,?,?,?)",
                    (key, revision, record["id"], json.dumps(history, ensure_ascii=False)))
         db.execute("UPDATE products SET wiki_document=NULL,wiki_toc=NULL WHERE key=?", (key,))
+    _sync_change_calendar(name)
     saved = _refresh_saved_document(name, actor)
     return (saved, record["id"]) if return_saved_id else saved
 
@@ -789,6 +802,7 @@ def delete_entry(product, expected_revision, entry_id, actor, manager=False):
             (key, revision, entry_id, json.dumps(history, ensure_ascii=False)),
         )
         db.execute("UPDATE products SET wiki_document=NULL,wiki_toc=NULL WHERE key=?", (key,))
+    _sync_change_calendar(name)
     return _refresh_saved_document(name, actor)
 
 

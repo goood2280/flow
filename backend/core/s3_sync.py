@@ -82,14 +82,8 @@ def disabled_by_env() -> bool:
 
 
 def disabled_by_role() -> bool:
-    """v9.4.5: worker(개발서버) 역할은 S3 업로드를 하지 않는다 — 외부 서비스
-    연동은 운영(api)·standalone 전용 (worker_dispatch.external_services_enabled).
-    env 플래그 없이도 역할 지정만으로 개발서버 업로드가 꺼지도록 하는 가드."""
-    try:
-        from core import worker_dispatch
-        return not worker_dispatch.external_services_enabled()
-    except Exception:
-        return False
+    """운영 단일 서버라 역할로 끄는 경우는 없다(예전 개발 worker 가드). 호출부 호환용."""
+    return False
 
 SYNCABLE_DB_ROOT_FILES = {
     "matching_step.csv",
@@ -342,9 +336,7 @@ def sync_one(data_root: Path, artifact: Dict[str, Any], cfg: Dict[str, Any]) -> 
         # appending a line on every save while permanently off.
         entry["status"] = "disabled_env"; return entry
     if disabled_by_role():
-        # worker 역할도 서버 단위로 반영구적 — env 와 같은 이유로 status 로그 생략.
-        # disabled_env 와 마찬가지로 store fallback 도 하지 않는다 (fallback push
-        # 역시 외부 전송이므로 개발서버에서는 전부 차단).
+        # 호환용 분기(현재 항상 False) — env 와 같은 이유로 status 로그 생략.
         entry["status"] = "disabled_role"; return entry
     if not master_enabled():
         # v9.1.x: 관리자 전역 스위치 꺼짐 — 저장마다 로그가 쌓이지 않게 status 기록 생략.

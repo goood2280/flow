@@ -15,7 +15,14 @@ New preferred env vars (see core/roots.py for full chain):
 
 Local dev:  env vars unset → DB root resolves to data/Fab under project root
 
-Production (사내 배포):
+Windows server: D:/DB and D:/flow-data are the default storage for an
+installed copy (a folder extracted from setup.py, i.e. no .git), and for a git
+checkout when either folder exists or FLOW_PROD=1. The drive is
+FLOW_STORAGE_ROOT (default D:); FLOW_STORAGE_DEFAULT=0 turns it off. Linux
+/config/... defaults are never used on Windows (they would resolve to the
+current drive, e.g. D:/config/work/sharedworkspace).
+
+Production (Linux 사내 배포):
     FLOW_APP_ROOT        = /config/work/flow-fast-api
     FLOW_DATA_ROOT       = /config/work/sharedworkspace/flow-data
     FLOW_DB_ROOT         = /config/work/sharedworkspace/DB
@@ -43,14 +50,19 @@ from core.roots import (
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent   # → flow/
 _PROFILE = root_profile.read_profile()
-_PROD_APP = next((p for p in root_profile.prod_app_candidates(_PROFILE) if p.exists()), root_profile.prod_app_candidates(_PROFILE)[0])
+_PROD_APP_CANDIDATES = root_profile.prod_app_candidates(_PROFILE)
+# Windows 는 Linux 운영 앱 경로 후보가 없다 — 실행 중인 설치 폴더가 곧 앱 루트다.
+_PROD_APP = next((p for p in _PROD_APP_CANDIDATES if p.exists()),
+                 _PROD_APP_CANDIDATES[0] if _PROD_APP_CANDIDATES else _PROJECT_ROOT)
 _USE_SHARED_DEFAULTS = root_profile.use_shared_defaults(_PROFILE)
 _IS_PROD = _USE_SHARED_DEFAULTS
 
 
 class _Paths:
     def __init__(self):
-        default_app  = str(_PROD_APP)    if _IS_PROD else str(_PROJECT_ROOT)
+        # 운영이어도 Linux 운영 앱 경로가 없는 호스트(Windows 서버, 바탕화면에 푼 설치)는
+        # 지금 실행 중인 체크아웃을 앱 루트로 쓴다.
+        default_app  = str(_PROD_APP)    if (_IS_PROD and _PROD_APP.exists()) else str(_PROJECT_ROOT)
         default_data = str(root_profile.default_data_root(_PROFILE))
         self.app_root  = Path(os.environ.get("FLOW_APP_ROOT",  default_app))
         self.data_root = Path(os.environ.get("FLOW_DATA_ROOT", default_data))

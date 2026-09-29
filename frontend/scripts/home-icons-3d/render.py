@@ -28,6 +28,8 @@ MANIFEST = FRONTEND / "src" / "app" / "pageManifest.jsx"
 THREE_DIR = FRONTEND / "node_modules" / "three"
 OUT_DIR = FRONTEND / "src" / "features" / "home" / "icons3d"
 SIZE = 240
+# 홈 타일은 58px 로 그린다 — 2배 해상도(128px)로 줄여 저장해 홈 청크에 인라인한다.
+OUT_SIZE = 128
 
 HELPERS = ("box, cylinder, sphere, prismZ, prismY, drum, top, frontLeft, topLine, frontLeftLine, disc, "
            "project, ellipse, polyline, polygon, poly3, pt, rect, grid, circle, gear")
@@ -78,7 +80,8 @@ def main(selected: list[str]) -> None:
             page.goto(f"http://icons.local/scene.html?key={key}&group={groups.get(key, 'work')}&size={SIZE}")
             page.wait_for_function("window.__done === true", timeout=120_000)
             png = page.locator("canvas").screenshot(omit_background=True)
-            Image.open(io.BytesIO(png)).convert("RGBA").save(OUT_DIR / f"{key}.webp", "WEBP", quality=90, method=6)
+            image = Image.open(io.BytesIO(png)).convert("RGBA").resize((OUT_SIZE, OUT_SIZE), Image.LANCZOS)
+            image.save(OUT_DIR / f"{key}.webp", "WEBP", quality=90, method=6)
             print(f"{key:16s} {groups.get(key, 'work'):6s} -> icons3d/{key}.webp")
             page.close()
         browser.close()

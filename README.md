@@ -1,623 +1,266 @@
 # Flow
 
-Flow는 반도체 개발·파일 공유·SplitTable 관리·WF MAP 검사·데이터 분석을 lot/wafer 중심으로 연결하는 FastAPI + React 웹 애플리케이션입니다.
+Flow는 반도체 개발 데이터를 lot/wafer 중심으로 연결하는 FastAPI + React 웹 앱입니다. 파일탐색기,
+SplitTable, ET/LOT 추적, TEG/WF MAP, 업무 게시판, 차트·리포트와 홈 에이전트(Flow-i)를 제공합니다.
 
-이 GitHub 저장소는 사내 반입을 단순화하기 위해 세 파일만 배포합니다.
+- **배포 = `setup.py` 한 파일.** 백엔드·프런트엔드(빌드된 `frontend/dist` 포함)·운영 스크립트를 담은
+  자기추출 설치 파일입니다. 소스를 고친 뒤 `python _build_setup.py`로 다시 만들지 않으면 배포되지 않습니다.
+- **운영 = Windows 서버 1대.** 개발 worker 서버는 쓰지 않습니다(2026-09-29 폐지). 모든 작업이 운영
+  서버 한 프로세스에서 돕니다.
+- DB, 계정, 설정, 로그, 캐시 같은 운영 데이터는 `setup.py`에 들어가지 않고 업데이트 때도 덮어쓰지 않습니다.
+- **이 저장소는 공개(PUBLIC)입니다.** 사내 데이터·문서·발표자료·실제 사번/IP를 커밋하지 않습니다.
 
-- `setup.py`: 백엔드, 프런트엔드, 문서와 운영 스크립트를 압축 포함한 단일 설치 파일
-- `README.md`: 설치 및 운영 안내
-- `VERSION.json`: 버전과 릴리스 노트. `setup.py` 번들 안에도 같은 파일이 들어 있지만, 변경 이력은 잃으면 복구할 수 없어 커밋 diff로 보이도록 따로 추적합니다.
-
-DB, 계정, 설정, 로그, 캐시 등 운영 데이터는 `setup.py`에 포함되지 않으며 업데이트 시에도 덮어쓰지 않습니다.
+| 문서 | 내용 |
+|---|---|
+| [AGENTS.md](AGENTS.md) | 코드 에이전트·기여자 작업 규칙(단일 원천). `CLAUDE.md`는 이 파일을 가리킵니다 |
+| [docs/CODEMAP.md](docs/CODEMAP.md) | 탭별 화면·라우터·core 모듈 위치와 수정 레시피 |
+| [guides/](guides/README.md) | 탭별 사용법 영상과 안내 |
+| [DB_AI_AND_INPUT_GUIDE.md](DB_AI_AND_INPUT_GUIDE.md) | DB/AI 참고 파일과 입력 데이터 형식(합성 예시) |
+| [SECOND_BRAIN.md](SECOND_BRAIN.md) | 외부 second-brain 지식 패키지와 Flow 소비 계약 |
+| [VERSION.json](VERSION.json) | 버전과 릴리스 노트(정본) |
 
 ## 주요 기능
 
-- 파일 공유, 대용량 parquet/CSV 탐색 및 미리보기
-- 제품별 SplitTable 검색, plan/actual 비교와 편집
-- root lot/wafer 기준 FAB 데이터 결합
-- WF MAP, TEG MAP, 공정 데이터 검사
-- TEG 위치 기반 full chip과 제품별 BIN/MSR TABLE·BIN 컬러를 적용하는 Yield Map
-- ET 추적(일일 스캔·변경점 이슈·메일 발송)과 ET Index 다운로드
-- 개발 서버 FAB 매칭알람 검사 — 제품별 신규 step_id / ppid 를 찾아 룰북·매칭테이블 CSV에 반영
-- 제품별 랏 배정·Hot grade 요청, PI 처리 상태·답변 및 작성자별 수정·삭제 이력 관리
-- Inform Note와 랏 요청·답변의 게시판형 본문 — 이미지와 Excel 표를 Ctrl+V로 본문에 직접 삽입
-- Inform, Tracker, Meeting, Dashboard 및 Flow-i 지원
+- 파일 공유, 대용량 parquet/CSV 탐색·미리보기, read-only SQL과 AI SQL 초안
+- 제품별 SplitTable 검색, plan/actual 비교와 편집, root lot/wafer 기준 FAB 데이터 결합
+- WF MAP, TEG 위치 조회·Mapfile 검사, TEG 위치 기반 full chip Yield Map
+- ET 추적(일일 스캔·변경점 이슈·메일)과 ET Index 다운로드
+- FAB 매칭알람 검사 — 제품별 신규 `step_id`/`ppid`/`reticle_id`를 찾아 룰북·매칭테이블 CSV에 반영
+- 차트생성·Template Report·Auto report(PPT 생성)
+- 랏 배정/요청, Inform, Tracker, Meeting, Dashboard, 분석의뢰, 제품 위키
+- 홈 에이전트(Flow-i) 데이터 챗
+- 관리자 콘솔: 사용자·권한, 모니터, 백업, 메일, LLM, 기본지식, **운영 점검 스캔(매일 자동 + 관리자 알림)**
 
-### TEG 제품 노드와 접근 권한
+## 서버 구성과 처리 용량
 
-TEG 제품은 `상위 노드 / 하위 노드 / 제품명` 계층으로 분류합니다. 신규 제품의 노드 경로는
-`TEG_Product_Info.csv`와 TEG 설정의 `product_nodes`에 저장되며, 기존 Chip_Radius 전용 제품도
-config 변경 또는 관리자 화면에서 이름과 분류를 수정할 수 있습니다. 제품 추가는 분류와 제품명을
-먼저 확정한 뒤 형상·TEG 정보를 입력하며, 이름 변경은 `Chip_Radius.csv`, `Teg_location.csv`,
-`Main_chip_info.csv`, `TEG_Product_Info.csv`와 제품별 Mapfile/Inline 설정에 함께 반영됩니다.
-최상위 노드별 `node_access` 규칙이 없으면 기존처럼
-공개되고, 규칙이 있으면 허용 사용자 또는 허용 부서가 일치하는 제품만 목록과 API에서 접근할
-수 있습니다. 관리자는 항상 전체 제품에 접근합니다.
+### 구성
 
-부서 권한은 현재 세션의 `department`, `departments`, `dept`, `department_name`, `org`,
-`org_name` 값과 비교합니다. 향후 SSO provider가 해당 값을 비민감 session claims로 넘기면
-별도 TEG 코드 변경 없이 부서별 제품 노드 권한에 적용됩니다.
-- 업무 차트생성에서 여러 DB의 read-only SQL 결과를 JOIN·미리보기·CSV 다운로드하고 동일 데이터로 차트 생성
-- 운영 API 서버와 개발 worker 서버를 이용한 무거운 작업 분산
-- 필수 SplitTable 캐시 작업 큐, 실행 중 작업과 피크 메모리 관측
+| 항목 | 값 |
+|---|---|
+| 서버 | Windows, Xeon 6448Y 2.1GHz, 할당 8코어 / 128GB — 1대 |
+| 원천 DB (읽기 전용) | `D:\DB` (`FLOW_DB_ROOT`) |
+| 사용자 기록·설정·로그·캐시 | `D:\flow-data` (`FLOW_DATA_ROOT`) |
+| 자동 백업 | `D:\flow-backups` |
+| 프로세스 | API 1개 + 감시기(`scripts/flow_server.py`). `--workers N`·`--reload` 금지 |
 
-수동으로 준비하는 제품별 필수 캐시는 ① 랏 lookup ② `root_lot_id`별 SplitTable pivot
-③ WIP latest-lot ④ root별 FAB latest 인덱스의 네 종류입니다. ET history는 ET 추적에서
-독립적으로 관리하며 SplitTable 필수 캐시 완료 조건에는 포함하지 않습니다.
-통합 캐싱은 실제 단계가 끝날 때까지 작업 큐에 남아 진행 상황과 중단 버튼을 제공하고,
-중단 시 현재 안전 배치까지만 마친 뒤 다음 제품·단계는 시작하지 않습니다. 제품 전체 RAM과
-Root lot RAM 예열은 사용하지 않습니다. 검색 조건별 완성 응답 캐시는 실제 검색 때만
-생기는 read-through 항목이므로 수동 전체 생성 대상에 넣지 않습니다.
-제품별 `root_lot_id`·LOT ID 목록과 KNOB별 입력 후보는 lookup 빌드 중 함께 계산해
-RAM+공유 디스크에 미리 게시합니다. SplitTable의 Root Lot 후보 요청은 이 목록만 읽고,
-캐시가 없거나 오래됐으면 원천·FAB·`lot-ids`를 동기 스캔하지 않고 lookup 빌드만 큐에
-넣어 즉시 응답합니다. 준비 중에도 사용자는 Root Lot을 직접 입력해 바로 조회할 수 있습니다.
+호스트가 64GiB·8논리코어 이상이면 자원 프로파일이 자동으로 `large`가 됩니다(`FLOW_RESOURCE_PROFILE=auto`).
 
-ET 추적과 Inform 등록은 사용자 입력 레코드를 먼저 내구 저장하고 화면 목록·상세에
-즉시 반영합니다. LOT 진행상태/wafer 확장, FAB·ROOT·WAFER 매핑, 다중 LOT별
-SplitTable 스냅샷, audit·지식 추출은 응답 이후에 보강한 뒤 화면이 완성 데이터를
-재조회합니다. 따라서 무거운 계산이 등록 버튼과 새 항목 표시를 붙잡지 않습니다.
+| 항목 | small (그 외) | large (8코어/128GB 기준) |
+|---|---|---|
+| 계산 CPU 예산 · Polars 풀 | 코어-1 | 8 |
+| 메모리 소프트 기준 | 총량×0.80 | 총량×0.78 ≈ 99.8GiB (`FLOW_MEMORY_CEILING_GB`) |
+| 메모리 워치독 경고/긴급 축출/목표 | 80/95/60% | 72/78/62% (상한 기준) |
+| 전역 캐시 풀 | 총량×0.45×0.8 | 총량×0.6×0.8 ≈ 61GiB |
+| 요청 스레드 | 120 | 240 (`FLOW_THREADPOOL_TOKENS`) |
+| 무거운 요청 동시 실행 | 2~3 | 4 (`FLOW_HEAVY_REQUEST_CONCURRENCY`, 대기 최대 120초) |
+| SplitTable·파일 보기 전용 레인 | 3 | 8 (`FLOW_ESSENTIAL_REQUEST_CONCURRENCY`) |
+| 차트생성 동시 조회 / 결과 캐시 | 2 / 128MB | 4 / 1GB |
+| ET 다운로드 동시 계산 / 대기열 | 1 / 16 | 2 / 48 |
+| SplitTable 자동 제품 캐싱 | 꺼짐 | 켜짐 |
 
-## 랏 배정/요청과 리치 본문
+위 표는 **설정값이지 측정 결과가 아닙니다.** 메모리 소프트 기준은 OS 강제 상한이 아니며, 옛 서버에서
+저장한 관리자 ⚙ 캐시 설정(`pool_fraction` 등)이 있으면 그 값이 우선합니다.
 
-`업무 → 랏 배정/요청`은 제품별 랏 배정, Hot grade, 기타 PI 처리 요청을 업무
-이력으로 남기는 보드입니다. 요청은 `등록` 후 위임자가 `처리완료` 또는 `반려`로
-전환할 수 있으며, 상태 변경자·시각·메모와 PI 답변의 작성자·작성 시각을 함께
-보존합니다. 상태 변경·처리 답변·메일 발송은 `lotrequest` 페이지에 명시적으로
-위임된 사용자만 가능하며,
-요청 본문은 요청 작성자만, 각 답변은 그 답변 작성자만
-수정하거나 삭제할 수 있습니다. 관리자 권한도 다른 사용자의 본문 소유권을
-우회하지 않습니다.
+### 무거운 작업은 어떻게 도는가
 
-제품은 별도 페이지 탭 대신 각 이슈 행의 첫 컬럼에 표시됩니다. 제품·요청 팀·요청
-유형·등록자·상태·내 요청·검색 필터를 조합할 수 있고 상태 건수도 현재 필터 조건으로
-재집계됩니다. 상태 집계는 라벨과 건수를 한 줄로 표시합니다. 제품·이슈·등록자·
-요청 팀·유형·상태·우선순위·등록일·답변 수는 인폼로그처럼 컬럼 한 줄로 표시됩니다.
-이슈를 선택하면 바로 아래에 `요청 내용`, `처리·답변`, `이력` 탭이 펼쳐지며 목록에
-이미 표시된 메타데이터를 상세에서 반복하지 않습니다. 같은 이슈를 다시 누르면 접힙니다.
-신규 요청과 수정은 모달이 아니라 같은 페이지의
-인라인 작성 화면에서 진행합니다. 요청한 팀은 페이지 톱니 설정 목록에서 선택하며
-목록과 상세는 팀별 색상으로 구분됩니다.
+예전 개발 worker가 맡던 작업을 포함해 모든 무거운 작업이 운영 서버의 `core/heavy_jobs.py`를 거칩니다.
 
-이슈의 업무 히스토리는 요청 등록·수정, PI 상태 변경, 답변 등록·수정·삭제와 메일
-발송을 하나의 시간순 로그로 보여줍니다. 상세의 메일 기능은 Inform과 동일한 승인
-사용자 및 공용 메일 그룹을 사용하고 추가 이메일도 받을 수 있습니다. 메일에는
-요청 본문, 대상 랏, 모든 PI 답변·배정 결과와 업무 히스토리가 포함되며 발송자·시각·
-실제 수신 주소·제목·결과는 이슈와 감사 로그에 다시 기록됩니다.
+- **캐시 빌드·스캔은 서버 전체에서 한 번에 1건**(공용 스캔 슬롯): lookup·pivot·FAB 인덱스·WIP latest-lot,
+  FAB 매칭 검사, ET 추적 스캔, Auto report 생성·ET history 갱신.
+- 자동(예약) 작업은 **사용자 요청이 조용해질 때까지 기다린 뒤** 시작합니다. 조회의 전제가 되는 캐시는 짧은
+  유예(기본 5초, `FLOW_REQUIRED_CACHE_IDLE_WAIT_SEC`) 뒤 진행합니다.
+- 시작 전 **메모리 확인**: 프로세스 한도 초과나 호스트 여유 메모리 부족이면 최대 2분 기다리고, 그래도 부족하면
+  실행하지 않고 다음 기회로 미룹니다.
+- 대화형 작업(홈 에이전트, 파일탐색기 SQL, 차트 원본 조회)은 이 줄에 서지 않습니다.
+- 관리자 → 시스템 → 모니터의 **무거운 작업** 패널과 캐시관리 화면에서 실행 중인 작업과 미뤄진 횟수를 봅니다.
 
-페이지 관리자는 좌하단 톱니바퀴에서 요청 유형과 `요청한 팀` 목록을 관리합니다.
-각 값은 입력칸에서 하나씩 추가하고 등록된 칩에서 개별 삭제하며, 저장 즉시 신규
-요청과 유형 필터에 반영됩니다. 신규 요청은
-요청한 팀을 필수로 선택합니다. Inform 메일은 `go/flow_process-inform`, 랏 요청
-메일은 `go/flow_process-request`를 기본 후속 처리 안내로 사용합니다.
+예전 `FLOW_SERVER_ROLE`, `FLOW_WORKER_OFFLOAD`, `FLOW_API_SERVER_URL`, `FLOW_*_OFFLOAD` 환경변수는
+**아무 효과가 없습니다.** 남아 있으면 운영 점검 스캔이 알려 줍니다 — 지워 두세요.
 
-랏 요청 본문·PI 답변과 신규 Inform Note는 공통 게시판형 편집기를 사용합니다.
-클립보드의 이미지 파일은 Ctrl+V 시 현재 커서 위치에 업로드되어 표시됩니다. Windows 캡처·Office·파일 복사의 `clipboard items/files`와 HTML data image를 함께 인식하며, 선택 영역이 유실된 경우에도 편집기 끝에 안전하게 삽입합니다.
-Excel·Google Sheets에서 복사한 탭/행 형식 텍스트는 HTML 표로 변환됩니다.
-저장 시 서버가 허용 태그·스타일과 Flow 내부 이미지 경로만 남기며, Inform 메일
-미리보기와 발송 본문에서도 표와 인라인 이미지를 유지합니다. 기존 일반 텍스트
-Inform 이력은 별도 변환 없이 계속 표시됩니다.
+ET 추적·Tracker·Dashboard 차트의 **주기 스캐너**는 `FLOW_ENABLE_HEAVY_BACKGROUND_JOBS=1`일 때만 켜집니다
+(`large` 프로파일에서도 기본은 꺼짐). 운영에서 이 예약 스캔이 필요하면 `flow_env.local.bat`에 켜 두세요.
 
-ET 측정 이력은 제품별 집계 history parquet를 공유합니다. 캐시가 없는 제품만 전체
-ET 원본을 한 번 읽어 초기 history를 만들고, 이후 스캔은 최신 원본 날짜 기준 최근
-3일만 재집계해 병합합니다. ET Tracker는 이 제품 history에서 LOT/wafer 패키지를
-찾아 이슈에 붙이며, 캐시 준비 실패 때만 기존 원본 조회로 폴백합니다.
+### 동시 사용자 용량 (추정)
 
-## 개발자 안내
+아래는 위 설정값과 요청 구조로 계산한 **추정치**이며, 실제 데이터로 측정한 값이 아닙니다.
 
-백엔드 진입점은 `backend/app.py`이며, HTTP API는 `backend/routers/`, 도메인 계산과
-파일 처리는 `backend/core/`에 둡니다. 프런트 페이지는
-`frontend/src/app/pageManifest.jsx`에 등록하고, 실제 구현은
-`frontend/src/features/` 아래 기능별 폴더에 둡니다.
+| 사용 형태 | 무난한 범위(추정) | 먼저 막히는 곳 |
+|---|---|---|
+| 화면을 열어 둔 접속자(알림 30초 폴링 등 가벼운 요청) | 약 300명 | 거의 없음 — 요청당 수 ms, 초당 수십 건 |
+| 동시에 검색·조회하는 사용자 | 약 30~50명 | 무거운 요청 레인 4건 + SplitTable/파일 보기 레인 8건. 캐시가 준비된 검색(0.1~0.5초)은 빠르게 돌지만, 원본을 처음 읽는 조회(수 초~수십 초)가 몰리면 줄이 생기고 120초를 넘으면 잠시 뒤 재시도 응답 |
+| 홈 챗(Flow-i) 동시 질문 | 약 5~10턴 | 사내 LLM(Gemma4) 처리량. 한 턴에 LLM 2~4회(수 초~수십 초). 서버 쪽 제한은 사용자당 분당 25질문뿐이고 전체 동시 턴 제한은 없음 |
+| 캐시 빌드·FAB 검사·Auto report | 한 번에 1건 | 설계상 직렬. 사용자 요청에 양보 |
 
-TEG 위치조회 좌표 계산은 `backend/core/teg_map.py`, Mapfile 검사는
-`backend/core/teg_check.py`가 담당합니다. 제품 정보가 있으면 Shot Size와 Map
-offset을 직접 사용하고, 없으면 `Chip_Radius`의 격자 좌표와 radius를 fit해 wafer
-중심·축별 배율·shot 크기를 구합니다. `Teg_location`의 ebeam 좌표는 shot center
-기준 TEG 좌하단이며, H/V(R)/V(L) 회전과 제품별 보정을 적용한 뒤 wafer 절대 좌표로
-변환합니다.
+"몇 명까지"는 동시에 무엇을 하느냐에 달려 있습니다. 가입자 200~300명 규모에서 평소 동시 활동 20~30명은
+여유 있는 범위로 보고, 첫 주에 아래로 확인하세요.
 
-변경 후에는 `cd frontend && npm run check`와 관련 `pytest`를 통과시킵니다. 배포본은
-main checkout에서 `python _build_setup.py`를 실행해 `frontend/dist`와 `setup.py`를
-현재 소스로 다시 만든 뒤 전달합니다. 운영 데이터와 코드 외 산출물은 저장소에 넣지
-않습니다.
+- `scripts/check_split_server_latency.py --help` — 실제 제품·root lot으로 SplitTable 응답 측정(준비 중·빈 결과는 성공으로 세지 않음)
+- 화면 URL에 `?split_perf=1` — 브라우저 첫 표시 시간
+- 관리자 → 모니터(메모리 p95·무거운 작업), 캐시관리 → 검색 속도(히트율·대기), 운영 점검 스캔 알림
 
-캐시관리의 제품별 상태는 전체 제품을 한 줄씩 표시합니다. 행을 누르면 lookup,
-SplitTable pivot, WIP latest-lot, FAB latest 인덱스의 최근 성공·실패·진행 상세가
-펼쳐지고, 목록은 고정 높이 안에서 스크롤되므로 제품 수가 많아도 캐시 이벤트 로그를
-아래로 밀어내지 않습니다.
-제품 목록은 현재 ML_TABLE 원본 카탈로그를 기준으로 제한합니다. 공유 이벤트 로그에
-남은 테스트·진단용 제품명은 상태 행을 만들지 않으므로 빈 실패 행이 누적되지 않습니다.
+## 설치 (Windows, Miniforge)
 
-## 권장 서버 구성
+요구 사항: Python 3.10 이상(Miniforge conda env), Node.js LTS(npm), `D:\DB`·`D:\flow-data` 읽기·쓰기 권한.
 
-기준 구성은 다음과 같습니다.
+1. **Python 환경** — Miniforge를 가능하면 "All Users"(`C:\ProgramData\miniforge3`)로 설치합니다(부팅 예약 작업이
+   SYSTEM 계정으로 같은 파이썬을 쓰기 쉽습니다). `Miniforge Prompt`에서:
+   ```bat
+   conda create -n flow python=3.10 -y
+   conda activate flow
+   ```
+2. **코드 풀기** — 설치 폴더(예: 바탕화면 `flow`)에 `setup.py`를 넣고:
+   ```bat
+   python setup.py
+   ```
+   추출 → Python 의존성 → 프런트 빌드를 한 번에 합니다. 같은 폴더의 현장 `requirements.txt`가 있으면 그것을
+   씁니다(없을 때만 Flow 최소 의존성). 사내 패키지(`botocore`, `boto`, `awscli`, `bigdataquery`)는 버전
+   표기를 빼 두면 충돌이 적습니다. 암호화 연락처와 WebSocket 로그인에 `cryptography`, `websockets`가 필요합니다.
+   코드 에이전트(opencode)가 고칠 설치 폴더라면 `set FLOW_EXTRACT_ALL=1` 후 실행해 `AGENTS.md`·`docs/`·`tests/`까지 풉니다.
+3. **기존 데이터 이전**(서버 이사 때) — 옛 서버의 Flow를 멈춘 뒤, 먼저 `-DryRun`으로 확인하고 실행합니다.
+   다시 실행하면 바뀐 파일만 복사합니다.
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\scripts\windows\migrate_flow_data.ps1 -SourceData "<옛 flow-data>" -SourceDb "<옛 DB>"
+   ```
+   옛 `admin_settings.json`의 `data_roots` 경로 덮어쓰기는 자동으로 지웁니다(백업 `.pre_migration.bak`).
+   캐시 폴더도 수정 시각을 보존해 복사하므로 첫날부터 캐시가 유효합니다(`-SkipCache`면 새로 만듭니다).
+4. **현장 설정** — LLM 주소·키, 로그인, 포트 같은 현장 값은 `scripts\windows\flow_env.local.bat`에
+   `set "이름=값"`으로 적습니다. `flow_env.bat`은 업데이트 때 덮어써지지만 `.local`은 번들에 없어 남습니다.
+5. **초기 관리자** — `FLOW_ADMIN_PW`에 10자 이상의 비기본 비밀번호를 지정한 경우에만 `hol` 관리자를 만듭니다
+   (`1111`, `CHANGE_ME` 같은 기본값이면 만들지 않습니다).
 
-| 역할 | 권장 자원 | 책임 |
-|---|---:|---|
-| 운영 API | 5코어 / 30GB RAM | 사용자 요청, SplitTable 조회, API-local RAM 캐시, worker 부재 시 모든 작업 로컬 실행 |
-| 개발 worker | 5코어 / 16GB RAM | lookup/pivot/FAB index 캐시, 파일탐색기 SQL, 홈 에이전트 분석 턴, 차트생성·Template Report 조회 |
+경로 기본값: Windows에서 `.git`이 없는 설치 폴더는 환경변수가 없어도 `D:\DB`·`D:\flow-data`를 씁니다
+(드라이브는 `FLOW_STORAGE_ROOT`, 끄려면 `FLOW_STORAGE_DEFAULT=0`). Linux 경로 `/config/work/...`는 쓰지 않습니다.
+관리자 → 데이터 루트에서 실제 적용 경로를 확인합니다.
 
-두 서버를 사용할 경우 동일한 `FLOW_DB_ROOT`와 `FLOW_DATA_ROOT`를 봐야 합니다. 별도 worker는 선택 사항입니다. worker가 켜져 있으면 무거운 조회·빌드를 먼저 worker에 맡기고, 꺼져 있거나 메모리가 부족하면 같은 작업을 운영 서버가 그대로 실행합니다. worker가 없으면 lookup/pivot/FAB/latest-lot 필수 읽기 캐시는 운영 서버에서 메모리 여유를 확인한 뒤 공유 스캔 슬롯으로 하나씩 생성합니다. 계속되는 화면 폴링이 캐시 생성을 막지 않도록 idle 양보는 기본 5초(`FLOW_REQUIRED_CACHE_IDLE_WAIT_SEC`, 0~60초) 뒤 진행합니다. 빌더 내부의 배치별 사용자 양보와 메모리 보호는 유지됩니다.
+## 켜기·상태·끄기
 
-SplitTable의 목표는 준비된 데이터 조회부터 실제 표 첫 표시까지 p95 500ms입니다. 원본만 있고 필수 캐시가 전혀 없는 최초 생성까지 500ms를 보장하는 것은 아닙니다. 운영 화면 URL에 `split_perf=1` 쿼리를 추가해 브라우저 표시 시간을 확인하고, 서버/API 별도 측정은 `scripts/check_split_server_latency.py --help`를 사용합니다. 이 도구는 준비 중·빈 결과를 빠른 성공으로 계산하지 않으며 실제 운영 URL·제품·root lot과 `FLOW_BENCH_SESSION_TOKEN` 환경변수를 요구합니다. 운영 설정과 캐시를 지우지 않고 조회만 수행합니다.
-
-## 빠른 설치
-
-### 1. 요구 사항
-
-- Python 3.10 이상
-- Node.js와 npm
-- DB/data 공유 경로에 대한 읽기·쓰기 권한
-
-### 2. 설치
-
-설치 폴더에 `setup.py`를 복사한 뒤 실행합니다. 현장에서 관리하는
-`requirements.txt`, `Dockerfile`, `.dockerignore`가 있으면 같은 폴더에 그대로 둡니다.
-이 파일들은 setup 번들에 포함되지 않으며 추출할 때 생성하거나 덮어쓰지 않습니다.
-
-```bash
-python setup.py
+```bat
+scripts\windows\flow_run.bat
 ```
 
-이 명령은 다음을 순서대로 수행합니다.
+창 하나가 감시기입니다(`scripts/flow_server.py`). uvicorn이 죽거나(OOM 포함) `/health`가 1분 넘게 응답이 없거나
+메모리 합이 호스트의 90%를 1분 넘게 넘으면 서버를 다시 띄우고, 감시기가 죽으면 바깥 루프가 5초 뒤 다시 띄웁니다.
+창을 닫으면 꺼집니다.
 
-1. 포함된 Flow 소스를 현재 폴더에 추출
-2. 같은 폴더의 기존 `requirements.txt`로 백엔드 Python 의존성 설치
-   (`requirements.txt`가 없을 때만 Flow 최소 의존성 사용)
-3. 프런트엔드 npm 의존성 설치 및 production build
+다른 Prompt에서:
 
-소스만 먼저 풀려면 다음 명령을 사용합니다.
-
-```bash
-python setup.py extract
+```bat
+scripts\windows\flow_ctl.bat status
+scripts\windows\flow_ctl.bat restart
+scripts\windows\flow_ctl.bat stop
+scripts\windows\flow_ctl.bat log
+scripts\windows\flow_ctl.bat health
 ```
 
-`extract`는 pip를 실행하지 않습니다. 의존성만 별도로 설치하려면
-`python setup.py install-deps`를 실행합니다. `pip freeze > requirements.txt`로 만든
-현장 파일도 그대로 사용할 수 있으며, 충돌 방지를 위해 아래 사내 패키지는 필요에 따라
-버전 표기를 제거한 형태로 유지합니다.
-
-```text
-botocore
-boto
-awscli
-bigdataquery
-```
-
-Docker 빌드는 setup이 새 파일을 만드는 방식이 아니라 설치 폴더에 이미 있는
-`Dockerfile`과 `.dockerignore`를 사용합니다.
-
-설치 후 서버를 실행합니다.
-
-```bash
-uvicorn app:app --host 0.0.0.0 --port 8080
-```
+`restart`는 서버만 다시 띄우고(감시기 유지), `stop`은 서버와 감시기를 함께 끕니다. 둘 다 요청 파일을 남기고
+바로 돌아오므로 `status`와 `/health`로 완료를 확인합니다. 같은 동작을 `python scripts/flow_server.py --status | --restart | --stop`으로도 할 수 있습니다.
+로그는 `D:\flow-data\logs\uvicorn.log`(20MB×5 순환), 재시작 이력 `flow_restarts.log`, 상태 `flow_supervisor.json`입니다.
+`taskkill /IM python.exe`처럼 다른 파이썬까지 끄지 마세요.
 
 접속 주소는 `http://<서버주소>:8080`입니다.
 
-초기 관리자 계정은 `FLOW_ADMIN_PW`에 10자 이상의 비기본 비밀번호를 명시한 경우에만 `hol`로 생성됩니다. 값이 없거나 `1111`, `hol12345!`, `CHANGE_ME` 같은 기본값이면 계정을 자동 생성하지 않습니다.
+### 부팅 자동 시작
 
-## 운영 API 서버 설정
-
-PowerShell 예시:
+관리자 PowerShell에서 flow env를 활성화한 상태로:
 
 ```powershell
-$env:FLOW_SERVER_ROLE="api"
-$env:FLOW_DB_ROOT="\\shared-server\flow\DB"
-$env:FLOW_DATA_ROOT="\\shared-server\flow\flow-data"
-$env:FLOW_CACHE_TOTAL_BUDGET_FRACTION="0.45"
-$env:FLOW_PROCESS_MEMORY_LIMIT_FRACTION="0.80"
-uvicorn app:app --host 0.0.0.0 --port 8080
+powershell -ExecutionPolicy Bypass -File .\scripts\windows\install_autostart.ps1 -StartNow -OpenFirewall -DisableSleep
+Get-ScheduledTask -TaskName FlowWebApp
 ```
 
-Linux 예시:
+활성 conda env의 `python.exe` 전체 경로를 고정합니다(패키지 없는 python이면 등록을 거부). 부팅 시 로그인 없이
+SYSTEM 계정으로 감시기를 실행하므로 DB/data 접근 권한과 LLM·인증 설정을 그 계정 기준으로 확인합니다. 수동 창과
+동시에 띄우지 않습니다. 재부팅 후에도 꺼 두려면 **먼저** `Disable-ScheduledTask -TaskName FlowWebApp` 후 `stop`
+하고, 다시 켤 때 `Enable-ScheduledTask` → `Start-ScheduledTask`. 등록 제거는 정상 종료 확인 뒤 `install_autostart.ps1 -Uninstall`.
 
-```bash
-export FLOW_SERVER_ROLE=api
-export FLOW_DB_ROOT=/config/work/sharedworkspace/DB
-export FLOW_DATA_ROOT=/config/work/sharedworkspace/flow-data
-export FLOW_CACHE_TOTAL_BUDGET_FRACTION=0.45
-export FLOW_PROCESS_MEMORY_LIMIT_FRACTION=0.80
-uvicorn app:app --host 0.0.0.0 --port 8080
-```
+### 헬스체크와 배포 진단
 
-## 개발 worker 서버 설정
+`GET /health`는 인증 없이 `{"status":"ok","uptime_sec":…}`만 돌려줍니다(경로·환경변수 같은 내부 정보 없음).
 
-운영 서버와 동일한 DB/data 공유 경로를 지정합니다.
-
-```powershell
-$env:FLOW_SERVER_ROLE="worker"
-$env:FLOW_DB_ROOT="\\shared-server\flow\DB"
-$env:FLOW_DATA_ROOT="\\shared-server\flow\flow-data"
-$env:FLOW_WORKER_CONCURRENCY="1"
-$env:FLOW_WORKER_POLARS_THREADS="2"
-uvicorn app:app --host 0.0.0.0 --port 8080
-```
-
-포트는 운영서버와 다른 머신이므로 8080을 그대로 씁니다. `scripts/worker_watchdog.py`로 원격 기동도 함께 쓴다면 `--port`를 같은 값으로 맞춥니다(워치독 기본값은 8081).
-
-### Linux 개발서버: tmux + watchdog으로 상주 실행
-
-SSH 세션이 끊겨도 서버가 죽지 않도록, 원격 Linux 개발서버에서는 tmux 안에서
-`scripts/run_dev_worker_tmux.sh`로 띄웁니다. 이 스크립트는 uvicorn을 직접 실행하지
-않고 `scripts/worker_watchdog.py`를 통해 실행하며, uvicorn이 OOM/SIGKILL 또는
-오류로 죽으면 watchdog이 자동으로 재기동합니다.
-
-```bash
-tmux new -s flow-dev
-bash scripts/run_dev_worker_tmux.sh
-# 세션에서 빠져나가기(끊지 않고 detach): Ctrl-B D
-# 다시 붙기: tmux attach -t flow-dev
-```
-
-한 줄로 백그라운드 세션 생성 + attach:
-
-```bash
-tmux new-session -d -s flow-dev 'bash scripts/run_dev_worker_tmux.sh'
-tmux attach -t flow-dev
-```
-
-`FLOW_APP_ROOT`, `FLOW_DATA_ROOT`, `FLOW_DB_ROOT`, `FLOW_WORKER_PORT`,
-`FLOW_WORKER_CONCURRENCY`, `FLOW_WORKER_RESTART_DELAY_SEC`,
-`FLOW_WORKER_MAX_RESTART_DELAY_SEC`는 스크립트 안에 기본값이 있으므로 필요한 값만
-export 하고 실행하면 됩니다. 로그는 `$FLOW_DATA_ROOT/worker/control/worker_uvicorn.log`에
-쌓입니다.
-
-개발 worker 기본 정책:
-
-- 무거운 작업 동시 실행 1개
-- Polars 2 threads (5코어 기준, `FLOW_WORKER_POLARS_THREADS`로 조정)
-- API용 product/root/view RAM 캐시 비활성화
-- backup, mail, S3 등 운영 scheduler 비활성화
-- worker available memory와 process memory admission 통과 후 작업 실행
-
-### 차트생성·Template Report
-
-차트 데이터 조회는 기본적으로 동시에 2개까지만 실행하고, 동일한 Query/JOIN/필터 결과는
-3분 동안 최대 128MB까지 재사용합니다. Template Report도 같은 데이터 정의를 쓰는 차트를
-한 번만 조회한 뒤 차트 설정만 달리 적용하므로, 차트 수만큼 원천 파일을 반복 스캔하지
-않습니다. 필요하면 다음 환경 변수로 조정할 수 있습니다.
-
-```powershell
-$env:FLOW_CHART_BUILDER_CONCURRENCY="2"   # 1~5, 5코어 권장값 2
-$env:FLOW_DUCKDB_THREADS="2"               # 조회 2개 × 2 threads + API 여유 1코어
-$env:FLOW_CHART_BUILDER_CACHE_MB="128"    # 결과 JSON 캐시 총량
-$env:FLOW_CHART_BUILDER_CACHE_TTL_SEC="180"
-```
-
-차트생성과 Template Report의 `root_lot_id`, `wafer_id`, `color` 목록은 3열
-스프레드시트형 편집표를 사용합니다. 기본 10행을 표시하고 초과 행은 표 안에서 스크롤하며,
-Excel/Google Sheets에서 복사한 여러 셀을 선택한 셀부터 그대로 붙여 넣을 수 있습니다.
-각 행은 정확한 Root Lot/Wafer 조합으로 모든 Query를 필터링하고 해당 조합의 색상 규칙도
-저장합니다. 현재 결과에 없는 조합도 이후 데이터가 생기면 같은 색으로 표시됩니다.
-`tkout_time WITHIN N DAYS` 같은 시간 기준 색상은 목록과 분리된 수식 규칙으로 조절하며,
-Query별 조회 기간(`RECENT_DAYS`)과도 독립적입니다.
-
-## FAB 매칭알람 검사
-
-매칭알람은 Valve/S3에서 JSON 알람을 받지 않습니다. 개발 worker가 파일탐색기의
-폴더 설정에서 표시명이 정확히 `FAB`으로 지정된 DB만 찾아 제품 폴더를 하나씩
-순차 검사하고, 결과를 `FLOW_DATA_ROOT`의 공유 상태에 저장합니다. 수~수십 GB
-Parquet를 여는 실제 검사는 `FLOW_SERVER_ROLE=worker`인 개발 서버에서만 실행됩니다.
-운영 API 서버(`FLOW_SERVER_ROLE=api`)는 저장된 결과만 조회하며, 화면에서 수동
-검사를 요청해도 운영 서버가 원천을 읽지 않고 개발 worker에 다음 제품 검사를
-요청합니다. 역할이 없거나 판정에 실패한 경우에도 검사는 실행되지 않습니다.
-
-검사와 판정 기준은 다음과 같습니다.
-
-- 제품별 `step_id`가 `Vehicle_matching.csv`에 없으면 신규 step 알람으로 표시
-- 매칭된 step의 function step에 연결된 `ppid_knob.csv` split별 명시 Rule을 적용
-- `eq`, `contains`, `starts_with`, `ends_with`, `regex` 어느 Rule에도 맞지 않아
-  해당 split의 `RO`로 빠지는 PPID unique 값만 PPID 알람으로 표시
-- 신규 step 알람은 제품 범위와 PPID/EQP ID/EQP MODEL의 포함·시작·일치 조건으로
-  예외 처리 가능하며, 해당 step의 어느 행이라도 조건에 맞으면 step 전체를 제외
-- 신규 `reticle_id`는 `mask_info.csv`의 기존 `category` 열에 mask 이름,
-  기존 `product` 열에 해당 vehicle 이름을 저장하며 새 열을 만들지 않음
-
-알람 화면에서 PPID를 분류하면 해당 split의 RO 앞에 다음 Rule 번호로
-`ppid_knob.csv`에 추가하고, 신규 step을 매칭하면 제품·vehicle·step 정보를
-`Vehicle_matching.csv`에 추가하고, 신규 reticle의 mask 이름과 vehicle은
-`mask_info.csv` 기존 `category`·`product` 열에 각각 추가합니다. 필수 열이
-없으면 새 열을 만들지 않고 반영을 거부합니다. 이 작업들은 파일탐색기의 단일 파일 저장
-흐름을 사용해 버전 스냅샷과 변경 메모를 남기고, 매칭 캐시 갱신과 기존 파일
-동기화를 수행한 뒤 개발 worker의 재검사를 요청합니다. 알람 전송용 S3 bucket/prefix
-설정은 더 이상 사용하지 않습니다.
-
-DCOP 검사는 붙여넣은 테이블에 실제로 적용되는 규칙 번호·등급·조건을 결과 위에
-표시합니다. GPT OSS 120B가 연결된 경우 FAIL/WARNING 내용을 요약하고, 연결되지
-않았거나 호출이 실패하면 규칙별 건수와 행 번호(5개 이상은 `5행 이상`)를 표시합니다.
-
-매칭알람 화면 좌하단 톱니바퀴에서는 자동 검사 사용 여부와 제품 1개당 검사 간격을
-설정할 수 있습니다. `지금 다음 제품 검사`는 현재 커서의 제품을 우선 검사하도록
-공유 요청을 등록하며, 버튼을 누른 HTTP 요청 안에서 대용량 Parquet를 직접 읽지는
-않습니다. 신규 설치의 기본 간격은 제품당 2시간이며, 설정 변경과 수동 검사 요청은
-매칭알람 페이지 관리자 이상만 가능합니다.
-
-## 자동 재시작 (프로세스 상시 기동)
-
-프로세스가 죽었을 때 되살리는 것은 앱이 아니라 **바깥의 관리자**가 합니다. 죽은 프로세스는 스스로를 되살릴 수 없기 때문입니다.
-
-| 서버 | 방법 |
-|---|---|
-| 운영서버 | Docker 재시작 정책 (`--restart unless-stopped`) — 이미 적용됨 |
-| 개발서버 | systemd 유닛 (`scripts/flow.service`) |
-
-수동 `uvicorn` 실행은 OOM이나 예기치 못한 종료 뒤 아무도 되살리지 않습니다. 개발서버는 무거운 작업을 넘겨받는 쪽이라 죽을 여지가 가장 크고, 죽어 있으면 운영서버의 위임이 조용히 로컬 폴백으로 떨어져 느려집니다.
-
-### 프로토콜 A — 자동 재시작 켜기 (개발서버, 최초 1회)
-
-모두 **개발서버 셸에서** 실행합니다. 각 단계의 "확인" 이 통과해야 다음으로 넘어갑니다.
-
-**A-1. 사전 확인** — 유닛에 적을 값을 먼저 알아냅니다.
-
-```bash
-whoami && pwd && which python3 && python3 -c "import fastapi, uvicorn; print('deps ok')"
-```
-
-확인: flow를 실행할 계정, `app.py`가 있는 backend 경로, python3 절대경로가 나오고 `deps ok`가 찍힐 것. `deps ok`가 안 나오면 먼저 `python setup.py install-deps`를 합니다.
-
-**A-2. 유닛 파일 값 수정** — 템플릿을 그대로 쓰면 반드시 실패합니다(`/opt/flow/backend`, 사용자 `flow`는 예시값).
-
-```bash
-sudo nano /etc/systemd/system/flow.service
-```
-
-`scripts/flow.service` 내용을 붙여넣고 아래를 A-1에서 확인한 값으로 고칩니다.
-
-| 항목 | 설명 |
-|---|---|
-| `User` / `Group` | flow를 실행할 계정 |
-| `WorkingDirectory` | `app.py`가 있는 backend 디렉터리 |
-| `ExecStart` | python3 절대경로 + 포트(개발서버 8080) |
-| `FLOW_DATA_ROOT` / `FLOW_DB_ROOT` | **운영서버와 같은 공유 경로** (다르면 위임이 동작하지 않음) |
-| `FLOW_ADMIN_PW` | 초기 `hol` 관리자 비밀번호. 10자 이상의 비기본값 필수이며 미설정·취약값이면 계정을 생성하지 않음 |
-
-**A-3. 등록·기동**
-
-```bash
-sudo systemctl daemon-reload && sudo systemctl enable --now flow
-```
-
-`daemon-reload`는 유닛 파일 변경을 systemd에 읽히고, `enable`은 부팅 시 자동 시작 등록, `--now`는 지금 바로 기동입니다.
-
-**A-4. 검증** — 셋 다 통과해야 완료입니다.
-
-```bash
-systemctl status flow
-```
-
-확인: `Active: active (running)`, 그리고 `Loaded:` 줄에 `enabled`.
-
-```bash
-curl -s localhost:8080/health
-```
-
-확인: `{"status":"ok",...}`.
-
-```bash
-sudo systemctl kill -s SIGKILL flow && sleep 8 && systemctl status flow --no-pager | head -3
-```
-
-확인: 강제로 죽였는데도 다시 `active (running)`이면 자동 재시작이 실제로 동작하는 것입니다. **이 테스트를 꼭 한 번 해보세요** — 유닛이 등록만 되고 재시작이 안 되는 경우를 여기서 걸러냅니다.
-
-**A-5. 실패했다면**
-
-```bash
-journalctl -u flow -n 50 --no-pager
-```
-
-대부분 A-2의 경로·계정·python 경로 오타입니다. 로그에 이유가 그대로 찍힙니다. 고친 뒤에는 항상 `sudo systemctl daemon-reload && sudo systemctl restart flow`.
-
-### 프로토콜 B — 업데이트 (setup.py 재배포)
-
-자동 재시작이 켜진 뒤에는 **프로세스를 그냥 죽이면 안 됩니다.** `Restart=always`는 예기치 못한 종료에만 반응하므로 `systemctl stop`은 되살아나지 않지만, `kill`/`pkill`로 죽이면 즉시 재기동돼 구버전과 신버전 파일이 섞인 채로 앱이 뜹니다.
-
-**B-1. 진행 중 작업 확인** — 정지는 30초 후 강제 종료라 무거운 작업이 끊깁니다. 캐시 관리 화면에서 스캔·빌드가 도는지 봅니다.
-
-**B-2. 백업**
-
-```bash
-python3 scripts/preflight_internal.py --write-probe --backup-now
-```
-
-**B-3. 정지** — 여기서 `kill`을 쓰지 않습니다.
-
-```bash
-sudo systemctl stop flow
-```
-
-확인: `systemctl status flow`가 `inactive (dead)`. 이 상태는 유지됩니다(되살아나지 않음).
-
-**B-4. 교체**
-
-```bash
-FLOW_SETUP_STRICT=1 python3 setup.py extract && python3 setup.py install-deps
-```
-
-`FLOW_SETUP_STRICT=1`이 중요합니다. 기본값은 일부 파일 쓰기가 실패해도 경고만 내고 성공(exit 0)으로 끝나서, 일부만 갱신된 상태를 정상으로 오인합니다.
-
-확인: 명령이 exit 0으로 끝날 것. 실패하면 B-6.
-
-**B-5. 기동**
-
-```bash
-sudo systemctl start flow
-```
-
-**B-6. 검증**
-
-```bash
-systemctl status flow && curl -s localhost:8080/health && curl -s localhost:8080/version.json
-```
-
-확인: `active (running)` + `{"status":"ok"}` + 버전이 새 배포 시각인지.
-
-**B-7. 문제가 생겼다면 롤백**
-
-```bash
-sudo systemctl stop flow && python3 setup.py restore latest && sudo systemctl start flow
-```
-
-> Docker 운영서버는 이미지 교체 → 컨테이너 재생성이므로 B 프로토콜이 필요 없습니다.
-
-### 프로토콜 C — 일상 조작
-
-| 목적 | 명령 |
-|---|---|
-| 상태 확인 | `systemctl status flow` |
-| 실시간 로그 | `journalctl -u flow -f` |
-| 최근 로그 50줄 | `journalctl -u flow -n 50 --no-pager` |
-| 수동 재시작 | `sudo systemctl restart flow` |
-| 임시 정지 (되살아나지 않음) | `sudo systemctl stop flow` |
-| 다시 시작 | `sudo systemctl start flow` |
-| 부팅 자동시작 해제 | `sudo systemctl disable flow` |
-| 유닛 수정 반영 | `sudo systemctl daemon-reload && sudo systemctl restart flow` |
-
-### 헬스체크
-
-`GET /health`는 **인증 없이** 접근됩니다. 감시 도구가 세션 토큰을 들고 다닐 수 없기 때문이며, 대신 경로·환경변수 같은 내부 정보는 넣지 않습니다.
-
-```bash
-curl -s localhost:8080/health
-```
-
-```json
-{"status":"ok","uptime_sec":195,"started_at":"2026-07-29T00:36:16"}
-```
-
-systemd는 프로세스가 *죽는* 것은 감지하지만 *살아서 멎은* 것은 모릅니다. 외부 모니터링이 이 엔드포인트를 주기적으로 확인하고, 응답이 없거나 200이 아니면 재시작 대상으로 판단하면 됩니다. Docker 운영서버에서는 `HEALTHCHECK`에 같은 경로를 쓸 수 있습니다.
-
-> **Windows 개발서버라면** systemd가 없으므로 [NSSM](https://nssm.cc)으로 서비스 등록하거나, 작업 스케줄러에서 "시스템 시작 시 실행" + "작업이 실패하면 다시 시작"을 설정합니다. 이때도 B 프로토콜의 순서(정지 → 교체 → 기동)는 같습니다.
-
-### 배포 원격 진단 — "앱 파일을 서버에서 받지 못했습니다"가 뜰 때 (v9.5.80+)
-
-서버 셸에 접근할 수 없어도(Docker 운영서버) 원인을 특정할 수 있습니다. 부팅 실패 화면이 자동으로 `GET /deploy-info.json`(무인증)을 조회해 **판정을 화면에 띄웁니다**:
+화면에 "앱 파일을 서버에서 받지 못했습니다"가 뜨면 부팅 실패 화면이 `GET /deploy-info.json`을 조회해 판정을 보여 줍니다.
 
 | 판정 | 의미 | 조치 |
 |---|---|---|
-| 서버에는 파일이 있음 | 중간 프록시·캐시가 `/assets/`를 막거나 낡은 응답을 줌 | 프록시 설정/캐시 확인 |
-| 서버 dist에 파일이 없음 | 서버에서 extract 부분 실패 (쓰기 실패 목록 병기) | 이미지 캐시 없이 재빌드 |
-| 참조 자체가 다름 | 프록시가 낡은 index.html을 캐시 중 | 프록시 캐시 무효화 |
-| 구버전 백엔드 | 새 번들이 아직 배포되지 않음 | 재배포 확인 |
+| 서버에는 파일이 있음 | 중간 프록시·캐시가 `/assets/`를 막거나 낡은 응답 | 프록시 설정/캐시 확인 |
+| 서버 dist에 파일이 없음 | extract 부분 실패(쓰기 실패 목록 병기) | 다시 추출 |
+| 참조 자체가 다름 | 프록시가 낡은 index.html 캐시 | 프록시 캐시 무효화 |
+| 구버전 백엔드 | 새 번들 미배포 | 재배포 확인 |
 
-`setup.py extract`는 끝날 때 dist 정합을 검사해 `extract_report.json`을 남기고, 누락이 있으면 `[extract] FAIL` 로그를 냅니다 (`FLOW_SETUP_STRICT=1`이면 exit 1). 실패 화면의 캡처 한 장이면 원인 보고가 끝납니다.
+## 업데이트와 데이터 보존
 
-## 매칭알람 (Valve 연동)
+순서는 **정상 종료 확인 → 코드 추출 → 검증 → 재기동**입니다.
 
-Valve 파이프라인이 발행한 미매칭 step / RO ppid 알람을 읽어 엔지니어 판정을 받고, 그 판정을 DB 루트의 `Vehicle_matching.csv` · `ppid_knob.csv` 에 반영합니다.
+1. 캐시관리에서 도는 스캔·빌드가 있으면 끝나기를 기다리거나 중단합니다.
+2. 백업: `python scripts/preflight_internal.py --write-probe --backup-now`
+3. 정지: 예약 작업으로 운영 중이면 `Disable-ScheduledTask -TaskName FlowWebApp` 후 `flow_ctl.bat stop`, `status`로 종료 확인
+4. 추출: `set FLOW_SETUP_STRICT=1` 후 `python setup.py extract` — 종료 코드와 `extract_report.json` 확인
+   (STRICT가 없으면 일부 파일 쓰기 실패도 exit 0으로 끝나 반쯤 갱신된 상태를 놓칩니다)
+5. 의존성이 바뀐 경우만: `python setup.py install-deps`
+6. 기동: `Enable-ScheduledTask` → `Start-ScheduledTask`(또는 `flow_run.bat`), `/health`와 `/version.json` 확인
+7. 문제가 있으면: 정지 → `python setup.py restore latest` → 기동
 
-알람 파일의 위치는 `data/flow-data/valve_alerts.json` 의 `local_root` 가 정합니다. 비어 있으면 S3, 값이 있으면 그 폴더를 버킷 루트처럼 씁니다. **S3가 없는 환경에서는 Valve가 알람을 공유 DB 폴더에 떨궈 두고 flow가 그걸 읽는 구성이 기본입니다.**
+보존 대상: `data/`, `flow-data/`, `DB/`, `Base/`, `Fab/`, `wafer_maps/`, `FLOW_DATA_ROOT`·`FLOW_DB_ROOT`·`FLOW_WAFER_MAP_ROOT`
+아래 모든 파일(users, sessions, groups, informs, tracker, meetings, dashboard, cache, 로그), 그리고 `flow_env.local.bat`.
+설치 전 소형 설정 파일은 사용자 홈의 `.flow_backups`에 스냅숏됩니다.
 
-```json
-{ "local_root": "{db_root}", "alerts_prefix": "valve-alerts" }
+```bat
+python setup.py extract
+python setup.py install-deps
+python setup.py build-frontend
+python setup.py version
+python setup.py sync-version
+python setup.py restore latest
 ```
 
-```
-{db_root}/valve-alerts/pipeline/{vehicle}.json   ← Valve가 씀
-{db_root}/valve-alerts/pipeline/ack.json         ← flow가 씀 (양방향, 폴더 sync로 덮지 말 것)
-{db_root}/flow/artifacts/matching/*.csv          ← 판정 반영 결과 (Valve가 가져감)
-```
+예전 개발 worker 시절 파일(`backend/core/worker_dispatch.py` 등)이 설치 폴더에 남아 있어도 더 이상 불러오지 않으므로
+지워도 되고 그대로 둬도 됩니다. `D:\flow-data\worker\` 폴더(옛 작업 큐)도 지워도 됩니다.
 
-`local_root` 에는 `{db_root}` / `{data_root}` / `{app_root}` 토큰을 쓸 수 있습니다. 설치마다 다른 드라이브 경로를 설정에 박지 않기 위한 것으로, 해석은 `FLOW_DB_ROOT` 체인을 그대로 따릅니다.
+### 기본지식을 포함한 로컬 설치본
 
-미매칭 step 은 **function step 추천**이 함께 뜹니다. 해당 step의 PPID와 같은 PPID를 쓰는 매칭 완료 `step_id`가 있으면 그 행의 `step_desc`를 가장 먼저 제시합니다. 동일 PPID 후보가 없을 때만 같은 앞 영문자 계열에서 번호가 가까운 매칭 step을 뽑아 최근 며칠치 `eqp_id · eqp_model · area`와 step 번호 근접도를 비교합니다. **LLM이 없어도 동작합니다** — 추천을 판정 입력칸에 적용한 뒤 사람이 확인하여 최종 반영합니다.
-
-데모·점검용 예시 알람은 실제 FAB raw 를 읽어 만듭니다.
+관리자 **기본지식**의 최신 내용을 새 설치에도 가져가려면 전용 설치본을 만듭니다(본문·제목·편집 지침만,
+계정·수정 이력 제외).
 
 ```bash
-python scripts/seed_valve_alert_examples.py --write
+python _build_setup.py --include-domain-knowledge --output "../deliverables/flow-private/setup.py"
 ```
 
-## SplitTable 성능 및 메모리 정책
+다른 DB는 `--include-domain-knowledge "/path/to/knowledge/domain_knowledge.sqlite3"`. 설치하면 설치 폴더의
+`data/install-seeds/domain_knowledge.json`에 사본을 두고 `FLOW_DATA_ROOT/knowledge/domain_knowledge.sqlite3`에
+첫 버전으로 등록합니다. 기존 문서가 있으면 덮어쓰지 않습니다. **사내 지식을 담으므로 로컬 전달 전용이며**,
+출력 경로는 이 공개 저장소 밖만 허용됩니다.
 
-- 서로 다른 root lot 조회도 제품 전체가 아닌 root partition/pivot 파일 하나만 읽습니다.
-- 요청 중에는 root의 전체 wide frame을 RAM에 올리지 않고 필요한 prefix/custom 컬럼만 parquet projection으로 읽습니다.
-- lookup/pivot/FAB root index는 개발 worker가 우선 생성합니다.
-- 개발 worker에서 SplitTable을 조회하면 `FLOW_API_SERVER_URL`의 운영 API·예열 캐시를 먼저 시도하고, URL이 없거나 운영 API가 응답하지 않으면 공유 DB/캐시를 사용해 개발 worker에서 로컬 검색합니다.
-- 자동 lookup/pivot/FAB/view 캐시는 운영 API heartbeat가 살아 있을 때 worker가 꾸준히 처리합니다. API가 내려가면 큐에 보존하고, 복구 후 이어서 처리합니다.
-- 수동 캐싱은 normal 우선순위로 큐에 들어가며 worker가 없으면 운영 서버가 메모리 가드를 거쳐 한 작업씩 local fallback합니다.
-- pivot 생성은 root 1개씩 처리합니다.
-- 제품 전체 RAM과 Root lot RAM 예열은 자동·수동 모두 폐기했습니다. 가장 먼저 읽는 view 응답 RAM은 호스트의 15%를 희망 예산으로 사용하며, 최종 상한은 전역 캐시 풀 지분입니다. 기본 운영 설정의 30GiB 호스트에서는 약 3.78GiB이며 서버 증설에 비례해 늘어납니다.
-- 역할 마커는 소스 폴더가 아니라 `{data_root}/worker/roles/<hostname>/`에 저장되어, `.dev_worker` 같은 파일이 Git/설치 번들에 섞여도 운영 서버가 worker로 기동되지 않습니다.
-- 5코어 운영 서버의 cold root-scoped 조회는 기본 2개가 실행되고 추가 요청은 짧은 큐에서 기다립니다.
+## 로그인과 권한
 
-샘플 데이터 검증 결과:
+### 접속 IP 로그인 (버튼 하나)
 
-- 서로 다른 5개 root 동시 조회: 전체 약 312ms
-- 서로 다른 root 순차 조회: 첫 초기화 이후 약 56~86ms
-- 동일 조건 재조회: 약 8.7ms
-- cold partition 5개 동시 조회: 약 433ms, 측정 process peak RSS 증가 약 71.7MB
+사내 인증서버를 붙이기 전, 지정한 PC에서 [로그인] 버튼만 누르면 들어오게 할 수 있습니다. `FLOW_IP_LOGIN_MAP`에
+접속 IP → 사내 ID를 적으면 로그인 화면에 버튼만 남습니다(ID/PW 입력은 꺼지고, 필요하면
+`FLOW_PASSWORD_LOGIN_ENABLED=1`). 사내 ID는 WebSocket 로그인과 같은 규칙(`FLOW_WS_AUTH_USER_MAP`)으로 Flow 계정이 됩니다.
 
-운영 데이터의 실제 속도는 parquet 폭, root당 wafer/row 수, 공유 스토리지와 네트워크 성능에 따라 달라집니다.
+```bat
+set "FLOW_IP_LOGIN_MAP={"127.0.0.1":"example.user"}"
+set "FLOW_WS_AUTH_USER_MAP={"example.user":"hol"}"
+```
 
-## 운영·개발 서버 분담과 전송 최적화
+실제 사번·IP는 `flow_env.local.bat`에만 적고 저장소에 커밋하지 않습니다. IP는 TCP 접속 주소만 보고
+`X-Forwarded-For`는 믿지 않으므로 리버스 프록시 뒤에서는 쓰지 마세요. VM 이사로 사용자 IP/NAT가 바뀌면 매핑을 갱신합니다.
 
-개발 worker가 켜져 있으면 아래 작업은 worker가 먼저 실행하고, 결과만 운영 API가 사용자에게
-돌려줍니다. worker가 꺼져 있거나 메모리가 부족하거나, 다른 Flow 버전으로 떠 있거나, worker에서
-LLM을 쓸 수 없으면 운영 API가 같은 작업을 그대로 실행합니다. 운영 서버만으로도 모든 기능이 동작합니다.
+### WebSocket 로그인과 관리자 연락처
 
-| 작업 | worker 작업 이름 | 운영에서 계속 처리하는 경우 |
-|---|---|---|
-| lookup / pivot / FAB index / WIP latest-lot 캐시 | 기존 캐시 빌드 작업 | worker 부재 |
-| 파일탐색기 SQL 대용량 조회 | `filebrowser_sql_query` | 작은 조회, 캐시 적중 |
-| 차트생성·Template Report·홈 차트의 원본 조회 | `chart_builder_run` | 결과 캐시 적중 |
-| 홈 에이전트(Flow-i) 분석 턴 | `home_agent_turn` | 승인·취소, SplitTable 조회, WIP 현위치 |
+`FLOW_WS_AUTH_URL`(브라우저가 접속할 로그인 주소)과 `FLOW_WS_AUTH_VERIFY_URL`(Flow가 토큰을 재확인할 주소)을
+설정하면 ID/PW 로그인과 비밀번호 찾기(`/api/auth/forgot-password`, `/api/auth/reset-request`)가 꺼집니다.
+비상시 `FLOW_PASSWORD_LOGIN_ENABLED=1`.
 
-- worker는 캐시 빌드용 일반 슬롯(`FLOW_WORKER_CONCURRENCY`, 기본 1)과 별도로 대화형 작업 전용
-  슬롯(`FLOW_WORKER_INTERACTIVE_CONCURRENCY`, 기본 1)을 둡니다. 긴 캐시 빌드가 돌아도 사용자 조회가
-  그 뒤에서 기다리지 않습니다. 끄려면 `FLOW_CHART_BUILDER_OFFLOAD=0`, `FLOW_HOME_AGENT_OFFLOAD=0`.
-- API의 JSON·JS·CSS 응답은 gzip으로 압축합니다(`FLOW_HTTP_GZIP=0`으로 끔, 수준 `FLOW_HTTP_GZIP_LEVEL`
-  기본 5). CSV/XLSX 다운로드와 SSE는 압축하지 않습니다. 빌드 산출물(해시 이름)은 1년 캐시로 두고
-  `index.html`만 매번 새로 받으므로, 재배포 후 새로고침 한 번이면 새 화면이 뜹니다.
-- 숨겨진 브라우저 탭은 알람·모니터·캐시 로그 폴링을 멈추고, 다시 보일 때 한 번 갱신합니다.
+관리자 → **사내 로그인·관리자**에서 계정 ID, 이름, 메일, 역할과 위임 페이지를 등록합니다(관리자는 `admin`,
+페이지 위임자는 `user`+페이지 ID). 여기 명시한 관리자·위임자만 권한 계정에 추가되고 Flow 비밀번호는 생기지
+않습니다. 일반 사내 로그인 사용자는 부서 규칙을 따릅니다. 연락처는 `auth/people.enc`에 암호화 저장되며
+(키 `FLOW_DATA_KEY` 또는 `<설치 폴더>\.flow_data.key` — 커밋 금지), 메일 수신 주소에도 쓰입니다. 행을 비워도
+계정은 지워지지 않습니다 — 위임 해제·삭제는 업무 권한·위임과 사용자 관리에서 합니다.
 
-### ET 조회·TEG 위치 조회가 SplitTable 검색을 느리게 하지 않게
+### 사내 OIDC SSO
 
-- **ET 조회(`/api/reformatize/run`)** 의 첫 계산은 운영 API 프로세스가 아니라 상주 계산 프로세스에서
-  합니다(다운로드는 원래 별도 프로세스). SplitTable 검색과 polars 스레드풀·메모리를 나눠 쓰지 않고,
-  CPU를 다툴 때는 OS 우선순위가 낮은 쪽(ET)이 양보합니다. 캐시 적중·페이지 넘김은 그대로 운영에서
-  즉시 처리하고, 같은 조건을 여러 명이 동시에 조회하면 한 번만 계산합니다. 제품을 고르는 순간 계산
-  프로세스를 미리 띄워 첫 조회에 기동 대기가 붙지 않습니다.
-  - 조절: `FLOW_REFORMATIZE_RUN_PROCS`(동시 계산 수, 기본 8코어 미만 1), `FLOW_REFORMATIZE_RUN_THREADS`
-    (기본 2), `FLOW_REFORMATIZE_RUN_TIMEOUT_SEC`(기본 300), `FLOW_REFORMATIZE_RUN_MAX_RSS_MB`(기본 호스트
-    30%, 2~8GB), `FLOW_REFORMATIZE_RUN_IDLE_SEC`(기본 600초 유휴 시 종료), `FLOW_REFORMATIZE_CHILD_NICE`
-    (기본 5, 0=우선순위 유지). 끄기: `FLOW_REFORMATIZE_RUN_ISOLATION=0`.
-  - 계산 프로세스를 띄울 수 없는 환경이면 10분간 예전처럼 운영 프로세스에서 계산합니다(기능은 멈추지 않음).
-- **TEG 위치 조회** 는 Chip_Radius·Teg_location·MAIN·Product Info 를 파일 지문(경로·수정시각·크기)이
-  바뀔 때만 다시 읽고, 지도 응답은 직렬화된 결과를 재사용합니다. SplitTable 공정 메타(`/process-meta`)도
-  같은 방식입니다.
-
-## 사내 LLM(Gemma4) 연동
-
-관리자 → LLM 설정에서 provider `gemma4`를 고르면 다음이 자동 적용됩니다.
-
-- 호출 제한시간 최소 60초(연결 검사 제외). 공유 GPU 대기로 한 번 늦어져도 차단기가 열려 이어지는
-  질문까지 실패하지 않게 합니다.
-- JSON 계획·추출 호출은 temperature 0.1(설정의 `extra_body.temperature`가 있으면 그 값). 같은
-  질문에 같은 도구를 고르고 JSON 형식이 덜 깨집니다. 형식이 깨지면 계획 단계에서 한 번 고쳐 받습니다.
-- 기본지식·제품 Wiki(측정 항목·지식·스텝)·3D 구조 모델은 질문과 관련된 항목부터 글자 예산 안에서만
-  보냅니다. 제품이 정해진 질문의 계획 프롬프트가 약 8만 자에서 2만 자대로 줄었습니다. 예산 배율은
-  `FLOW_LLM_CONTEXT_SCALE`(기본 1, 0.25~4)로 조절합니다.
-
-홈 화면의 **최근 작업 결과**는 Flow-i에서 만든 차트·표·리포트를 최근 순으로 보여 주며, 누르면 그 대화와
-결과창이 그대로 다시 열립니다.
-
-## 캐시 관리 화면
-
-관리자용 데이터 캐시 화면에서 다음을 확인할 수 있습니다.
-
-- 수동 스캔 단계별 `queued / running / done / failed`
-- 현재 실행 중인 제품과 앞으로 대기 중인 작업
-- root RAM 유휴 예열의 현재 root와 향후 큐
-- API RSS, 작업 시작 이후 peak 증가량, 최소 host available memory
-- worker 현재/대기 task와 worker lifetime peak RSS
-
-## 사내 OIDC SSO 연결
-
-Flow의 OIDC 코드는 설정이 없을 때 비활성 상태로 등록됩니다. 아래 값을 운영 서버의
-환경변수 또는 Secret Manager에 넣고 서버를 재시작하면 로그인 화면에 `SSO Login`
-버튼이 자동으로 나타납니다. Client Secret은 `.env`, Git, 프런트 코드에 커밋하지 않습니다.
+설정이 없으면 비활성입니다. 아래 값을 환경변수로 넣고 재시작하면 로그인 화면에 `SSO Login`이 나타납니다.
+Client Secret은 `.env`, Git, 프런트 코드에 커밋하지 않습니다.
 
 ```env
 FLOW_OIDC_ISSUER=https://sso.company.example/oidc
@@ -629,148 +272,163 @@ FLOW_OIDC_DEPARTMENT_CLAIM=department
 FLOW_OIDC_AUTO_PROVISION=false
 ```
 
-Discovery 주소가 `ISSUER + /.well-known/openid-configuration` 규칙과 다르면
-`FLOW_OIDC_DISCOVERY_URL`을 별도로 지정합니다. IdP가 client secret을 POST body로만
-받는 경우 `FLOW_OIDC_CLIENT_AUTH_METHOD=client_secret_post`를 설정합니다. 기본값은
-`client_secret_basic`이며 ID token 서명 알고리즘은 RS256을 사용해야 합니다.
+Discovery 주소가 `ISSUER + /.well-known/openid-configuration`과 다르면 `FLOW_OIDC_DISCOVERY_URL`, IdP가 client
+secret을 POST body로만 받으면 `FLOW_OIDC_CLIENT_AUTH_METHOD=client_secret_post`(기본 `client_secret_basic`).
+ID token은 RS256이어야 합니다. 검증이 끝나면 `FLOW_PASSWORD_LOGIN_ENABLED=false`로 SSO만 남길 수 있습니다.
 
-초기 연결 중에는 기존 로그인을 함께 두는 것이 안전합니다. SSO 검증이 끝난 뒤 로그인
-화면에 SSO만 표시하려면 다음 값을 추가합니다.
+SSO 사용자는 `users.csv` 계정과 매칭되고 역할·탭·제품 노드 권한은 Flow가 관리합니다. 로그인 때 OIDC `sub`와
+부서 claim을 `sso_id`, `department` 열에 동기화합니다. 권한 그룹의 `기본 부서`에 SSO 부서명을 연결하면, 개인 권한이나
+직접 그룹이 없는 사용자는 그 그룹 권한을 상속합니다(개인 지정 → 직접 그룹 → 부서 기본). 기본값은 로컬 계정이
+없는 SSO 사용자를 거부하며, `FLOW_OIDC_AUTO_PROVISION=true`면 권한 없는 `pending` 계정으로 만들어 관리자 승인을
+기다립니다. 인증팀에 callback URL을 Redirect URI로 정확히 등록해 달라고 요청하고, 서버가 Discovery/Token/JWKS에
+HTTPS로 나갈 수 있는지 확인합니다. PKCE·state·nonce·issuer·audience·expiry·RS256 서명을 모두 검사하며 세션 토큰은
+callback query string에 넣지 않습니다.
 
-```env
-FLOW_PASSWORD_LOGIN_ENABLED=false
-```
+### TEG 제품 노드 권한
 
-SSO 사용자의 식별자는 기존 `users.csv` 계정과 매칭되며 역할·탭·제품 노드 권한은 계속
-Flow가 관리합니다. 로그인에 성공할 때 OIDC `sub`와 부서 claim을 각각 `users.csv`의
-`sso_id`, `department` 컬럼에 동기화합니다. 관리자 → 권한의 권한 그룹에서 `기본 부서`에
-SSO 부서명을 연결하면, 개인 권한이나 직접 권한 그룹이 지정되지 않은 사용자는 해당 그룹의
-권한을 부서 기본값으로 즉시 상속합니다. 우선순위는 개인 지정 → 직접 그룹 → 부서 기본이며,
-기존 사용자의 비어 있지 않은 권한은 개인 지정으로 보존됩니다.
+TEG 제품은 `상위 노드 / 하위 노드 / 제품명` 계층입니다. 경로는 `TEG_Product_Info.csv`와 TEG 설정의
+`product_nodes`에 저장되고, 이름 변경은 `Chip_Radius.csv`, `Teg_location.csv`, `Main_chip_info.csv`,
+`TEG_Product_Info.csv`와 제품별 Mapfile/Inline 설정에 함께 반영됩니다. 최상위 노드별 `node_access` 규칙이 없으면
+공개, 있으면 허용 사용자·부서만 목록과 API에서 접근합니다(관리자는 항상 전체). 부서는 세션의 `department`,
+`departments`, `dept`, `department_name`, `org`, `org_name` 값과 비교합니다.
 
-기본값에서는 로컬 계정이 없는 SSO 사용자를 거부합니다.
-`FLOW_OIDC_AUTO_PROVISION=true`로 바꾸면 미등록 사용자는 권한이 없는 `pending` 계정으로
-생성되고 관리자 승인 후 접근할 수 있습니다. 부서 claim은 TEG 제품 대분류 권한에도
-사용됩니다.
+## 기능별 운영 메모
 
-인증팀에는 위 callback URL을 Redirect URI로 정확히 등록해 달라고 요청하고, Flow 서버가
-Discovery/Token/JWKS endpoint에 HTTPS로 나갈 수 있는지 확인합니다. OIDC 임시 상태는
-10분짜리 HttpOnly/SameSite 쿠키로 검증하고 PKCE, state, nonce, issuer, audience, expiry,
-RS256 서명을 모두 검사합니다. Flow 세션 토큰은 callback query string에 넣지 않습니다.
+### SplitTable 캐시와 성능
 
-## 업데이트와 데이터 보존
+제품별 필수 캐시는 ① 랏 lookup ② `root_lot_id`별 pivot ③ WIP latest-lot ④ root별 FAB latest 인덱스입니다.
+캐시관리의 통합 캐싱은 실제 단계가 끝날 때까지 작업 큐에 남아 진행 상황과 중단 버튼을 제공하고, 중단 시 현재
+안전 배치까지만 마칩니다. 제품 전체 RAM·Root lot RAM 예열은 쓰지 않습니다. ET history는 ET 추적에서 따로
+관리하며 SplitTable 필수 캐시에 포함하지 않습니다.
 
-새 `setup.py`를 기존 설치 폴더에서 다시 실행해도 운영 데이터는 보존됩니다.
+- 조회는 제품 전체가 아니라 root partition/pivot 파일 하나만, 필요한 prefix/custom 컬럼만 읽습니다.
+- Root Lot 후보·LOT ID 목록·KNOB 입력 후보는 lookup 빌드 때 함께 계산해 둡니다. 캐시가 없으면 원천을 동기
+  스캔하지 않고 빌드만 큐에 넣고 즉시 응답합니다(준비 중에도 Root Lot 직접 입력 조회 가능).
+- pivot은 root 1개씩 만들고, 실패하면 최대 3번까지 다시 시도합니다.
+- `large` 서버는 자동 제품 캐싱이 켜져 모든 제품의 root 인덱스·pivot을 미리 만들고, 자주 찾는 root와 최근 공정이
+  진행된 root의 KNOB 화면을 30분마다 미리 계산합니다(사용자 요청에 양보, 메모리 압박이면 중단). 끄기:
+  ⚙ 캐시 설정 또는 `FLOW_SPLITTABLE_AUTO_PRODUCT_CACHE_ENABLED=0`, 예열은 `FLOW_SPLITTABLE_KNOB_PREWARM=0`
+  (개수 `…_MAX_LOTS`, 기간 `…_RECENT_DAYS`).
+- 목표는 준비된 데이터 조회부터 표 첫 표시까지 p95 500ms입니다(원본만 있고 캐시가 없는 최초 생성은 제외).
 
-보호 대상에는 다음이 포함됩니다.
+샘플 데이터 검증(운영 데이터 아님): 서로 다른 5개 root 동시 조회 약 312ms, 순차 조회 약 56~86ms, 동일 조건
+재조회 약 8.7ms, cold partition 5개 동시 조회 약 433ms(peak RSS 증가 약 72MB). 운영 속도는 parquet 폭·root당
+행 수·스토리지 성능에 따라 달라집니다.
 
-- `data/`, `flow-data/`, `Fab/`, `DB/`, `Base/`, `wafer_maps/`
-- `FLOW_DATA_ROOT`, `FLOW_DB_ROOT`, `FLOW_WAFER_MAP_ROOT` 아래의 모든 파일
-- users, sessions, groups, informs, tracker, meetings, dashboard, cache와 로그
+캐시관리 화면은 제품별 상태(행을 누르면 lookup·pivot·WIP latest-lot·FAB 인덱스의 최근 성공·실패·진행 상세),
+스캔 단계별 `queued / running / done / failed`, 실행 중·대기 작업, 무거운 작업 현황, API RSS와 peak 증가량을 보여 줍니다.
 
-설치 전 소형 설정/state 파일은 사용자 홈의 `.flow_backups`에 snapshot됩니다. 수동 복구가 필요하면 다음 명령을 사용합니다.
+### 차트생성·Template Report
 
-```bash
-python setup.py restore latest
-```
+차트 데이터 조회는 동시에 제한된 수만 실행하고(`FLOW_CHART_BUILDER_CONCURRENCY`), 같은 Query/JOIN/필터 결과는
+짧게 재사용합니다(`FLOW_CHART_BUILDER_CACHE_MB`, `FLOW_CHART_BUILDER_CACHE_TTL_SEC`). Template Report는 같은 데이터
+정의의 차트를 한 번만 조회합니다. `root_lot_id`·`wafer_id`·`color` 목록은 스프레드시트형 편집표로 Excel/Google
+Sheets 여러 셀을 그대로 붙여 넣을 수 있고, 조합별 색상 규칙은 이후 데이터에도 적용됩니다. 시간 기준 색상
+(`tkout_time WITHIN N DAYS`)은 Query 조회 기간(`RECENT_DAYS`)과 독립입니다.
 
-버전과 번들 생성 시각 확인:
+### ET 조회·TEG 위치 조회
 
-```bash
-python setup.py version
-```
+- ET 조회(`/api/reformatize/run`)의 첫 계산은 우선순위를 낮춘 상주 계산 프로세스에서 합니다. 캐시 적중·페이지
+  넘김은 바로 처리하고, 같은 조건을 여러 명이 동시에 조회하면 한 번만 계산합니다. 조절: `FLOW_REFORMATIZE_RUN_PROCS`,
+  `…_THREADS`, `…_TIMEOUT_SEC`, `…_MAX_RSS_MB`, `…_IDLE_SEC`, `FLOW_REFORMATIZE_CHILD_NICE`, 끄기 `FLOW_REFORMATIZE_RUN_ISOLATION=0`.
+- ET 측정 이력은 제품별 history parquet를 공유합니다. 첫 생성 후에는 최근 3일만 재집계해 병합합니다.
+- TEG 위치 조회는 Chip_Radius·Teg_location·MAIN·Product Info를 파일 지문이 바뀔 때만 다시 읽습니다.
 
-### 자동 재시작이 켜진 서버를 업데이트할 때
+### FAB 매칭알람 검사
 
-`systemctl stop` → `extract` → `systemctl start` 순서를 지켜야 합니다. 프로세스를 `kill`로 죽이면 systemd가 즉시 되살려 구버전과 신버전이 섞입니다. 단계별 절차와 검증 기준은 위의 **[프로토콜 B — 업데이트](#프로토콜-b--업데이트-setuppy-재배포)** 를 그대로 따릅니다.
+파일탐색기 폴더 설정에서 표시명이 정확히 `FAB`인 DB의 제품 폴더를 **운영 서버가 하나씩, 사용자 요청이 조용할 때**
+검사하고 결과를 `FLOW_DATA_ROOT`에 저장합니다(무거운 작업 슬롯 1건, 메모리 확인 후 실행). 화면의 `지금 다음 제품 검사`는
+요청만 등록하며 HTTP 요청이 Parquet를 직접 읽지 않습니다. 기본 간격은 제품당 2시간(톱니바퀴에서 변경, 페이지 관리자 이상).
 
-## 개별 설치 명령
+- `step_id`가 `Vehicle_matching.csv`에 없으면 신규 step 알람
+- 매칭된 step의 function step에 연결된 `ppid_knob.csv` split별 Rule(`eq`/`contains`/`starts_with`/`ends_with`/`regex`)에
+  맞지 않아 `RO`로 빠지는 PPID만 PPID 알람
+- 신규 step 알람은 제품 범위와 PPID/EQP ID/EQP MODEL 조건으로 예외 처리
+- 신규 `reticle_id`는 `mask_info.csv`의 기존 `category`(mask 이름)·`product`(vehicle) 열에 추가, 새 열을 만들지 않음
 
-```bash
-python setup.py extract
-python setup.py install-deps
-python setup.py build-frontend
-python setup.py version
-python setup.py sync-version
-python setup.py restore latest
-```
+판정은 파일탐색기 단일 파일 저장 흐름으로 버전 스냅샷과 변경 메모를 남기고, 매칭 캐시 갱신 후 재검사를 요청합니다.
+미매칭 step에는 **function step 추천**(같은 PPID를 쓰는 매칭 step 우선, 없으면 가까운 번호의 eqp/area 비교)이 뜨며
+LLM 없이도 동작합니다.
 
-## 검증
+Valve 연동 알람 파일 위치는 `data/flow-data/valve_alerts.json`의 `local_root`가 정합니다(비면 S3). S3가 없으면
+`{"local_root": "{db_root}", "alerts_prefix": "valve-alerts"}`처럼 공유 DB 폴더를 씁니다(`{db_root}`/`{data_root}`/`{app_root}`
+토큰 지원). 예시 알람: `python scripts/seed_valve_alert_examples.py --write`.
 
-현재 배포본은 다음 검증을 통과한 상태로 생성합니다.
+### Auto report
 
-- Python 구문 검사
-- 백엔드 pytest 1,296개 전부 통과 (실패 0 — 실패는 곧 회귀로 봅니다)
-- Vite production build
-- 로컬 HTTP smoke test 35항목 (인증 방어 포함)
-- `setup.py` 추출 파일 목록 및 데이터 제외 정책 확인
+요청은 작업 파일로 저장되고, 운영 서버의 러너가 **오래된 요청부터 한 번에 한 건씩** 무거운 작업 슬롯에서 PPT를 만듭니다
+(원 렌더러는 별도 자식 프로세스). 메모리가 부족하거나 다른 캐시 작업이 돌면 대기하고, 서버가 재시작되면 실행 중이던 작업을
+한 번 다시 대기열에 넣습니다(두 번째 중단은 실패 처리). ET history는 6시간마다(`FLOW_AUTO_REPORT_HISTORY_INTERVAL_SEC`)
+스캔 슬롯으로 갱신합니다. 실행 파일과 자산은 `<DB>/Auto report`, reformatter CSV는 `<DB>/reformatter`에 둡니다.
+
+### 운영 점검 스캔
+
+관리자 → 에이전트 → 운영 점검 스캔. 파일(DB 루트)·서버 자원·라이브러리·운영 설정을 **읽기만** 해서 점검 결과와
+(LLM이 있으면) 추천을 만듭니다. 설정은 아무것도 바꾸지 않습니다. 버튼 외에 **매일 한 번(기본 07시)** 자동으로 돌고,
+높음·보통 항목이 있으면 관리자 전원에게 알림(bell)을 남깁니다(알림을 누르면 이 화면이 열림). 시각·AI 사용·알림 조건은
+화면 상단에서 바꾸고, `FLOW_DISABLE_OPS_SCAN_SCHEDULE=1`이면 자동 실행이 꺼집니다.
+
+### 사내 LLM (Gemma4)
+
+관리자 → LLM 설정에서 provider `gemma4`를 고르면 호출 제한시간 최소 60초, JSON 계획·추출 호출 temperature 0.1이
+적용되고, 기본지식·제품 위키·3D 구조는 질문과 관련된 항목부터 글자 예산 안에서만 보냅니다(`FLOW_LLM_CONTEXT_SCALE`, 기본 1).
+LLM을 부르는 새 API 경로는 `backend/core/llm_adapter.py`의 `_DATA_TASK_PATHS`에 등록해야 합니다.
+
+### 랏 배정/요청과 게시판 본문
+
+`업무 → 랏 배정/요청`은 제품별 랏 배정·Hot grade·PI 처리 요청 보드입니다. 상태 변경·답변·메일은 `lotrequest`에
+위임된 사용자만, 본문·답변 수정은 작성자만 가능합니다(관리자도 소유권을 우회하지 않음). 이력은 등록·수정·상태 변경·
+답변·메일 발송을 한 줄 로그로 보여 주고, 메일에는 본문·대상 랏·답변·이력이 들어갑니다. 요청 유형과 요청 팀 목록은
+톱니바퀴에서 관리합니다. 랏 요청·PI 답변·Inform Note는 게시판형 편집기를 써서 Ctrl+V로 이미지와 Excel 표를 본문에
+넣을 수 있고, 저장 시 서버가 허용 태그와 Flow 내부 이미지 경로만 남깁니다. ET 추적과 Inform 등록은 레코드를 먼저
+저장해 바로 보여 주고, LOT 진행·매핑·스냅샷 같은 무거운 보강은 응답 뒤에 채웁니다.
+
+### 관리자 모니터의 보도블럭 갈기
+
+기본 예약은 한국 시간 매일 11:00, CPU·RAM 목표 85%, 최대 10분입니다. 90% 안전선에 닿거나 관리자가 해제하면 멈추고
+임시 RAM을 반환합니다. 운영(`PATHS.is_prod`)에서만 돌고, 놓친 예약은 당일 한 번만 따라잡습니다. 합성 부하가 필요 없으면
+관리자 모니터에서 **예약 설정 자체를 끕니다**(`FLOW_SYSMON_ENABLE_LOAD=0`은 유휴 부하만 끄고 이 예약은 끄지 않음).
+정기 부하가 공급자의 자원 회수 방지를 보장하지는 않습니다.
+
+## 서버 이사 체크리스트
+
+| 구분 | 위험 | 확인·대응 |
+|---|---|---|
+| 경로 | 옛 `admin_settings.json`·⚙ 캐시 설정의 절대경로·`pool_fraction`이 새 서버를 옛 경로/작은 예산으로 묶음 | 이전 스크립트가 `data_roots`를 지움. 관리자 → 데이터 루트, 캐시관리 ⚙에서 확인 |
+| 경로 | 설정 파일에 남은 `/config/work/...`·`\\옛서버\...` 경로(Valve `local_root`, 백업, 메일/LLM) | `D:\flow-data`에서 검색해 `{db_root}` 토큰이나 D: 경로로 교체 |
+| 옛 설정 | `FLOW_SERVER_ROLE`, `FLOW_WORKER_OFFLOAD`, `FLOW_API_SERVER_URL` 등 개발 worker 설정 | 효과 없음. 운영 점검 스캔이 알려 주면 `flow_env*.bat`에서 삭제 |
+| 옛 고정값 | `FLOW_CPU_BUDGET_CORES`, `FLOW_PROCESS_MEMORY_LIMIT_GB`, `POLARS_MAX_THREADS`, `FLOW_DUCKDB_THREADS` 등 | 자동 인식이 맞으면 지우고 재시작(Polars 풀은 시작 때 고정). 캐시관리 → 검색 코어는 **자동** 저장 |
+| 디스크 | `D:`가 동적 확장 가상디스크·네트워크 드라이브면 느림 | 로컬 고정 디스크(SSD) 권장. 여유: DB + 캐시(DB의 20~50%) + 백업 5개 |
+| 백신 | Defender 실시간 검사가 parquet·캐시 파일마다 끼어듦 | 승인 하에 `D:\DB`, `D:\flow-data`, 설치 폴더, conda env 검사 제외 |
+| 메모리 | VM 동적 메모리면 총량이 작게 보여 `small`로 뜸 | 메모리 고정 128GB. 모니터에서 `large` 확인(강제 `FLOW_RESOURCE_PROFILE=large`). 페이지 파일은 끄지 않음 |
+| 전원 | 절전·자동 업데이트 재부팅 | `-DisableSleep`, Windows Update 재부팅 창 설정, 부팅 자동 시작 |
+| 네트워크 | 방화벽 8080, 호스트명 해석 | `-OpenFirewall`, 고정 IP, `http://<IP>:8080` 안내 |
+| 로그인 | IP 로그인 매핑이 이사 후 IP/NAT 변경으로 안 맞음 | `flow_env.local.bat` 매핑 갱신 |
+| 인코딩 | 한글 경로·cp949 콘솔 | `flow_env.bat`이 `PYTHONUTF8=1` 설정. 설치 경로에 한글·공백 피하기 |
+| 외부 연결 | LLM·메일·S3가 새 VM에서 막힘 | LLM 연결 테스트, 메일 테스트 발송, S3 동기화 1회 수동 실행 |
+| 동시 사용 | 대화형 요청과 캐시 빌드 경합 | 빌드는 한 번에 1건·사용자 요청 양보. 첫 주는 캐시관리 → 검색 속도와 운영 점검 스캔 알림 확인 |
+| 백업 | 백업 위치 | 기본 `D:\flow-backups`. 다른 디스크/NAS는 관리자 → 자동 백업 경로 |
+
+## 개발자 안내
+
+- 백엔드 앱은 `backend/app.py`(루트 `app.py`는 import shim), HTTP 경로는 `backend/routers/`, 계산·저장은 `backend/core/`.
+  SplitTable·파일탐색기 라우터 일부는 `backend/app_v2/modules/*/router_parts/`에서 조립되므로 해당 part를 고칩니다.
+- 탭 등록은 `frontend/src/app/pageManifest.jsx`, 구현은 `frontend/src/features/`. 색·간격은 `frontend/src/styles/tokens.css`.
+- 무거운 계산은 `core/heavy_jobs.run_heavy()`를 거칩니다(메모리 확인·캐시 슬롯·사용자 양보). 새 예약 작업은
+  `app_v2/runtime/startup.py`의 background owner 목록에 넣습니다.
+- 새 backend 모듈은 `backend/app.py`의 `_REQUIRED_BUNDLED_BACKEND_SOURCES`에, 새 최상위 파일은 `_build_setup.py`의
+  포함 목록에 넣어야 번들에 실립니다.
+- 검증: `cd frontend && npm run check`(디자인·구조 검사+빌드)와 관련 `pytest`. 테스트는 임시 `FLOW_DATA_ROOT`/`FLOW_DB_ROOT`/
+  `FLOW_WAFER_MAP_ROOT`와 `FLOW_PROD=0`으로 돌리고 운영 데이터에 기록을 남기지 않습니다. 로컬 데이터·드라이버 버전에 기대는
+  테스트 일부는 환경에 따라 실패할 수 있으므로, 변경 전후 결과를 비교해 새로 생긴 실패가 없는지 봅니다.
+- 배포: `python _build_setup.py` → `frontend/dist`와 `setup.py` 재생성. `git add -A` 금지(작업 트리에 런타임 데이터가 있음).
 
 ## 주의 사항
 
-- `setup.py`는 사내 코드와 프런트엔드를 포함하므로 외부에 공개하지 마십시오.
-- 운영 서버와 worker 서버의 시스템 시간과 공유 경로 권한을 맞추십시오.
-- DB 및 runtime data를 Git 저장소 안에 직접 커밋하지 마십시오.
-- 개발 worker 메모리가 부족할 때 동시 실행 수를 늘리지 마십시오.
+- 공개 저장소입니다. 운영 DB·사용자 정보·사내 문서·발표자료·실제 사번/IP·키를 커밋하지 않습니다.
+- 운영 서버는 API 프로세스 1개로 둡니다. 여러 프로세스는 RAM 캐시와 메모리 예산을 복제합니다.
+- 동시 처리 수(`FLOW_HEAVY_REQUEST_CONCURRENCY` 등)를 늘리기 전에 실제 조회의 순간 메모리를 측정합니다.
 
 ## License
 
 Private. 사내/개인 검증 목적으로만 사용합니다.
-
-
-## 서버 용량 자동 조정과 일일 모니터 부하
-
-운영 기본값은 할당 CPU에서 1코어를 남긴 계산 예산, 총 메모리의 80% 소프트 한도다.
-`FLOW_RESOURCE_PROFILE=auto`는 기존 `small`과 같은 안전 가드를 쓰는 자동 비례 모드다.
-CPU는 affinity/cgroup quota를 반영하며, 메모리는 물리 RAM/cgroup 한도보다 크게 잡지 않는다.
-메모리 단위는 GiB(1024³ bytes)다. 공급자가 표기한 30GB와 모니터 실측 총량이 다르면
-실측 총량으로 비례 계산한다.
-
-| 할당 자원 | 기본 계산 CPU | 메모리 소프트 한도 | 전역 캐시 풀 | SplitTable 응답 캐시 상한 |
-| --- | ---: | ---: | ---: | ---: |
-| 5코어 / 30GiB | 4 | 24GiB | 10.8GiB | 약 3.78GiB |
-| 12코어 / 64GiB | 11 | 51.2GiB | 23.04GiB | 약 8.06GiB |
-
-캐시는 실제 요청에 따라 채워진다. CPU 예산은 각 라이브러리의 스레드 기본값과
-가드 기준이며 OS 차원의 프로세스 전체 hard quota는 아니다. 메모리 소프트 한도도
-RSS만으로 중단하지 않고 실제 호스트 압력을 함께 확인한다. API는 기본 1프로세스를 유지한다.
-
-### 서버 이전 후 변경할 항목
-
-1. 컨테이너/VM 할당 CPU와 메모리를 새 용량으로 변경한다. Docker/Kubernetes/서비스의
-   기존 자원 한도가 남아 있으면 앱에는 그 한도가 계속 유효하다.
-2. 캐시 관리 → 검색 코어에서 **자동**을 한 번 저장한다(`query_workers=0`).
-   기존에 명시 저장한 4 같은 값은 호환을 위해 유지한다.
-3. 배포 환경에서 오래된 고정값을 제거하고 서버를 재시작한다:
-   `FLOW_CPU_BUDGET_CORES`, `FLOW_PROCESS_MEMORY_LIMIT_GB`, `POLARS_MAX_THREADS`,
-   `RAYON_NUM_THREADS`, `PYARROW_NUM_THREADS`, `FLOW_DUCKDB_THREADS`.
-   `FLOW_SYSTEM_CPU_CORES`, `FLOW_SYSTEM_MEMORY_TOTAL_GB`, `FLOW_EFFECTIVE_MEMORY_TOTAL_GB`도
-   자동 인식이 정확하면 제거한다. 이 값들은 필요할 때 낮은 할당량을 명시하는 상한이다.
-   Polars 풀은 프로세스 시작 시 고정되므로 재시작이 필요하다.
-4. 관리자 모니터에서 할당 CPU/메모리 총량·CPU 예산·메모리 limit를 확인하고,
-   캐시 관리의 희망/실제 검색 코어가 일치하는지 확인한다.
-
-세부 튜닝은 `FLOW_PROCESS_MEMORY_LIMIT_FRACTION`(기본 0.80),
-`FLOW_CACHE_TOTAL_BUDGET_FRACTION`(0.45), `FLOW_CACHE_MEMORY_TARGET_RATIO`(0.80)로 조정한다.
-동시 무거운 요청은 기본 5코어에서 2건, 큰 서버에서도 3건으로 보수적으로 유지한다.
-더 늘릴 때는 실제 쿼리의 순간 메모리를 측정한 뒤 `FLOW_HEAVY_REQUEST_CONCURRENCY`(1~8),
-`FLOW_ESSENTIAL_REQUEST_CONCURRENCY`(1~8)를 조정한다. 개별 캐시의 관리자 수동 예산이나
-환경변수도 이전 시 점검한다. 개발 worker는 축소 캐시(풀×0.25)와 Polars 2 threads로 오프로드 작업만 처리한다.
-
-### 관리자 모니터의 보도블럭 갈기
-
-기본 예약은 한국 시간 매일 11:00, CPU·RAM 목표 85%, 최대 10분이다.
-각 자원이 한 번 이상 80%에 도달했는지를 따로 관측해 결과에 기록한다.
-90% 안전선에 닿거나 관리자가 해제하면 부하를 중단하고 임시 RAM을 반환한다.
-부하는 컨테이너 CPU 누적 시간/할당 코어를 사용해 제어하고, 호스트 사용률은 별도로 표시한다.
-
-앱의 기존 스케줄러 소유자 한 개가 모니터를 시작한다. 예약 부하는 운영 API(`PATHS.is_prod`)에서만 실행되며 개발 API/worker는 제외한다. 예약 시각을 놓친 재기동은
-당일 남은 시간에 한 번 실행하며, 시작한 날짜를 먼저 기록해 같은 날 중복 실행하지 않는다.
-실행 도중 서버가 재시작되면 중단으로 표시하고 같은 날 무조건 재시도하지 않는다.
-예약을 꺼 둔 관리자의 설정은 보존한다. 관리자 화면에서 다시 켤 수 있다.
-결과는 `log_dir/sysmon_state.json`의 `last_result`에 보존되고 모니터에 최고 사용률과
-완료/미달/중단 사유가 표시된다. 미달 시 실제 측정 source, 안전선 해제 사유,
-`FLOW_SYSMON_MAX_MEM_LOAD_MB` 고정 상한을 확인한다.
-
-정기 부하로 공급자의 자원 회수 방지가 보장되지는 않는다. 공급자 측 집계 기간·회수 조건과
-실제 운영 그래프를 별도로 확인해야 한다. 컨테이너 CPU 계측 근거:
-https://docs.kernel.org/admin-guide/cgroup-v2.html#cpu-interface-files

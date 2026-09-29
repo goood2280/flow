@@ -16,8 +16,7 @@
 - 요청자는 절대 블로킹되지 않는다. `submit()` 은 즉시 대기 순번을 돌려주고,
   진행 상황은 캐시 이벤트 로그와 `snapshot()` 으로 본다.
 
-게이트는 **프로세스(서버) 로컬**이다. 운영/개발 2서버 분산에서 개발 워커로
-오프로드된 작업은 그쪽 프로세스의 게이트가 관리한다.
+게이트는 **프로세스(서버) 로컬**이다(운영 단일 서버·단일 API 프로세스 전제).
 
 ## 대기열 밖에서 도는 캐시 작업 — `exclusive()`
 
@@ -25,7 +24,7 @@
 않는 경로로도 시작된다:
 
 - `ml_table_lookup` 의 빌드 스레드(`enqueue_build` → `_worker_loop`)
-- 개발 worker 가 운영에서 넘겨받아 실행하는 오프로드 태스크(`worker_dispatch`)
+- 무거운 작업 계층(`core.heavy_jobs.run_heavy`)을 거친 캐시 빌드
 
 예전에는 이 셋이 **각자 다른 단일 슬롯**(scan gate / `_LOCAL_HEAVY_GATE` /
 worker `slots`)을 잡아서, 한 서버에서 서로 다른 제품의 랏캐시 빌드가 동시에
@@ -155,7 +154,7 @@ def exclusive(kind: str, label: str, *, product: str = "", source: str = "extern
     빌더는 자기 취소 여부를 물어볼 id 조차 없었다. 이제 매 획득마다 고유 id 를
     발급하고 **이 스레드의 `_TLS.task_id` 로 심는다** — 블록 안에서 도는 코드는
     대기열 작업과 똑같이 인자 없는 `cancel_requested()` 로 확인할 수 있다
-    (`run_heavy` → `_run_local_heavy` → 빌더가 전부 이 스레드다).
+    (`heavy_jobs.run_heavy` → 빌더가 전부 이 스레드다).
     """
     global _EXTERNAL, _SEQ
     if holding():

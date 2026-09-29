@@ -19,9 +19,9 @@ class _AliveTimer:
         return True
 
 
-def test_durable_worker_queue_is_waiting_not_failed(tmp_path, monkeypatch):
+def test_existing_build_lock_is_waiting_not_failed(tmp_path, monkeypatch):
     from core import ml_table_lookup as lookup
-    from core import worker_dispatch
+    from core import heavy_jobs
 
     source = tmp_path / "ML_TABLE_PRODUCT_A.parquet"
     source.write_bytes(b"source")
@@ -29,12 +29,9 @@ def test_durable_worker_queue_is_waiting_not_failed(tmp_path, monkeypatch):
     events = []
 
     monkeypatch.setattr(lookup, "lookup_artifacts_fresh", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(worker_dispatch, "run_heavy", lambda *_args, **_kwargs: {
-        "ok": True,
-        "queued": True,
-        "deferred": True,
-        "task_id": "worker-task-1",
-        "deduped": False,
+    monkeypatch.setattr(heavy_jobs, "run_heavy", lambda *_args, **_kwargs: {
+        "ok": False,
+        "error": "build_lock_held",
     })
     monkeypatch.setattr(
         lookup,
@@ -72,16 +69,15 @@ def test_durable_worker_queue_is_waiting_not_failed(tmp_path, monkeypatch):
     assert len(events) == 1
     product, message, event_kwargs = events[0]
     assert product == "ML_TABLE_PRODUCT_A"
-    assert "워커 빌드 완료 대기" in message
+    assert "기존 빌드 완료 대기" in message
     assert event_kwargs["ok"] is True
     assert event_kwargs["phase"] == "skip"
-    assert event_kwargs["detail"]["reason"] == "worker_task_queued"
-    assert event_kwargs["detail"]["task_id"] == "worker-task-1"
+    assert event_kwargs["detail"]["reason"] == "build_lock_held"
 
 
 def test_failed_build_still_consumes_limited_retry(tmp_path, monkeypatch):
     from core import ml_table_lookup as lookup
-    from core import worker_dispatch
+    from core import heavy_jobs
 
     source = tmp_path / "ML_TABLE_PRODUCT_B.parquet"
     source.write_bytes(b"source")
@@ -89,11 +85,9 @@ def test_failed_build_still_consumes_limited_retry(tmp_path, monkeypatch):
     events = []
 
     monkeypatch.setattr(lookup, "lookup_artifacts_fresh", lambda *_args, **_kwargs: False)
-    monkeypatch.setattr(worker_dispatch, "run_heavy", lambda *_args, **_kwargs: {
+    monkeypatch.setattr(heavy_jobs, "run_heavy", lambda *_args, **_kwargs: {
         "ok": False,
-        "queued": False,
-        "deferred": True,
-        "error": "worker queue is full",
+        "error": "local_heavy_memory_guard",
     })
     monkeypatch.setattr(
         lookup,
@@ -127,7 +121,7 @@ def test_failed_build_still_consumes_limited_retry(tmp_path, monkeypatch):
         "consume_attempt": True,
         "local_only": False,
     })]
-    assert lookup._BUILD_STATE["last_error"] == "worker queue is full"
+    assert lookup._BUILD_STATE["last_error"] == "local_heavy_memory_guard"
     assert len(events) == 1
     assert "재시도 없음" in events[0][1]
     assert events[0][2]["ok"] is False
@@ -214,44 +208,31 @@ def test_delayed_retry_is_reported_as_queued(tmp_path):
             lookup._BUILD_STATE.update(previous_state)
 
 
-def test_durable_lookup_falls_back_locally_when_worker_is_offline(monkeypatch):
-    from core import worker_dispatch
+def test_automatic_lookup_runs_locally_in_the_idle_lane(tmp_path, monkeypatch):
+    from core import ml_table_lookup as lookup
+    from core import heavy_jobs
 
+    source = tmp_path / "ML_TABLE_PRODUCT_C.parquet"
+    source.write_bytes(b"source")
+    fresh = iter([False, True, True, True])
     calls = []
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "api")
-    monkeypatch.setattr(worker_dispatch, "offload_enabled", lambda: True)
-    monkeypatch.setattr(worker_dispatch, "worker_alive", lambda **_kwargs: False)
-    monkeypatch.setattr(
-        worker_dispatch,
-        "_discard_unclaimed_deduped_task",
-        lambda key: calls.append(("discard", key)) or 1,
-    )
-    monkeypatch.setattr(worker_dispatch, "_bump", lambda key: calls.append(("bump", key)))
-    monkeypatch.setattr(
-        worker_dispatch,
-        "_run_local_heavy",
-        lambda task_type, name, fn, **kwargs: calls.append(("local", task_type, kwargs)) or fn(),
-    )
-    monkeypatch.setattr(
-        worker_dispatch,
-        "_submit",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("offline fallback must not queue")),
-    )
+    monkeypatch.setattr(lookup, "lookup_artifacts_fresh", lambda *_args, **_kwargs: next(fresh))
+    monkeypatch.setattr(heavy_jobs, "run_heavy",
+                        lambda kind, fn, **kwargs: calls.append((kind, kwargs)) or {"ok": True})
+    monkeypatch.setattr(lookup, "_emit_build_event", lambda *a, **k: None)
 
-    result = worker_dispatch.run_heavy(
-        "ml_lookup_cache_build",
-        {"product": "ML_TABLE_PRODUCT"},
-        lambda: {"ok": True, "executed_on": "local"},
-        durable=True,
-        local_fallback=True,
-        local_idle_only=True,
-        priority="maintenance",
-        dedupe_key="ml_lookup:ML_TABLE_PRODUCT",
-    )
+    with lookup._BUILD_LOCK:
+        lookup._BUILD_QUEUE.clear()
+        lookup._BUILD_QUEUE.append(source)
+        lookup._BUILD_IMMEDIATE.clear()
+        lookup._BUILD_LOCAL_ONLY.clear()
+        lookup._BUILD_STATE.update({"running": False, "paused": False, "pause_reason": "",
+                                    "resource_snapshot": {}, "current": "", "last_error": ""})
 
-    assert result == {"ok": True, "executed_on": "local"}
-    assert ("discard", "ml_lookup:ML_TABLE_PRODUCT") in calls
-    assert any(call[0] == "local" and call[2]["idle_only"] is True for call in calls)
+    lookup._worker_loop()
+
+    assert calls == [("ml_lookup_cache_build", {
+        "label": "ml_lookup:ML_TABLE_PRODUCT_C", "idle_only": True, "product": "ML_TABLE_PRODUCT_C"})]
 
 
 def test_old_lookup_lock_is_not_reclaimed_while_owner_pid_is_alive(tmp_path, monkeypatch):

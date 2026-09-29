@@ -18,6 +18,7 @@ import time
 _LOCK = threading.Lock()
 _LAST_USER_REQUEST_TS = 0.0
 _ACTIVE_SPLITTABLE_REQUESTS = 0
+_ACTIVE_OTHER_REQUESTS = 0
 
 _SPLITTABLE_PRIORITY_PREFIXES = (
     "/api/splittable/view",
@@ -82,6 +83,33 @@ def end_splittable_request(active: bool) -> None:
     with _LOCK:
         _ACTIVE_SPLITTABLE_REQUESTS = max(0, _ACTIVE_SPLITTABLE_REQUESTS - 1)
         _LAST_USER_REQUEST_TS = time.monotonic()
+
+
+def begin_other_request(path: str) -> bool:
+    """스플릿테이블이 아닌 탭의 (light 가 아닌) API 요청 시작. 폴링성 경로는 세지 않는다."""
+    p = str(path or "")
+    if p.startswith("/api/splittable/") or p in _IGNORED_PATHS or p.endswith(_IGNORED_PATH_SUFFIXES):
+        return False
+    if p.startswith(("/api/monitor", "/api/system")):
+        return False
+    global _ACTIVE_OTHER_REQUESTS
+    with _LOCK:
+        _ACTIVE_OTHER_REQUESTS += 1
+    return True
+
+
+def end_other_request(active: bool) -> None:
+    if not active:
+        return
+    global _ACTIVE_OTHER_REQUESTS
+    with _LOCK:
+        _ACTIVE_OTHER_REQUESTS = max(0, _ACTIVE_OTHER_REQUESTS - 1)
+
+
+def other_requests_active() -> int:
+    """지금 처리 중인 스플릿테이블 외 탭 요청 수."""
+    with _LOCK:
+        return _ACTIVE_OTHER_REQUESTS
 
 
 def seconds_since_user_activity() -> float:

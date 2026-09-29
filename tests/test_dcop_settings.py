@@ -104,11 +104,10 @@ def test_dcop_llm_draft_is_admin_only():
     assert excinfo.value.status_code == 403
 
 
-def test_dcop_llm_draft_is_allowed_by_llm_gate_and_ai_proxy():
-    from core import llm_adapter, upstream_proxy
+def test_dcop_llm_draft_is_allowed_by_llm_gate():
+    from core import llm_adapter
 
     assert "/api/dcop/rules/llm/draft" in llm_adapter._DATA_TASK_PATHS
-    assert "/api/dcop/rules/llm/draft" in upstream_proxy._AI_PROXY_PATHS_DEFAULT
 
 
 def test_dcop_llm_draft_normalizes_validates_and_dedupes(tmp_path, monkeypatch):

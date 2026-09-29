@@ -811,13 +811,6 @@ def _scheduler_loop():
             if not is_owner():
                 time.sleep(5)
                 continue
-            # v9.4.5: worker(개발서버) 역할은 외부 서비스 연동 없음 — S3 자동
-            # 동기화는 운영(api)·standalone 만 수행. 역할은 재시작 없이 바뀔 수
-            # 있으므로 매 반복 확인한다.
-            from core import worker_dispatch as _wd
-            if not _wd.external_services_enabled():
-                time.sleep(30)
-                continue
             # v9.1.x: 공유 flow-data lease — 두 서버 중 lease 보유 서버만 주기 스케줄 실행.
             from core import shared_lease as _shared_lease
             if not _shared_lease.try_acquire("s3_ingest_scheduler", ttl_sec=90.0):
@@ -1027,9 +1020,6 @@ def delete_item(req: IdReq, _perm=Depends(require_page_manager("filebrowser"))):
 
 @router.post("/run")
 def run_manual(req: IdReq, _perm=Depends(require_page_manager("filebrowser"))):
-    from core import worker_dispatch as _wd
-    if not _wd.external_services_enabled():
-        raise HTTPException(409, "worker(개발서버) 역할에서는 S3 연동이 차단됩니다 — 운영 서버에서 실행하세요")
     if not _auto_sync_settings().get("master_enabled", True):
         raise HTTPException(409, "관리자 설정에서 S3 전체가 꺼져 있습니다 (S3 master switch off)")
     cfg = _load_cfg()
@@ -1271,9 +1261,6 @@ def push_item(req: PushReq, _perm=Depends(require_page_manager("filebrowser"))):
     """v8.4.4 — 양방향 sync 의 local → S3 방향. 등록된 item 의 target s3 url 에
     local_path (db_root 기준) 를 업로드 (aws s3 cp/sync).
     """
-    from core import worker_dispatch as _wd
-    if not _wd.external_services_enabled():
-        raise HTTPException(409, "worker(개발서버) 역할에서는 S3 연동이 차단됩니다 — 운영 서버에서 실행하세요")
     if not _auto_sync_settings().get("master_enabled", True):
         raise HTTPException(409, "관리자 설정에서 S3 전체가 꺼져 있습니다 (S3 master switch off)")
     cfg = _load_cfg()

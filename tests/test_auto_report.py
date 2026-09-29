@@ -46,42 +46,77 @@ def test_preflight_resolves_vehicle_reformatter_from_product_config(tmp_path, mo
     assert result["products"] == ["PRODUCT_KEY"]
 
 
-def test_enqueue_persists_job_and_uses_async_queue_only(tmp_path, monkeypatch):
-    from core import worker_dispatch
-
-    submitted = []
+def _job_env(tmp_path, monkeypatch):
     monkeypatch.setattr(auto_report, "_job_root", lambda: tmp_path / "auto_report")
     monkeypatch.setattr(auto_report, "preflight", lambda product="": {"ok": True, "missing": []})
-    monkeypatch.setattr(
-        worker_dispatch,
-        "submit_async",
-        lambda task_type, payload, **kwargs: submitted.append((task_type, payload, kwargs)) or {
-            "ok": True,
-            "task_id": "task-1",
-            "worker_alive": False,
-        },
-    )
+
+
+def test_enqueue_persists_a_queued_job_without_running_it(tmp_path, monkeypatch):
+    _job_env(tmp_path, monkeypatch)
+    ran = []
+    monkeypatch.setattr(auto_report, "generate_job", lambda job_id: ran.append(job_id))
 
     job = auto_report.enqueue("PRODUCT_A1000A.3_4500", "engineer")
 
     assert job["state"] == "queued"
-    assert job["task_id"] == "task-1"
-    assert submitted[0][0] == auto_report.TASK_TYPE
-    assert submitted[0][1] == {"job_id": job["id"]}
     assert auto_report.read_job(job["id"])["username"] == "engineer"
+    assert auto_report.queue_depth() == 1
+    assert ran == []  # the HTTP request only writes the job file
 
 
-def test_worker_role_cannot_submit_an_async_job(monkeypatch):
-    from core import worker_dispatch
+def test_runner_takes_oldest_queued_job_through_heavy_jobs(tmp_path, monkeypatch):
+    from core import heavy_jobs
 
-    called = []
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "worker")
-    monkeypatch.setattr(worker_dispatch, "_submit", lambda *args, **kwargs: called.append(True))
+    _job_env(tmp_path, monkeypatch)
+    first = auto_report.enqueue("PRODUCT_A1000A.3_4500", "a")
+    auto_report.update_job(first["id"], created_at="2026-01-01T00:00:00")
+    second = auto_report.enqueue("PRODUCT_A1000B.3_4500", "b")
+    auto_report.update_job(second["id"], created_at="2026-01-02T00:00:00")
+    kinds = []
 
-    result = worker_dispatch.submit_async("auto_report_generate", {"job_id": "job-1"})
+    def fake_run_heavy(kind, fn, **kwargs):
+        kinds.append(kind)
+        return fn()
 
-    assert result["ok"] is False
-    assert called == []
+    def fake_generate(job_id):
+        auto_report.update_job(job_id, state="completed")
+        return {"ok": True}
+
+    monkeypatch.setattr(heavy_jobs, "run_heavy", fake_run_heavy)
+    monkeypatch.setattr(auto_report, "generate_job", fake_generate)
+
+    assert auto_report.run_next_job()["job_id"] == first["id"]
+    assert auto_report.run_next_job()["job_id"] == second["id"]
+    assert auto_report.run_next_job() is None
+    assert kinds == [auto_report.TASK_TYPE, auto_report.TASK_TYPE]
+
+
+def test_admission_refusal_keeps_the_job_queued(tmp_path, monkeypatch):
+    from core import heavy_jobs
+
+    _job_env(tmp_path, monkeypatch)
+    job = auto_report.enqueue("PRODUCT_A1000A.3_4500", "a")
+    monkeypatch.setattr(heavy_jobs, "run_heavy", lambda kind, fn, **kw: {
+        "ok": False, "error": "local_heavy_memory_guard", "reason": "low_host_memory"})
+
+    result = auto_report.run_next_job()
+
+    assert result["deferred"] is True
+    row = auto_report.read_job(job["id"])
+    assert row["state"] == "queued" and "low_host_memory" in row["phase"]
+
+
+def test_interrupted_job_is_requeued_once_then_failed(tmp_path, monkeypatch):
+    _job_env(tmp_path, monkeypatch)
+    job = auto_report.enqueue("PRODUCT_A1000A.3_4500", "a")
+    auto_report.update_job(job["id"], state="running")
+
+    assert auto_report.recover_interrupted_jobs() == [job["id"]]
+    assert auto_report.read_job(job["id"])["state"] == "queued"
+
+    auto_report.update_job(job["id"], state="running")
+    auto_report.recover_interrupted_jobs()
+    assert auto_report.read_job(job["id"])["state"] == "failed"
 
 
 def test_auto_report_download_writes_shared_admin_history(tmp_path, monkeypatch):
@@ -151,67 +186,23 @@ def test_history_refresh_publishes_under_db_auto_report_run(tmp_path, monkeypatc
     assert (expected.parent / "et_log.csv").is_file()
 
 
-def test_durable_maintenance_is_queued_without_local_fallback(monkeypatch):
-    from core import worker_dispatch
-
-    local_calls = []
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "api")
-    monkeypatch.setattr(worker_dispatch, "_find_deduped_task", lambda key: None)
-    monkeypatch.setattr(worker_dispatch, "_queue_depth", lambda: 0)
-    monkeypatch.setattr(worker_dispatch, "max_queue_depth", lambda: 10)
-    monkeypatch.setattr(worker_dispatch, "worker_alive", lambda **kwargs: False)
-    monkeypatch.setattr(worker_dispatch, "_bump", lambda key: None)
-    monkeypatch.setattr(
-        worker_dispatch,
-        "_submit",
-        lambda *args, **kwargs: ("task-queued", Path("task.json"), False),
-    )
-
-    result = worker_dispatch.run_heavy(
-        "splittable_match_cache_refresh",
-        {"product": "PRODUCT"},
-        lambda: local_calls.append(True) or {"ok": True},
-        durable=True,
-        local_fallback=False,
-        priority="maintenance",
-    )
-
-    assert result["ok"] is True
-    assert result["queued"] is True
-    assert result["task_id"] == "task-queued"
-    assert local_calls == []
-
-
 def test_auto_report_matching_and_et_tracker_share_serial_heavy_gate():
-    from core import worker_dispatch
+    from core import heavy_jobs
 
     assert {
         "auto_report_generate",
         "auto_report_history_refresh",
         "fab_matching_alert_scan",
         "et_tracker_scan",
-    } <= worker_dispatch._CACHE_BUILD_TYPES
+    } <= heavy_jobs.CACHE_BUILD_KINDS
 
 
-def test_auto_report_generation_is_rejected_on_api_role(monkeypatch):
-    from core import worker_dispatch
+def test_matching_alert_scheduler_runs_only_in_the_background_owner(monkeypatch):
+    from core import background_owner, fab_matching_alerts
 
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "api")
-
-    result = auto_report.generate_job("job-that-must-not-run")
-
-    assert result == {
-        "ok": False,
-        "error": "auto_report_generation_requires_development_worker",
-    }
-
-
-def test_matching_alert_scheduler_is_development_worker_only(monkeypatch):
-    from core import fab_matching_alerts, worker_dispatch
-
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "api")
+    monkeypatch.setattr(background_owner, "is_owner", lambda: False)
     assert fab_matching_alerts._scheduler_owner_enabled() is False
-    monkeypatch.setattr(worker_dispatch, "server_role", lambda: "worker")
+    monkeypatch.setattr(background_owner, "is_owner", lambda: True)
     assert fab_matching_alerts._scheduler_owner_enabled() is True
 
 

@@ -50,26 +50,11 @@ def _origin() -> tuple[str, str]:
     now = time.time()
     if now - float(_ORIGIN_CACHE.get("ts") or 0.0) < 5.0 and _ORIGIN_CACHE.get("label"):
         return _ORIGIN_CACHE["label"], _ORIGIN_CACHE["host"]
-    role = ""
-    try:
-        from core.worker_dispatch import server_role
-        role = server_role()
-    except Exception:
-        pass
-    prod = None
     try:
         from core.paths import PATHS
-        prod = bool(PATHS.is_prod)
+        label = "운영" if PATHS.is_prod else "개발"
     except Exception:
-        pass
-    if role == "worker":
-        label = "개발(worker)"
-    elif role == "api" or prod is True:
-        label = "운영"
-    elif prod is False:
-        label = "개발"
-    else:
-        label = role or "server"
+        label = "server"
     try:
         host = socket.gethostname()[:24]
     except Exception:

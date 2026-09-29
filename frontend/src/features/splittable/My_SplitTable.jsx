@@ -5,6 +5,7 @@ import { PageGearButton } from "../../components/PageGear";
 import ProductOrderEditor from "../../components/ProductOrderEditor";
 import { toast } from "../../components/Toast";
 import { columnSearchMatcher } from "../../lib/columnSearch";
+import { handOffInformDraft } from "../../lib/informDraft";
 import { authSrc, sf, dl } from "../../lib/api";
 import { allowedSubTabs, useUserRole } from "../../lib/permissions";
 import { orderProductItems } from "../../lib/productOrder";
@@ -23,8 +24,6 @@ import ImageLightbox from "../../components/ui/ImageLightbox";
 import SplitTableSnapshotView, { buildPemsStView, buildSplitCheckStView, normalizeSplitTableColumnWidths, formatSplitCellValue, planningS0ValueForParam, SPLIT_CHECK_PREFIX_COLUMNS, SPLITTABLE_COLUMN_WIDTH_DEFAULTS, splitParamDisplayName, s0ValueForParam } from "../../components/SplitTableSnapshotView";
 const API="/api/splittable";
 const INFORM_API="/api/informs";
-const INFORM_WIZARD_DRAFT_KEY="flow_inform_wizard_draft_v1";
-const INFORM_WIZARD_OPEN_KEY="flow_inform_open_wizard_v1";
 const BAD = statusPalette.bad;
 const GRID_BORDER = "rgba(85,85,85,0.95)";
 const GRID_LINE = `1px solid ${GRID_BORDER}`;
@@ -2243,10 +2242,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         wizardMailDraft:{subject:"",body:"",generatedFor:""},
         ...(planRecipientUsers.length?{wizardMailMeta:{recipients:[],to:[],to_users:planRecipientUsers,groups:[],extra_emails:[],knobMap:{}}}:{}),
       };
-      try{
-        localStorage.setItem(INFORM_WIZARD_DRAFT_KEY,JSON.stringify(draft));
-        localStorage.setItem(INFORM_WIZARD_OPEN_KEY,"1");
-      }catch(_){}
+      // 큰 스냅샷은 localStorage 한도를 넘는다 — 위저드에는 메모리로 넘기고, 저장은 들어가는 만큼만.
+      if(handOffInformDraft(draft)!=="full")toast.info("표가 커서 새로고침 대비 임시 저장에서는 스냅샷을 뺐습니다. 이 화면에서 바로 등록하면 스냅샷은 그대로 첨부됩니다.",7000);
       (Array.isArray(d?.warnings)?d.warnings:[]).forEach(w=>toast.warn(w));
       if(planModules.length){
         const summary=planModules.map(m=>`${m.module} ${m.params.length}항목`).join(", ");

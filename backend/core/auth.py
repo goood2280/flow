@@ -122,10 +122,77 @@ def _load_tokens() -> dict:
     return _cache
 
 
+_file_lock = threading.Lock()  # tokens.json 쓰기 직렬화(_lock 과 별개)
+_snapshot_gen = 0   # _lock 안에서 증가 — 스냅샷 순서
+_written_gen = 0    # _file_lock 안에서 갱신 — 파일에 반영된 마지막 스냅샷
+
+
+def _snapshot_locked() -> tuple[int, str]:
+    """caller holds _lock."""
+    global _snapshot_gen
+    _snapshot_gen += 1
+    return _snapshot_gen, json.dumps(_cache)
+
+
+def _write_tokens_file(gen: int, payload: str) -> None:
+    global _written_gen
+    with _file_lock:
+        if gen <= _written_gen:
+            return  # 더 새 스냅샷이 이미 쓰였다 — 오래된 내용으로 덮지 않는다.
+        tmp = TOKENS_FILE.with_suffix(".tmp")
+        tmp.write_text(payload, "utf-8")
+        tmp.replace(TOKENS_FILE)
+        _written_gen = gen
+
+
 def _save_tokens() -> None:
-    tmp = TOKENS_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps(_cache), "utf-8")
-    tmp.replace(TOKENS_FILE)
+    """caller holds _lock. 발급·폐기처럼 즉시 영속해야 하는 경우."""
+    global _tokens_dirty
+    gen, payload = _snapshot_locked()
+    _write_tokens_file(gen, payload)
+    _tokens_dirty = False
+
+
+# validate_token 은 인증 미들웨어(이벤트 루프)에서 매 요청 불린다. 여기서 last_seen
+# touch·만료 정리마다 공유드라이브의 tokens.json 을 동기로 다시 쓰면, 사용자 수만큼
+# 분당 쓰기가 생기고 그때마다 서버 전체 요청이 멈췄다(전 탭 지연). touch 는 메모리에만
+# 반영하고 백그라운드 스레드가 몇 초 간격으로 모아서 쓴다. 발급·폐기는 즉시 쓴다.
+_TOKENS_FLUSH_SEC = 5.0
+_tokens_dirty = False
+_flusher_started = False
+
+
+def _flush_loop() -> None:
+    global _tokens_dirty
+    while True:
+        time.sleep(_TOKENS_FLUSH_SEC)
+        if not _tokens_dirty:
+            continue
+        try:
+            # 직렬화만 _lock 안에서, 공유드라이브 쓰기는 밖에서 — 쓰는 동안
+            # validate_token(이벤트 루프)이 락을 기다리지 않게 한다.
+            with _lock:
+                if not _tokens_dirty:
+                    continue
+                gen, payload = _snapshot_locked()
+                _tokens_dirty = False
+            _write_tokens_file(gen, payload)
+        except Exception:
+            with _lock:
+                _tokens_dirty = True
+
+
+def _schedule_save() -> None:
+    """caller holds _lock."""
+    global _tokens_dirty, _flusher_started
+    _tokens_dirty = True
+    if not _flusher_started:
+        _flusher_started = True
+        try:
+            threading.Thread(target=_flush_loop, name="flow-token-flush", daemon=True).start()
+        except Exception:
+            _flusher_started = False
+            _save_tokens()
 
 
 def issue_token(
@@ -133,6 +200,7 @@ def issue_token(
     role: str,
     auth_method: str = "password",
     claims: dict | None = None,
+    tabs: str | None = None,
 ) -> tuple[str, float]:
     """새 세션 토큰 발급. 동일 유저의 기존 토큰은 유지 (다중 기기).
 
@@ -155,6 +223,10 @@ def issue_token(
     }
     if claims:
         meta["claims"] = dict(claims)
+    if tabs is not None:
+        # users.csv 에 행이 없는 사용자(websocket 로그인)는 탭 권한을 세션에 담는다 —
+        # user_tab_tokens() 는 세션의 tabs 를 먼저 본다.
+        meta["tabs"] = str(tabs)
     with _lock:
         _load_tokens()
         _cache[token] = meta
@@ -200,17 +272,17 @@ def validate_token(token: str) -> Optional[dict]:
         # idle 만료
         if (now - last) >= SESSION_IDLE_SECONDS:
             _cache.pop(token, None)
-            _save_tokens()
+            _schedule_save()
             return None
         # absolute 만료
         if (now - issued) >= SESSION_ABSOLUTE_MAX_SECONDS:
             _cache.pop(token, None)
-            _save_tokens()
+            _schedule_save()
             return None
         # touch (60s grace 로 쓰기 I/O 최소화)
         if (now - last) > SESSION_TOUCH_GRACE:
             meta["last_seen"] = now
-            _save_tokens()
+            _schedule_save()
         out = dict(meta)
         # 업그레이드 이전에 발급된 토큰에는 auth_method 가 없다. 그때는 비밀번호
         # 로그인뿐이었으므로 "password" 로 채운다 — 재로그인 없이 넘어간다.
@@ -413,6 +485,22 @@ def is_page_manager(user: dict | str, page_id: str) -> bool:
     return username in (pa.get(canonical_page_id(page_id)) or [])
 
 
+def has_page_access(user: dict | None, page_id: str) -> bool:
+    """이 페이지(탭) 사용 권한 — admin, 페이지 관리자, 또는 users.csv 탭 권한 보유.
+
+    AI 기능은 관리자 전용이 아니라 해당 페이지 권한이 있는 사용자에게 열린다."""
+    if not user or not page_id:
+        return False
+    if str(user.get("role") or "") == "admin" or is_page_manager(user, page_id):
+        return True
+    try:
+        tabs, _subs = user_tab_tokens(user)
+    except Exception:
+        return False
+    page = canonical_page_id(page_id)
+    return "__all__" in tabs or any(str(tab).split(":", 1)[0] == page for tab in tabs)
+
+
 def is_page_admin(username: str, page_id: str) -> bool:
     """Back-compat delegated-page check. Global admin cannot be inferred from username only."""
     if not username or not page_id:
@@ -440,14 +528,27 @@ def _user_tabs(user: dict) -> list[str] | str:
     return out
 
 
+def _read_groups_for_permissions() -> list:
+    """그룹 목록 — 부서 기준 소속까지 반영된 `members` 를 쓴다(routers.groups._load).
+
+    라우터를 못 불러오는 환경(스크립트 등)에서는 저장 파일의 개별 멤버만 본다."""
+    try:
+        from routers.groups import _load as _load_groups
+
+        return _load_groups()
+    except Exception:
+        pass
+    try:
+        fp = PATHS.data_root / "groups" / "groups.json"
+        return json.loads(fp.read_text("utf-8")) if fp.is_file() else []
+    except Exception:
+        return []
+
+
 def _group_permissions(username: str, role: str) -> dict:
     if role == "admin":
         return {"all": True, "owner": [], "member": []}
-    try:
-        fp = PATHS.data_root / "groups" / "groups.json"
-        groups = json.loads(fp.read_text("utf-8")) if fp.is_file() else []
-    except Exception:
-        groups = []
+    groups = _read_groups_for_permissions()
     owner: list[str] = []
     member: list[str] = []
     if isinstance(groups, list):
@@ -472,11 +573,7 @@ def _group_permissions_index() -> dict[str, dict[str, list[str]]]:
     the per-user part linear in the number of users rather than rescanning every
     group for every user.
     """
-    try:
-        fp = PATHS.data_root / "groups" / "groups.json"
-        groups = json.loads(fp.read_text("utf-8")) if fp.is_file() else []
-    except Exception:
-        groups = []
+    groups = _read_groups_for_permissions()
     indexed: dict[str, dict[str, list[str]]] = {}
     if not isinstance(groups, list):
         return indexed

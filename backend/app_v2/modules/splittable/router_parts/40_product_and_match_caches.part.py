@@ -1507,20 +1507,14 @@ def _run_started_match_cache_job(products: list[str], force: bool, reason: str =
                 break
             _match_cache_job_update(current_product=raw_product, paused=False)
             try:
-                from core import worker_dispatch as _wd
-                automatic = reason not in {"manual", "unified_scan"}
+                from core import heavy_jobs
 
-                result = _wd.run_heavy(
+                result = heavy_jobs.run_heavy(
                     "splittable_match_cache_refresh",
-                    {"product": raw_product, "force": bool(force)},
                     lambda: _refresh_match_cache_products([raw_product], force=force),
                     label=f"match_cache:{raw_product}",
-                    local_idle_only=(reason != "unified_scan"),
-                    local_fallback=not automatic,
-                    durable=automatic,
-                    priority="maintenance" if automatic else "normal",
-                    dedupe_key=f"match_cache:{raw_product}",
-                    timeout_sec=6 * 3600.0 if automatic else None,
+                    idle_only=(reason != "unified_scan"),
+                    product=str(raw_product),
                 ) or {"ok": False, "products": []}
             except Exception as e:
                 logger.warning("SplitTable match cache queued build failed (product=%s) %s: %s",
@@ -1810,7 +1804,7 @@ def get_search_timings(request: Request, hours: float = Query(24.0), limit: int 
     slow_wait_pct 가 지속적으로 높으면 cold 레인 슬롯을 늘릴 근거가 되고,
     wait 은 낮은데 compute 가 크면 레인이 아니라 캐시/계산 쪽 문제다.
 
-    origin 은 서버 라벨(예: "운영", "개발(worker)") — 로그가 두 서버 공유라
+    origin 은 서버 라벨(예: "운영", "개발") — 로그가 여러 서버 공유일 수 있어
     기본값(빈 값)은 합산이다. 이 서버만 보려면 origin 을 지정한다."""
     if not is_page_manager(current_user(request), "splittable"):
         raise HTTPException(403, "관리자 전용")

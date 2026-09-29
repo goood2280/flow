@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef, memo, useDeferredValue } from "react";
 import Loading from "../../components/Loading";
 import Modal from "../../components/Modal";
+import { columnSearchMatcher } from "../../lib/columnSearch";
+import { isDownloadLimitError, limitErrorInfo, truncatedDownloadInfo, useDownloadLimitDialog } from "../../components/DownloadLimitDialog";
 import { PageGearButton } from "../../components/PageGear";
 import { toast } from "../../components/Toast";
 import { dl, qs, sf } from "../../lib/api";
@@ -732,6 +734,17 @@ const baseEditIndexBody={...baseEditRowCell,position:"sticky",left:0,zIndex:5,te
 const baseEditCellInput={width:"100%",height:"100%",padding:"0 10px",border:"none",outline:"none",background:"transparent",color:"var(--text-primary)",fontSize:13,fontFamily:"inherit",boxSizing:"border-box"};
 const baseEditCellActive={boxShadow:`inset 0 0 0 2px var(--accent)`,background:"#dbeafe",zIndex:2};
 const baseReadCell={...baseEditRowCell,padding:"0 10px",fontSize:13,color:"var(--text-primary)",height:34,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"};
+// 조회 표 열 폭: 헤더와 앞쪽 행 값 길이로 정한다(열 이름이 잘리지 않게). 상한을 두어 긴 값 한 칸이 표를 늘이지 않는다.
+const READ_COL_MIN=120, READ_COL_MAX=520, READ_COL_SAMPLE=200;
+const textWidth=(text)=>{let w=0;for(const ch of String(text))w+=ch.charCodeAt(0)>0x2e80?13:7.8;return w;};
+function readColumnWidths(cols,rows){
+  const sample=Array.isArray(rows)?rows.slice(0,READ_COL_SAMPLE):[];
+  return cols.map(c=>{
+    let w=textWidth(c)+34;
+    for(const r of sample){const v=r?.[c];if(v!=null)w=Math.max(w,textWidth(v)+24);if(w>=READ_COL_MAX)break;}
+    return Math.round(Math.min(READ_COL_MAX,Math.max(READ_COL_MIN,w)));
+  });
+}
 const baseReadIndexCell={...baseEditIndexBody,padding:"0 10px",height:34,width:54,textAlign:"center",fontSize:13};
 const baseReadIndexBodyCell={...baseReadIndexCell,color:FB_MUTED};
 const baseReadCellFind={...baseReadCell,background:FIND_HIT_BG,color:"#1f2937"};
@@ -1104,13 +1117,16 @@ export default function My_FileBrowser({
   // 내보내지 않던 값이다 — 툴팁에만 있던 걸 여기서 눈에 보이게 한다.
   const[rootCollapsed,setRootCollapsed]=useState(false);
   const[colPanelOpen,setColPanelOpen]=useState(false);
-  const lightDot=(name)=>{const l=s3Light(name);return(
+  const[downloadLimitDialog,showDownloadLimit]=useDownloadLimitDialog();
+  // 원형은 .fb-light 클래스로 준다 — 인라인 borderRadius 는 global.css 의
+  // `.flow-connected-page [style*="border-radius"]` 규칙에 덮여 네모가 된다.
+  // 방향 정보가 없는 상태(미설정·확인중)의 "·" 는 그리지 않는다.
+  const lightDot=(name)=>{const l=s3Light(name);const hasDir=l.directionArrow&&l.directionArrow!=="·";return(
     <span title={l.tip} style={{display:"inline-flex",alignItems:"center",gap:3,flexShrink:0}}>
-      <span style={{display:"inline-block",width:10,height:10,borderRadius:"50%",background:l.color,flexShrink:0,boxSizing:"content-box",border:l.latestItemStale?"2px solid var(--danger)":(l.inherited?"1px dashed var(--border-strong)":"1px solid transparent")}}>
-      </span>
-      <span aria-label={"S3 "+l.directionLabel} style={{fontFamily:"var(--font-mono)",fontSize:11,fontWeight:700,lineHeight:1,color:l.color,flexShrink:0,width:7,textAlign:"center"}}>
+      <span className={"fb-light"+(l.latestItemStale?" is-stale":(l.inherited?" is-inherited":""))} style={{background:l.color}}/>
+      {hasDir&&<span aria-label={"S3 "+l.directionLabel} style={{fontFamily:"var(--font-mono)",fontSize:11,fontWeight:700,lineHeight:1,color:l.color,flexShrink:0,width:7,textAlign:"center"}}>
         {l.directionArrow}
-      </span>
+      </span>}
     </span>
   );};
   const lightFreshText=(name)=>{
@@ -3001,13 +3017,19 @@ export default function My_FileBrowser({
     }
     else if(mode==="rootpq")url+="&file="+encodeURIComponent(selRootPq);
     else url+="&root="+encodeURIComponent(selRoot)+"&product="+encodeURIComponent(selProd);
-    dl(url).catch(e=>toast.error(e.message||"다운로드 실패"));
+    dl(url).then(result=>{const info=truncatedDownloadInfo(result,"CSV");if(info)showDownloadLimit(info);})
+      .catch(e=>{if(isDownloadLimitError(e))showDownloadLimit(limitErrorInfo(e,"CSV 다운로드"));else toast.error(e.message||"다운로드 실패");});
   };
 
 
   // 컬럼 목록은 data/colSearch 변경 때만 재계산 (1초 ticker 등 무관 렌더에서 재filter 방지)
   const allCols=useMemo(()=>data?.all_columns||data?.columns||[],[data]);
-  const filteredCols=useMemo(()=>colSearch?allCols.filter(c=>c.toLowerCase().includes(colSearch.toLowerCase())):allCols,[allCols,colSearch]);
+  // 조회 표 열 폭은 데이터가 바뀔 때만 계산 — 가상 스크롤이 스크롤마다 다시 렌더하므로
+  // 렌더 안에서 계산하면 (행 200 × 열 수) 만큼 글자 폭을 매 프레임 다시 쟀다.
+  const readCols=useMemo(()=>data?.showing_cols||data?.columns||[],[data]);
+  const readWidths=useMemo(()=>readColumnWidths(readCols,data?.data),[readCols,data]);
+  const readTableWidth=useMemo(()=>readWidths.reduce((a,b)=>a+b,54),[readWidths]);
+  const filteredCols=useMemo(()=>{const match=columnSearchMatcher(colSearch);return match?allCols.filter(match):allCols;},[allCols,colSearch]);
   const displayCols=(data?.all_columns_truncated&&colSearch.trim())?remoteCols:filteredCols;
   const fbActiveRule=formToRule(fbRuleForm);
   const fbActiveRuleSections=ruleSummarySections(fbActiveRule);
@@ -3540,12 +3562,12 @@ export default function My_FileBrowser({
                 </div>}
               </>}
               {tab==="data"&&!isBaseEditingMode&&(()=>{
-                const readCols=data.showing_cols||data.columns||[];
                 return <div ref={baseReadGridRef} style={baseReadWrap} onScroll={readVirt.onScroll}>
-                  <table style={baseEditTable}>
+                  <table style={{...baseEditTable,tableLayout:"fixed",width:readTableWidth,minWidth:"100%"}}>
+                    <colgroup><col style={{width:54}}/>{readWidths.map((w,i)=><col key={i} style={{width:w}}/>)}</colgroup>
                     <thead><tr>
                       <th style={baseReadIndexCell}>#</th>
-                      {readCols.map((c,i)=><th key={i} style={baseEditHeaderReadCell}>{c}</th>)}</tr></thead>
+                      {readCols.map((c,i)=><th key={i} style={baseEditHeaderReadCell} title={c}>{c}</th>)}</tr></thead>
                     <tbody>
                       {readVirt.padTop>0&&<tr aria-hidden="true" style={{height:readVirt.padTop}}><td colSpan={readCols.length+1} style={SPACER_CELL}/></tr>}
                       {(data.data||[]).slice(readVirt.start,readVirt.end).map((row,i)=>{
@@ -3574,7 +3596,7 @@ export default function My_FileBrowser({
                   <button type="button" className="flow-icon-button" onClick={()=>setColPanelOpen(false)} title="닫기"><Icon name="close"/></button>
                 </div>
                 <div className="fb-colpanel__search">
-                  <input className="fb-input" value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색..." autoFocus/>
+                  <input className="fb-input" value={colSearch} onChange={e=>setColSearch(e.target.value)} placeholder="컬럼 검색 (예: QTIME*M3, cd%top, lot_id,wafer_id)" title="스플릿테이블 CUSTOM 목록과 같은 규칙: * 또는 % 는 아무 글자, 쉼표로 여러 조건(OR), 대소문자 무시·부분일치." autoFocus/>
                   <div className="fb-colpanel__hint">
                     체크한 열이 SELECT 절에 들어갑니다. <b>실행</b>을 눌러야 조회에 반영돼요. + WHERE 는 조건 틀을 SQL 칸에 넣습니다.
                     {data.all_columns_truncated&&<> 스키마 {Number(data.schema_columns_returned||0).toLocaleString()}/{Number(data.total_cols||0).toLocaleString()}열 — 나머지는 검색하면 서버에서 찾습니다{remoteColsLoading?" (검색 중)":""}.</>}
@@ -3602,6 +3624,7 @@ export default function My_FileBrowser({
           </>}
         </div>
       </div>
+      {downloadLimitDialog}
       {reasonDialog&&(
         <Modal open onClose={()=>closeReasonDialog(null)} title={reasonDialog.title} width={500} zIndex={120} closeOnBackdrop={false}>
           <form className="fb-dialog" onSubmit={e=>{e.preventDefault();closeReasonDialog(String(reasonDialog.value||"").trim()||reasonDialog.fallback||"");}}>

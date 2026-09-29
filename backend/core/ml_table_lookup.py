@@ -57,7 +57,7 @@ class LookupBuildCancelled(RuntimeError):
 def _build_cancel_requested() -> bool:
     """스캔 게이트에 이 빌드의 중단 요청이 왔는가 — 청크 경계에서만 확인한다.
 
-    빌드는 `scan_gate.exclusive()` 블록 안에서 돌고(run_heavy → _run_local_heavy →
+    빌드는 `scan_gate.exclusive()` 블록 안에서 돌고(heavy_jobs.run_heavy →
     _cache_gate), exclusive 가 그 슬롯 id 를 호출 스레드의 `_TLS.task_id` 로 심으므로
     여기서 인자 없이 물어봐도 올바른 작업을 가리킨다. 게이트 밖에서 시작된 빌드는
     id 가 없어 항상 False — 종전대로 무중단이다.
@@ -132,10 +132,9 @@ _BUILD_QUEUE: deque[Path] = deque()
 # 이 파일들은 idle 창을 기다리지 않고 바로 빌드한다 — 관리자가 화면에서 진행을
 # 지켜보는 동안에는 서버가 절대 idle 이 되지 않아, idle 대기가 곧 무한 정지였다.
 _BUILD_IMMEDIATE: set[str] = set()
-# 이 서버에서 직접 빌드해야 하는(개발 워커로 오프로드 금지) 빌드의 resolved path.
-# 관리자가 "수동 캐싱" 을 누른 서버가 곧 결과를 봐야 하는 서버라, 그 요청만큼은
-# 워커로 넘기지 않는다. 큐를 꺼내는 워커 스레드는 요청 스레드와 다르므로 이
-# 플래그는 반드시 **경로에 붙여** 전달한다 (thread-local 은 전파되지 않는다).
+# 관리자가 "수동 캐싱" 으로 요청한 빌드의 resolved path — idle 창을 기다리지 않는다.
+# 큐를 꺼내는 빌드 스레드는 요청 스레드와 다르므로 이 플래그는 반드시 **경로에
+# 붙여** 전달한다 (thread-local 은 전파되지 않는다).
 _BUILD_LOCAL_ONLY: set[str] = set()
 _BUILD_PARENT_TASKS: dict[str, str] = {}
 _BUILD_CANCEL_CONTEXT = threading.local()
@@ -314,19 +313,8 @@ def _root_ram_settings() -> dict[str, Any]:
 
 
 def _root_ram_cache_use_dev() -> bool:
-    """개발서버(운영보다 작은 lot 예산) 컨텍스트 여부.
-
-    PATHS.is_prod 가 아니면 dev. 운영이라도 server_role 이 worker(개발서버
-    오프로드)이면 dev 예산을 쓴다."""
-    if not PATHS.is_prod:
-        return True
-    try:
-        from core.worker_dispatch import server_role
-        if server_role() == "worker":
-            return True
-    except Exception:
-        pass
-    return False
+    """개발 PC(운영보다 작은 lot 예산) 컨텍스트 여부 — PATHS.is_prod 가 아니면 dev."""
+    return not PATHS.is_prod
 
 
 def _root_ram_cache_product_budget(product_token: str) -> int:
@@ -471,7 +459,7 @@ def _load_priority_root_lot_ids(product: str) -> list[str]:
 def root_ram_cache_disabled_reason() -> str:
     """root lot RAM 캐시가 꺼져 있는 이유(사람이 읽는 문장). 켜져 있으면 빈 문자열.
 
-    개발(worker) 서버 RAM은 운영 API와 공유되지 않으므로 기본 적재하지 않는다.
+    개발 PC RAM은 운영 API와 공유되지 않으므로 기본 적재하지 않는다.
     worker는 공유 lookup/pivot/FAB 인덱스에 집중하며 진단 시에만
     FLOW_ENABLE_WORKER_RAM_CACHE=1로 opt-in한다.
     끄려면 FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE=1 (역할 무관 전역 스위치).
@@ -594,7 +582,7 @@ def _root_ram_cache_load_workers() -> int:
     예열은 파티션 parquet 을 읽어 RAM 에 적재한다. 워커 수는 '동시에 몇 파티션을
     로드하나'라는 IO/메모리 축(각 collect 는 공용 Polars 풀을 빌려 CPU 병렬도는
     풀 크기로 상한). query_workers 설정과는 무관(분리).
-      · 개발서버(dev/worker): 1 — **순차 로드**. 병렬 로드는 한 번에 여러 프레임을
+      · 개발 PC(비운영): 1 — **순차 로드**. 병렬 로드는 한 번에 여러 프레임을
         메모리에 올려 순간 RSS 스파이크 → 메모리 워치독 축출/OOM 을 유발했다.
         개발서버는 메모리 안전을 예열 속도보다 우선한다(사용자 승인: 순차 허용).
       · 운영(api/standalone-prod): 2 — 사용자 검색에 코어를 양보하며 완만히 예열.
@@ -733,6 +721,12 @@ def _root_ram_cache_auto_max_gb() -> float:
         if cached is not None and now - cached[0] < _ROOT_RAM_AUTO_GB_TTL_SEC:
             return cached[1]
     lo, hi = ROOT_RAM_CACHE_AUTO_MIN_GB, ROOT_RAM_CACHE_AUTO_MAX_GB
+    try:
+        from core import cache_budget
+        # 대형 서버: 2GB 천장 대신 캐시 풀 지분(128GB 기준 약 9GB)까지 연다.
+        hi = max(hi, cache_budget.default_bytes("splittable_root_ram", 0) / (1024.0 ** 3))
+    except Exception:
+        pass
     budget = lo
     try:
         snap = system_memory_snapshot()
@@ -2410,16 +2404,9 @@ def root_ram_warmup_overview() -> dict[str, Any]:
     max_bytes = _root_ram_cache_max_bytes()
     setting_gb = _root_ram_cache_budget_setting_gb()
     effective_gb = round(max_bytes / (1024 ** 3), 3) if max_bytes else 0.0
-    role = ""
-    try:
-        from core.worker_dispatch import server_role
-        role = server_role()
-    except Exception:
-        role = ""
     return {
         "products": by_file,
         "is_dev": _root_ram_cache_use_dev(),
-        "server_role": role,
         "scheduler_started": _ROOT_RAM_STARTED,
         "disabled_reason": root_ram_cache_disabled_reason(),
         "last_refresh_at": status.get("last_refresh_at") or "",
@@ -2530,7 +2517,7 @@ def start_root_lot_ram_cache_scheduler() -> bool:
     global _ROOT_RAM_THREAD, _ROOT_RAM_STARTED
     if _ROOT_RAM_STARTED:
         return False
-    # 개발(worker) 서버에서도 예열한다 — 역할로 끄지 않는다. 적재량은 예산
+    # 개발 PC에서도 예열한다 — 역할로 끄지 않는다. 적재량은 예산
     # (제품별 max_roots / target_roots, root RAM GB)이 정하고, 끄려면
     # FLOW_DISABLE_SPLITTABLE_ROOT_LOT_RAM_CACHE=1 을 쓴다.
     if not root_ram_cache_available() or _root_ram_cache_max_bytes() <= 0:
@@ -2845,10 +2832,8 @@ def _try_acquire_build_lock(fp: Path) -> tuple[int | None, Path, str]:
                     owner_meta = {}
             except Exception:
                 owner_meta = {}
-            # 워커가 OOM/종료되면 O_EXCL lock 파일만 남고 30분 동안 api의
-            # 폴백까지 막혔다. 마지막 heartbeat의 정확한 owner와 일치하고 그
-            # heartbeat가 stale인 경우에만 즉시 고아 lock으로 회수한다.
-            orphaned_worker_lock = False
+            # 빌드 프로세스가 OOM/종료되면 O_EXCL lock 파일만 남는다. 같은 머신의
+            # 죽은 PID 가 남긴 lock 은 즉시 고아로 회수한다.
             lock_owner_id = str(owner_meta.get("owner") or "")
             lock_host = str(owner_meta.get("host") or "")
             try:
@@ -2863,33 +2848,11 @@ def _try_acquire_build_lock(fp: Path) -> tuple[int | None, Path, str]:
             local_owner_active = bool(
                 same_host_owner and _local_pid_alive(lock_pid)
             )
-            # worker 재시작 후 heartbeat owner가 새 PID로 바뀐 경우에도, 같은
-            # 머신의 새 worker는 이전 PID를 검사해 OOM 고아 lock을 즉시 회수한다.
             orphaned_local_process_lock = bool(
                 same_host_owner
                 and lock_pid != os.getpid()
                 and not local_owner_active
             )
-            worker_owner_active = False
-            if lock_owner_id and lock_owner_id != owner_id:
-                try:
-                    from core import worker_dispatch as _wd
-
-                    hb = _wd.heartbeat_meta(fresh_read=True)
-                    hb_owner = str(hb.get("owner") or "")
-                    worker_owner_active = bool(
-                        hb_owner
-                        and lock_owner_id == hb_owner
-                        and _wd.worker_alive(fresh_read=True)
-                    )
-                    orphaned_worker_lock = bool(
-                        hb_owner
-                        and lock_owner_id == hb_owner
-                        and not worker_owner_active
-                    )
-                except Exception:
-                    orphaned_worker_lock = False
-                    worker_owner_active = False
             # Age is only a fallback for an owner whose liveness cannot be
             # verified.  A wide lookup build can legitimately exceed 30 min;
             # reclaiming a live owner's old lock starts two writers against
@@ -2897,18 +2860,16 @@ def _try_acquire_build_lock(fp: Path) -> tuple[int | None, Path, str]:
             age_expired = bool(
                 age > BUILD_LOCK_STALE_SECONDS
                 and not local_owner_active
-                and not worker_owner_active
             )
             if attempt == 0 and (
                 age_expired
-                or orphaned_worker_lock
                 or orphaned_local_process_lock
             ):
                 try:
                     lock_fp.unlink()
-                    if orphaned_worker_lock or orphaned_local_process_lock:
+                    if orphaned_local_process_lock:
                         logger.warning(
-                            "reclaimed orphaned worker lookup-build lock source=%s owner=%s",
+                            "reclaimed orphaned lookup-build lock source=%s owner=%s",
                             fp, lock_owner_id,
                         )
                     continue
@@ -3678,7 +3639,7 @@ def _build_lookup_cache(fp: Path) -> dict[str, Any]:
     fp = Path(fp).resolve()
     started = time.monotonic()
     _prod_lbl = _safe_product_token(Path(fp).stem) or Path(fp).name
-    # 오프로드된 개발서버(worker)에서 빌드해도 공유 로그로 운영 화면에 뜨도록 기록.
+    # 빌드 시작·끝을 공유 캐시 이벤트 로그에 남겨 캐시관리 화면에 뜨게 한다.
     try:
         from core.cache_event_log import record as _cache_log, stage_detail
         _cache_log("build", f"lookup 캐시 빌드 시작: {_prod_lbl}", product=_prod_lbl,
@@ -3926,7 +3887,7 @@ def _schedule_build_retry(
 def _warm_root_ram_after_lookup_build(fp: Path) -> None:
     """공유 lookup 산출물을 만든 뒤 로컬 RAM 을 즉시 예열.
 
-    개발(worker) 서버도 예열한다 — 랏 캐시는 역할이 아니라 예산으로 제한한다.
+    개발 PC도 예열한다 — 랏 캐시는 역할이 아니라 예산으로 제한한다.
     """
     if not root_ram_cache_available():
         return
@@ -3980,19 +3941,15 @@ def _worker_loop() -> None:
             _BUILD_STATE["last_error"] = ""
         try:
             def _local_build() -> dict:
-                # 로컬 실행일 때만 메모리 대기 — 오프로드되면 이 서버 메모리를
-                # 쓰지 않으므로 대기 없이 워커가 바로 빌드한다.
+                # 이미 최신이면 메모리 대기 없이 바로 끝낸다.
                 if not lookup_artifacts_fresh(fp) and not _wait_for_lookup_cache_memory(fp):
                     return {"ok": False, "error": "memory_wait_timeout"}
                 return build_lookup_cache(fp, force=False)
 
-            # v9.4.x: 개발서버(워커) 생존 시 파티션 빌드를 오프로드 — 산출물은
-            # 공유 db cache 파티션 트리라 어느 서버가 빌드해도 동일하게 읽힌다.
-            # 워커 다운/타임아웃이면 로컬 폴백 (core.worker_dispatch.run_heavy).
-            from core import worker_dispatch as _wd
+            from core import heavy_jobs
             # maintainer scan과 실제 실행 사이에 다른 작업이 cache를 완성했으면
-            # worker 큐에 넣지도 않는다. 제품 수가 많을 때 no-op task가 앞 제품의
-            # 실작업을 밀어내는 것을 막는다.
+            # 빌드하지 않는다. 제품 수가 많을 때 no-op 빌드가 앞 제품의 실작업을
+            # 밀어내는 것을 막는다.
             if lookup_artifacts_fresh(fp):
                 res = {"ok": True, "skipped": True, "reason": "fresh"}
                 # 관리자가 직접 요청한 빌드(immediate)만 남긴다 — 유지보수 스캔이
@@ -4000,62 +3957,27 @@ def _worker_loop() -> None:
                 if immediate:
                     _emit_build_event(fp.stem, f"lookup 캐시 이미 최신 — 건너뜀: {fp.stem}",
                                       phase="skip", detail={"reason": "fresh"})
-            elif local_only:
-                # 관리자가 이 서버에서 누른 수동 캐싱 — 워커 큐를 거치지 않고
-                # 여기서 바로 빌드한다. 대기열 왕복이 없으니 중단도 이 서버의
-                # scan gate 로 바로 먹는다.
-                res = _wd._run_local_heavy(
-                    "ml_lookup_cache_build", f"ml_lookup:{fp.stem}",
-                    _local_build, product=fp.stem) or {}
             else:
-                res = _wd.run_heavy(
-                    "ml_lookup_cache_build",
-                    {
-                        "product": fp.stem,
-                        "file": fp.name,
-                        # 구버전 worker 호환용. 새 worker는 logical identifier를 우선한다.
-                        "source_path": str(fp.resolve()),
-                    },
-                    _local_build,
+                # 관리자 요청(immediate)·수동 캐싱(local_only)은 idle 을 기다리지 않는다.
+                # 자동 lookup 은 사용자 요청이 조용해질 때까지 기다리되, 조회의 전제
+                # 캐시라 짧은 유예 뒤 진행한다(heavy_jobs.REQUIRED_READ_CACHE_KINDS).
+                res = heavy_jobs.run_heavy(
+                    "ml_lookup_cache_build", _local_build,
                     label=f"ml_lookup:{fp.stem}",
-                    # 관리자 요청 빌드는 idle 을 기다리지 않는다 (immediate).
-                    local_idle_only=not immediate,
-                    # 자동 lookup도 worker가 오프라인이면 운영 API의 idle lane에서
-                    # 이어받는다. lookup은 검색의 선행 산출물이라 worker 복귀까지
-                    # 무기한 비워둘 수 없다. scan gate + shared build lock이 중복
-                    # 실행을 막는다.
-                    local_fallback=True,
-                    durable=not immediate,
-                    priority="normal" if immediate else "maintenance",
-                    dedupe_key=f"ml_lookup:{fp.stem}",
-                    timeout_sec=6 * 3600.0 if not immediate else None,
+                    idle_only=not (immediate or local_only),
+                    product=fp.stem,
                 ) or {}
             if res.get("cancelled"):
                 raise LookupBuildCancelled("cancelled_by_admin")
             fresh_after = lookup_artifacts_fresh(fp)
             if not fresh_after:
-                # durable 자동 빌드는 API가 worker queue에 영속 등록한 뒤 즉시
-                # 돌아온다. 이때 cache_status(fp)는 현재 coordinator loop 때문에
-                # "running"을 돌려주지만, 그것은 실패 사유가 아니라 원격 작업의
-                # 정상 대기 상태다. 과거에는 이 running을 실패로 3회 차감해 모든
-                # 제품이 "running · 재시도 없음"으로 끝났다.
-                worker_task_pending = bool(
-                    res.get("ok")
-                    and res.get("queued")
-                    and res.get("deferred")
-                    and res.get("task_id")
+                reason = str(
+                    res.get("error")
+                    or res.get("reason")
+                    or cache_status(fp).get("status")
+                    or "lookup_build_not_fresh"
                 )
-                reason = (
-                    "worker_task_queued"
-                    if worker_task_pending
-                    else str(
-                        res.get("error")
-                        or res.get("reason")
-                        or cache_status(fp).get("status")
-                        or "lookup_build_not_fresh"
-                    )
-                )
-                waiting_on_build = worker_task_pending or reason == "build_lock_held"
+                waiting_on_build = reason == "build_lock_held"
                 with _BUILD_LOCK:
                     _BUILD_STATE["last_error"] = "" if waiting_on_build else reason
                     _BUILD_STATE["last_source"] = str(fp.resolve())
@@ -4074,30 +3996,22 @@ def _worker_loop() -> None:
                 elif retry:
                     logger.info(
                         "ML_TABLE lookup cache build pending; completion check scheduled "
-                        "source=%s reason=%s task_id=%s",
-                        fp, reason, res.get("task_id") or "",
+                        "source=%s reason=%s",
+                        fp, reason,
                     )
-                # 여기가 "큐에는 넣었는데 캐시가 안 생긴" 경로다. 예전에는
+                # 여기가 "빌드를 돌렸는데 캐시가 안 생긴" 경로다. 예전에는
                 # logger.warning 뿐이라 화면에서는 아무 일도 없던 것과 구분이
-                # 안 됐다 — 워커 오프로드 대기/메모리 대기 초과가 전부 침묵했다.
+                # 안 됐다 — 메모리 대기 초과 같은 사유가 전부 침묵했다.
                 if waiting_on_build and retry:
-                    waiting_message = (
-                        f"lookup 캐시 워커 빌드 완료 대기: {fp.stem}"
-                        if worker_task_pending
-                        else f"lookup 캐시 기존 빌드 완료 대기: {fp.stem}"
-                    )
                     _emit_build_event(
                         fp.stem,
-                        waiting_message,
+                        f"lookup 캐시 기존 빌드 완료 대기: {fp.stem}",
                         ok=True,
                         phase="skip",
                         detail={
                             "reason": reason,
                             "retry_scheduled": True,
                             "waiting_for_existing_build": True,
-                            "worker_task_pending": worker_task_pending,
-                            "task_id": str(res.get("task_id") or ""),
-                            "deduped": bool(res.get("deduped")),
                         },
                     )
                 else:
@@ -4165,7 +4079,7 @@ def enqueue_build(fp: Path, *, immediate: bool = False,
     """빌드 큐에 넣는다. immediate=True 면 idle 창을 기다리지 않고 바로 빌드한다
     (관리자가 요청한 수동 스캔/전체 셋업). 기본은 기존대로 idle 양보.
 
-    local_only=True 면 개발 워커로 오프로드하지 않고 이 서버에서 빌드한다."""
+    local_only=True 면 관리자 수동 캐싱 — idle 창을 기다리지 않는다."""
     fp = Path(fp).resolve()
     from core import scan_gate
     parent_task_id = (scan_gate.current_task_id()

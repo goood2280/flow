@@ -94,23 +94,6 @@ except (TypeError, ValueError):
 DEFAULT_FILEBROWSER_CSV_DOWNLOAD_ROWS = 500_000
 
 
-def _filebrowser_sql_offload_min_bytes() -> int:
-    """Minimum source size worth paying the cross-server queue round trip."""
-    try:
-        value = int(os.environ.get("FLOW_FILEBROWSER_SQL_OFFLOAD_MIN_BYTES", "") or 256 * 1024 * 1024)
-    except (TypeError, ValueError):
-        value = 256 * 1024 * 1024
-    return max(0, value)
-
-
-def _should_offload_filebrowser_sql(
-    *, source_size: int, all_partitions: bool, aggregate: bool,
-) -> bool:
-    return bool(
-        all_partitions
-        or aggregate
-        or int(source_size or 0) >= _filebrowser_sql_offload_min_bytes()
-    )
 MAX_CSV_DOWNLOAD_AUTO_COLUMNS = 200
 DEFAULT_SQL_QUERY_MAX_SOURCE_BYTES = 5 * 1024 * 1024 * 1024
 MAX_SQL_QUERY_MAX_SOURCE_BYTES = 500 * 1024 * 1024 * 1024
@@ -180,8 +163,21 @@ _CHART_BUILDER_LIKE_LOCK = threading.Lock()
 _CHART_BUILDER_CACHE_LOCK = threading.Lock()
 _FILEBROWSER_SQL_HISTORY_LOCK = threading.Lock()
 _CHART_BUILDER_RESULT_CACHE: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
+def _chart_builder_default_concurrency() -> int:
+    # 대형 서버(8코어·128GB)는 차트 조회 4건을 동시에 돌린다 — Template Report 가
+    # 차트마다 조회를 부르므로 동시성이 곧 보고서 속도다.
+    try:
+        from core import cache_budget
+        if cache_budget.large_host():
+            return 4
+    except Exception:
+        pass
+    return 2
+
+
 try:
-    _CHART_BUILDER_CONCURRENCY = max(1, min(5, int(os.environ.get("FLOW_CHART_BUILDER_CONCURRENCY", "2") or 2)))
+    _CHART_BUILDER_CONCURRENCY = max(1, min(8, int(
+        os.environ.get("FLOW_CHART_BUILDER_CONCURRENCY", "") or _chart_builder_default_concurrency())))
 except (TypeError, ValueError):
     _CHART_BUILDER_CONCURRENCY = 2
 _CHART_BUILDER_QUERY_GATE = threading.BoundedSemaphore(_CHART_BUILDER_CONCURRENCY)

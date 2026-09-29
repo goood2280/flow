@@ -143,6 +143,31 @@ export default function LotTracker() {
   const [managedLots, setManagedLots] = useState([]);
   const [lotFilter, setLotFilter] = useState("");
   const helperReqId = useRef(0);
+  // FAB DB 제품 폴더 목록 — 제품 입력 칸 아래 목록(SplitTable ROOT LOT ID 목록과 같은 모양).
+  const [productOptions, setProductOptions] = useState([]);
+  const [productFilter, setProductFilter] = useState("");
+  const [showProductDrop, setShowProductDrop] = useState(false);
+  const productRef = useRef(null);
+  useEffect(() => {
+    let alive = true;
+    sf("/api/lot-tracker/products")
+      .then((d) => { if (alive) setProductOptions(Array.isArray(d?.products) ? d.products : []); })
+      .catch(() => { if (alive) setProductOptions([]); });
+    return () => { alive = false; };
+  }, []);
+  useEffect(() => {
+    const h = (e) => {
+      if (productRef.current && !productRef.current.contains(e.target)) setShowProductDrop(false);
+    };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+  const filteredProducts = useMemo(() => {
+    const q = String(productFilter || "").trim().toLowerCase();
+    return q
+      ? productOptions.filter((p) => String(p || "").toLowerCase().includes(q))
+      : productOptions;
+  }, [productOptions, productFilter]);
 
   const trimProduct = String(form.product || "").trim();
 
@@ -363,14 +388,55 @@ export default function LotTracker() {
       <Card style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--bg-secondary)" }}>
         <form onSubmit={load} style={{ display: "grid", gap: 12 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 12, alignItems: "end" }}>
-            <div style={{ display: "grid", gap: 5 }}>
+            <div style={{ display: "grid", gap: 5, position: "relative" }} ref={productRef}>
               <label style={{ fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>Product (선택)</label>
               <input
                 value={form.product}
-                placeholder="비워두면 FAB DB에서 검색"
-                onChange={(event) => setForm({ ...form, product: event.target.value })}
+                autoComplete="off"
+                placeholder={productOptions.length ? `입력 또는 선택 (${productOptions.length}개) · 비우면 전체 검색` : "비워두면 FAB DB에서 검색"}
+                onChange={(event) => {
+                  setForm({ ...form, product: event.target.value });
+                  setProductFilter(event.target.value);
+                  setShowProductDrop(true);
+                }}
+                onFocus={() => setShowProductDrop(true)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setShowProductDrop(false);
+                  if (event.key === "Enter") {
+                    if (event.nativeEvent?.isComposing || event.keyCode === 229) return;
+                    setShowProductDrop(false);
+                  }
+                }}
                 style={inputStyle}
               />
+              {showProductDrop && filteredProducts.length > 0 && (
+                <div
+                  style={{
+                    position: "absolute", top: "100%", left: 0, right: 0, zIndex: 20,
+                    maxHeight: 180, overflow: "auto", marginTop: 2,
+                    border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-card)",
+                  }}
+                >
+                  {filteredProducts.slice(0, 50).map((name) => (
+                    <div
+                      key={name}
+                      onClick={() => {
+                        setForm((prev) => ({ ...prev, product: name }));
+                        setProductFilter("");
+                        setShowProductDrop(false);
+                      }}
+                      style={{
+                        padding: "6px 10px", fontSize: 14, cursor: "pointer",
+                        borderBottom: "1px solid var(--border)", color: "var(--text-primary)",
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+                    >
+                      {name}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div style={{ display: "grid", gap: 5 }}>

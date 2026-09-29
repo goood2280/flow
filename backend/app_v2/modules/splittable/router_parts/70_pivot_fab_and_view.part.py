@@ -148,13 +148,13 @@ def _cache_build_emit(product: str, event: str, *, ok: bool = True, detail: dict
 
 
 def _enqueue_pivot_cache_build(product: str, reason: str = "", *, immediate: bool = False,
-                               local_only: bool = False, allow_local_fallback: bool = True) -> bool:
+                               local_only: bool = False) -> bool:
     """Rebuild the product's pre-pivoted root_lot cache in a daemon thread.
     Single-flight per product with a cooldown so view-triggered rebuilds cannot
     stampede; the daily 03:00 scheduler remains the full sweep.
 
-    local_only=True 면 개발 워커로 오프로드하지 않고 이 서버에서 직접 빌드한다
-    (관리자가 이 서버에서 누른 수동 캐싱)."""
+    local_only=True 는 관리자가 누른 수동 캐싱이다 — 사용자 요청이 조용해질 때까지
+    기다리지 않고 바로 빌드한다."""
     canonical = _canonical_mltable_product_name(product, allow_bare=True) or str(product or "").strip().upper()
     if not canonical:
         return False
@@ -255,36 +255,15 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "", *, immediate: boo
                         pass
 
         try:
-            if local_only:
-                # 관리자가 이 서버에서 요청한 수동 캐싱 — 워커로 넘기지 않는다.
-                # 오프로드된 빌드는 중단 신호가 워커까지 전파되지 않아 "중단을
-                # 눌러도 안 멈춘다" 로 보인다. 로컬 실행은 should_cancel 이
-                # 그대로 배선되므로 중단이 즉시 먹는다.
-                from core import worker_dispatch as _wd
-                res = _wd._run_local_heavy(
-                    "splittable_pivot_build", f"pivot:{canonical}",
-                    _local_build, product=canonical)
-            else:
-                # v9.4.x: 개발서버(워커) 생존 시 빌드를 워커로 오프로드 — 결과는 공유
-                # cache/split_table 파일로 돌아온다. 워커 다운/타임아웃/원격 실패면
-                # 위 로컬 경로로 자동 폴백 (core.worker_dispatch.run_heavy).
-                from core import worker_dispatch as _wd
-                res = _wd.run_heavy(
-                    "splittable_pivot_build",
-                    {"product": canonical, "product_path": str(source_fp) if source_fp else ""},
-                    _local_build,
-                    label=f"pivot:{canonical}",
-                    local_idle_only=not immediate,
-                    local_fallback=allow_local_fallback,
-                    durable=not immediate,
-                    priority="normal" if immediate else "maintenance",
-                    dedupe_key=f"pivot:{canonical}",
-                    timeout_sec=6 * 3600.0,
-                )
-            if (res or {}).get("queued"):
-                _cache_build_emit(canonical, "[Pivot캐시] worker 실행 대기 중",
-                                  detail={"reason": reason, "queued": True})
-                return  # submission is not completion; retain ready view caches
+            # 메모리 admission·서버 공용 캐시 슬롯을 거쳐 이 서버에서 빌드한다.
+            # 자동 재빌드는 사용자 요청이 조용해질 때까지 기다린다.
+            from core import heavy_jobs
+            res = heavy_jobs.run_heavy(
+                "splittable_pivot_build", _local_build,
+                label=f"pivot:{canonical}",
+                idle_only=not (immediate or local_only),
+                product=canonical,
+            )
             ok = bool((res or {}).get("ok"))
         except Exception as exc:
             # run_heavy 자체가 터지면 예전에는 스레드만 조용히 죽어 화면에
@@ -385,6 +364,12 @@ def _auto_product_cache_enabled() -> bool:
     예전 기본값은 켜짐이었다 — 반입 직후 아무도 켜지 않았는데 전 제품 순환이
     돌기 시작해, 관리자가 상황을 파악하기도 전에 무거운 빌드가 서버를 물고
     있었다. 자동 캐싱은 관리자가 톱니바퀴에서 명시적으로 켜는 기능으로 둔다.
+
+    예외: 전용 대형 서버(128GB·8코어, auto→large, 2026-09-29)는 기본 켜짐. 개발 worker
+    없이 한 서버가 모든 캐시를 만드는 구성에서 이게 꺼져 있으면, 캐시가 없는 제품·root 의
+    첫 검색이 "Root lot 인덱스 준비 중"으로 빌드 완료(수십 초~분)를 기다리게 된다. 빌드는
+    여전히 공용 스캔 슬롯에서 한 번에 하나이고 사용자 요청에 양보한다. 톱니바퀴에 저장된
+    값(꺼짐 포함)과 환경변수가 이 기본값보다 우선한다.
     """
     raw = os.environ.get("FLOW_SPLITTABLE_AUTO_PRODUCT_CACHE_ENABLED")
     if raw is not None and str(raw).strip() != "":
@@ -394,10 +379,10 @@ def _auto_product_cache_enabled() -> bool:
         return cache_settings.get_bool_role(
             "auto_product_cache_enabled",
             _ml_table_lookup._root_ram_cache_use_dev(),
-            False,
+            _split_large_host(),
         )
     except Exception:
-        return False
+        return _split_large_host()
 
 
 def _auto_product_cache_interval_minutes() -> int:
@@ -1556,7 +1541,7 @@ def _enqueue_fab_lot_index_build(product: str, fab_source: str = "",
                                  local_only: bool = False) -> bool:
     """Single-flight, cooldown-guarded background (re)build of the fab lot index.
 
-    local_only=True 면 개발 워커로 오프로드하지 않고 이 서버에서 직접 빌드한다."""
+    local_only=True 면 관리자 수동 캐싱 — 이미 스캔 슬롯 안이라 바로 빌드한다."""
     if not _fab_lot_index_enabled():
         return False
     if _is_fab_lot_index_staging_product(product):
@@ -1607,28 +1592,20 @@ def _enqueue_fab_lot_index_build(product: str, fab_source: str = "",
 
         try:
             if local_only:
-                # 이 서버에서 요청한 수동 캐싱 — 워커로 넘기지 않는다 (pivot 과 동일).
+                # 이 서버에서 요청한 수동 캐싱 — 이미 스캔 슬롯 안에서 돈다.
                 res = _local_build()
             else:
-                # v9.4.x: 워커 생존 시 오프로드, 아니면 로컬 폴백 (pivot 빌드와 동일).
-                from core import worker_dispatch as _wd
-                res = _wd.run_heavy(
+                from core import heavy_jobs
+                res = heavy_jobs.run_heavy(
                     "splittable_fab_lot_index_build",
-                    {"product": canonical, "fab_source": fab_source, "include_all": include_all},
                     _local_build,
                     # 스캔 큐에 그대로 뜨는 문자열이다 — 'fabidx:PRODA' 로는
                     # 무슨 작업인지 알 수 없어 사람이 읽는 이름으로 둔다.
                     label=f"FAB 랏 인덱스 (root별 최신 FAB lot): {canonical}",
-                    local_idle_only=not immediate,
-                    # FAB labels are a read prerequisite even with no worker.
-                    # The local lane still enforces memory admission/one build.
-                    local_fallback=True,
-                    durable=not immediate,
-                    priority="normal" if immediate else "maintenance",
-                    dedupe_key=f"fab_lot_index:{canonical}",
-                    timeout_sec=6 * 3600.0,
+                    idle_only=not immediate,
+                    product=canonical,
                 )
-            ok = bool((res or {}).get("ok")) and not bool((res or {}).get("queued"))
+            ok = bool((res or {}).get("ok"))
         finally:
             with _FAB_IDX_BUILD_LOCK:
                 _FAB_IDX_BUILD_INPROGRESS.discard(canonical)
@@ -1757,8 +1734,7 @@ def _view_revalidate_execute(view_cache_key: tuple, params: dict) -> dict:
 def _view_revalidate_worker_loop() -> None:
     """전역 재검증 워커 — 큐를 한 건씩 처리한다.
 
-    재계산은 워커(개발서버) 생존 시 오프로드되어 이 서버의 polars 풀을 쓰지
-    않고, 로컬 폴백 시에도 동시 재계산은 항상 최대 1건: 20명이 몰려도
+    동시 재계산은 항상 최대 1건: 20명이 몰려도
     백그라운드가 polars 풀에서 점유하는 collect 는 하나뿐이라 사용자 검색의
     CPU 경쟁이 상수로 묶인다."""
     while True:
@@ -2429,10 +2405,9 @@ def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),
                 # column projection (prefix/custom) stays index-fast AND the
                 # latest-lot join runs (lot_id/fab label). Legacy transposed
                 # files (a "parameter" column, no wafer_id) are skipped + rebuilt.
-                try:
-                    cache_names = pl.scan_parquet(str(fast_cache_path)).collect_schema().names()
-                except Exception:
-                    cache_names = []
+                # 스키마(footer)는 (경로, mtime, size) 키로 메모한다 — 넓은 pivot 파일을
+                # 공유드라이브에서 매 cold 검색마다 다시 읽던 비용(fastpath_ms)을 없앤다.
+                cache_names = _cached_scan_schema(fast_cache_path)[1] or []
                 is_legacy = ("parameter" in cache_names) and not any(
                     c.lower() == "wafer_id" for c in cache_names
                 )

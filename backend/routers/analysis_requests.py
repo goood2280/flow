@@ -310,7 +310,7 @@ def ml_columns(request: Request, product: str = Query(...), q: str = Query(""), 
             "matched": len(matched), "total": len(names), "prefixes": prefixes}
 
 
-# LLM 을 부르는 유일한 경로 — llm_adapter._DATA_TASK_PATHS 와 upstream_proxy._AI_PROXY_PATHS_DEFAULT 가
+# LLM 을 부르는 유일한 경로 — llm_adapter._DATA_TASK_PATHS 가
 # 정확한 경로로만 허용하므로 id 를 경로가 아니라 본문으로 받는다.
 @router.post("/report-draft")
 def report_draft(payload: ReportDraftWrite, request: Request):

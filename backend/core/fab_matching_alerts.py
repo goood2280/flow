@@ -1,10 +1,12 @@
-"""Development-worker FAB scanner for matching alerts.
+"""FAB scanner for matching alerts (runs on the single production server).
 
 The matching-alert page used to consume alarm JSON produced by Valve.  This
 module makes Flow authoritative instead:
 
-* only the development ``worker`` runs the periodic, product-by-product scan;
-* the API server reads the shared state written by that worker;
+* the elected background owner process runs the periodic, product-by-product
+  scan through ``core.heavy_jobs`` (idle lane, memory admission, one cache/scan
+  slot per server) — it used to be a development-worker job until 2026-09-29;
+* HTTP requests only read the shared state written by that scanner;
 * a FAB step absent from ``Vehicle_matching.csv`` becomes ``unmatched_step``;
 * a PPID without an explicit rule for the step's function step becomes
   ``ro_ppid`` and can be added to ``ppid_knob.csv`` from the existing page;
@@ -191,9 +193,8 @@ def _scanner_beat(**patch: Any) -> None:
 def _scanner_status() -> dict:
     """Read the scanner heartbeat and judge whether a scanner is really running.
 
-    Wall clocks between the api and worker hosts can drift, so staleness is
-    judged on the absolute difference — the same rule ``worker_dispatch`` uses
-    for its own heartbeat.
+    Staleness is judged on the absolute difference so a clock step (NTP) does
+    not make a live scanner look dead.
     """
     raw = load_json(SCANNER_PATH, {})
     raw = raw if isinstance(raw, dict) else {}
@@ -219,22 +220,23 @@ def _scanner_status() -> dict:
 
 
 def _scan_request_hint(requested: bool, requested_ts: float, scanner: dict,
-                       worker_enabled: bool) -> str:
+                       owner_here: bool) -> str:
     """Explain, in one line, why a pending scan request has not run yet."""
     if not requested:
         return ""
     waited = max(0.0, time.time() - requested_ts) if requested_ts else 0.0
     waited_text = f" ({int(waited // 60)}분 대기)" if waited >= 60 else ""
     if scanner.get("state") == "scanning":
-        return (f"개발 worker가 {scanner.get('product')} 검사 중입니다 — "
+        return (f"검사기가 {scanner.get('product')} 검사 중입니다 — "
                 f"끝나면 이어서 실행됩니다{waited_text}")
     if scanner.get("alive"):
-        return f"개발 worker가 요청을 확인 중입니다{waited_text}"
-    if worker_enabled:
-        return (f"이 서버는 worker 역할이지만 검사 스레드가 실행 중이 아닙니다{waited_text} — "
-                "'지금 다음 제품 검사'를 다시 누르거나 개발 서버를 재시작하세요")
-    return (f"실행 중인 개발 worker 검사기가 없습니다{waited_text} — "
-            "개발 서버 기동과 worker 역할 마커를 확인하세요")
+        return (f"검사기가 요청을 확인 중입니다{waited_text} — 사용자 요청이 많거나 다른 캐시 "
+                "스캔이 돌고 있으면 그 뒤에 실행됩니다")
+    if owner_here:
+        return (f"검사 스레드가 실행 중이 아닙니다{waited_text} — "
+                "'지금 다음 제품 검사'를 다시 누르거나 서버를 재시작하세요")
+    return (f"실행 중인 검사기가 없습니다{waited_text} — "
+            "서버 로그의 background owner/스케줄러 기동 실패를 확인하세요")
 
 
 def _norm(value: Any) -> str:
@@ -758,13 +760,9 @@ def _alerts_for_product(product: dict, observations: list[dict],
 
 def scan_product(product: dict) -> dict:
     """Scan one product and atomically publish its current matching gaps."""
-    # This function opens every parquet/csv belonging to the product.  Keep the
-    # role gate at the heavy-work boundary as well as at scheduler startup so a
-    # future API route, test hook, or refactor cannot make the operating server
-    # scan multi-GB FAB data accidentally.
-    if not _development_worker_enabled():
-        return {"ok": False, "skipped": True, "reason": "development_worker_only",
-                "product": product.get("product") or ""}
+    # This opens every parquet/csv belonging to the product.  Call it only from
+    # the scanner loop, which runs it through core.heavy_jobs (idle lane, memory
+    # admission, the server-wide scan slot) — never from an HTTP request.
     started = time.time()
     name = str(product.get("product") or "")
     _scanner_beat(state="scanning", product=name, product_started_ts=started,
@@ -799,8 +797,6 @@ def scan_product(product: dict) -> dict:
 
 
 def scan_next_product(force: bool = False) -> dict:
-    if not _development_worker_enabled():
-        return {"ok": False, "skipped": True, "reason": "development_worker_only"}
     cfg = load_cfg()
     if not cfg["enabled"] and not force:
         return {"ok": True, "enabled": False}
@@ -847,12 +843,10 @@ def scan_next_product(force: bool = False) -> dict:
 
 
 def request_scan() -> dict:
-    """Ask the development worker to advance its product scan immediately.
+    """Ask the scanner to advance its product scan immediately.
 
-    The request is only ever consumed by the scanner thread, so a host that was
-    marked as the worker *after* boot would queue requests nobody reads.  Check
-    the thread here as well — that turns "restart the dev server" into "press
-    the button again".
+    The request is only ever consumed by the scanner thread.  Check the thread
+    here as well so a scanner that died is restarted by pressing the button.
     """
     _ensure_scheduler_running()
     with _lock:
@@ -863,13 +857,13 @@ def request_scan() -> dict:
     scanner = _scanner_status()
     if not scanner["alive"]:
         return {"ok": True, "queued": True, "scanner_alive": False,
-                "message": "요청은 등록했지만 실행 중인 개발 worker 검사기가 없습니다 — "
-                           "개발 서버 기동과 worker 역할 마커를 확인하세요"}
+                "message": "요청은 등록했지만 실행 중인 검사기가 없습니다 — "
+                           "서버 로그의 스케줄러 기동 실패를 확인하세요"}
     if scanner["state"] == "scanning":
         return {"ok": True, "queued": True, "scanner_alive": True,
                 "message": f"검사 대기열에 등록했습니다 — 현재 {scanner['product']} 검사 중입니다"}
     return {"ok": True, "queued": True, "scanner_alive": True,
-            "message": "개발 서버 검사 대기열에 등록했습니다"}
+            "message": "검사 대기열에 등록했습니다 — 사용자 요청이 조용할 때 실행됩니다"}
 
 
 def _acks() -> dict:
@@ -972,8 +966,7 @@ def _run_recommendation_batch() -> dict:
 
 
 def list_alerts() -> dict:
-    # 개발 worker 에서 페이지를 열기만 해도 죽은/미기동 스캐너가 되살아난다.
-    # 운영 API 에서는 역할 게이트에 막혀 아무 일도 하지 않는다.
+    # 페이지를 열기만 해도 죽은/미기동 스캐너가 되살아난다(background owner 에서만).
     _ensure_scheduler_running()
     state = _load_state()
     alerts: list[dict] = []
@@ -1048,7 +1041,7 @@ def list_alerts() -> dict:
     mapping_by_product: dict[str, dict] = {}
     visible_alerts = []
     for alert in alerts:
-        # A step decision is visible immediately, before the worker reaches the
+        # A step decision is visible immediately, before the scanner reaches the
         # product again.  This also unlocks its PPID rows for same-session rule
         # classification without making the operating API rescan FAB.
         if alert.get("type") in {"ro_ppid", "unmatched_step"}:
@@ -1075,26 +1068,25 @@ def list_alerts() -> dict:
         -float(a.get("first_seen_ts") or 0),
     ))
     active = sum(1 for a in alerts if a["status"] == "active" and not a.get("decision"))
-    # The operating API reads only the shared worker state.  Product discovery
-    # itself can recurse through a large FAB tree and is worker-owned.
+    # HTTP reads only the scanner's shared state.  Product discovery itself can
+    # recurse through a large FAB tree and belongs to the scanner loop.
     products = state.get("products") or []
-    worker_enabled = _development_worker_enabled()
+    owner_here = _scheduler_owner_enabled()
     scanner_info = _scanner_status()
     requested = bool(state.get("scan_requested"))
     requested_ts = float(state.get("scan_requested_ts") or 0.0)
     return {
         "ok": True,
-        "source": "development_fab_scanner",
-        "store": "개발 서버 FAB 직접 검사",
+        "source": "fab_scanner",
+        "store": "FAB 직접 검사",
         "alerts": alerts,
         "active": active,
         "stalled": 0,
         "vehicles": [],
         "alert_cols": [],
         "scanner": {
-            "role": "worker",
-            "execution_enabled_here": worker_enabled,
-            "execution_policy": "development_worker_only",
+            "execution_enabled_here": owner_here,
+            "execution_policy": "background_owner_idle_lane",
             "products": len(products),
             "product_list": [p.get("product") for p in products],
             "source_roots": sorted({str(p.get("root") or "") for p in products if p.get("root")}),
@@ -1126,7 +1118,7 @@ def list_alerts() -> dict:
             },
             "next_scan_ts": scanner_info["next_scan_ts"],
             "scan_request_hint": _scan_request_hint(
-                requested, requested_ts, scanner_info, worker_enabled),
+                requested, requested_ts, scanner_info, owner_here),
             "product_status": state.get("product_status") or {},
             "recommendation": state.get("recommendation_status") or {},
         },
@@ -1841,18 +1833,12 @@ def _loop_once() -> None:
     requested = bool(state.get("scan_requested"))
     if cfg.get("enabled") or requested:
         try:
-            from core import worker_dispatch
-            worker_dispatch.run_heavy(
+            from core import heavy_jobs
+            heavy_jobs.run_heavy(
                 "fab_matching_alert_scan",
-                {"force": requested},
                 lambda: scan_next_product(force=requested),
-                timeout_sec=3600.0,
                 label="FAB matching alert scan",
-                local_idle_only=True,
-                local_fallback=True,
-                durable=False,
-                priority="maintenance",
-                dedupe_key="fab-matching-alert-scan",
+                idle_only=True,
             )
         except Exception:
             logger.exception("FAB matching scan dispatch failed; running on owner")
@@ -1900,32 +1886,20 @@ def _ensure_scheduler_running() -> bool:
     return bool(_started)
 
 
-def _development_worker_enabled() -> bool:
-    """True only on the designated development worker.
-
-    Role resolution is intentionally fail-closed.  The default/api role and a
-    role lookup error must never touch the large FAB parquet sources.
-    """
-    try:
-        from core.worker_dispatch import server_role
-        return server_role() == "worker"
-    except Exception:
-        return False
-
-
 def _scheduler_owner_enabled() -> bool:
+    """True only in the process that holds the shared background-owner lease."""
     try:
-        from core.worker_dispatch import server_role
-        return server_role() == "worker"
+        from core.background_owner import is_owner
+        return bool(is_owner())
     except Exception:
         return False
 
 
 def start_scheduler() -> None:
-    """Start only on the development worker."""
+    """Start the scanner thread (background owner process only)."""
     global _thread, _started
     if not _scheduler_owner_enabled():
-        logger.info("FAB matching scanner not started: development worker role required")
+        logger.info("FAB matching scanner not started: this process is not the background owner")
         return
     with _lock:
         # 죽은 스레드는 다시 띄운다 — _started 만 보면 한 번 죽은 뒤 영영

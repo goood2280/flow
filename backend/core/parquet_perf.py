@@ -65,6 +65,52 @@ def scan_parquet_relaxed(source, **kwargs):
         return pl.scan_parquet(source, **kwargs)
 
 
+# ── hive partition 경로 (key=value 폴더) ────────────────────────────────
+# ET 원본은 제품 폴더·일자별 파일(<PRODUCT>/<PRODUCT>_2025_07_23.parquet) 외에
+# hive 레이아웃(product=PRODA/date=2025-07-23/part-0.parquet)으로도 떨어진다.
+# 파일을 하나씩 열거나 파일 목록으로 열면 polars 가 폴더값을 컬럼으로 만들지
+# 않는(버전·혼합 레이아웃에 따라 다름) 경우가 있어, 경로의 key=value 를 직접
+# 읽어 파일에 없는 컬럼만 문자열로 채운다. key=value 폴더가 없으면 아무것도 안 한다.
+_HIVE_SEGMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_HIVE_NULL = "__HIVE_DEFAULT_PARTITION__"
+
+
+def hive_path_values(path) -> dict[str, str | None]:
+    """경로의 폴더 부분에서 key=value 를 뽑는다(바깥 폴더 → 안쪽 순서, 같은 key 는 안쪽 우선)."""
+    from urllib.parse import unquote
+
+    out: dict[str, str | None] = {}
+    for part in Path(str(path)).parent.parts:
+        m = _HIVE_SEGMENT.match(part)
+        if m:
+            value = unquote(m.group(2))
+            out[m.group(1)] = None if value == _HIVE_NULL else value
+    return out
+
+
+def with_hive_path_columns(lf: "pl.LazyFrame", path, names: Iterable[str] | None = None) -> "pl.LazyFrame":
+    """파일 경로의 hive 폴더값을 컬럼으로 추가한다. 파일에 이미 있는 컬럼(대소문자 무시)은 건드리지 않는다."""
+    values = hive_path_values(path)
+    if not values:
+        return lf
+    try:
+        have = {str(n).casefold() for n in (names if names is not None else lf.collect_schema().names())}
+    except Exception:
+        return lf
+    add = [pl.lit(v, dtype=pl.Utf8).alias(k) for k, v in values.items() if k.casefold() not in have]
+    return lf.with_columns(add) if add else lf
+
+
+def scan_parquet_hive_files(files, **kwargs) -> "pl.LazyFrame":
+    """파일 목록 스캔 + hive 폴더값 컬럼. hive 폴더가 하나도 없으면 기존 단일 스캔 그대로."""
+    paths = [str(f) for f in files]
+    if not any(hive_path_values(p) for p in paths):
+        return pl.scan_parquet(paths, **kwargs)
+    kwargs.pop("hive_partitioning", None)
+    frames = [with_hive_path_columns(scan_parquet_relaxed(p, **kwargs), p) for p in paths]
+    return frames[0] if len(frames) == 1 else pl.concat(frames, how="diagonal_relaxed")
+
+
 # ─────────────────────────────────────────────────────────────
 # 1. streaming collect
 # ─────────────────────────────────────────────────────────────

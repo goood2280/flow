@@ -450,7 +450,38 @@ export function featureInfo(feature, tool) {
   };
 }
 
-function ModelStatus({ refreshKey = 0, probeKey = 0, turnUsage = null }) {
+// 일반 사용자 질문 한도 (서버 core/flowi_quota.py). 관리자는 limited=false.
+function quotaSecondsLeft(quota, now) {
+  if (!quota?.limited || Number(quota.remaining) > 0) return 0;
+  const elapsed = Math.max(0, now - (quota.receivedAt || now)) / 1000;
+  return Math.max(0, Math.ceil(Number(quota.retry_after_s || 0) - elapsed));
+}
+
+function QuotaStatus({ quota, secondsLeft }) {
+  if (!quota) return null;
+  if (!quota.limited) {
+    return <span className="home-data-chat__quota" title="관리자는 질문 한도가 없습니다.">질문 한도 없음</span>;
+  }
+  const exhausted = Number(quota.remaining) <= 0;
+  return (
+    <span
+      className={`home-data-chat__quota${exhausted ? " is-exhausted" : ""}`}
+      role="status"
+      title={`일반 사용자는 1분에 질문 ${quota.limit}개까지 보낼 수 있습니다. 여러 질문을 한 번에 보내면 질문 수만큼 차감되고, 선택·확인을 묻는 질문에 대한 답은 차감되지 않습니다.`}
+    >
+      내 질문 한도 · 1분에 {quota.limit}개 · {exhausted && secondsLeft > 0 ? `${secondsLeft}초 후 가능` : `남은 ${exhausted ? 0 : quota.remaining}개`}
+    </span>
+  );
+}
+
+function quotaNote(quota) {
+  if (!quota?.limited) return "";
+  if (quota.free_followup) return "선택 답변 · 질문 한도 차감 없음";
+  if (quota.charged) return `질문 한도 ${quota.charged}개 차감 · 남은 ${quota.remaining}/${quota.limit}`;
+  return "";
+}
+
+function ModelStatus({ refreshKey = 0, probeKey = 0, turnUsage = null, onQuota }) {
   const [model, setModel] = useState({});
   const [checking, setChecking] = useState(false);
   const active = useRef(true);
@@ -463,6 +494,7 @@ function ModelStatus({ refreshKey = 0, probeKey = 0, turnUsage = null }) {
     try {
       const result = await sf(probe ? "/api/home-agent/probe" : "/api/home-agent/status", { method: probe ? "POST" : "GET" });
       if (active.current) setModel(result.model || {});
+      if (active.current && result.quota) onQuota?.(result.quota);
     } catch {
       if (active.current) setModel({ status: "disconnected", message: "AI 서버 연결을 확인할 수 없습니다. 서버 연결 설정과 운영서버 상태를 확인해 주세요." });
     } finally {
@@ -882,8 +914,25 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
   const [samplePrompts, setSamplePrompts] = useState({ pinned: [], successful: [] });
   const [turnUsage, setTurnUsage] = useState(null);
   const [modelRefreshKey, setModelRefreshKey] = useState(0);
+  const [quota, setQuotaState] = useState(null);
+  const [clock, setClock] = useState(() => Date.now());
+  const setQuota = (value) => {
+    const now = Date.now();
+    setClock(now);
+    setQuotaState(value ? { ...value, receivedAt: now } : null);
+  };
+  const quotaWait = quotaSecondsLeft(quota, clock);
 
   const pastedTable = useMemo(() => parsePastedTable(prompt), [prompt]);
+  useEffect(() => {
+    if (!quota?.limited || Number(quota.remaining) > 0) return undefined;
+    const timer = setInterval(() => setClock(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [quota]);
+  useEffect(() => {
+    // 한도가 풀리는 시점에 서버 값으로 다시 맞춘다.
+    if (quota?.limited && Number(quota.remaining) <= 0 && quotaWait === 0) setModelRefreshKey((value) => value + 1);
+  }, [quota, quotaWait]);
   const promptTooLong = (value) => value.length > (parsePastedTable(value) ? MAX_TABLE_PROMPT_CHARS : MAX_PROMPT_CHARS);
 
   const scrollRef = useRef(null);
@@ -1074,6 +1123,9 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
       });
       if (requestVersionRef.current !== requestVersion) return;
       if (response?.usage && typeof response.usage === "object") setTurnUsage(response.usage);
+      if (response?.quota && typeof response.quota === "object") setQuota(response.quota);
+      // 한도로 실행하지 않은 질문은 입력창에 되돌려 두어 나중에 그대로 보낼 수 있게 한다.
+      if (response?.rate_limited) setPrompt((current) => current || value);
       setModelRefreshKey((value) => value + 1);
       const tool = response?.tool && typeof response.tool === "object" ? response.tool : null;
       const feature = isHumanInLoopTool(tool) ? null : (tool?.feature || (tool?.chart_result ? "chart" : (tool?.table ? "table" : null)));
@@ -1095,7 +1147,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
           };
         });
         setWorkspaceOpen(true);
-      } else if (decision || isHumanInLoopTool(tool)) {
+      } else if (!response?.rate_limited && (decision || isHumanInLoopTool(tool))) {
         setActiveWorkspace(null);
         setWorkspaceOpen(false);
       }
@@ -1138,11 +1190,16 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
 
   const hasActiveWorkspace = workspaceOpen && activeWorkspace && activeWorkspace.tool;
   const assistantResponses = chatState.messages.filter(
-    (message) => message.role === "assistant" && message.response && !message.error
+    // 한도 안내는 실행 결과가 아니므로, 기다리던 선택·확인 패널을 가리지 않는다.
+    (message) => message.role === "assistant" && message.response && !message.error && !message.response.rate_limited
   );
   const latestResponse = assistantResponses.length
     ? assistantResponses[assistantResponses.length - 1].response
     : null;
+  // 선택·확인을 기다리는 중이면 답은 한도와 관계없이 보낼 수 있다 (서버가 최종 판단).
+  const awaitingChoice = Object.entries(chatState.context || {}).some(([key, item]) => key.startsWith("pending_") && item)
+    || Boolean(latestResponse && isHumanInLoopTool(latestResponse.tool));
+  const quotaBlocked = quotaWait > 0 && !awaitingChoice;
 
   return (
     <section className={`home-data-chat${hasActiveWorkspace ? " has-workspace" : ""}`} aria-label="데이터 채팅">
@@ -1155,7 +1212,8 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
             ))}
           </select>
           <button type="button" onClick={newConversation} disabled={loading}>새 대화</button>
-          <ModelStatus key={username} refreshKey={modelRefreshKey} probeKey={probeKey} turnUsage={turnUsage} />
+          <ModelStatus key={username} refreshKey={modelRefreshKey} probeKey={probeKey} turnUsage={turnUsage} onQuota={setQuota} />
+          <QuotaStatus quota={quota} secondsLeft={quotaWait} />
           {activeWorkspace && !workspaceOpen && (
             <button type="button" className="home-data-chat__reopen-btn" onClick={() => setWorkspaceOpen(true)}>
               <Icon name="monitor" style={{ marginRight: 4 }} />결과창 열기 ({featureInfo(activeWorkspace.feature, activeWorkspace.tool).title})
@@ -1223,7 +1281,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
               const isBatchMessage = Array.isArray(message.response?.questions) && message.response.questions.length > 0;
 
               return (
-                <article key={message.id} className={`home-data-chat__message is-${message.role}${message.error ? " is-error" : ""}`}>
+                <article key={message.id} className={`home-data-chat__message is-${message.role}${message.error ? " is-error" : ""}${message.response?.rate_limited ? " is-quota" : ""}`}>
                   <div className="home-data-chat__speaker">{message.role === "user" ? "나" : "Flow"}</div>
                   <div className="home-data-chat__bubble">
                      {isBatchMessage
@@ -1231,6 +1289,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                        : <BubbleContent message={message} />}
                   </div>
 
+                  {quotaNote(message.response?.quota) && <div className="home-data-chat__usage">{quotaNote(message.response.quota)}</div>}
                   {message.response?.usage && <div className="home-data-chat__usage">이번 요청 LLM {message.response.usage.llm_calls_used}회 차감 / 최대 {message.response.usage.llm_call_limit}회 · 당시 분당 잔여 {message.response.usage.minute_calls_remaining}회</div>}
                   {message.role === "assistant" && !message.error && isFeedbackUuid(chatState.conversationId) && isFeedbackUuid(message.id) && (
                     <ResponseFeedback key={`${chatState.conversationId}:${message.id}`} conversationId={chatState.conversationId} messageId={message.id} />
@@ -1262,7 +1321,7 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
               disabled={loading || conversationLoading}
               aria-label="데이터 질문"
             />
-            <button type="submit" disabled={loading || conversationLoading || !prompt.trim() || promptTooLong(prompt.trim())} aria-label="메시지 보내기">↑</button>
+            <button type="submit" disabled={loading || conversationLoading || quotaBlocked || !prompt.trim() || promptTooLong(prompt.trim())} aria-label="메시지 보내기" title={quotaBlocked ? `질문 한도: ${quotaWait}초 후 보낼 수 있습니다` : undefined}>↑</button>
           </form>
           {promptTooLong(prompt.trim()) ? (
             <div className="home-data-chat__composer-help is-warn" role="status">
@@ -1270,13 +1329,25 @@ export default function HomeDataChat({ user, onNavigate, enabled = false, probeK
                 ? `표가 너무 깁니다 (${prompt.length.toLocaleString()}자 / 최대 ${MAX_TABLE_PROMPT_CHARS.toLocaleString()}자). 나누어 붙여 주세요.`
                 : `질문은 ${MAX_PROMPT_CHARS.toLocaleString()}자까지 보낼 수 있습니다 (현재 ${prompt.length.toLocaleString()}자).`}
             </div>
+          ) : quotaBlocked ? (
+            <div className="home-data-chat__composer-help is-quota" role="status">
+              질문 한도(1분에 {quota.limit}개)를 모두 사용했습니다 · {quotaWait}초 후 다시 보낼 수 있습니다
+            </div>
+          ) : quota?.limited && awaitingChoice && quotaWait > 0 ? (
+            <div className="home-data-chat__composer-help is-quota" role="status">
+              질문 한도를 모두 사용했지만 지금 묻는 선택·확인에는 답할 수 있습니다
+            </div>
           ) : pastedTable ? (
             <div className="home-data-chat__composer-help is-table" role="status">
               <Icon name="table" style={{ marginRight: 4 }} />엑셀 표 {pastedTable.rows.length}행 × {pastedTable.rows[0]?.length || 0}열 인식 · 한 요청으로 보냅니다
               {pastedTable.truncated ? " (500행까지만 읽습니다)" : ""}
             </div>
           ) : (
-            <div className="home-data-chat__composer-help">여러 질문은 줄바꿈 또는 물음표(?)로 나누세요 · 한 번에 최대 4개 · 엑셀 표는 그대로 붙여 넣으세요</div>
+            <div className="home-data-chat__composer-help">
+              {quota?.limited
+                ? `1분에 질문 ${quota.limit}개까지 (여러 질문은 개수만큼 차감 · 선택·확인 답은 제외) · 엑셀 표는 그대로 붙여 넣으세요`
+                : "여러 질문은 줄바꿈 또는 물음표(?)로 나누세요 · 한 번에 최대 4개 · 엑셀 표는 그대로 붙여 넣으세요"}
+            </div>
           )}
         </div>
 

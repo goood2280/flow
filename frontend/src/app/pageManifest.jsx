@@ -72,9 +72,29 @@ export const SUB_TABS = Object.fromEntries(
   PAGE_MANIFEST.filter((page) => page.subtabs?.length).map((page) => [page.key, page.subtabs]),
 );
 
+// 관리자 콘솔 구역. 상단 "관리" 메뉴에 관리자 대신 이 세 항목이 바로 나온다
+// (`/admin?section=<key>`). 구역별 소탭 구성은 features/admin/My_Admin.jsx 가 갖는다.
+export const ADMIN_NAV_SECTIONS = [
+  { id: "ops", label: "운영", hint: "사용자 · 업무 권한 · 활동" },
+  { id: "system", label: "시스템", hint: "서버 · 데이터 · 백업" },
+  { id: "agent", label: "에이전트", hint: "LLM · 지식 · 학습 · 점검" },
+];
+
+function expandNavItem(tab) {
+  if (tab.key !== "admin") return [tab];
+  return ADMIN_NAV_SECTIONS.map((section) => ({
+    ...tab,
+    navId: `admin:${section.id}`,
+    label: section.label,
+    hint: section.hint,
+    section: section.id,
+    search: `?section=${section.id}`,
+  }));
+}
+
 export function buildNavGroups(visibleTabs = []) {
   return PAGE_GROUPS.map((group) => ({
     ...group,
-    items: visibleTabs.filter((tab) => tab.group === group.id),
+    items: visibleTabs.filter((tab) => tab.group === group.id).flatMap(expandNavItem),
   })).filter((group) => group.items.length > 0);
 }

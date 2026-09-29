@@ -19,6 +19,7 @@ GUIDELINES = "기존 사실과 예외를 보존하고 전체 수정 본문만 �
 def isolated_store(tmp_path, monkeypatch):
     path = tmp_path / "domain-knowledge.sqlite3"
     monkeypatch.setattr(knowledge, "_path", lambda: path)
+    monkeypatch.setattr(knowledge, "_seed_path", lambda: tmp_path / "absent-seed.json")
     monkeypatch.setattr(knowledge, "references", lambda: {"sources": [], "warnings": []})
     return path
 
@@ -238,12 +239,13 @@ def test_domain_knowledge_endpoints_require_admin(isolated_store):
     assert not isolated_store.exists()
 
 
-def test_llm_policy_allows_admin_preview_path_but_denies_non_admin():
+def test_llm_policy_allows_admin_preview_path_but_denies_unauthenticated():
+    # 관리자 제한은 라우터(require_admin)가 맡고, 어댑터는 인증 주체만 확인한다.
     path = "/api/admin/domain-knowledge/preview"
     with llm_adapter.request_execution_scope({"username": "admin", "role": "admin"}, path):
         assert llm_adapter._execution_denial() == ""
-    with llm_adapter.request_execution_scope({"username": "engineer", "role": "user"}, path):
-        assert "admin-only" in llm_adapter._execution_denial()
+    with llm_adapter.request_execution_scope(None, path):
+        assert "authenticated" in llm_adapter._execution_denial()
 
 
 def test_section_preview_preserves_other_sections(isolated_store, monkeypatch):

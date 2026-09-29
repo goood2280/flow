@@ -31,7 +31,7 @@ _SAMPLER_STARTED = False
 _SAMPLER_WAKE = threading.Event()
 
 # ── 서버 간 공유 이벤트 로그 ──────────────────────────────────────────────
-# 운영(api)/개발(worker) 서버가 같은 data_root 를 공유하므로, 각 서버의 캐시
+# 운영 서버와 개발 PC 가 같은 data_root 를 볼 수 있으므로, 각 서버의 캐시
 # 이벤트를 공유 JSONL 파일에 append 해 두면 운영 서버의 캐시관리 화면에서 두
 # 서버의 로그를 한 곳에서 볼 수 있다. get_events() 가 인메모리 + 공유파일을
 # eid 로 병합한다. 파일은 append-only(다중 서버 동시 기록 안전)이며 주기적으로
@@ -265,28 +265,11 @@ def _origin() -> tuple[str, str]:
     now = time.time()
     if now - float(_ORIGIN_CACHE.get("ts") or 0.0) < 5.0 and _ORIGIN_CACHE.get("label"):
         return _ORIGIN_CACHE["label"], _ORIGIN_CACHE["host"]
-    role = ""
-    try:
-        from core.worker_dispatch import server_role
-        role = server_role()
-    except Exception:
-        pass
-    prod = None
     try:
         from core.paths import PATHS
-        prod = bool(PATHS.is_prod)
+        label = "운영" if PATHS.is_prod else "개발"
     except Exception:
-        pass
-    if role == "worker":
-        label = "개발(worker)"
-    elif role == "api":
-        label = "운영"
-    elif prod is True:
-        label = "운영"
-    elif prod is False:
-        label = "개발"
-    else:
-        label = role or "server"
+        label = "server"
     try:
         host = socket.gethostname()[:24]
     except Exception:
@@ -404,7 +387,7 @@ def record(
         "event": event,
         "ok": ok,
         "product": product,
-        "origin": origin_label,   # "운영" | "개발" | "개발(worker)"
+        "origin": origin_label,   # "운영" | "개발"
         "host": origin_host,
     }
     if detail:
