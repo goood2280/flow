@@ -3,6 +3,7 @@
 사내 VM의 opencode 등 코딩 에이전트가 **어디를 고쳐야 하는지 빠르게 찾도록** 만든 지도다.
 규칙·금지사항은 루트 `AGENTS.md`가 정본이고, 이 문서는 위치 안내만 한다.
 파일 목록이 바뀌면 이 문서도 같이 고친다(2026-09-29 기준으로 실제 코드에서 추출).
+로그·저장소 작업은 [기록 종류·위치](LOG_STORAGE.md)와 [진단·보관·복원 절차](LOG_STORAGE_OPERATIONS.md)를 먼저 읽는다.
 
 ## 1. 한눈에 보는 구조
 
@@ -25,7 +26,7 @@ backend/core/<기능>.py      계산·캐시·저장 (polars / duckdb / sqlite /
 
 - 경로는 전부 `core/paths.py`의 `PATHS`(`data_root`, `db_root`, `base_root`, `wafer_map_root`)에서 얻는다. 경로 문자열을 직접 만들지 않는다.
 - 백그라운드 스케줄러(캐시 예열, ET 추적, 매칭 알람 등)는 `app_v2/runtime/startup.py`가 기동 때 켠다.
-- 모든 요청 활동은 `core/audit.py`의 `record()`로 `FLOW_DATA_ROOT/logs/activity.jsonl`에 남고, 관리자 > 활동 현황이 `core/activity_index.py`로 집계한다.
+- 명시적인 업무·감사 이벤트는 `core/audit.py`의 `record()`로 `FLOW_DATA_ROOT/logs/activity.jsonl`에 남고, 관리자 > 활동 현황이 `core/activity_index.py`로 집계한다. 모든 HTTP 요청을 감사 이벤트로 기록하는 구조는 아니다. HTTP 접근은 감시기의 `uvicorn.log`에서 확인한다.
 
 ## 2. 폴더 지도
 
@@ -60,7 +61,7 @@ backend/core/<기능>.py      계산·캐시·저장 (polars / duckdb / sqlite /
 
 | 탭 key (라벨) | 화면 | API prefix → 라우터 | 주요 core |
 |---|---|---|---|
-| `home` (홈) | `home/My_Home.jsx`, `HomeDataChat.jsx`, `HomeAppIcons.jsx` | `/api/home` → `home.py`, `/api/home-agent` → `data_chat.py`·`chat_prompts.py` | `data_chat*.py`, `flowi_turn.py`, `flowi_quota.py`, `home_agent_offload.py` |
+| `home` (홈) | `home/My_Home.jsx`, `HomeDataChat.jsx`, `HomeAppIcons.jsx` | `/api/home` → `home.py`, `/api/home-agent` → `data_chat.py`·`chat_prompts.py` | `data_chat*.py`, `flowi_turn.py`, `flowi_quota.py` |
 | `filebrowser` (파일탐색기) | `filebrowser/My_FileBrowser.jsx` | `/api/filebrowser` → `app_v2/modules/filebrowser/router_parts/*`, `/api/sql-workspace`, `/api/s3ingest` | `filebrowser_cache.py`, `duckdb_engine.py`, `sql_workspace.py`, `db_cache.py` |
 | `dashboard` (대시보드) | `dashboard/My_Dashboard.jsx` | `/api/dashboard` → `dashboard.py` | `dashboard_join.py`, `lot_progress_cache.py` |
 | `splittable` (스플릿 테이블) | `splittable/My_SplitTable.jsx` | `/api/splittable` → `app_v2/modules/splittable/router_parts/*` | `lot_step.py`, `ml_table_lookup.py`, `lot_list_cache.py`, `scan_gate.py` |
@@ -173,7 +174,9 @@ cd frontend && npm run check
 ```
 
 - 테스트는 격리된 `FLOW_DATA_ROOT`/`FLOW_DB_ROOT`와 `FLOW_PROD=0`에서 돌린다. 운영 데이터에 쓰지 않는다.
-- `npm run check`는 `frontend/dist`를 다시 만든다. 배포하려면 `python _build_setup.py`로 `setup.py`까지 재빌드해야 한다.
+  **사내 VM 설치 폴더에서는** 환경변수 없이 돌리면 운영 `D:\flow-data`·`D:\DB`가 잡히므로 `AGENTS.md` VM 절의 **테스트 격리 명령**을 그대로 쓴다(`tests/conftest.py`는 일부 파일만 격리한다).
+- `npm run check`는 `frontend/dist`를 다시 만든다(`frontend/node_modules` 필요 — 없으면 AGENTS.md VM 절의 프런트 빌드 준비물 참고).
+- 개발 체크아웃에서 배포하려면 `python _build_setup.py`로 `setup.py`까지 재빌드한다. VM 설치 폴더에서는 재빌드하지 않는다.
 
 ## 7. 수정할 때 자주 걸리는 함정
 
@@ -182,5 +185,5 @@ cd frontend && npm run check
 - **디자인 규칙:** 색·간격은 `tokens.css` 변수. `components.css`/`layouts.css`/`utilities.css`에 raw 색상·`!important` 금지 (`npm run design:check`).
 - **한국어 정규식:** Python `re`에서 한글도 `\w`라 `\b`가 "GATE는" 같은 곳에서 경계를 못 잡는다 → `(?<![A-Za-z0-9])` 사용.
 - **LLM 선택성:** LLM이 없어도 규칙 경로로 동작해야 하는 기능(3D 구조 편집, 운영 점검, 홈 챗 일부)은 테스트가 LLM 호출을 막는다.
-- **개발용 추출:** 운영 기본 `python setup.py extract`는 `tests/`, `docs/`, `AGENTS.md`를 풀지 않는다. 코드를 고칠 VM에서는 `python setup.py extract --all`로 받는다.
+- **개발용 추출:** 운영 기본 `python setup.py extract`는 `tests/`, `docs/`, `AGENTS.md`를 풀지도, 옛 사본을 갱신하지도 않는다. 코드를 고칠 VM에서는 설치·업데이트 때마다 `python setup.py extract --all`(또는 `FLOW_EXTRACT_ALL=1`)로 받는다.
 - **공개 저장소:** GitHub 저장소는 PUBLIC. 사내 데이터·제품 실명·리포트·발표자료를 커밋하지 않는다. `git add -A` 금지.

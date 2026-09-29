@@ -1,7 +1,22 @@
 {
-  "version": "10.4.316",
+  "version": "10.4.317",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.317",
+      "date": "2026-09-30",
+      "tag": "docs",
+      "title": "사내 VM OpenCode·oh-my-opencode 작업 지침 정비·로그/저장소 작업 안내",
+      "changes": [
+        "[에이전트 지침] AGENTS.md 에 '지금 어디서 작업하는가' 판별표 추가 — 개발 체크아웃(재빌드·공개 저장소 규칙)과 사내 VM 설치 폴더(재빌드·push 금지)를 먼저 구분한다.",
+        "[에이전트 지침] VM 테스트 격리 명령을 복사해 쓰도록 명시 — 설치 폴더에서 환경변수 없이 pytest 를 돌리면 운영 D:\\flow-data·D:\\DB 가 기본으로 잡히는 위험을 막는다.",
+        "[에이전트 지침] VM 프런트 빌드 준비물(frontend node_modules 유무 확인, 사내 npm 미러) 과 OpenCode·oh-my-opencode 규칙(설치 폴더를 작업 폴더로, /init·/init-deep 으로 AGENTS.md 재생성 금지, 외부 전송 금지) 추가.",
+        "[에이전트 지침] 기본 extract 는 AGENTS.md·docs·tests 를 새로 풀지도 갱신하지도 않으므로 코드를 고치는 VM 은 설치·업데이트 때마다 extract --all 을 쓰도록 AGENTS.md·README·CODEMAP 에 명시.",
+        "[에이전트 지침] AGENTS.md 의 켜기·끄기 절차 중복을 README 정본으로 돌리고 에이전트가 지킬 규칙만 남겨 매 턴 로드되는 지침을 줄였다. Codex 전용 모델 위임 문구는 개발 체크아웃 한정으로 표시.",
+        "[문서] docs/LOG_STORAGE.md(기록 종류·위치)·docs/LOG_STORAGE_OPERATIONS.md(용량 진단·순환·S3 보관·복원 절차)와 scripts/windows/measure_flow_storage.ps1(내용 없이 폴더·로그 용량 기록) 추가, README 에 로그·저장소·사내 로그인/WebSocket 수정 안내 절 추가.",
+        "[문서] CODEMAP 에서 삭제된 home_agent_offload.py 참조 제거, 자동 백업 설명(기본 3개·48시간, 날짜 범위 비보장) 주석 정정."
+      ]
+    },
     {
       "version": "10.4.316",
       "date": "2026-09-30",

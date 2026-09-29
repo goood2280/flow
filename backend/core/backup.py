@@ -7,8 +7,8 @@
   - logs/uploads 는 포함 (운영 기록 + 인폼 이미지 보존 필요).
   - 백업 경로: admin_settings.json `backup.path` (없으면 Linux /config/work/sharedworkspace,
     Windows 는 flow-data 옆 flow-backups — 예: D:/flow-backups).
-  - 보관 정책: 최신 N 개 유지 (기본 5, 상한 5 — v8.8.3 부터 축소).
-  - 주기: 서버 기동 시 1회 + 스케줄 스레드 (기본 24h). admin_settings.json
+  - 보관 정책: 최신 N 개 유지 (기본 3, 상한 5; 횟수 기준이며 날짜 보장은 아님).
+  - 주기: 서버 기동 뒤 유휴 시 1회 + 스케줄 스레드 (기본 48h). admin_settings.json
     `backup.interval_hours` 로 런타임 조절.
 """
 from __future__ import annotations
@@ -38,8 +38,8 @@ _EXCLUDE_GLOBS = ("*.pyc", "*.parquet")
 
 # v8.8.3: 기본 보관 개수 14 → 5, 상한도 5 로 축소 (디스크 보호).
 # v9.5.70: 디스크 여유가 빠듯한 사내 서버 기준으로 기본 3 개, 상한은 5 개 유지.
-#   48시간 간격 × 3개 = 약 6일치 = 주말을 낀 사고도 되돌릴 수 있는 최소선.
-#   (간격을 늘리면 같은 개수로 더 긴 기간을 덮는다 — 용량과 복구 가능 기간의 교환)
+#   48시간 간격의 최신 3회 보관. 기동/수동 백업도 포함하므로 날짜 범위는 보장하지 않는다.
+#   (간격과 기동 빈도에 따라 같은 개수가 덮는 기간은 달라진다.)
 _DEFAULT_KEEP = 3
 _MAX_KEEP = 5
 _DEFAULT_INTERVAL_HOURS = 48

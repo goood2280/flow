@@ -14,10 +14,16 @@ SplitTable, ET/LOT 추적, TEG/WF MAP, 업무 게시판, 차트·리포트와 �
 |---|---|
 | [AGENTS.md](AGENTS.md) | 코드 에이전트·기여자 작업 규칙(단일 원천). `CLAUDE.md`는 이 파일을 가리킵니다 |
 | [docs/CODEMAP.md](docs/CODEMAP.md) | 탭별 화면·라우터·core 모듈 위치와 수정 레시피 |
+| [docs/LOG_STORAGE.md](docs/LOG_STORAGE.md) | 로그·대화·업무 이력·캐시의 저장 위치, 내용, 보존 정책, 기록/조회 코드 |
+| [docs/LOG_STORAGE_OPERATIONS.md](docs/LOG_STORAGE_OPERATIONS.md) | OpenCode용 용량 진단·로그 순환·S3 보관·백업·복원 작업 절차 |
 | [guides/](guides/README.md) | 탭별 사용법 영상과 안내 |
 | [DB_AI_AND_INPUT_GUIDE.md](DB_AI_AND_INPUT_GUIDE.md) | DB/AI 참고 파일과 입력 데이터 형식(합성 예시) |
 | [SECOND_BRAIN.md](SECOND_BRAIN.md) | 외부 second-brain 지식 패키지와 Flow 소비 계약 |
 | [VERSION.json](VERSION.json) | 버전과 릴리스 노트(정본) |
+
+사내 VM의 OpenCode에서 로그인·관리자를 조정하려면 먼저 아래
+[관리자 ID·이름·허용 부서 빠른 수정](#관리자-id이름허용-부서-빠른-수정-vmopencode)과
+[WebSocket 수신 형식·방식 수정](#websocket-수신-형식방식-수정)을 읽습니다.
 
 ## 주요 기능
 
@@ -98,6 +104,26 @@ ET 추적·Tracker·Dashboard 차트의 **주기 스캐너**는 `FLOW_ENABLE_HEA
 - 화면 URL에 `?split_perf=1` — 브라우저 첫 표시 시간
 - 관리자 → 모니터(메모리 p95·무거운 작업), 캐시관리 → 검색 속도(히트율·대기), 운영 점검 스캔 알림
 
+## 로그·저장소 확인과 보관 작업 (OpenCode)
+
+OpenCode/oh-my-opencode에는 **`AGENTS.md`를 읽고 로그·저장소 작업 진입점을 따라 처리하라**고 요청하면 됩니다.
+Gemma4 등으로 작업할 때 종류·경로는 [로그·저장소 목록](docs/LOG_STORAGE.md), 수정·정리 절차는
+[작업 안내](docs/LOG_STORAGE_OPERATIONS.md)의 해당 절만 읽고 필요한 함수로 이동합니다.
+설치본에 문서가 없으면 현장 수정 보존·서버 정상 종료 후 `python setup.py extract --all`로 문서·테스트까지 받습니다.
+이 명령은 설치 폴더의 코드도 덮어쓰므로 [업데이트 절차](#업데이트와-데이터-보존)를 따릅니다.
+
+| 구분 | 기본 위치 | 확인할 점 |
+|---|---|---|
+| 실행·감사·성능 로그 | `D:\flow-data\logs` (`FLOW_DATA_ROOT`; 감시기는 `FLOW_LOG_DIR` 가능) | 순환/건수 제한 로그와 전체 보존 감사 이력을 구별 |
+| 대화·업무 이력·첨부파일 | `D:\flow-data`의 기능별 폴더 | 대화 표·차트와 파일 변경본·휴지통·Auto report 중간 자료도 용량에 포함 |
+| 원천·파생 DB 캐시 | `D:\DB`, `D:\DB\cache` (`FLOW_DB_ROOT`) | 원천을 정리 대상으로 취급하지 않음. Auto report의 관리 산출물은 별도 경로 |
+| 자동 백업 | `D:\flow-backups` 또는 관리자 설정 | 기본 48시간·최근 3개, 최대 5개. DB 원천·cache/tmp·모든 Parquet 제외 |
+
+운영 설치 폴더에서 `powershell -File scripts\windows\measure_flow_storage.ps1`로 파일 내용 없이
+폴더·로그 용량과 C:/D: 여유를 기록할 수 있습니다. 사용자 활동이 적은 시간에 실행하고, 실제 root가 다르면
+매개변수로 지정합니다. 이전 JSON과 비교하면 순증가량을 계산합니다(자세한 명령은 작업 안내 참고).
+S3 연결만으로 로컬 용량이 줄거나 과거 자료가 자동 복원되지는 않습니다. 기간별 보관은 조회·복원까지 함께 설계합니다.
+
 ## 설치 (Windows, Miniforge)
 
 요구 사항: Python 3.10 이상(Miniforge conda env), Node.js LTS(npm), `D:\DB`·`D:\flow-data` 읽기·쓰기 권한.
@@ -116,6 +142,8 @@ ET 추적·Tracker·Dashboard 차트의 **주기 스캐너**는 `FLOW_ENABLE_HEA
    씁니다(없을 때만 Flow 최소 의존성). 사내 패키지(`botocore`, `boto`, `awscli`, `bigdataquery`)는 버전
    표기를 빼 두면 충돌이 적습니다. 암호화 연락처와 WebSocket 로그인에 `cryptography`, `websockets`가 필요합니다.
    코드 에이전트(opencode)가 고칠 설치 폴더라면 `set FLOW_EXTRACT_ALL=1` 후 실행해 `AGENTS.md`·`docs/`·`tests/`까지 풉니다.
+   OpenCode·oh-my-opencode는 이 설치 폴더를 작업 폴더로 열면 `AGENTS.md`를 자동으로 읽습니다. `/init`·`/init-deep`으로
+   `AGENTS.md`를 다시 만들지 마세요(번들이 덮어쓰는 정본입니다).
 3. **기존 데이터 이전**(서버 이사 때) — 옛 서버의 Flow를 멈춘 뒤, 먼저 `-DryRun`으로 확인하고 실행합니다.
    다시 실행하면 바뀐 파일만 복사합니다.
    ```powershell
@@ -154,7 +182,7 @@ scripts\windows\flow_ctl.bat health
 
 `restart`는 서버만 다시 띄우고(감시기 유지), `stop`은 서버와 감시기를 함께 끕니다. 둘 다 요청 파일을 남기고
 바로 돌아오므로 `status`와 `/health`로 완료를 확인합니다. 같은 동작을 `python scripts/flow_server.py --status | --restart | --stop`으로도 할 수 있습니다.
-로그는 `D:\flow-data\logs\uvicorn.log`(20MB×5 순환), 재시작 이력 `flow_restarts.log`, 상태 `flow_supervisor.json`입니다.
+로그는 `D:\flow-data\logs\uvicorn.log`(20MiB 활성 1개+백업 5개, 명목 약 120MiB), 재시작 이력 `flow_restarts.log`, 상태 `flow_supervisor.json`입니다.
 `taskkill /IM python.exe`처럼 다른 파이썬까지 끄지 마세요.
 
 접속 주소는 `http://<서버주소>:8080`입니다.
@@ -195,6 +223,8 @@ SYSTEM 계정으로 감시기를 실행하므로 DB/data 접근 권한과 LLM·�
 3. 정지: 예약 작업으로 운영 중이면 `Disable-ScheduledTask -TaskName FlowWebApp` 후 `flow_ctl.bat stop`, `status`로 종료 확인
 4. 추출: `set FLOW_SETUP_STRICT=1` 후 `python setup.py extract` — 종료 코드와 `extract_report.json` 확인
    (STRICT가 없으면 일부 파일 쓰기 실패도 exit 0으로 끝나 반쯤 갱신된 상태를 놓칩니다)
+   opencode로 고치는 설치 폴더는 `python setup.py extract --all`을 씁니다. 기본 추출은 `AGENTS.md`·`docs/`·`tests/`를
+   갱신하지 않아 에이전트가 옛 지침·코드 지도를 읽게 됩니다. VM에서 고친 소스는 추출 전에 로컬 git 커밋으로 남깁니다.
 5. 의존성이 바뀐 경우만: `python setup.py install-deps`
 6. 기동: `Enable-ScheduledTask` → `Start-ScheduledTask`(또는 `flow_run.bat`), `/health`와 `/version.json` 확인
 7. 문제가 있으면: 정지 → `python setup.py restore latest` → 기동
@@ -256,6 +286,157 @@ set "FLOW_WS_AUTH_USER_MAP={"example.user":"hol"}"
 않습니다. 일반 사내 로그인 사용자는 부서 규칙을 따릅니다. 연락처는 `auth/people.enc`에 암호화 저장되며
 (키 `FLOW_DATA_KEY` 또는 `<설치 폴더>\.flow_data.key` — 커밋 금지), 메일 수신 주소에도 쓰입니다. 행을 비워도
 계정은 지워지지 않습니다 — 위임 해제·삭제는 업무 권한·위임과 사용자 관리에서 합니다.
+
+### 관리자 ID·이름·허용 부서 빠른 수정 (VM/OpenCode)
+
+현재 구현 기준입니다. VM에서는 **setup.py를 푼 실제 Flow 설치 폴더**를 OpenCode 작업 폴더로 엽니다.
+처음 문서·테스트까지 받을 때는 서버를 정상 종료하고 `python setup.py extract --all`을 실행합니다.
+이미 VM에서 수정한 소스가 있으면 먼저 로컬 사본/커밋을 남깁니다(추출하면 소스는 덮어써집니다).
+설정값만 바꾸는 작업은 아래 화면·현장 환경변수를 사용하고, 동작 자체를 바꿀 때 표의 구현을 수정합니다.
+
+| 바꿀 내용 | 현재 조정 방법 | OpenCode가 확인할 구현 |
+|---|---|---|
+| 관리자 추가, 이름·메일·역할 | 관리자 → 운영 → **사내 로그인·관리자**의 관리자·대리인 표 | `frontend/src/features/admin/DepartmentAccessPanel.jsx` → `backend/routers/admin.py`: `ManagerProfileReq`(행), `ManagerProfilesReq`(요청), `manager_profiles_save()` (`GET/POST /api/admin/manager-profiles`) |
+| 기존 계정의 역할·연락처 | 관리자 → 운영 → **사용자** | `frontend/src/features/admin/My_Admin.jsx` → `backend/routers/admin.py`: `set_role()`, `set_name()`, `set_email()` |
+| 사내 ID와 Flow 계정 ID 연결 | `scripts/windows/flow_env.local.bat`의 `FLOW_WS_AUTH_USER_MAP` | `backend/core/auth_providers.py`: `_ws_user_map()`, `_identity_for_company_user()` |
+| 로그인 허용 부서·탭 | **사내 로그인·관리자**의 부서 규칙 표 | `DepartmentAccessPanel.jsx` → `backend/routers/auth.py`: `get_department_rules()`, `save_department_rules()` → `auth_providers.py`: `write_department_rules()`, `department_access()` |
+| 검증 응답의 부서·이름 키 | `FLOW_WS_AUTH_DEPT_FIELDS`, `FLOW_WS_AUTH_NAME_FIELDS` 등 | 아래 WebSocket 절의 설정표와 `WebsocketAuthProvider.authenticate()` |
+
+**ID와 이름은 서로 다릅니다.** 인증서버가 확인한 사내 ID(`ws_user`)를 `FLOW_WS_AUTH_USER_MAP`으로 Flow
+계정 ID(`username`)에 연결하고, `name`은 화면에 표시할 이름입니다. 역할은 `role="admin"`으로 판정하므로
+이름이나 ID를 `admin`으로 적는 것만으로 관리자 권한이 생기지는 않습니다.
+
+- 이미 관리자 계정이 있으면 표에 계정·이름·유효한 메일·`admin`을 입력해 추가/수정합니다. 페이지 대리인은
+  `user`와 위임 페이지 ID가 하나 이상 필요합니다. 저장은 **제출한 ID별 추가/갱신**이며, 빠진 행은 삭제하지 않습니다.
+  이름·메일을 직접 저장하면 이후 WebSocket 로그인 응답보다 이 수동 연락처가 우선합니다.
+- 사내 ID 표기가 바뀌었지만 기존 Flow 기록을 유지하려면 **새 사내 ID → 기존 Flow 계정 ID** 매핑을 바꿉니다.
+  관리자 표의 ID를 바꾸는 것은 기존 계정의 이름 변경이 아니라 다른 계정 추가입니다. 일괄 ID 변경 API는 없습니다.
+  기존 ID의 게시글 작성자·그룹·위임·세션까지 옮길 작업은 별도 데이터 이관으로 다룹니다.
+- 매핑 JSON의 key는 사내 ID, value는 Flow 계정 ID입니다. 기존 대상 계정이 있으면 그 계정의 역할·탭을 쓰며,
+  **대상 계정이 없으면 관리자 세션을 만듭니다.** 따라서 일반 사용자 전체를 여기에 등록하지 않습니다. 기본 매핑은
+  빈 `{}`이며 실제 ID는 현장 파일에만 둡니다. 새 서버에 관리자가 없어도 이 매핑으로 첫 관리자를 로그인시켜 표에서 등록할 수 있습니다.
+- 관리자를 해제할 때는 기존 계정의 역할/위임뿐 아니라 매핑도 확인합니다. 매핑을 남기고 대상 계정을 삭제하면
+  다음 로그인에서 다시 관리자 세션이 만들어집니다. 새 관리자 로그인을 먼저 확인한 뒤 기존 권한을 정리합니다.
+- 로컬 비밀번호용 초기 계정 `hol`은 `backend/app_v2/runtime/startup.py`의 `ensure_seed_admin()`에 고정되어 있습니다.
+  `FLOW_ADMIN_PW`는 없는 `hol`을 최초 생성하는 비밀번호(10자 이상)이며 ID·표시 이름 설정이나 기존 비밀번호 변경용이 아닙니다.
+  사내 관리자 변경은 위 표/매핑으로 처리합니다. 초기 ID 기본값 자체를 바꾸려면 이 함수와
+  `tests/test_security_and_background_owner.py`의 seed 검사, 설치 안내의 `hol` 표기도 함께 확인합니다.
+
+**부서 규칙의 현재 적용 범위와 우선순위:** `_identity_for_company_user()`는 매핑 후 기존 `users.csv` 계정이
+있으면 그 역할·탭을 우선하며 부서 규칙을 검사하지 않습니다. 매핑 대상이 없으면 앞서 설명한 관리자 경로,
+그 외 계정이 없는 일반 WebSocket 사용자는 부서 규칙을 따릅니다. IP 로그인도 같은 함수를 쓰지만 부서 claim을
+받지 않습니다. OIDC의 부서 기본 권한은 아래 별도 SSO 절의 경로입니다.
+
+| 부서 규칙 | 현재 결과 |
+|---|---|
+| 규칙이 비어 있음 | 일반 사용자 모두 로그인 가능. 기본 탭은 `FLOW_WS_AUTH_DEFAULT_TABS`(미지정/`__all_user__`이면 관리자 외 허용 탭 전체) |
+| 규칙이 하나 이상 있음 | 허용 규칙에 일치하는 부서만 로그인. 일치 없음·부서 정보 없음은 403 |
+| `match=exact` / `prefix` | 앞뒤 공백 제거·대소문자 무시 후 전체 일치 / 접두어 일치 |
+| 여러 규칙에 일치 | 거부(`allow_login=false`, 화면 `X`)가 우선. 거부가 없으면 허용 규칙들의 탭을 합침 |
+| 허용 규칙의 `tabs`가 빈 값/`__all_user__` | 관리자 외 허용 탭 전체. 빈 값이 접근 금지를 뜻하지 않음 |
+
+예를 들어 `공정기술 / prefix / O / splittable,filebrowser`, `공정기술외주 / prefix / X /`를 저장하면
+일반 `공정기술1팀` 사용자는 두 탭을, `공정기술외주1팀` 사용자는 로그인 거부를 받습니다(합성 부서명).
+제한 운영에서는 허용 목록을 실제로 저장해 둡니다. 현재 `read_department_rules()`는 파일 누락·잘못된 JSON도
+빈 규칙으로 취급하므로 파일을 지우거나 깨뜨리는 방식으로 차단하지 않습니다.
+기존 계정까지 부서로 제한하거나 규칙이 없으면 거부하도록 바꾸려면 `_identity_for_company_user()`와
+`department_access()`의 분기를 수정하고 관리자 진입 경로 및 관련 테스트를 함께 확인합니다.
+
+저장 위치는 `FLOW_DATA_ROOT/users.csv`(역할·상태·탭), `auth/people.enc`(암호화 연락처),
+`auth/department_rules.json`(부서 규칙), `admin_settings.json`의 `page_admins`(위임)입니다.
+`people.enc`는 직접 텍스트 편집하지 않습니다. 키는 `FLOW_DATA_KEY`, `FLOW_DATA_KEY_FILE` 또는 설치 폴더의
+`.flow_data.key`이므로 데이터 이사 때 키도 보존합니다. 운영 파일·실제 ID·부서·메일·키는 공개 저장소나 번들에 넣지 않습니다.
+
+### WebSocket 수신 형식·방식 수정
+
+현재 로그인 흐름:
+
+```text
+My_Login.jsx: GET /api/auth/providers → new WebSocket(provider.ws_url)
+  연결 직후 provider.send 전송 → onmessage(event.data)
+  → POST /api/auth/sso/ws/login {"message": event.data}
+backend/routers/auth.py: websocket_login()
+  → auth_providers.py: WebsocketAuthProvider.authenticate()
+  → _ws_parse() / _ws_pick() → _ws_verify()로 인증서버 재확인
+  → _identity_for_company_user() → start_session() → Flow 세션 token
+```
+
+브라우저는 수신 문자열을 그대로 전달합니다. 서버 `_ws_parse()`는 JSON 문자열을 객체로 풀고 `_ws_pick()`은
+필드 목록에서 **첫 번째 비어 있지 않은 문자열/정수**를 선택합니다. key는 대소문자를 무시하고 `data.user.id`처럼
+점 경로로 중첩 객체를 읽습니다(배열 인덱스 경로는 지원하지 않음). 부서·이름·메일은 **인증서버 재검증 응답**에서
+읽습니다. 브라우저 메시지에만 부서를 붙여도 허용 부서 판정에 쓰지 않습니다.
+
+| 현장 환경변수 | 현재 기본값·의미 |
+|---|---|
+| `FLOW_WS_AUTH_URL` | 브라우저가 접속할 `ws://`/`wss://` 주소. 비면 WebSocket 로그인 비활성 |
+| `FLOW_WS_AUTH_SEND` / `FLOW_WS_AUTH_AUTO` | 연결 직후 보낼 문자열(기본 전송 없음) / 화면 진입 시 자동 시도(기본 `1`, 끄려면 `0`) |
+| `FLOW_WS_AUTH_USER_FIELDS` | 사내 ID 후보. 기본 `user_id,userId,userid,username,user_name,user,loginId,login_id,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id` |
+| `FLOW_WS_AUTH_TOKEN_FIELDS` | 인증서버 토큰 후보. 기본 `token,access_token,accessToken,ticket,session,sessionId,session_id,data.token,data.ticket` |
+| `FLOW_WS_AUTH_DEPT_FIELDS` | 기본 `department,dept,deptName,dept_name,deptNm,orgName,org_name,org,team,data.department,data.dept,user.department` |
+| `FLOW_WS_AUTH_NAME_FIELDS` | 기본 `name,userName,user_name,displayName,display_name,korName,kor_name,data.name,user.name` |
+| `FLOW_WS_AUTH_EMAIL_FIELDS` | 기본 `email,mail,emailAddress,email_address,data.email,user.email` |
+| `FLOW_WS_AUTH_VERIFY_URL` / `FLOW_WS_AUTH_VERIFY` | 서버의 재검증 주소 / `http` 또는 `ws`. mode 미지정 시 verify URL이 HTTP면 `http`, 나머지는 `ws`; URL·mode 둘 다 없으면 기본 거부 |
+| `FLOW_WS_AUTH_VERIFY_SEND` | 검증 요청 문자열 템플릿. 기본 `{"token": "{token}"}`. `{token}`·`{user}`를 추출값으로 치환 |
+| `FLOW_WS_AUTH_VERIFY_TIMEOUT_SEC` | 서버 재검증 제한시간, 기본 10초. 브라우저의 전체 대기는 `My_Login.jsx`에서 60초 |
+
+`*_FIELDS`는 쉼표로 나열하며 **기본 목록을 대체**합니다. ID 목록은 브라우저 수신과 서버 재검증 응답에 공통으로
+쓰므로 두 응답의 경로를 모두 넣습니다. 단순 key 변경은 환경변수로 해결하고, 일반 기본값을 바꿀 때는
+`auth_providers.py`의 `_WS_DEFAULT_*_FIELDS`도 수정합니다.
+
+다음은 합성 메시지 예입니다. 브라우저가 `{"data":{"employee":{"id":"example.user"},"ticket":"sample-ticket"}}`를
+받고 재검증 응답이 `{"ok":true,"employee":{"id":"example.user","department":"공정기술1팀","name":"예시 사용자","email":"user@example.com"}}`라면,
+현장 파일에 아래 경로를 지정합니다(실제 URL·토큰은 이 문서에 넣지 않음).
+
+```bat
+rem scripts\windows\flow_env.local.bat (Miniforge Prompt / CMD 문법)
+set "FLOW_WS_AUTH_USER_FIELDS=data.employee.id,employee.id"
+set "FLOW_WS_AUTH_TOKEN_FIELDS=data.ticket"
+set "FLOW_WS_AUTH_DEPT_FIELDS=employee.department"
+set "FLOW_WS_AUTH_NAME_FIELDS=employee.name"
+set "FLOW_WS_AUTH_EMAIL_FIELDS=employee.email"
+```
+
+**수신 방식을 바꿀 때의 수정 지점:**
+
+- 브라우저 연결 옵션·첫 송신·여러 프레임 조립·binary/Blob 변환·중간 메시지 분류는 `My_Login.jsx`의 `wsLogin()`.
+  현재 모든 프레임을 POST하며 HTTP 400만 중간 메시지로 보고 계속 기다립니다. 다른 오류는 종료합니다.
+- JSON wrapper·배열·문자열 프로토콜은 `auth_providers.py`의 `_ws_parse()`, `_ws_pick()`, `authenticate()`.
+  현재 일반 문자열은 ID로만 읽어 토큰이 없으므로 정상 재검증 로그인에 쓸 수 없습니다.
+- 서버 HTTP 헤더·Bearer 토큰·GET 요청·인증서버 성공 코드·서버 WS의 추가 handshake/중간 프레임은 `_ws_verify()`.
+  현재 HTTP는 JSON Content-Type의 POST, WS는 한 번 보내고 **첫 응답 한 프레임**을 읽습니다.
+  명시적 `FLOW_WS_AUTH_VERIFY=ws`에서 verify URL이 비면 브라우저 URL을 재사용합니다.
+- 현재 성공 판정은 `ok` → `success` → `result` 우선이며 `false/fail/error/0`을 거부하고, 확인 ID가 있어야 통과합니다.
+  브라우저 ID도 있으면 재검증 ID와 대소문자 무시 일치해야 합니다. 프로필은 검증 응답에서 추출하는 규칙을 유지합니다.
+  요청 템플릿은 단순 문자열 치환이므로 따옴표 등을 포함하는 값을 지원하려면 객체를 만들고 `json.dumps()`하는 방식으로 수정합니다.
+- 사내 토큰과 Flow 세션 `token`은 별개입니다. `start_session()` → `core/auth.py: issue_token()` 경로를 유지하고
+  인증서버 토큰·비밀번호·수신 원문을 로그/`tokens.json`/공개 문서에 남기지 않습니다.
+  `FLOW_WS_AUTH_VERIFY=none` + `FLOW_WS_AUTH_TRUST_CLIENT=1`은 재검증을 생략하고 클라이언트 프로필까지 믿는 예외이므로
+  로그인 오류 해결책으로 적용하지 않습니다.
+
+### VM 수정 반영·검증
+
+- 화면에서 저장한 관리자·부서 설정은 서버 재시작이 필요 없습니다. 관리자·대리인 표에서 권한을 바꾸거나 사용자 화면에서
+  역할을 바꾸면 해당 계정 세션은 무효화됩니다.
+  부서 규칙·ID 매핑 변경은 이미 발급된 일반 사용자 세션을 일괄 회수하지 않으므로 로그아웃 후 **새 로그인**으로 확인합니다.
+- **`flow_env.local.bat` 변경은 감시기까지 정상 종료 후 다시 기동**합니다. `flow_ctl.bat restart`는 API 자식만
+  재기동해 실행 중인 감시기의 옛 환경변수를 그대로 전달합니다. Miniforge Prompt에서 `scripts\windows\flow_ctl.bat stop`
+  후 `status`로 감시기 종료를 확인하고 `scripts\windows\flow_run.bat`을 실행합니다. 예약 작업 운영이면 같은 종료 확인 뒤
+  PowerShell의 `Start-ScheduledTask -TaskName FlowWebApp`으로 다시 시작합니다.
+- Python 소스만 바꿨으면 관련 검증 후 `scripts\windows\flow_ctl.bat restart`. 화면 소스는
+  `cd frontend` → `npm run check`(검사+dist 빌드) 후 브라우저 새로고침으로 반영합니다.
+- 검증은 임시 `FLOW_DATA_ROOT`·`FLOW_DB_ROOT`·`FLOW_WAFER_MAP_ROOT`·`FLOW_DATA_KEY_FILE`, `FLOW_PROD=0`으로
+  운영 데이터와 분리합니다. `tests/test_websocket_auth.py`, `tests/test_manager_profiles.py`,
+  `tests/test_group_departments_ip_login.py`를 우선 실행하고, 초기 계정 동작을 바꾸면 seed 테스트도 실행합니다.
+  기존 WS 테스트는 주요 경로의 `_ws_verify()`를 mock하므로 통과해도 실제 사내 인증서버 연결이 검증된 것은 아닙니다.
+  프로토콜을 바꾸면 송신 payload·중간 프레임·검증 ID 불일치·클라이언트 부서 위조에 대한 검증도 추가합니다.
+- 현장에서는 `GET /api/auth/providers`, 브라우저 개발자 도구의 WS 연결/프레임과 `/api/auth/sso/ws/login` 응답,
+  새 로그인 뒤 `/api/auth/me`의 ID·역할·탭을 확인합니다. **새 관리자, 허용 부서, 거부 부서, 부서 없음**을 각각 확인합니다.
+  로그인 API의 400은 ID/토큰 추출, 401은 토큰·검증 ID, 403은 부서/검증 설정, 503은 재검증 설정,
+  502는 VM→인증서버 연결 실패부터 조사합니다. 관리자 프로필 API의 503은 암호화 키/연락처 저장도 확인합니다.
+  개발자 도구 캡처는 토큰·개인정보를 가리고 공유합니다.
+- VM 수정은 다음 `setup.py extract`에서 소스가 덮어써집니다. 로컬 patch/커밋을 보관하고,
+  다른 설치본에 전달할 일반 코드·문서 변경은 개발 체크아웃에서 `python _build_setup.py`로 `setup.py`까지 재생성합니다.
+  현장 ID·URL·키·운영 데이터는 번들에 넣지 않습니다.
 
 ### 사내 OIDC SSO
 
@@ -398,7 +579,7 @@ LLM을 부르는 새 API 경로는 `backend/core/llm_adapter.py`의 `_DATA_TASK_
 | 경로 | 설정 파일에 남은 `/config/work/...`·`\\옛서버\...` 경로(Valve `local_root`, 백업, 메일/LLM) | `D:\flow-data`에서 검색해 `{db_root}` 토큰이나 D: 경로로 교체 |
 | 옛 설정 | `FLOW_SERVER_ROLE`, `FLOW_WORKER_OFFLOAD`, `FLOW_API_SERVER_URL` 등 개발 worker 설정 | 효과 없음. 운영 점검 스캔이 알려 주면 `flow_env*.bat`에서 삭제 |
 | 옛 고정값 | `FLOW_CPU_BUDGET_CORES`, `FLOW_PROCESS_MEMORY_LIMIT_GB`, `POLARS_MAX_THREADS`, `FLOW_DUCKDB_THREADS` 등 | 자동 인식이 맞으면 지우고 재시작(Polars 풀은 시작 때 고정). 캐시관리 → 검색 코어는 **자동** 저장 |
-| 디스크 | `D:`가 동적 확장 가상디스크·네트워크 드라이브면 느림 | 로컬 고정 디스크(SSD) 권장. 여유: DB + 캐시(DB의 20~50%) + 백업 5개 |
+| 디스크 | `D:`가 동적 확장 가상디스크·네트워크 드라이브면 느림 | 로컬 고정 디스크(SSD) 권장. DB + 실측 캐시·업무 자료 + 백업 최근 3개(설정 최대 5개) + 작업 중 임시 공간을 합산. [용량 진단](docs/LOG_STORAGE_OPERATIONS.md) 참고 |
 | 백신 | Defender 실시간 검사가 parquet·캐시 파일마다 끼어듦 | 승인 하에 `D:\DB`, `D:\flow-data`, 설치 폴더, conda env 검사 제외 |
 | 메모리 | VM 동적 메모리면 총량이 작게 보여 `small`로 뜸 | 메모리 고정 128GB. 모니터에서 `large` 확인(강제 `FLOW_RESOURCE_PROFILE=large`). 페이지 파일은 끄지 않음 |
 | 전원 | 절전·자동 업데이트 재부팅 | `-DisableSleep`, Windows Update 재부팅 창 설정, 부팅 자동 시작 |
