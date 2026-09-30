@@ -28,7 +28,7 @@ Windows 설치 기본 드라이브는 `FLOW_STORAGE_ROOT`로 바꾸고, `FLOW_ST
 
 | 위치 | 저장 내용 | writer → reader / 현재 보존 |
 |---|---|---|
-| `<SUPERVISOR_LOGS>/uvicorn.log`, `.1`~`.5` | HTTP 접근 경로·상태, 앱 stdout/stderr·경고·예외, 감시기 메시지 | `flow_server.py:RotatingLog` → control/log 도구. 20MiB 활성 1개+백업 5개, 명목 약 120MiB. 쓰기 단위로 조금 초과 가능 |
+| `<SUPERVISOR_LOGS>/uvicorn.log`, `.1`~`.5` | 앱 stdout/stderr·경고·예외, 감시기 메시지. HTTP 접근 출력은 `FLOW_UVICORN_ACCESS_LOG=1`일 때 | `flow_server.py:RotatingLog` → control/log 도구. 20MiB 활성 1개+백업 5개, 명목 약 120MiB. 쓰기 단위로 조금 초과 가능 |
 | `<SUPERVISOR_LOGS>/flow_restarts.log` | 기동·종료·재시작 시각/이유·코드 | `flow_server.py:_append_history()`. append, 별도 상한 없음 |
 | `<SUPERVISOR_LOGS>/flow_supervisor.json` | 현재 PID·상태·재시작/헬스 정보 | `flow_server.py:_write_state()` → `--status`. 같은 상태 파일 교체 |
 | `<API_LOGS>/activity.jsonl` | 사용자·행동·탭·상세 메모·시각 | `core/audit.py:record()/append_activity()` → 관리자 활동/통계 `activity_index.py`. **전체 보존, 줄/바이트 제한 없음** |
@@ -44,7 +44,7 @@ Windows 설치 기본 드라이브는 `FLOW_STORAGE_ROOT`로 바꾸고, `FLOW_ST
 | `<API_LOGS>/faulthandler_api.log` | 네이티브 오류 traceback | `sysmon.py:start_crash_forensics()`. append, 별도 순환 없음. 관리자 표시만 끝 6KiB로 제한 |
 | `<API_LOGS>/product_dedup_scheduler.log` | 제품 목록 정규화 실행 시각·전후 건수 | `backend/scheduler.py:_append_log()`. 일일 실행 append, 별도 상한 없음 |
 
-HTTP 모든 요청과 업무 감사 이벤트는 다르다. 기본 Uvicorn 접근 출력은 `uvicorn.log`에 들어가며,
+HTTP 모든 요청과 업무 감사 이벤트는 다르다. Uvicorn 접근 출력은 기본으로 끄며, 활성화하면 `uvicorn.log`에 들어간다.
 감사 로그는 로그인·업무 변경·홈 챗 등 명시적 `audit.record()` 호출에서 기록한다.
 `backend/app.py`의 inflight 추적은 현재 요청과 느린 요청/서버 오류 요약을 장애 진단에 남긴다.
 

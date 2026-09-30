@@ -104,12 +104,12 @@ function ProfileMenu({ user, dark, setDark, onLogout, onChangePw }) {
       <div onClick={() => setOpen(!open)} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:6,
         padding:"4px 10px",borderRadius:6,background:open?"var(--bg-hover)":"transparent",fontSize:14,
         color:"var(--text-secondary)"}}>
-        <Icon name="user" style={{fontSize:16}} />{user.username}
+        <Icon name="user" style={{fontSize:16}} />{user.name || user.username}
       </div>
       {open && <div style={{position:"fixed",top:52,right:16,background:"var(--bg-secondary)",border:"1px solid var(--border)",
         borderRadius:8,padding:6,minWidth:150,zIndex:9999,boxShadow:"0 4px 12px rgba(0,0,0,0.3)"}}>
         <div style={{padding:"8px 12px",fontSize:14,color:"var(--text-secondary)",borderBottom:"1px solid var(--border)"}}>
-          {user.role} | {user.username}
+          {user.name ? `${user.name} (${user.username})` : user.username} · {user.role}
         </div>
         <div onClick={() => { setDark(!dark); localStorage.setItem("hol_dark",String(!dark)); }}
           style={{padding:"8px 12px",fontSize:14,cursor:"pointer",color:"var(--text-primary)"}}>

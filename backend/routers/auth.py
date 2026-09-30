@@ -382,14 +382,13 @@ def me(request: Request):
                 "tabs": "__all__" if u.get("role") == "admin" else u.get("tabs", ""),
             }
     if me.get("auth_method") == "websocket":
-        # websocket 사용자는 users.csv 에 저장하지 않는다 — 세션 토큰의 역할·탭을 쓴다.
         claims = me.get("claims") or {}
         return {
             "authenticated": True,
             "username": me["username"],
             "role": me.get("role", "user"),
-            "name": profile.get("name", ""),
-            "email": profile.get("email", ""),
+            "name": profile.get("name") or str(claims.get("name") or ""),
+            "email": profile.get("email") or str(claims.get("email") or ""),
             "sso_id": str(claims.get("ws_user") or ""),
             "department": str(claims.get("department") or ""),
             "permission_source": "department",

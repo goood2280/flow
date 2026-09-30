@@ -84,6 +84,20 @@ from app_v2.runtime.startup import ensure_seed_admin, start_background_services
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("flow")
 
+try:
+    from core.runtime_limits import host_diagnostics as _host_diagnostics
+
+    _host_info, _host_warnings = _host_diagnostics({
+        "FLOW_DATA_ROOT": PATHS.data_root,
+        "FLOW_DB_ROOT": PATHS.db_root,
+        "FLOW_WAFER_MAP_ROOT": PATHS.wafer_map_root,
+    })
+    logger.info("host resources: %s", " ".join(f"{k}={v}" for k, v in _host_info.items()))
+    for _warning in _host_warnings:
+        logger.warning("host resources: %s", _warning)
+except Exception as _exc:
+    logger.warning("host resources: diagnostics skipped: %s", _exc)
+
 
 def _release_version() -> str:
     """Return the semantic release version from the repository metadata."""

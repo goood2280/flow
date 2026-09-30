@@ -98,6 +98,7 @@ export default function My_Login({ onLogin }) {
   const passwordEnabled = authProviders === null || authProviders.some((provider) => provider?.name === "password");
   const ssoProviders = (authProviders || []).filter((provider) => provider?.kind === "sso" && provider?.start_url);
   const wsProvider = (authProviders || []).find((provider) => provider?.kind === "websocket" && provider?.ws_url);
+  const wsContact = wsProvider?.contact || "";
   const recoveryEnabled = passwordEnabled && !wsProvider;
   useEffect(() => {
     if (!recoveryEnabled && mode === "reset") setMode("login");
@@ -153,7 +154,12 @@ export default function My_Login({ onLogin }) {
         // 인증 정보가 아직 없는 중간 메시지(400)는 다음 메시지를 기다린다.
         if (r.status === 400) return;
         window.clearTimeout(timer);
-        if (!r.ok) { finish(d.detail || "사내 로그인에 실패했습니다."); return; }
+        if (!r.ok) {
+          let errMsg = d.detail || "사내 로그인에 실패했습니다.";
+          if (provider.contact && !errMsg.includes("문의")) errMsg += ` 문의 ${provider.contact}`;
+          finish(errMsg);
+          return;
+        }
         finish("");
         onLogin(d);
       } catch (_) {
@@ -283,6 +289,9 @@ export default function My_Login({ onLogin }) {
           )}
 
           {msg && <div role="status" className={`flow-login__message${isOk ? " flow-login__message--success" : ""}`}>{msg}</div>}
+          {!msg && wsContact && !passwordEnabled && (
+            <div className="flow-login__contact">로그인이 안 되면 문의 {wsContact}</div>
+          )}
 
           {passwordEnabled && (
             <nav className="flow-login__links" aria-label="계정 도움말">

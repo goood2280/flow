@@ -162,6 +162,13 @@
   overflow-wrap: anywhere;
 }
 .flow-login__message--success { color: var(--login-success); }
+.flow-login__contact {
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  color: var(--login-muted);
+  font-size: var(--font-size-body);
+  text-align: center;
+}
 .flow-login__version { margin-top: var(--space-5); color: var(--login-muted); text-align: center; font-size: var(--font-size-caption); }
 @media (max-width: 480px) {
   .flow-login { padding: var(--space-6) var(--space-4); }

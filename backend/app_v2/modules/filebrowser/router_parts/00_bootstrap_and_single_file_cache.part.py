@@ -76,6 +76,31 @@ from app_v2.shared.contracts import FileVersionMeta
 
 logger = logging.getLogger("flow.fb")
 router = APIRouter(prefix="/api/filebrowser", tags=["filebrowser"])
+
+
+def _preview_http_response(func):
+    """Encode previews in the sync handler's worker, preserving internal dict calls.
+
+    FastAPI otherwise recursively walks every cached cell on the event loop
+    before JSON encoding. The SQL-history decorator must run inside this one
+    so it can still inspect the original result.
+    """
+    @functools.wraps(func)
+    def wrapped(*args, **kwargs):
+        payload = func(*args, **kwargs)
+        if not isinstance(kwargs.get("request"), Request) or not isinstance(payload, dict):
+            return payload
+        from core import json_fast
+
+        try:
+            return json_fast.response(json_fast.dumps_bytes(payload))
+        except (TypeError, ValueError, OverflowError):
+            # Preserve FastAPI's encoder for any uncommon legacy value.
+            return payload
+
+    return wrapped
+
+
 YIELD_SHOT_ROOT = "YIELD_SHOT"
 # v4.1.1 (2026-04-19): module-level DB_BASE removed. Every route handler now
 # reads `PATHS.db_root` / `PATHS.base_root` at request time so env overrides

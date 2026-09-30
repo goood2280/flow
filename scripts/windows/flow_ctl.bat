@@ -1,11 +1,12 @@
 @echo off
 rem ---------------------------------------------------------------------------
-rem Flow control:  flow_ctl.bat status | stop | restart | log | health
+rem Flow control:  flow_ctl.bat status | stop | restart | log | health | perf
 rem   status   supervisor + server state (JSON)
 rem   stop     stop the server and the watchdog (requests it, returns at once)
 rem   restart  restart only the server process (e.g. after an update)
 rem   log      show the last 60 lines of uvicorn.log
 rem   health   call /health on this machine
+rem   perf     inspect next-launch CPU/RAM limits (no scans or settings changes)
 rem Uses the same environment as flow_run.bat (flow_env.bat).
 rem ---------------------------------------------------------------------------
 setlocal EnableExtensions
@@ -20,7 +21,8 @@ if /i "%ACTION%"=="stop"    goto :stop
 if /i "%ACTION%"=="restart" goto :restart
 if /i "%ACTION%"=="log"     goto :log
 if /i "%ACTION%"=="health"  goto :health
-echo usage: flow_ctl.bat status ^| stop ^| restart ^| log ^| health
+if /i "%ACTION%"=="perf"    goto :perf
+echo usage: flow_ctl.bat status ^| stop ^| restart ^| log ^| health ^| perf
 popd
 exit /b 1
 
@@ -38,6 +40,10 @@ powershell -NoProfile -Command "Get-Content -Tail 60 -Encoding UTF8 '%FLOW_DATA_
 goto :end
 :health
 powershell -NoProfile -Command "try { (Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 'http://127.0.0.1:%FLOW_PORT%/health').Content } catch { Write-Host ('health check failed: ' + $_.Exception.Message); exit 1 }"
+goto :end
+
+:perf
+"%PYTHON_EXE%" scripts\check_flow_performance.py
 goto :end
 
 :end

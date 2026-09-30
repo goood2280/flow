@@ -786,8 +786,73 @@ def _default_polars_threads() -> str:
     return str(_polars_threads_for_role())
 
 
+def _is_remote_path(path) -> bool:
+    text = str(path or "")
+    if text.startswith("\\\\") or text.startswith("//"):
+        return True
+    if os.name != "nt" or len(text) < 2 or text[1] != ":":
+        return False
+    try:
+        import ctypes
+
+        return int(ctypes.windll.kernel32.GetDriveTypeW(f"{text[0]}:\\")) == 4  # DRIVE_REMOTE
+    except Exception:
+        return False
+
+
+def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
+    """기동 로그용 요약 + 경고. 느린 서버에서 설정 오판을 로그 한 줄로 찾게 한다."""
+    total_gb = float(system_memory_snapshot().get("system_memory_total_gb") or 0.0)
+    cores = effective_cpu_count()
+    explicit = os.environ.get("FLOW_RESOURCE_PROFILE_SOURCE") == "env"
+    info = {
+        "profile": resource_profile(),
+        "profile_source": "env" if explicit else "auto",
+        "cores": cores,
+        "memory_total_gb": round(total_gb, 1),
+        "cpu_budget": cpu_budget_cores(),
+        "polars_threads": os.environ.get("POLARS_MAX_THREADS", ""),
+        "process_memory_limit_gb": process_memory_limit_gb(),
+    }
+    warnings: list[str] = []
+    if is_large_profile():
+        if info["cpu_budget"] < cores:
+            warnings.append(
+                f"FLOW_CPU_BUDGET_CORES={info['cpu_budget']:g} 로 {cores:g}코어 중 일부만 사용합니다. "
+                "이전 서버의 고정값이면 제거 후 감시기까지 다시 기동하세요. 의도한 제한이면 유지하세요."
+            )
+        for name in ("POLARS_MAX_THREADS", "FLOW_DUCKDB_THREADS"):
+            raw = os.environ.get(name, "").strip()
+            try:
+                threads = int(raw)
+            except ValueError:
+                continue
+            if 0 < threads < int(info["cpu_budget"]):
+                warnings.append(
+                    f"{name}={threads} 로 계산 병렬도가 CPU 예산 {info['cpu_budget']:g}보다 작습니다. "
+                    "이전 서버의 고정값이면 제거 후 감시기까지 다시 기동하세요. 의도한 제한이면 유지하세요."
+                )
+        if 0 < info["process_memory_limit_gb"] < total_gb * 0.5:
+            warnings.append(
+                f"FLOW_PROCESS_MEMORY_LIMIT_GB={info['process_memory_limit_gb']:g} 는 "
+                f"감지된 메모리 {total_gb:g}GB의 절반 미만입니다. 이전 서버의 고정값인지 확인하세요."
+            )
+    if (not explicit and info["profile"] != "large" and cores >= _LARGE_HOST_MIN_CORES
+            and 0 < total_gb < _LARGE_HOST_MIN_MEMORY_GB):
+        warnings.append(
+            f"{cores:g}코어인데 메모리가 {total_gb:.0f}GB 로 보여 '{info['profile']}' 프로파일로 동작합니다. "
+            "VM 동적 메모리면 기동 시점 할당량만 보입니다 — 전용 서버면 FLOW_RESOURCE_PROFILE=large 를 지정하세요."
+        )
+    for label, path in (paths or {}).items():
+        if _is_remote_path(path):
+            warnings.append(f"{label}={path} 가 네트워크 드라이브입니다. 로컬 디스크로 옮기면 조회·저장이 빨라집니다.")
+    return info, warnings
+
+
 def apply_runtime_limits() -> None:
     """Apply CPU/memory-conscious defaults unless deploy set explicit values."""
+    explicit_profile = os.environ.get("FLOW_RESOURCE_PROFILE", "").strip().lower() not in ("", "auto")
+    os.environ.setdefault("FLOW_RESOURCE_PROFILE_SOURCE", "env" if explicit_profile else "auto")
     os.environ.setdefault("FLOW_RESOURCE_PROFILE", resource_profile())
     # 호스트 크기를 읽어 비례 산출 — 환경이 바뀌어도 (코어/메모리 증감) 재배포 없이 맞춰진다.
     os.environ.setdefault("FLOW_CPU_BUDGET_CORES", str(auto_cpu_budget_cores()) if is_small_profile() else "")

@@ -153,6 +153,25 @@ def _save_tokens() -> None:
     _tokens_dirty = False
 
 
+def _take_save_snapshot() -> tuple[int, str]:
+    """caller holds _lock. 파일 쓰기는 _lock 을 놓은 뒤 _persist_snapshot 으로 한다."""
+    global _tokens_dirty
+    snap = _snapshot_locked()
+    _tokens_dirty = False
+    return snap
+
+
+def _persist_snapshot(snap: tuple[int, str]) -> None:
+    # 로그인이 몰릴 때 파일 쓰기 동안 validate_token(매 요청)이 _lock 을 기다리지 않게 한다.
+    global _tokens_dirty
+    try:
+        _write_tokens_file(*snap)
+    except Exception:
+        with _lock:
+            _tokens_dirty = True
+        raise
+
+
 # validate_token 은 인증 미들웨어(이벤트 루프)에서 매 요청 불린다. 여기서 last_seen
 # touch·만료 정리마다 공유드라이브의 tokens.json 을 동기로 다시 쓰면, 사용자 수만큼
 # 분당 쓰기가 생기고 그때마다 서버 전체 요청이 멈췄다(전 탭 지연). touch 는 메모리에만
@@ -230,29 +249,36 @@ def issue_token(
     with _lock:
         _load_tokens()
         _cache[token] = meta
-        _save_tokens()
+        snap = _take_save_snapshot()
+    _persist_snapshot(snap)
     return token, now + SESSION_IDLE_SECONDS
 
 
 def revoke_token(token: str) -> None:
     if not token:
         return
+    snap = None
     with _lock:
         _load_tokens()
         if _cache.pop(token, None) is not None:
-            _save_tokens()
+            snap = _take_save_snapshot()
+    if snap is not None:
+        _persist_snapshot(snap)
 
 
 def revoke_user_tokens(username: str) -> int:
     """유저의 모든 토큰 revoke (비번 변경/계정 삭제 시)."""
     n = 0
+    snap = None
     with _lock:
         _load_tokens()
         for t in list(_cache.keys()):
             if _cache[t].get("username") == username:
                 _cache.pop(t, None); n += 1
         if n:
-            _save_tokens()
+            snap = _take_save_snapshot()
+    if snap is not None:
+        _persist_snapshot(snap)
     return n
 
 

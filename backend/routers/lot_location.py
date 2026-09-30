@@ -11,8 +11,10 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 from core import fab_reference
+from core import json_fast
 from core import lot_progress_cache
 from core.latest_lot_cache_format import normalize_product
 from core.lot_wip import step_desc_index
@@ -243,15 +245,27 @@ def query_lot_locations(lot_ids: list[str], match_root: bool = True) -> dict[str
 @router.post("/query")
 async def query_lot_location_endpoint(request: Request):
     req = await _extract_query_payload(request)
+    return await run_in_threadpool(_query_lot_location_response, req)
+
+
+def _query_lot_location_response(req: LotLocationQueryRequest):
+    # The WIP parquet scan and JSON encoding both belong in the worker pool.
+    # Doing either on the event loop stalls /health and unrelated tabs.
     lot_ids = req.lot_ids
     if req.raw_text:
         lot_ids = parse_lot_ids(lot_ids, req.raw_text)
-    return query_lot_locations(lot_ids, match_root=req.match_root)
+    return json_fast.response(json_fast.dumps_bytes(
+        query_lot_locations(lot_ids, match_root=req.match_root)
+    ))
 
 
 @router.post("/export-csv")
 async def export_lot_location_csv(request: Request):
     req = await _extract_query_payload(request)
+    return await run_in_threadpool(_export_lot_location_csv, req)
+
+
+def _export_lot_location_csv(req: LotLocationQueryRequest):
     lot_ids = req.lot_ids
     if req.raw_text:
         lot_ids = parse_lot_ids(lot_ids, req.raw_text)

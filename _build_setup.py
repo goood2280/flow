@@ -363,7 +363,8 @@ Usage (fresh machine):
 
 Run the server afterwards:
 
-    uvicorn app:app --host 0.0.0.0 --port 8080
+    scripts\\\\windows\\\\flow_run.bat  # Windows: site environment + supervisor
+    python scripts/flow_server.py  # Other platforms: supervised API
 
 Initial admin: set FLOW_ADMIN_PW to an explicit non-default password (10+ characters)
 

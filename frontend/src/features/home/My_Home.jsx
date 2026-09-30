@@ -162,7 +162,7 @@ export default function My_Home({ onNavigate, user, visibleTabs }) {
         <BrandLogo size="home" />
         <section className="home-welcome">
           <div className="home-welcome__title">
-            {user?.username || "user"}님, 안녕하세요
+            {user?.name || user?.username || "user"}님, 안녕하세요
           </div>
           <HomeAlertsSection onNavigate={open} user={user} />
           {canUseFlowi && (

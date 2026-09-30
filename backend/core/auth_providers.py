@@ -307,12 +307,12 @@ register_provider(PasswordAuthProvider())
 #   FLOW_WS_AUTH_USER_MAP       사내 ID → Flow 계정 매핑 JSON. 예) {"example.user": "hol"}. 기본 없음 —
 #                               실제 사번은 현장 설정(flow_env.local.bat)에만 둔다(공개 저장소).
 #   FLOW_WS_AUTH_DEFAULT_TABS   users.csv 에 없는 사용자의 탭 권한. 기본 __all_user__(관리자 탭 제외 전부)
-_WS_DEFAULT_USER_FIELDS = "user_id,userId,userid,username,user_name,user,loginId,login_id,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id"
+_WS_DEFAULT_USER_FIELDS = "user_id,userId,userid,username,user_name,user,loginId,login_id,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id,ad.user_id,ad.userId,ad.id,ad.mail"
 _WS_DEFAULT_TOKEN_FIELDS = "token,access_token,accessToken,ticket,session,sessionId,session_id,data.token,data.ticket"
 _WS_DEFAULT_USER_MAP: dict[str, str] = {}
-_WS_DEFAULT_DEPT_FIELDS = "department,dept,deptName,dept_name,deptNm,orgName,org_name,org,team,data.department,data.dept,user.department"
-_WS_DEFAULT_NAME_FIELDS = "name,userName,user_name,displayName,display_name,korName,kor_name,data.name,user.name"
-_WS_DEFAULT_EMAIL_FIELDS = "email,mail,emailAddress,email_address,data.email,user.email"
+_WS_DEFAULT_DEPT_FIELDS = "department,dept,deptName,dept_name,deptNm,orgName,org_name,org,team,data.department,data.dept,user.department,ad.department"
+_WS_DEFAULT_NAME_FIELDS = "name,userName,user_name,displayName,display_name,korName,kor_name,data.name,user.name,ad.name"
+_WS_DEFAULT_EMAIL_FIELDS = "email,mail,emailAddress,email_address,data.email,user.email,ad.mail,ad.email"
 
 
 # ── 부서별 로그인·권한 규칙 (관리자 편집, flow-data/auth/department_rules.json) ──
@@ -611,6 +611,10 @@ def _ws_verify(user_id: str, token: str) -> tuple[str, Any]:
     return verified, data
 
 
+def _ws_login_contact() -> str:
+    return str(os.environ.get("FLOW_WS_AUTH_CONTACT", "") or "").strip()
+
+
 def _ws_default_tabs() -> str:
     raw = str(os.environ.get("FLOW_WS_AUTH_DEFAULT_TABS", "") or "").strip()
     if raw and raw != "__all_user__":
@@ -630,12 +634,15 @@ class WebsocketAuthProvider(AuthProvider):
 
     def describe(self) -> dict:
         out = super().describe()
+        contact = _ws_login_contact()
         out.update({
             "ws_url": _ws_auth_url(),
             "send": str(os.environ.get("FLOW_WS_AUTH_SEND", "") or ""),
             "login_url": "/api/auth/sso/ws/login",
             "auto": str(os.environ.get("FLOW_WS_AUTH_AUTO", "1") or "").strip().lower() not in {"0", "false", "no", "off"},
         })
+        if contact:
+            out["contact"] = contact
         return out
 
     def authenticate(self, credential: Any) -> AuthIdentity:
@@ -665,7 +672,7 @@ def _identity_for_company_user(user_id: str, provider: str, *, department: str =
 
     mapped = _ws_user_map().get(user_id.casefold())
     username = mapped or user_id
-    claims = {"ws_user": user_id, "department": department}
+    claims = {"ws_user": user_id, "department": department, "name": name, "email": email}
     rows = auth_router.find_user_rows(auth_router.read_users(), username)
     row = rows[0] if rows else None
     profile = read_people().get((row or {}).get("username") or username, {})
@@ -687,7 +694,14 @@ def _identity_for_company_user(user_id: str, provider: str, *, department: str =
     else:
         allowed, tabs = department_access(department)
         if not allowed:
-            raise HTTPException(403, f"'{department or '부서 정보 없음'}' 부서는 Flow 로그인 대상이 아닙니다. 관리자에게 문의하세요.")
+            contact = _ws_login_contact()
+            dept_label = department or '부서 정보 없음'
+            msg = f"'{dept_label}' 부서는 Flow 로그인 대상이 아닙니다."
+            if contact:
+                msg += f" 문의 {contact}"
+            else:
+                msg += " 관리자에게 문의하세요."
+            raise HTTPException(403, msg)
         identity = AuthIdentity(username=username, provider=provider, role="user", status="approved",
                                 tabs=tabs, name=name, email=email, claims=claims, ephemeral=True)
     _remember_manager_profile(identity, department)

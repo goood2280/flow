@@ -183,6 +183,11 @@ scripts\windows\flow_ctl.bat health
 `restart`는 서버만 다시 띄우고(감시기 유지), `stop`은 서버와 감시기를 함께 끕니다. 둘 다 요청 파일을 남기고
 바로 돌아오므로 `status`와 `/health`로 완료를 확인합니다. 같은 동작을 `python scripts/flow_server.py --status | --restart | --stop`으로도 할 수 있습니다.
 로그는 `D:\flow-data\logs\uvicorn.log`(20MiB 활성 1개+백업 5개, 명목 약 120MiB), 재시작 이력 `flow_restarts.log`, 상태 `flow_supervisor.json`입니다.
+요청별 접근 로그는 기본으로 끕니다(로그 쓰기 지연이 서버 전체를 멈추지 않게). 필요하면 `FLOW_UVICORN_ACCESS_LOG=1` 후 감시기까지 재기동합니다.
+기동 직후 `host resources:` 줄에서 프로파일·코어·메모리·Polars 스레드를 확인하고, 동적 메모리로 `small`이 된 경우나 데이터 경로가 네트워크 드라이브인 경우 경고가 함께 남습니다.
+`scripts\windows\flow_ctl.bat perf`는 현장 환경설정을 읽어 **다음 기동에 적용될** 프로파일·실제 Polars 스레드·DuckDB 스레드·캐시 풀·동시 요청 수와 예약 합성 부하를 표시합니다.
+실행 중인 감시기의 환경은 읽지 않으므로 현재 기동 로그와 비교합니다. 스캔·부하 생성·설정 변경은 하지 않습니다.
+`large`인데 이전 서버의 CPU/메모리 고정값이 작게 남아 있으면 경고합니다. 의도한 제한이 아니라면 해당 값만 `.local.bat`/기동 환경에서 제거하고 감시기까지 다시 기동합니다.
 `taskkill /IM python.exe`처럼 다른 파이썬까지 끄지 마세요.
 
 접속 주소는 `http://<서버주소>:8080`입니다.
@@ -370,11 +375,12 @@ backend/routers/auth.py: websocket_login()
 |---|---|
 | `FLOW_WS_AUTH_URL` | 브라우저가 접속할 `ws://`/`wss://` 주소. 비면 WebSocket 로그인 비활성 |
 | `FLOW_WS_AUTH_SEND` / `FLOW_WS_AUTH_AUTO` | 연결 직후 보낼 문자열(기본 전송 없음) / 화면 진입 시 자동 시도(기본 `1`, 끄려면 `0`) |
-| `FLOW_WS_AUTH_USER_FIELDS` | 사내 ID 후보. 기본 `user_id,userId,userid,username,user_name,user,loginId,login_id,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id` |
+| `FLOW_WS_AUTH_CONTACT` | 로그인 화면·거부 메시지에 붙일 문의처(합성 예: `example.admin` → "문의 example.admin"). 실제 문의처는 현장 `.local.bat`에만 둔다. 비면 "관리자에게 문의" |
+| `FLOW_WS_AUTH_USER_FIELDS` | 사내 ID 후보. 기본 `user_id,userId,userid,username,user_name,user,loginId,login_id,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id,ad.user_id,ad.userId,ad.id,ad.mail`(ID 필드가 없으면 AD 메일을 ID로 쓰고 사내 도메인은 떼어 기존 계정과 맞춤). AD 형식 `{"ad": {"department","company","mail","title","description","name"}}`의 부서·이름·메일은 기본 후보(`ad.department`, `ad.name`, `ad.mail`)로 읽힘 |
 | `FLOW_WS_AUTH_TOKEN_FIELDS` | 인증서버 토큰 후보. 기본 `token,access_token,accessToken,ticket,session,sessionId,session_id,data.token,data.ticket` |
-| `FLOW_WS_AUTH_DEPT_FIELDS` | 기본 `department,dept,deptName,dept_name,deptNm,orgName,org_name,org,team,data.department,data.dept,user.department` |
-| `FLOW_WS_AUTH_NAME_FIELDS` | 기본 `name,userName,user_name,displayName,display_name,korName,kor_name,data.name,user.name` |
-| `FLOW_WS_AUTH_EMAIL_FIELDS` | 기본 `email,mail,emailAddress,email_address,data.email,user.email` |
+| `FLOW_WS_AUTH_DEPT_FIELDS` | 기본 `department,dept,deptName,dept_name,deptNm,orgName,org_name,org,team,data.department,data.dept,user.department,ad.department` |
+| `FLOW_WS_AUTH_NAME_FIELDS` | 기본 `name,userName,user_name,displayName,display_name,korName,kor_name,data.name,user.name,ad.name` |
+| `FLOW_WS_AUTH_EMAIL_FIELDS` | 기본 `email,mail,emailAddress,email_address,data.email,user.email,ad.mail,ad.email` |
 | `FLOW_WS_AUTH_VERIFY_URL` / `FLOW_WS_AUTH_VERIFY` | 서버의 재검증 주소 / `http` 또는 `ws`. mode 미지정 시 verify URL이 HTTP면 `http`, 나머지는 `ws`; URL·mode 둘 다 없으면 기본 거부 |
 | `FLOW_WS_AUTH_VERIFY_SEND` | 검증 요청 문자열 템플릿. 기본 `{"token": "{token}"}`. `{token}`·`{user}`를 추출값으로 치환 |
 | `FLOW_WS_AUTH_VERIFY_TIMEOUT_SEC` | 서버 재검증 제한시간, 기본 10초. 브라우저의 전체 대기는 `My_Login.jsx`에서 60초 |

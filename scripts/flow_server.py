@@ -253,7 +253,12 @@ def _child_env() -> dict:
 def _spawn(args, log: RotatingLog) -> subprocess.Popen:
     cmd = [args.python, "-m", "uvicorn", "app:app",
            "--host", args.host, "--port", str(args.port),
-           "--timeout-keep-alive", "30", *args.uvicorn_args]
+           "--timeout-keep-alive", "30"]
+    # 요청마다 한 줄씩 이벤트 루프가 파이프로 동기 출력한다. 로그 파일 쓰기가 밀리면
+    # (백신 검사·디스크 지연) 파이프가 차서 전체 요청이 멈춘다. 요청 기록은 sysmon 이 따로 남긴다.
+    if str(os.environ.get("FLOW_UVICORN_ACCESS_LOG", "")).strip().lower() not in {"1", "true", "yes", "on"}:
+        cmd.append("--no-access-log")
+    cmd += list(args.uvicorn_args)
     kwargs: dict = {}
     if IS_WINDOWS:
         # 자식은 따로 콘솔 그룹 — Ctrl-C 는 감시기가 받아 CTRL_BREAK 로 정리해서 넘긴다.

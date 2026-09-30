@@ -10,6 +10,25 @@ from routers.lot_location import parse_lot_ids, query_lot_locations
 from core.auth import issue_token
 
 
+@pytest.fixture(autouse=True)
+def wip_cache(monkeypatch, tmp_path):
+    """Exercise real parquet queries without depending on operator data."""
+    import polars as pl
+    from routers import lot_location
+
+    path = tmp_path / "wip.parquet"
+    pl.DataFrame({
+        "lot_id": ["A1022A.2", "A1022A.2", "A1022A.2", "A1027C.1"],
+        "root_lot_id": ["A1022", "A1022", "A1022", "A1027"],
+        "wafer_id": ["10", "2", "1", "1"],
+        "step_id": ["S1", "S1", "S1", "S2"],
+        "function_step": ["공정 1", "공정 1", "공정 1", "공정 2"],
+        "product": ["DEMO"] * 4,
+    }).write_parquet(path)
+    monkeypatch.setattr(lot_location.lot_progress_cache, "filebrowser_cache_parquet_file", lambda: path)
+    monkeypatch.setattr(lot_location.fab_reference, "vehicle_matching_rows", lambda: [])
+
+
 @pytest.fixture
 def client():
     token, _ = issue_token("test_lot_location_user", "admin")
@@ -33,8 +52,7 @@ def test_parse_lot_ids_preserves_order_and_filters_headers():
     assert res == ["A1022", "B2000"]
 
 
-def test_query_lot_locations_real_cache():
-    # Test with real known lot_id in Fab parquet cache
+def test_query_lot_locations_parquet_cache():
     result = query_lot_locations(["A1022A.2", "UNKNOWN_LOT_999"])
     items = result.get("items") or []
     stats = result.get("stats") or {}
