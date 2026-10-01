@@ -300,6 +300,8 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/core/json_fast.py",
     "backend/core/et_run_service.py",
     "backend/core/et_run_child.py",
+    "backend/core/splittable_prewarm_process.py",
+    "backend/core/gc_tuning.py",
     "backend/core/chat_table.py",
     "backend/core/data_chat_semantic_admin.py",
     "backend/core/product_wiki_knowledge.py",

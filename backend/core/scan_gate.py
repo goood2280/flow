@@ -38,6 +38,16 @@ worker `slots`)을 잡아서, 한 서버에서 서로 다른 제품의 랏캐시
 root RAM 예열(warmup)은 파티션을 읽어 메모리에 올리는 가벼운 작업이라 이 슬롯을
 잡지 않는다 — 빌드가 도는 동안에도 예열은 진행된다.
 
+## 조회 레인 — `exclusive(..., lane="read")` (대형 서버)
+
+슬롯이 하나뿐이면 FAB 매칭 알람 스캔·예약 스캔 같은 긴 백그라운드 작업 뒤에서
+**사용자 조회에 필요한 캐시**(pivot·lookup·FAB 인덱스·WIP)가 수십 분씩 기다렸다.
+새 서버처럼 캐시가 하나도 없으면 SplitTable 이 그동안 아예 뜨지 않는다.
+대형 서버(`cache_budget.large_host()`)에서는 조회 전제 캐시가 별도 레인
+(기본 2칸, `FLOW_CACHE_READ_LANE_SLOTS`, 0 = 끄기)을 쓴다. 같은 종류·같은 제품
+중복은 각 빌더의 진행 중 표시가 막고, 메모리는 `heavy_jobs` 의 admission 이 지킨다.
+소형 서버는 예전처럼 슬롯 하나다.
+
 ## 취소 — `cancel()`
 
 캐시 작업은 한 건이 수십 분씩 걸리므로 "지금 도는 것을 끊고 다음으로 넘기고
@@ -88,6 +98,41 @@ _CANCEL_MAX = 64
 # 대기열 밖에서 슬롯을 잡고 있는 작업 (화면/진단용).
 _EXTERNAL: dict[str, Any] | None = None
 _EXTERNAL_LOCK = threading.Lock()
+# 조회 레인(대형 서버) — 크기는 처음 쓸 때 정한다. 실행 중 작업은 id → 작업.
+_READ_SLOT: threading.Semaphore | None = None
+_READ_SLOT_SIZE = 0
+_READ_LANE_LOCK = threading.Lock()
+_READ_EXTERNAL: dict[str, dict[str, Any]] = {}
+_READ_LANE_SLOTS_LARGE_DEFAULT = 2
+
+
+def read_lane_slots() -> int:
+    """조회 레인 칸 수. 0 이면 레인 없음(모든 캐시 작업이 공용 슬롯 하나)."""
+    raw = str(os.environ.get("FLOW_CACHE_READ_LANE_SLOTS", "") or "").strip()
+    if raw:
+        try:
+            return max(0, min(8, int(float(raw))))
+        except Exception:
+            pass
+    try:
+        from core import cache_budget
+
+        return _READ_LANE_SLOTS_LARGE_DEFAULT if cache_budget.large_host() else 0
+    except Exception:
+        return 0
+
+
+def _read_slot() -> threading.Semaphore | None:
+    """조회 레인 세마포어(크기는 첫 사용 때 고정). 레인이 꺼져 있으면 None."""
+    global _READ_SLOT, _READ_SLOT_SIZE
+    size = read_lane_slots()
+    if size <= 0:
+        return None
+    with _READ_LANE_LOCK:
+        if _READ_SLOT is None:
+            _READ_SLOT = threading.BoundedSemaphore(size)
+            _READ_SLOT_SIZE = size
+        return _READ_SLOT
 _EXCLUSIVE_WAIT_SEC_DEFAULT = 7 * 24 * 3600.0
 _PENDING_STALE_SEC_DEFAULT = 7 * 24 * 3600.0
 
@@ -131,20 +176,21 @@ def lend():
     if depth <= 0:
         yield False
         return
+    slot = getattr(_TLS, "slot", None) or _SLOT
     _TLS.depth = 0
-    _SLOT.release()
+    slot.release()
     with _COND:
         _COND.notify()
     try:
         yield True
     finally:
-        _SLOT.acquire()
+        slot.acquire()
         _TLS.depth = depth
 
 
 @contextlib.contextmanager
 def exclusive(kind: str, label: str, *, product: str = "", source: str = "external",
-              timeout: float | None = None):
+              timeout: float | None = None, lane: str = ""):
     """대기열 워커와 같은 슬롯을 블로킹으로 잡는다. `as acquired` 가 False 면 타임아웃.
 
     같은 스레드에서 이미 잡고 있으면 재진입으로 통과한다(항상 True).
@@ -155,6 +201,9 @@ def exclusive(kind: str, label: str, *, product: str = "", source: str = "extern
     발급하고 **이 스레드의 `_TLS.task_id` 로 심는다** — 블록 안에서 도는 코드는
     대기열 작업과 똑같이 인자 없는 `cancel_requested()` 로 확인할 수 있다
     (`heavy_jobs.run_heavy` → 빌더가 전부 이 스레드다).
+
+    lane="read" 는 조회 전제 캐시용 — 대형 서버면 공용 슬롯 대신 조회 레인을 잡는다
+    (모듈 설명 참고). 레인이 꺼져 있으면 공용 슬롯과 같다.
     """
     global _EXTERNAL, _SEQ
     if holding():
@@ -164,9 +213,11 @@ def exclusive(kind: str, label: str, *, product: str = "", source: str = "extern
         finally:
             _TLS.depth -= 1
         return
+    read_slot = _read_slot() if lane == "read" else None
+    slot = read_slot or _SLOT
     wait = _exclusive_wait_sec() if timeout is None else max(0.0, float(timeout))
     started = time.monotonic()
-    if not _SLOT.acquire(timeout=wait):
+    if not slot.acquire(timeout=wait):
         logger.warning("cache gate timeout after %.0fs: %s (%s)", wait, label, kind)
         _record(f"[스캔 큐] 대기 시간 초과: {label} — 다른 캐시 작업이 {int(wait)}초 넘게 진행 중이라 "
                 "이번에는 건너뜁니다(다음 주기에 다시 시도).", ok=False, product=product)
@@ -174,18 +225,23 @@ def exclusive(kind: str, label: str, *, product: str = "", source: str = "extern
         return
     waited = time.monotonic() - started
     _TLS.depth = 1
+    _TLS.slot = slot
     with _COND:
         _SEQ += 1
-        ext_id = f"ext-{_SEQ}"
+        ext_id = f"{'read' if read_slot else 'ext'}-{_SEQ}"
     prev_task_id = str(getattr(_TLS, "task_id", "") or "")
     _TLS.task_id = ext_id
+    holder = {
+        "id": ext_id, "kind": str(kind or ""), "label": str(label or kind or ""),
+        "product": str(product or ""), "source": str(source or "external"),
+        "started_mono": time.monotonic(), "started_iso": _now_iso(),
+        "waited_sec": round(waited, 1), "lane": "read" if read_slot else "shared",
+    }
     with _EXTERNAL_LOCK:
-        _EXTERNAL = {
-            "id": ext_id, "kind": str(kind or ""), "label": str(label or kind or ""),
-            "product": str(product or ""), "source": str(source or "external"),
-            "started_mono": time.monotonic(), "started_iso": _now_iso(),
-            "waited_sec": round(waited, 1),
-        }
+        if read_slot:
+            _READ_EXTERNAL[ext_id] = holder
+        else:
+            _EXTERNAL = holder
     if waited >= 1.0:
         _record(f"[스캔 큐] 시작: {label} (대기 {int(waited)}초 · 다른 캐시 작업이 끝나길 기다림)",
                 product=product)
@@ -193,12 +249,16 @@ def exclusive(kind: str, label: str, *, product: str = "", source: str = "extern
         yield True
     finally:
         with _EXTERNAL_LOCK:
-            _EXTERNAL = None
+            if read_slot:
+                _READ_EXTERNAL.pop(ext_id, None)
+            else:
+                _EXTERNAL = None
         with _COND:
             _CANCELED.pop(ext_id, None)
         _TLS.task_id = prev_task_id
         _TLS.depth = 0
-        _SLOT.release()
+        _TLS.slot = None
+        slot.release()
         with _COND:
             _COND.notify()
 
@@ -498,14 +558,17 @@ def snapshot(limit: int = 20) -> dict[str, Any]:
         worker_alive = bool(_WORKER and _WORKER.is_alive())
     with _EXTERNAL_LOCK:
         external = _public(dict(_EXTERNAL), now=now) if _EXTERNAL else None
+        read_lane = [_public(dict(task), now=now) for task in _READ_EXTERNAL.values()]
     # 대기열 밖 작업(빌드 스레드·오프로드 태스크)도 같은 슬롯을 쓰므로 현재
     # 실행 중인 것으로 함께 보여준다 — 화면에 "아무것도 안 도는데 왜 대기?"가
-    # 생기지 않게.
+    # 생기지 않게. 조회 레인 작업은 공용 슬롯이 비어 있을 때 현재 작업으로 보인다.
     return {
-        "running": current is not None or external is not None,
-        "busy": current is not None or external is not None or depth > 0,
-        "current": current or external,
+        "running": current is not None or external is not None or bool(read_lane),
+        "busy": current is not None or external is not None or bool(read_lane) or depth > 0,
+        "current": current or external or (read_lane[0] if read_lane else None),
         "external": external,
+        "read_lane": read_lane,
+        "read_lane_slots": _READ_SLOT_SIZE or read_lane_slots(),
         "pending": pending,
         "depth": depth,
         "last": last,
@@ -543,8 +606,11 @@ def cancel(task_id: str, by: str = "") -> dict[str, Any]:
                 # 404 가 된다 — 그게 "중단을 눌러도 아무 일도 안 일어난다"였다.
                 with _EXTERNAL_LOCK:
                     external = dict(_EXTERNAL) if _EXTERNAL else None
+                    read_task = dict(_READ_EXTERNAL[task_id]) if task_id in _READ_EXTERNAL else None
                 if external and external.get("id") == task_id:
                     running = external
+                elif read_task:
+                    running = read_task
             if running is None:
                 return {"ok": False, "state": "not_found",
                         "detail": "그 작업을 찾을 수 없습니다 — 이미 끝났을 수 있습니다."}
@@ -597,7 +663,7 @@ def busy() -> bool:
     """실행 중이거나 대기 중인 스캔이 있는가."""
     _reap_stale_pending()
     with _EXTERNAL_LOCK:
-        if _EXTERNAL is not None:
+        if _EXTERNAL is not None or _READ_EXTERNAL:
             return True
     with _COND:
         return _CURRENT is not None or bool(_PENDING)

@@ -226,7 +226,8 @@ def generate_reference(db_root: Path | None = None) -> dict[str, Any]:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        from core.file_transaction import replace_file
+        replace_file(temporary, path)
     finally:
         if temporary and os.path.exists(temporary):
             os.unlink(temporary)

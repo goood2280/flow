@@ -819,7 +819,8 @@ def rollback_base_file(req: BaseFileRollbackReq, request: Request):
     try:
         os.close(fd)
         shutil.copy2(content_fp, tmp_name)
-        os.replace(tmp_name, target)
+        from core.file_transaction import replace_file
+        replace_file(tmp_name, target)
     finally:
         try:
             if os.path.exists(tmp_name):

@@ -189,7 +189,8 @@ def _write_disk(entry: dict) -> None:
         fp.parent.mkdir(parents=True, exist_ok=True)
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, ensure_ascii=False)
-        os.replace(tmp, fp)
+        from core.file_transaction import replace_file
+        replace_file(tmp, fp)
     except Exception as exc:
         # 공유/읽기전용 root 는 정상 시나리오다 — RAM 계층만으로 계속 동작한다.
         _DISK_WRITE_DISABLED = True

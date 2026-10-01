@@ -160,6 +160,20 @@ def include_router_modules(app: FastAPI, routers_dir: Path, logger,
             _ensure_local_package(package_name, package_dir)
     loaded: list[str] = []
     failed: list[tuple[str, str]] = []
+    fast_json = {"wrapped": 0, "skipped": 0, "failed": 0}
+
+    def _prepare(router) -> None:
+        # dict 응답을 핸들러 스레드에서 바로 JSON bytes 로 — FastAPI 가 이벤트 루프에서
+        # jsonable_encoder 로 큰 목록을 순회하며 서버 전체를 멈추던 경로를 없앤다.
+        try:
+            from core import json_fast
+            stats = json_fast.wrap_router_endpoints(router)
+        except Exception as exc:  # 실패해도 기존 FastAPI 경로로 동작한다
+            logger.warning("json_fast route wrap skipped: %s: %s", type(exc).__name__, exc)
+            return
+        for key in fast_json:
+            fast_json[key] += int(stats.get(key) or 0)
+
     # aipd_bridge: aipd now feeds Flow via S3 sync only (-> vehicle_matching /
     # ppid_knob), so its HTTP console is unused. Kept off to avoid carrying an
     # unused surface, NOT because it is unsafe — the original hazard (routes
@@ -196,15 +210,19 @@ def include_router_modules(app: FastAPI, routers_dir: Path, logger,
         try:
             module = _import_module_from_path(module_name, file_path)
             if hasattr(module, "router"):
+                _prepare(module.router)
                 app.include_router(module.router)
                 loaded.append(file_path.stem)
             for extra_name in ("match_router", "console_router"):
                 extra_router = getattr(module, extra_name, None)
                 if extra_router is not None:
+                    _prepare(extra_router)
                     app.include_router(extra_router)
                     loaded.append(f"{file_path.stem}:{extra_name}")
         except Exception as exc:
             detail = _format_import_error(module_name, file_path, exc, backend_root, app_root)
             failed.append((file_path.stem, detail))
             logger.error("Router load failed: %s\n%s", module_name, detail)
+    logger.info("json_fast routes: wrapped=%d skipped=%d failed=%d",
+                fast_json["wrapped"], fast_json["skipped"], fast_json["failed"])
     return loaded, failed

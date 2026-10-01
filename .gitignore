@@ -37,6 +37,7 @@ server_role.json
 worker.marker
 standalone.marker
 extract_report.json
+install_check.json
 
 # Local development logs
 *.log

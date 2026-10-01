@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import threading
 import time
 from pathlib import Path
 
@@ -42,17 +43,27 @@ def _lock_path(name: str) -> Path:
 
 
 def _read(path: Path) -> dict:
-    try:
-        return json.loads(path.read_text("utf-8")) or {}
-    except Exception:
-        return {}
+    # Windows: a read that lands on the renewal's os.replace gets PermissionError.
+    # Reading that as "no owner" made is_owner() drop ownership and paused every
+    # background scheduler until the next election; retry the brief overlap instead.
+    for attempt in range(6):
+        try:
+            return json.loads(path.read_text("utf-8")) or {}
+        except PermissionError:
+            if attempt == 5:
+                return {}
+            time.sleep(0.005 * (2 ** attempt))
+        except Exception:
+            return {}
+    return {}
 
 
 def _write_atomic(path: Path, payload: dict) -> bool:
-    tmp = path.with_suffix(f".tmp.{os.getpid()}")
+    tmp = path.with_suffix(f".tmp.{os.getpid()}.{threading.get_ident()}")
     try:
         tmp.write_text(json.dumps(payload), "utf-8")
-        os.replace(tmp, path)
+        from core.file_transaction import replace_file
+        replace_file(tmp, path)
         return True
     except Exception:
         try:

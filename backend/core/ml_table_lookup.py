@@ -3719,7 +3719,8 @@ def _recover_lookup_cache(cdir: Path) -> None:
     # build restores its previous serving generation before doing any work.
     backup = cdir.with_name(cdir.name + ".previous")
     if not cdir.exists() and backup.is_dir():
-        backup.replace(cdir)
+        from core.file_transaction import replace_file
+        replace_file(backup, cdir)
 
 
 def _publish_lookup_cache(tmp_dir: Path, cdir: Path) -> None:
@@ -3730,14 +3731,17 @@ def _publish_lookup_cache(tmp_dir: Path, cdir: Path) -> None:
         # Keep at most one previous generation, including failed cleanup after
         # a sharing violation; never grow an unbounded directory backlog.
         shutil.rmtree(backup)
+    # Windows refuses a directory rename while a reader holds a file inside it;
+    # replace_file waits that out instead of failing the whole build.
+    from core.file_transaction import replace_file
     had_previous = cdir.exists()
     if had_previous:
-        cdir.replace(backup)
+        replace_file(cdir, backup)
     try:
-        tmp_dir.replace(cdir)
+        replace_file(tmp_dir, cdir)
     except BaseException:
         if had_previous:
-            backup.replace(cdir)
+            replace_file(backup, cdir)
         raise
     if had_previous:
         try:
@@ -3864,7 +3868,8 @@ def _schedule_build_retry(
             if parent_task_id:
                 state = scan_gate.snapshot()
                 active_ids = {str(item.get("id") or "") for item in
-                              [state.get("current") or {}, state.get("external") or {}]}
+                              [state.get("current") or {}, state.get("external") or {},
+                               *(state.get("read_lane") or [])]}
                 if scan_gate.cancel_requested(parent_task_id) or parent_task_id not in active_ids:
                     _cancel_build_retry(path)
                     return

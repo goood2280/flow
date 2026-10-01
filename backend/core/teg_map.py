@@ -423,7 +423,8 @@ def _save_inline_shot_matching_rows(rows: list[dict[str, str]]) -> None:
             writer = csv.DictWriter(handle, fieldnames=INLINE_SHOT_MATCHING_COLUMNS)
             writer.writeheader()
             writer.writerows(rows)
-        os.replace(temp, path)
+        from core.file_transaction import replace_file
+        replace_file(temp, path)
     finally:
         try:
             if temp.exists():
@@ -3263,7 +3264,8 @@ def save_reference_file(kind: str, columns: list[str], rows: list[list[Any]], us
             frame.to_excel(temp, index=False)
         else:
             frame.to_csv(temp, index=False, encoding="utf-8-sig", lineterminator="\n")
-        os.replace(temp, path)
+        from core.file_transaction import replace_file
+        replace_file(temp, path)
         _invalidate_loader_cache()
     finally:
         try:
@@ -3418,7 +3420,8 @@ def _save_product_info_row(vehicle: str, info: dict[str, Any], node_path: str,
     temp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp.csv")
     try:
         frame.to_csv(temp, index=False, encoding="utf-8-sig", lineterminator="\n")
-        os.replace(temp, path)
+        from core.file_transaction import replace_file
+        replace_file(temp, path)
         _invalidate_loader_cache()
     finally:
         try:
@@ -3453,7 +3456,8 @@ def _restore_file_bytes(path: Path, content: bytes | None) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp, path)
+        from core.file_transaction import replace_file
+        replace_file(temp, path)
         _invalidate_loader_cache()
     finally:
         try:

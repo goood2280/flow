@@ -376,7 +376,8 @@ def _write_admin_settings(cfg: dict) -> None:
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(_json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
     import os as _os
-    _os.replace(tmp, p)
+    from core.file_transaction import replace_file
+    replace_file(tmp, p)
 
 
 def _get_inform_user_mods(*, strict: bool = False) -> dict:

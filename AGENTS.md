@@ -3,6 +3,8 @@
 ## 프로젝트와 문서 읽는 순서
 
 - Flow는 반도체 개발 데이터를 lot/wafer 중심으로 연결하는 FastAPI + React 웹 앱이다. 파일탐색기, SplitTable, ET/LOT 추적, TEG/WF MAP, 업무 게시판, 차트·리포트와 홈 에이전트를 제공한다.
+- **읽는 순서**: 이 파일(규칙) → `README.md`(설치·운영) → [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)(동작 구조: 프로세스·요청·캐시·작업·홈 에이전트 흐름) → [`docs/CODEMAP.md`](docs/CODEMAP.md)(파일 위치) → 개선·최적화 요청이면 [`docs/PLAN.md`](docs/PLAN.md)(개선 계획).
+- **개선·최적화 요청**은 `docs/PLAN.md`의 해당 항목에서 시작한다: 항목의 **사내 조건 확인** 표를 먼저 채우고(명령·로그·설정으로 확인, 모르면 사용자에게 질문), 그 결과로 할 단계와 기본값을 정한 뒤 단계 순서대로 진행한다. 새 기능은 플래그 기본 꺼짐, 단계마다 숫자를 보고하고 다음 단계를 확인받는다. 계획에 없는 큰 변경은 먼저 PLAN.md에 항목으로 적어 사용자 확인을 받는다.
 - 먼저 이 파일을 읽고 `README.md`의 **서버 구성과 처리 용량**, **설치 (Windows, Miniforge)**, **켜기·상태·끄기**, **업데이트와 데이터 보존**, **서버 이사 체크리스트**를 읽는다. 로그인 변경은 아래 **사내 로그인·관리자·WebSocket 수정** 절에서 시작한다. 기능별 상세는 README의 해당 절과 실제 구현·테스트를 대조한다.
 - README는 설치·운영 절차, `VERSION.json`은 릴리스 이력의 정본이다. 문서와 코드가 다르면 실제 코드를 확인하고 문서를 함께 고친다. 목표 성능을 실측 결과로 표현하지 않는다.
 - 로그·저장소·보관·백업 작업은 아래 **로그·저장소 작업 진입점**에서 시작한다. 종류와 경로는 `docs/LOG_STORAGE.md`, 진단·정리·S3 보관·복원 절차는 `docs/LOG_STORAGE_OPERATIONS.md`가 안내한다.
@@ -105,9 +107,13 @@ Gemma4 등으로 작업할 때는 이 절 → 해당 문서의 필요한 절 →
 | 기존 계정 역할·이름·메일·위임 해제 | `features/admin/My_Admin.jsx`; `routers/admin.py`: `set_role()`, `set_name()`, `set_email()`, `page_admins_set()` |
 | 사내 ID → Flow ID | 현장 `scripts/windows/flow_env.local.bat`: `FLOW_WS_AUTH_USER_MAP`; `backend/core/auth_providers.py`: `_ws_user_map()`, `_identity_for_company_user()` |
 | 허용 department·탭·일치 방식 | `DepartmentAccessPanel.jsx`; `backend/routers/auth.py`: `get_department_rules()`, `save_department_rules()`; `auth_providers.py`: `write_department_rules()`, `department_access()` |
-| WS에서 받을 ID/token/department/name/email key | 현장 `FLOW_WS_AUTH_*_FIELDS`; `auth_providers.py`: `_WS_DEFAULT_*_FIELDS`, `_ws_pick()` (점 경로, 후보 순서). ID 목록은 브라우저/검증 응답에 공통 |
-| 브라우저 연결·송신·수신 프레임 처리 | `frontend/src/features/auth/My_Login.jsx`: `wsLogin()`; `WebsocketAuthProvider.describe()`에서 `/api/auth/providers` 설정 제공 |
-| 메시지 파싱·서버 재검증 HTTP/WS 방식 | `backend/routers/auth.py`: `WsLoginReq`, `websocket_login()` (`/api/auth/sso/ws/login`); `auth_providers.py`: `_ws_parse()`, `authenticate()`, `_ws_verify()` |
+| WS에서 받을 ID/token/department/name/email/url key | 현장 `FLOW_WS_AUTH_*_FIELDS`; `auth_providers.py`: `_WS_DEFAULT_*_FIELDS`, `_ws_fields()`, `_ws_pick()` (점 경로, 대소문자 무시, 후보 순서). ID 목록은 브라우저/검증 응답에 공통. AD 형식 `sAMAccountName`·`ad.mail` 기본 포함 |
+| 브라우저 연결·송신·수신 프레임 처리 | `frontend/src/features/auth/wsLogin.js`: `startWsLogin()`(연결·`send`·프레임 순차 처리·Blob 변환·202 처리), 화면은 `My_Login.jsx`의 `wsLogin()`; 설정은 `WebsocketAuthProvider.describe()` → `/api/auth/providers` |
+| 메시지 파싱·서버 재검증 HTTP/WS 방식 | `backend/routers/auth.py`: `WsLoginReq`, `websocket_login()` (`/api/auth/sso/ws/login`); `auth_providers.py`: `_ws_parse()`, `_ws_credentials()`, `authenticate()`, `_ws_verify()` (POST/GET·헤더·여러 프레임) |
+| ID·토큰 없이 **주소만 온 프레임** | `auth_providers.py`: `_ws_frame_url()`, `WsFollowUp`(→ HTTP 202), `_ws_fetch_url()`·`_ws_fetch_allowed()`; 현장 `FLOW_WS_AUTH_URL_ACTION`·`FLOW_WS_AUTH_FETCH_ALLOW` |
+| 설정에 사용자 ID 하드코딩 차단 | `auth_providers.py`: `_ws_reject_fixed_user()`, `_ws_fixed_literals()` |
+| 로그인 화면에 ID/PW 입력칸이 보임/안 보임 | `auth_providers.py`: `PasswordAuthProvider.enabled()`, `_password_login_default()`; 비상 스위치 `FLOW_PASSWORD_LOGIN_ENABLED=1` |
+| 수신 프레임 모양 확인(값은 가림) | `auth_providers.py`: `ws_frame_report()`, `record_ws_probe()`, `ws_config_summary()`; `routers/auth.py`: `websocket_probe()` (`GET /api/auth/sso/ws/probe`, 관리자) |
 | 로컬 비밀번호 초기 관리자 ID 기본값 | `backend/app_v2/runtime/startup.py`: `ensure_seed_admin()` (`hol` 고정, `FLOW_ADMIN_PW`는 최초 비밀번호). 사내 관리자 지정과 구별 |
 
 수정 원칙:
@@ -125,10 +131,15 @@ Gemma4 등으로 작업할 때는 이 절 → 해당 문서의 필요한 절 →
 5. 프로필 저장은 `users.csv`의 역할/상태, 암호화 `auth/people.enc`의 연락처, `admin_settings.json.page_admins`의
    위임을 함께 조정하고 권한 변경 시 해당 사용자 세션을 회수한다. 빠진 프로필 행은 삭제가 아니다.
    매핑을 남긴 채 대상 계정을 삭제하면 다시 관리자 세션을 얻을 수 있다. 수동 연락처는 재로그인에도 보존한다.
-6. 브라우저 수신은 원문을 `{message: event.data}`로 POST하고 400이면 다음 프레임을 기다린다. 서버 WS 재검증은
-   첫 프레임 하나만 읽는다. 여러 프레임·binary·배열·추가 handshake는 해당 수신 코드를 바꿔야 한다.
-   부서·이름·메일은 재검증 응답에서 읽고, 요청 ID와 검증 ID가 함께 있으면 일치 검사한다.
+6. 브라우저는 받은 프레임을 순서대로 하나씩(binary는 텍스트로 바꿔) `{message, step, via}`로 POST한다.
+   서버 응답 200=세션, 400=ID/토큰 없는 중간 프레임(다음 프레임 대기), 202=`{action, url}` 주소만 온 프레임
+   (`open`: 인증 창을 열고 같은 연결에서 대기, `browser`: 브라우저가 그 주소를 읽어 본문을 다시 POST), 그 외=종료.
+   주소(http/https)는 절대 사용자 ID로 쓰지 않는다. 서버 WS 재검증은 ID나 거부가 든 프레임까지 최대
+   `FLOW_WS_AUTH_VERIFY_MAX_FRAMES`(기본 3)개 읽는다. 배열 경로·추가 handshake는 해당 수신 코드를 바꿔야 한다.
+   부서·이름·메일은 재검증 응답(또는 server 방식에서 Flow가 직접 읽은 응답)에서 읽고, 요청 ID와 검증 ID가 함께 있으면 일치 검사한다.
    `TRUST_CLIENT=1`/`VERIFY=none`으로 인증 실패를 우회하지 않는다. 사내 토큰을 Flow claims·로그에 저장하지 않는다.
+   **보내는 메시지·URL에 사용자 ID를 넣어 조회하는 방식은 인증이 아니다**(누가 눌러도 그 사람이 된다).
+   `_ws_reject_fixed_user()`가 막으며, 이 검사를 끄거나 우회하지 않는다.
 7. 설정 파일 변경이면 감시기까지 `flow_ctl.bat stop` → 종료 확인 → runner/예약 작업으로 다시 기동한다.
    `flow_ctl.bat restart`는 자식 API만 재기동하므로 **실행 중인 감시기의 환경변수는 갱신되지 않는다**.
    Python 소스만 바꾸면 자식 restart, 프런트 변경은 `npm run check`로 dist를 다시 만든다.
@@ -138,6 +149,51 @@ Gemma4 등으로 작업할 때는 이 절 → 해당 문서의 필요한 절 →
    변경한 payload/프레임 처리를 별도로 확인한다. 새 관리자/허용·거부·부서 없음과 클라이언트 부서 위조를 검증한다.
 9. 부서 규칙/매핑은 기존 세션을 일괄 회수하지 않는다. 변경 후 새 로그인으로 `/api/auth/me`의 ID·역할·탭을 확인한다.
    일반 변경을 전달할 때는 README/이 지침과 함께 `_build_setup.py`를 재빌드한다. VM 전용 설정은 로컬에 보존한다.
+10. 설치본(`.git` 없음)·운영(`FLOW_PROD=1`)은 로그인 화면이 **버튼만**이다(ID/PW 입력·회원가입·비밀번호 찾기 없음).
+   ID/PW 입력칸을 되살리는 요청이 아니면 이 기본값을 바꾸지 않는다. 비상 로그인은 `FLOW_PASSWORD_LOGIN_ENABLED=1`.
+
+### WebSocket 사내 로그인이 안 될 때: 확인 → 판단 → 수정
+
+통신 구조(한 번 누를 때):
+
+```text
+ 브라우저(Flow 로그인 화면)           사내 인증서버(WebSocket)                 Flow 서버
+ [사내 로그인] 클릭
+   │ ① ws 연결  FLOW_WS_AUTH_URL ──────▶│  (브라우저는 헤더를 못 붙인다: 사용자는
+   │ ② (설정 시) FLOW_WS_AUTH_SEND ────▶│   쿠키·Windows 인증·PC 에이전트로만 알 수 있음)
+   │◀──────────── ③ 프레임(JSON/문자열) ─│
+   │ ④ POST /api/auth/sso/ws/login {message} ──────────────────────────────▶│ ID·토큰·주소 추출
+   │                                    │◀── ⑤ 재검증 VERIFY_URL(토큰) ────────│ (브라우저가 보낸 JSON 은
+   │                                    │── ⑥ 확인 응답(ID·부서·이름·메일) ─▶│  위조 가능하므로 믿지 않음)
+   │◀─────────────── ⑦ 200 세션 · 400 다음 프레임 대기 · 202 주소 처리 · 401/403 거부 ─│
+```
+
+**1) 받은 것을 본다 (값은 가리고 키 구조만 기록·공유).**
+- 브라우저: Chrome `F12` → Network → `WS` 필터 → [사내 로그인] → 연결 행 → **Messages**(위 화살표=보낸 것, 아래=받은 것).
+  **본인 PC와 다른 사람(권한 없는 사람·외부인) PC를 각각** 본다. 본인만 되는 것은 로그인이 된다는 증거가 아니다.
+- 서버(다른 사람 PC를 볼 수 없을 때): `flow_env.local.bat`에 `set "FLOW_WS_AUTH_DEBUG=1"` → 감시기 stop/재기동 →
+  사람들이 눌러 본 뒤 `FLOW_DATA_ROOT\logs\ws_login_probe.jsonl`(또는 관리자 `GET /api/auth/sso/ws/probe`)에서
+  프레임 모양·어느 필드가 맞았는지·서버 판정을 본다. 값은 저장되지 않는다. 확인이 끝나면 끈다.
+  `/probe`의 `config`는 실행 중 서버가 실제로 읽은 설정(비밀 없음)이라 `.local.bat` 반영 여부도 여기서 본다.
+- 프레임 하나를 Flow가 어떻게 읽는지: `POST /api/auth/sso/ws/login` 본문 `{"message": "<프레임 문자열>", "debug": true}`
+  → 응답 `ws_debug.matched`에 ID/토큰/주소/부서 경로. 실제 토큰 대신 합성 값으로 바꿔 시험한다.
+
+**2) 무엇을 받았는지로 판단한다.**
+
+| 본 것 | 뜻 | 조치 |
+|---|---|---|
+| 보내는 메시지·URL에 ID가 있음(예 `sAMAccountName=…` 고정) | **조회 서비스이지 인증이 아님.** 누가 눌러도 그 ID로 들어간다 | 설정에서 ID 제거(Flow는 403으로 막음). 인증서버 담당자에게 "지금 접속한 사람"을 알려 주는 방식(토큰·티켓·확인 API)을 받는다 |
+| JSON에 ID(`sAMAccountName`·`ad.mail`)와 토큰/ticket | 정상 형태 | `FLOW_WS_AUTH_USER_FIELDS`·`TOKEN_FIELDS` 경로 확인, `FLOW_WS_AUTH_VERIFY_URL`로 서버 재검증 |
+| JSON에 ID·`ad{…}`만, 토큰 없음(`client_id` 등만 있음) | Flow가 확인할 근거가 없다. 브라우저에서 같은 JSON을 만들어 보낼 수 있다 | `client_id`로 사용자를 되물을 인증서버 API가 있으면 `TOKEN_FIELDS=client_id` + `VERIFY_URL`(`VERIFY_METHOD`·`VERIFY_HEADERS`·`VERIFY_SEND`). 없으면 담당자에게 요청. `TRUST_CLIENT`로 넘기지 않는다 |
+| 주소(URL) 문자열만(특히 외부인·미로그인 PC) | 아직 인증되지 않은 사용자에게 로그인/동의 페이지를 안내하는 형태가 흔하다 | 기본 `URL_ACTION=open`(창을 열고 같은 연결에서 다음 프레임 대기). 그 주소를 GET하면 사용자 JSON이 나오는 티켓 주소면 `server`+`FETCH_ALLOW`, 브라우저 쿠키·Windows 인증이 있어야 읽히면 `browser`(인증서버 CORS 필요) |
+| 인사말·상태 프레임 뒤에 정보 | 중간 프레임 | 자동 처리(400=대기). 서버 재검증 쪽이면 `VERIFY_MAX_FRAMES` |
+| 연결되는데 아무것도 안 옴 | 요청을 보내야 답하는 서버 | `FLOW_WS_AUTH_SEND`에 요청 형식(ID 없이). `{nonce}`·`{origin}` 치환 가능 |
+| 연결 자체 실패 | 주소·방화벽·인증서(wss) | 브라우저 PC에서 그 주소로 접속 가능한지부터 |
+
+**3) 고친다.** 설정으로 되는 것(경로·주소·방식)은 `flow_env.local.bat`만 고치고 감시기 stop → 재기동한다.
+설정으로 안 되는 프로토콜(배열 경로, 서명 검증, 여러 번 주고받는 handshake)만 위 표의 함수를 부분 수정하고,
+합성 프레임 테스트를 `tests/test_websocket_auth.py`에 추가한다. 실제 ID·URL·토큰은 코드·문서·테스트에 넣지 않는다.
+**확인은 본인 + 다른 사람 + 외부인(거부되어야 함)** 세 경우를 모두 새 로그인으로 본다.
 
 ## Model delegation and token budget
 
@@ -158,10 +214,16 @@ Gemma4 등으로 작업할 때는 이 절 → 해당 문서의 필요한 절 →
 ## Server roles
 
 - Deployment: **one production Windows Xeon 6448Y 2.1GHz host, allocated 8 cores / 128 GB RAM**. The development worker was removed on 2026-09-30 (`worker_dispatch`, `worker_tasks`, `upstream_proxy`, `home_agent_offload` deleted). Do not reintroduce a second server, a file queue to another host, or role checks (`server_role`, `FLOW_SERVER_ROLE`, `FLOW_WORKER_OFFLOAD` no longer exist in code).
-- Every heavy job runs locally through `core/heavy_jobs.run_heavy(kind, fn, label=, idle_only=, product=)`: cache kinds (`CACHE_BUILD_KINDS`) take the server-wide `core.scan_gate` slot, other heavy kinds share one local slot, interactive kinds bypass both; memory admission runs before start. Former worker jobs now start in the background owner (`app_v2/runtime/startup.py` owner_starters): FAB matching scanner (`core/fab_matching_alerts.py`, idle lane), Auto report runner (`core/auto_report.py`: job files are the durable queue, one job at a time, a crash re-queues a running job once), Auto report history scheduler.
+- Every heavy job runs locally through `core/heavy_jobs.run_heavy(kind, fn, label=, idle_only=, product=)`: cache kinds (`CACHE_BUILD_KINDS`) take the server-wide `core.scan_gate` slot, other heavy kinds share one local slot, interactive kinds bypass both; memory admission runs before start. On a large host, read-prerequisite caches (`REQUIRED_READ_CACHE_KINDS`: lookup, pivot, FAB index, WIP latest) use the scan gate's read lane (`exclusive(lane="read")`, `FLOW_CACHE_READ_LANE_SLOTS`, default 2) so they never queue behind background scans, and `auto_report_generate` uses its own lane instead of the cache slot (`OWN_LANE_ON_LARGE_HOST_KINDS`). Do not put long-running non-cache work back into the cache slot. Former worker jobs now start in the background owner (`app_v2/runtime/startup.py` owner_starters): FAB matching scanner (`core/fab_matching_alerts.py`, idle lane), Auto report runner (`core/auto_report.py`: job files are the durable queue, one job at a time, a crash re-queues a running job once), Auto report history scheduler.
 - ET tracker, Tracker and Dashboard periodic scanners start only when `FLOW_ENABLE_HEAVY_BACKGROUND_JOBS=1` or the profile is `full` (the `large` profile does not enable them by default).
+- Python code runs on one core per process (GIL); only Polars/DuckDB work uses all cores. Do not add per-row Python loops over DB data — express selection/aggregation in Polars and build Python objects only for the reduced rows (pattern: `core/lot_progress_cache.py` `_LatestRowReducer`). Long Python-bound background work belongs in a separate process that publishes results through files (pattern: `core/splittable_prewarm_process.py` writes the SplitTable disk view cache; the API process only reads it).
+- On Windows, `os.replace`/directory renames fail while any reader holds the target. Swap files through `core.file_transaction.replace_file()`, and do not invalidate caches when a rebuild changed nothing (`cache_builder.last_build_changes()`).
 - 8 logical cores / 128GiB with no overrides selects `large`: CPU budget and Polars pool 8, process soft limit 99.8GiB, cache pool 61.44GiB, heavy request lane 4, essential lane 8. Actual usable memory/CPU detected by the OS takes precedence. These are settings, not a benchmark or OOM guarantee.
 - Home agent turns run locally and have a memory precheck, but no global turn semaphore. The legacy `FLOW_FLOWI_MAX_CONCURRENCY` gate does not constrain this path. Per-user question quota is not a global concurrent-work limit. Coordinate heavy tool execution across tabs before increasing parallelism.
+- Tens of GB of cache live as Python objects. Never call a full `gc.collect()` on a periodic or per-job path: use `core.memory_trim.trim()` (young-generation collect + `gc.freeze()` via `core/gc_tuning.py`); full collection runs only when users are idle or memory is critical. Check `watchdog.gc.gen2_pause_max_ms` in `/api/splittable/memory/overview`.
+- On Windows the process memory figure is private bytes (commit), not the working set, and the startup `host resources:` line reports the commit limit (pagefile). Keep the commit-percent guard opt-in (`FLOW_SYSTEM_COMMIT_GUARD_PERCENT`): a system-managed pagefile grows on demand.
+- The home agent planner prompt keeps static keys first and `request` last for server prefix caching.
+- Every DuckDB connection gets `memory_limit` and `temp_directory` from `core.duckdb_engine.configure_connection()` (large host 16GB, else 25% of RAM, capped at half of free memory). New DuckDB connections must call it.
 - DuckDB defaults to the CPU budget per connection; concurrent queries can contend with the shared Polars pool. Never increase every per-tab limit independently. Measure mixed workload p95, queue waits, memory peaks and `/health` responsiveness before accepting performance.
 - For this dedicated server, inspect the administrator's daily synthetic-load schedule (default 11:00, target 85%). `FLOW_SYSMON_ENABLE_LOAD=0` only disables idle load and does not disable the daily schedule; use the schedule setting itself when synthetic load is unwanted. Do not silently overwrite an existing operator setting.
 - Run the server through `scripts/flow_server.py` (restart on exit, hang via `/health`, memory), not a bare `uvicorn` command.

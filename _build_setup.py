@@ -242,8 +242,16 @@ def frontend_src_fingerprint(root: Path) -> str:
     src = fe / 'src'
     if src.is_dir():
         for p in src.rglob('*'):
-            if p.is_file():
-                items.append((p.relative_to(fe).as_posix(), p))
+            if not p.is_file():
+                continue
+            # 번들에 싣지 않는 파일(은퇴한 화면 등)은 설치 폴더에 없다. 여기서 세면 설치기가
+            # 다시 계산한 지문과 영원히 달라, 소스가 같은데도 설치 때마다 npm install·빌드가 돌아
+            # 검증된 dist 가 설치 서버의 npm 이 고른 패키지 버전으로 바뀐다.
+            rel_root = p.relative_to(root).as_posix()
+            if (rel_root in FLOWI_EXCLUDE_FILES or rel_root in LOCAL_EXCLUDE_FILES
+                    or rel_root.startswith(FLOWI_EXCLUDE_PREFIXES)):
+                continue
+            items.append((p.relative_to(fe).as_posix(), p))
     for name in _FE_STAMP_EXTRA:
         p = fe / name
         if p.is_file():
@@ -314,6 +322,56 @@ def installer_version_meta(version: dict) -> dict:
     return meta
 
 
+# 설치 끝 점검 목록 — setup.py 에 그대로 실린다(단일 원천).
+# (import 이름 후보, pip 이름, 최소 버전, 등급, 용도)
+#   required = 없거나 최소 미만이면 서버가 안 뜨거나 로그인·조회가 실패한다.
+#   perf     = 없으면 느린 경로로 동작한다.
+#   feature  = 해당 기능만 실패한다.
+# 최소 버전은 코드가 실제로 쓰는 API 로 확인한 값만 적는다(모르면 None).
+# 개발 PC 에서 검증한 버전은 빌드할 때 자동으로 기록된다(DEP_TESTED_VERSIONS).
+DEPENDENCY_CHECKS = [
+    (("fastapi",), "fastapi", None, "required", "웹 서버"),
+    (("uvicorn",), "uvicorn", None, "required", "웹 서버 실행"),
+    (("python_multipart", "multipart"), "python-multipart", None, "required", "파일 업로드·폼(없으면 서버 기동 실패)"),
+    (("pydantic",), "pydantic", None, "required", "요청 검증"),
+    (("polars",), "polars", "1.0", "required", "SplitTable·파일탐색기 계산(1.0 미만은 collect_schema 없음)"),
+    (("pyarrow",), "pyarrow", None, "required", "parquet 읽기·쓰기"),
+    (("pandas",), "pandas", None, "required", "표 처리·TEG·엑셀"),
+    (("numpy",), "numpy", None, "required", "수치 계산"),
+    (("psutil",), "psutil", None, "required", "메모리 감시·자원 보호(없으면 Windows 메모리 보호가 꺼짐)"),
+    (("cryptography",), "cryptography", None, "required", "사내 로그인 연락처 암호화 저장"),
+    (("duckdb",), "duckdb", None, "perf", "파일탐색기 대용량 SQL(없으면 느린 Polars 경로)"),
+    (("orjson",), "orjson", None, "perf", "큰 응답 JSON 직렬화(없으면 표준 json)"),
+    (("websockets",), "websockets", "11.0", "feature", "WebSocket 로그인 서버 재검증(ws:// 주소일 때)"),
+    (("openpyxl",), "openpyxl", None, "feature", "엑셀 읽기"),
+    (("xlsxwriter",), "xlsxwriter", None, "feature", "엑셀 내보내기"),
+    (("xlrd",), "xlrd", None, "feature", "옛 xls 읽기"),
+    (("matplotlib",), "matplotlib", None, "feature", "리포트 그림"),
+    (("pptx",), "python-pptx", None, "feature", "PPT 리포트"),
+    (("PIL",), "pillow", None, "feature", "TEG shot 그림 인식"),
+    (("dotenv",), "python-dotenv", None, "feature", ".env 설정"),
+    (("requests",), "requests", None, "feature", "외부 HTTP 연동"),
+    (("yaml",), "pyyaml", None, "feature", "YAML 설정"),
+    (("boto3",), "boto3", None, "feature", "S3 연동"),
+    (("sklearn",), "scikit-learn", None, "feature", "ML 분석"),
+    (("scipy",), "scipy", None, "feature", "통계 분석"),
+]
+
+
+def tested_dependency_versions() -> dict:
+    """빌드한 개발 환경의 설치 버전 — 현장 버전과 주 버전이 다르면 설치 점검이 알린다."""
+    from importlib import metadata
+
+    out = {}
+    for _imports, dist, _minimum, _level, _purpose in DEPENDENCY_CHECKS:
+        try:
+            out[dist] = metadata.version(dist)
+        except Exception:
+            out[dist] = ""
+    out["python"] = ".".join(str(part) for part in sys.version_info[:3])
+    return out
+
+
 def _load_local_module(name: str, path: Path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
@@ -357,6 +415,7 @@ Usage (fresh machine):
     python setup.py extract        # 운영에 필요한 소스만 추출 (tests/docs/CLAUDE.md 제외)
     python setup.py extract --all  # 번들에 든 모든 파일 추출 (문서·테스트 포함)
     python setup.py install-deps   # use existing requirements.txt; fallback to minimum deps
+    python setup.py check-deps     # 필요한 라이브러리가 조건대로 설치됐는지 표로 확인 (install_check.json)
     python setup.py build-frontend # npm install + npm run build only
     python setup.py version        # print mtime-based version label
     python setup.py sync-version   # rewrite VERSION.json metadata
@@ -418,7 +477,9 @@ VERSION_META = {json.dumps(installer_meta, ensure_ascii=False)}
 # frontend/src 로 지문을 다시 계산해 비교한다 (_build_setup.ensure_frontend_build).
 FRONTEND_STAMP = {frontend_stamp!r}
 DOMAIN_KNOWLEDGE_PAYLOAD = {domain_knowledge_payload!r}
-_FE_STAMP_EXTRA = ('package.json', 'vite.config.js', 'vite.config.mjs',
+DEPENDENCY_CHECKS = {DEPENDENCY_CHECKS!r}
+DEP_TESTED_VERSIONS = {tested_dependency_versions()!r}
+_FE_STAMP_EXTRA =('package.json', 'vite.config.js', 'vite.config.mjs',
                    'vite.config.ts', 'index.html')
 
 
@@ -528,6 +589,13 @@ def _is_backend_app_v2_source(parts: list[str]) -> bool:
     return len(parts) >= 2 and parts[0] == "backend" and parts[1] == "app_v2"
 
 
+def _is_frontend_source(parts: list[str]) -> bool:
+    # frontend/src 는 화면 소스다. features/splittable·tracker·calendar 폴더 이름이 데이터
+    # 루트의 같은 이름 폴더로 오인돼 조용히 버려지면, 설치 폴더에서 npm run build 가
+    # "Could not resolve ../features/calendar/My_Calendar" 로 실패한다.
+    return len(parts) >= 2 and parts[0] == "frontend" and parts[1] == "src"
+
+
 # 쓰기 실패(잠긴 파일/권한)를 모아 두었다가 extract 끝에서 요약한다. 운영서버에서
 # 앱(uvicorn)이 실행 중이면 Windows 가 로드된 .py/.pyd 를 잠가 write 가 실패하는데,
 # 예전엔 여기서 예외가 그대로 터져 setup.py 가 exit 1(+traceback) → Hudson durable
@@ -543,7 +611,7 @@ def _write(rel: str, gz_b64: str) -> None:
     # 6개 레이어로 검증 (하나라도 match 하면 쓰기 skip):
     #   L0) top-level 세그먼트가 _ALLOWED_TOP_LEVEL 에 없으면 화이트리스트 위반 → skip
     #   L1) 경로 prefix 가 data/ 또는 flow-data/ 이면 skip
-    #   L2) backend/app_v2 소스가 아닌 경로의 보호 세그먼트는 skip
+    #   L2) backend/app_v2·frontend/src 소스가 아닌 경로의 보호 세그먼트는 skip
     #   L3) 파일명이 _PROTECTED_BASENAMES 에 있으면 skip
     #   L4) resolve() 한 절대 경로가 ./data 또는 ./data/flow-data 아래면 skip
     #   L5) FLOW_DATA_ROOT / FLOW_{{DB,WAFER_MAP}}_ROOT 아래면 skip
@@ -566,8 +634,9 @@ def _write(rel: str, gz_b64: str) -> None:
             return
 
     # L2: app_v2 migration layer has legitimate source module names such as
-    # informs/tracker/meetings. Do not classify those code paths as data roots.
-    if not _is_backend_app_v2_source(parts):
+    # informs/tracker/meetings, and frontend/src/features has splittable/tracker/calendar.
+    # Do not classify those code paths as data roots.
+    if not (_is_backend_app_v2_source(parts) or _is_frontend_source(parts)):
         for seg in parts:
             if seg in _PROTECTED_SEGMENTS:
                 return
@@ -1067,6 +1136,7 @@ def _ensure_critical_deps() -> None:
         'polars': 'polars',
         'pyarrow': 'pyarrow',
         'duckdb': 'duckdb',
+        'orjson': 'orjson',   # 큰 조회 응답 직렬화(core/json_fast.py)
         'PIL': 'pillow',
         'openpyxl': 'openpyxl',
         'xlsxwriter': 'xlsxwriter',
@@ -1076,6 +1146,10 @@ def _ensure_critical_deps() -> None:
         'dotenv': 'python-dotenv',
         'requests': 'requests',
         'yaml': 'pyyaml',
+        'psutil': 'psutil',               # 메모리 감시·자원 보호
+        'cryptography': 'cryptography',   # 사내 로그인 연락처 암호화
+        'multipart': 'python-multipart',  # 업로드·폼(없으면 서버 기동 실패)
+        'websockets': 'websockets',       # WebSocket 로그인 재검증
     }
     missing = []
     for mod, package in critical.items():
@@ -1458,7 +1532,11 @@ def install_deps() -> int:
     req = ROOT / 'requirements.txt'
     if req.is_file():
         print(f'[deps] using existing operator-managed requirements: {req}')
-        return _pip_install(['-r', str(req)])
+        rc = _pip_install(['-r', str(req)])
+        # 현장 requirements.txt 에 성능 경로 패키지(duckdb·orjson 등)가 빠져 있어도 채운다.
+        # 실패해도 설치를 멈추지 않는다 — 서버는 느린 경로로 동작하고 기동 로그가 경고한다.
+        _ensure_critical_deps()
+        return rc
 
     print('[deps] requirements.txt not found - installing Flow minimum dependencies')
     pkgs = [
@@ -1469,6 +1547,8 @@ def install_deps() -> int:
         'matplotlib', 'python-pptx', 'python-dotenv',
         'pillow',   # TEG shot 그림에서 die 사각형 인식 (core/teg_shape.py)
         'psutil',   # 시스템 모니터 (core/sysmon.py)
+        'duckdb',   # 파일탐색기 대용량 SQL·집계 (core/duckdb_engine.py, 없으면 Polars 폴백)
+        'orjson',   # 큰 응답 JSON 직렬화 (core/json_fast.py, 없으면 표준 json)
     ]
     rc = _pip_install(pkgs)
     if rc != 0:
@@ -1622,6 +1702,163 @@ def sync_version_json() -> int:
     return 0
 
 
+def _version_tuple(text):
+    parts = []
+    for piece in str(text or "").replace("-", ".").replace("+", ".").split("."):
+        digits = ""
+        for ch in piece:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if not digits:
+            break
+        parts.append(int(digits))
+    return tuple(parts)
+
+
+def _major(text):
+    parts = _version_tuple(text)
+    if not parts:
+        return ()
+    # 0.x 라이브러리는 두 번째 자리까지가 호환 단위다.
+    return parts[:2] if parts[0] == 0 else parts[:1]
+
+
+def _dep_probe() -> int:
+    """새 인터프리터에서 실제 import 결과를 JSON 한 줄로 출력한다(check_deps 가 부른다)."""
+    import importlib
+    import warnings
+    from importlib import metadata
+
+    rows = []
+    for imports, dist, _minimum, _level, _purpose in DEPENDENCY_CHECKS:
+        row = {"dist": dist, "module": imports[0], "installed": "", "error": "", "warnings": []}
+        try:
+            row["installed"] = metadata.version(dist)
+        except Exception:
+            row["installed"] = ""
+        last_error = ""
+        for name in imports:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                try:
+                    module = importlib.import_module(name)
+                    row["module"] = name
+                    last_error = ""
+                    if not row["installed"]:
+                        row["installed"] = str(getattr(module, "__version__", "") or "")
+                    row["warnings"] = [str(w.message)[:200] for w in caught][:3]
+                    break
+                except Exception as exc:
+                    last_error = (type(exc).__name__ + ": " + str(exc))[:300]
+        row["error"] = last_error
+        rows.append(row)
+    print("FLOW_DEP_PROBE " + json.dumps(rows, ensure_ascii=False))
+    return 0
+
+
+def check_deps(*, strict_exit: bool = False) -> int:
+    """설치가 끝난 뒤 필요한 라이브러리가 조건대로 있는지 표로 출력하고 install_check.json 에 남긴다.
+
+    사내 저장소는 버전이 다르거나 없는 패키지가 있을 수 있다. 실제 서버와 같은 조건을
+    보려고 새 인터프리터에서 import 해 본다(DLL 로드 실패·CPU 경고까지 잡힌다)."""
+    print("")
+    print("[check] 설치 점검 — Python " + ".".join(str(p) for p in sys.version_info[:3]) + " · " + sys.executable)
+    print("[check] TESTED = 이 번들을 만든 개발 PC 의 버전(Python " + str(DEP_TESTED_VERSIONS.get("python") or "?")
+          + "). 주 버전이 다르면 WARN 으로 알린다.", flush=True)
+    rows = []
+    try:
+        proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "_dep-probe"],
+                              cwd=str(ROOT), capture_output=True, text=True, timeout=300,
+                              encoding="utf-8", errors="replace")
+        for line in (proc.stdout or "").splitlines():
+            if line.startswith("FLOW_DEP_PROBE "):
+                rows = json.loads(line[len("FLOW_DEP_PROBE "):])
+    except Exception as exc:
+        print("[check] 점검 프로세스 실패: " + str(exc), file=sys.stderr)
+    by_dist = {row.get("dist"): row for row in rows}
+    results = []
+    counts = {"FAIL": 0, "WARN": 0, "OK": 0}
+    if sys.version_info[:2] < (3, 10):
+        results.append({"status": "FAIL", "package": "python", "installed": ".".join(str(p) for p in sys.version_info[:3]),
+                        "required": ">=3.10", "tested": DEP_TESTED_VERSIONS.get("python", ""),
+                        "level": "required", "purpose": "Flow 실행", "note": "Python 3.10 이상이 필요합니다"})
+    for imports, dist, minimum, level, purpose in DEPENDENCY_CHECKS:
+        row = by_dist.get(dist) or {}
+        installed = str(row.get("installed") or "")
+        tested = str(DEP_TESTED_VERSIONS.get(dist) or "")
+        error = str(row.get("error") or "")
+        notes = []
+        bad = False
+        if not rows:
+            notes.append("점검 불가")
+            bad = True
+        elif error:
+            notes.append("import 실패 — " + error if installed else "설치되지 않음")
+            bad = True
+        elif minimum and _version_tuple(installed) and _version_tuple(installed) < _version_tuple(minimum):
+            notes.append("최소 " + minimum + " 미만")
+            bad = True
+        if not bad and tested and installed and _major(installed) != _major(tested):
+            notes.append("개발 검증 버전(" + tested + ")과 주 버전이 다름 — 동작 확인 필요")
+        for warning in row.get("warnings") or []:
+            notes.append("경고: " + warning)
+        if bad:
+            status = "FAIL" if level == "required" else "WARN"
+        elif notes:
+            status = "WARN"
+        else:
+            status = "OK"
+        counts[status] = counts.get(status, 0) + 1
+        results.append({"status": status, "package": dist, "installed": installed or "-",
+                        "required": (">=" + minimum) if minimum else "-", "tested": tested or "-",
+                        "level": level, "purpose": purpose, "note": "; ".join(notes)})
+    width = max(len(r["package"]) for r in results) if results else 10
+    # 한 스트림(stdout)으로만 출력한다 — stderr 를 섞으면 콘솔에서 줄 순서가 뒤섞인다.
+    print("[check] " + "STATE".ljust(6) + "PACKAGE".ljust(width + 2) + "INSTALLED".ljust(14)
+          + "MIN".ljust(9) + "TESTED".ljust(14) + "용도 / 비고")
+    for r in results:
+        line = ("[check] " + r["status"].ljust(6) + r["package"].ljust(width + 2) + str(r["installed"]).ljust(14)
+                + str(r["required"]).ljust(9) + str(r["tested"]).ljust(14) + r["purpose"])
+        if r["note"]:
+            line += "  <- " + r["note"]
+        print(line, flush=True)
+    for tool in ("node", "npm"):
+        print("[check] INFO " + tool + ": " + ("있음" if _has(tool) else "없음 — frontend/src 를 고쳐도 다시 빌드할 수 없습니다(번들 dist 사용)"))
+    required_fail = [r["package"] for r in results if r["status"] == "FAIL"]
+    warn = [r["package"] for r in results if r["status"] == "WARN"]
+    report = {"checked_at": datetime.datetime.now().isoformat(timespec="seconds"),
+              "python": sys.executable, "version": VERSION, "results": results,
+              "required_failures": required_fail, "warnings": warn}
+    try:
+        (ROOT / "install_check.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+    if required_fail:
+        print("[check] FAIL 필수 " + str(len(required_fail)) + "개: " + ", ".join(required_fail)
+              + " — 서버가 뜨지 않거나 로그인·조회가 실패합니다. 사내 저장소에서 해당 패키지를 설치한 뒤 "
+              + "python setup.py check-deps 로 다시 확인하세요.", flush=True)
+    if warn:
+        print("[check] WARN " + str(len(warn)) + "개: " + ", ".join(warn) + " — 해당 기능이 느리거나 실패할 수 있습니다.")
+    if not required_fail and not warn:
+        print("[check] OK 필요한 라이브러리가 모두 조건대로 설치되어 있습니다.")
+    print("[check] 결과 파일: " + str(ROOT / "install_check.json"))
+    if required_fail and (strict_exit or _setup_strict()):
+        return 1
+    return 0
+
+
+def check_deps_command() -> int:
+    return check_deps(strict_exit=True)
+
+
+def install_deps_command() -> int:
+    rc = install_deps()
+    rc_check = check_deps()
+    return rc or rc_check
+
+
 def all_steps() -> int:
     # CI/CD durable task(=python setup.py)에서 파이프라인이 exit 1 로 abort 되지 않도록
     # best-effort 로 진행한다. 핵심은 소스 추출(extract) — 성공하면 배포는 성공으로 본다.
@@ -1650,9 +1887,11 @@ def all_steps() -> int:
         print("[setup]   -> 개발 PC에서 python _build_setup.py 로 번들을 다시 만들어 배포하세요.",
               file=sys.stderr)
         return rc_fe or 1
-    if strict and (rc_extract or rc_deps or rc_fe):
+    # 사내 저장소는 버전이 다르거나 빠진 패키지가 있을 수 있다 — 마지막에 조건대로 설치됐는지 표로 보여 준다.
+    rc_check = check_deps()
+    if strict and (rc_extract or rc_deps or rc_fe or rc_check):
         print("[setup] FLOW_SETUP_STRICT=1 - 하위 단계 실패로 실패 처리", file=sys.stderr)
-        return rc_extract or rc_deps or rc_fe
+        return rc_extract or rc_deps or rc_fe or rc_check
     print(f"\\n[done] uvicorn app:app --host 0.0.0.0 --port 8080   (run from {ROOT})")
     print("[done] initial admin 'hol' is created only when FLOW_ADMIN_PW is explicitly set (10+ characters)")
     print("[done] setup completed (best-effort; FLOW_SETUP_STRICT=1 로 엄격 검증 가능)")
@@ -1661,7 +1900,9 @@ def all_steps() -> int:
 
 COMMANDS = {
     'extract':        extract,
-    'install-deps':   install_deps,
+    'install-deps':   install_deps_command,
+    'check-deps':     check_deps_command,
+    '_dep-probe':     _dep_probe,
     'build-frontend': build_frontend,
     'version':        print_version,
     'sync-version':   sync_version_json,

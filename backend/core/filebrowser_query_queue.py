@@ -1,7 +1,27 @@
-"""FIFO execution queue for interactive File Browser SQL scans."""
+"""Execution queue for interactive File Browser SQL scans.
+
+Several users' scans run at the same time (``max_concurrent()``; large host 3,
+otherwise 2). A single server-wide slot made a short query wait behind another
+user's multi-minute scan (up to the 120 s queue expiry).
+
+What stays serialized:
+- one running scan per user (``per_user_limit()``, default 1) — a user's second
+  tab waits in FIFO order as before instead of taking every slot;
+- one running scan per ``query_key`` (user + source). DuckDB keeps only the
+  newest connection per key and interrupts the older one, so two scans with the
+  same key must never overlap;
+- a page (session) owns only its newest request: an older queued or running
+  request of the same session is canceled.
+
+A scan that starts next to others gets a share of the DuckDB thread budget
+(8 → 4 → 2 …) so concurrent scans do not multiply the thread count, and no
+parallel scan starts while process/host memory is tight — it waits for the
+running ones instead. The first scan always starts as it did before.
+"""
 from __future__ import annotations
 
 import contextlib
+import itertools
 import os
 import threading
 import time
@@ -21,12 +41,23 @@ class QueryQueueExpired(RuntimeError):
 
 _COND = threading.Condition()
 _PENDING: deque[dict[str, Any]] = deque()
-_CURRENT: dict[str, Any] | None = None
+_RUNNING: list[dict[str, Any]] = []
+_SEQ = itertools.count(1)
+_MEMORY_CHECK: dict[str, float] = {"at": 0.0, "ok": 1.0}
+_MEMORY_CHECK_TTL_SEC = 1.0
 
 
 def _env_seconds(name: str, default: float, low: float, high: float) -> float:
     try:
         value = float(os.environ.get(name, "") or default)
+    except Exception:
+        value = default
+    return max(low, min(high, value))
+
+
+def _env_int(name: str, default: int, low: int, high: int) -> int:
+    try:
+        value = int(os.environ.get(name, "") or default)
     except Exception:
         value = default
     return max(low, min(high, value))
@@ -41,10 +72,85 @@ def max_runtime_seconds() -> float:
 
 
 def max_pending() -> int:
+    return _env_int("FLOW_FILEBROWSER_SQL_QUEUE_MAX", 24, 1, 64)
+
+
+def _default_concurrency() -> int:
     try:
-        return max(1, min(64, int(os.environ.get("FLOW_FILEBROWSER_SQL_QUEUE_MAX", "") or 24)))
+        from core.runtime_limits import is_large_profile
+        if is_large_profile():
+            return 3
     except Exception:
-        return 24
+        pass
+    return 2
+
+
+def max_concurrent() -> int:
+    """Server-wide running scans. ``FLOW_FILEBROWSER_SQL_CONCURRENCY`` (1~8)."""
+    return _env_int("FLOW_FILEBROWSER_SQL_CONCURRENCY", _default_concurrency(), 1, 8)
+
+
+def per_user_limit() -> int:
+    """Running scans per user. ``FLOW_FILEBROWSER_SQL_PER_USER`` (1~8, default 1)."""
+    return _env_int("FLOW_FILEBROWSER_SQL_PER_USER", 1, 1, 8)
+
+
+def _duckdb_thread_budget() -> int:
+    try:
+        return max(1, int(duckdb_engine.thread_budget()))
+    except Exception:
+        return 1
+
+
+def _parallel_memory_ok_locked(now: float) -> bool:
+    """True unless memory is tight. Cached briefly: waiters re-check every 0.5 s."""
+    if now - _MEMORY_CHECK["at"] < _MEMORY_CHECK_TTL_SEC:
+        return bool(_MEMORY_CHECK["ok"])
+    ok = True
+    try:
+        from core.runtime_limits import process_memory_high
+        ok = not process_memory_high()
+    except Exception:
+        ok = True
+    _MEMORY_CHECK["at"] = now
+    _MEMORY_CHECK["ok"] = 1.0 if ok else 0.0
+    return ok
+
+
+def _startable_locked(now: float) -> list[dict[str, Any]]:
+    """Pending items allowed to start now, oldest first.
+
+    An item blocked by its user's limit or by a running scan with the same
+    query_key also blocks that user's/key's later items, so each keeps FIFO order
+    while other users' items may pass it.
+    """
+    free = max_concurrent() - len(_RUNNING)
+    if free <= 0 or not _PENDING:
+        return []
+    user_limit = per_user_limit()
+    user_counts: dict[str, int] = {}
+    busy_keys: set[str] = set()
+    for running in _RUNNING:
+        user_counts[running["username"]] = user_counts.get(running["username"], 0) + 1
+        if running["query_key"]:
+            busy_keys.add(running["query_key"])
+    out: list[dict[str, Any]] = []
+    for item in _PENDING:
+        if len(out) >= free:
+            break
+        key = item["query_key"]
+        user = item["username"]
+        if (key and key in busy_keys) or user_counts.get(user, 0) >= user_limit:
+            if key:
+                busy_keys.add(key)
+            continue
+        out.append(item)
+        user_counts[user] = user_counts.get(user, 0) + 1
+        if key:
+            busy_keys.add(key)
+    if out and _RUNNING and not _parallel_memory_ok_locked(now):
+        return []
+    return out
 
 
 def _cancel_item_locked(item: dict[str, Any], reason: str) -> None:
@@ -52,23 +158,25 @@ def _cancel_item_locked(item: dict[str, Any], reason: str) -> None:
     item["cancel_reason"] = reason
 
 
+def _remove_pending_locked(item: dict[str, Any]) -> None:
+    for index, queued in enumerate(_PENDING):
+        if queued is item:
+            del _PENDING[index]
+            return
+
+
 def _drop_stale_locked(now: float) -> None:
     ttl = stale_seconds()
     for item in list(_PENDING):
         if now - float(item["created_mono"]) >= ttl:
             _cancel_item_locked(item, "queue_expired")
-            try:
-                _PENDING.remove(item)
-            except ValueError:
-                pass
+            _remove_pending_locked(item)
 
 
 def cancel(*, username: str, session_id: str, query_id: str = "", reason: str = "page_left") -> dict:
     """Remove matching queued work and interrupt it when it is already running."""
-    global _CURRENT
     removed = 0
-    interrupted = False
-    query_key = ""
+    query_keys: list[str] = []
     with _COND:
         for item in list(_PENDING):
             if item["username"] != username or item["session_id"] != session_id:
@@ -76,35 +184,30 @@ def cancel(*, username: str, session_id: str, query_id: str = "", reason: str = 
             if query_id and item["query_id"] != query_id:
                 continue
             _cancel_item_locked(item, reason)
-            try:
-                _PENDING.remove(item)
-                removed += 1
-            except ValueError:
-                pass
-        current = _CURRENT
-        if (
-            current
-            and current["username"] == username
-            and current["session_id"] == session_id
-            and (not query_id or current["query_id"] == query_id)
-        ):
-            _cancel_item_locked(current, reason)
-            query_key = str(current.get("query_key") or "")
-            interrupted = True
+            _remove_pending_locked(item)
+            removed += 1
+        for running in _RUNNING:
+            if (
+                running["username"] == username
+                and running["session_id"] == session_id
+                and (not query_id or running["query_id"] == query_id)
+            ):
+                _cancel_item_locked(running, reason)
+                query_keys.append(str(running.get("query_key") or ""))
         _COND.notify_all()
-    if query_key:
-        duckdb_engine.interrupt_query(query_key)
-    return {"ok": True, "removed": removed, "interrupted": interrupted}
+    for query_key in query_keys:
+        if query_key:
+            duckdb_engine.interrupt_query(query_key)
+    return {"ok": True, "removed": removed, "interrupted": bool(query_keys)}
 
 
-def _expire_running(query_id: str, query_key: str) -> None:
+def _expire_running(item: dict[str, Any]) -> None:
     with _COND:
-        current = _CURRENT
-        if not current or current["query_id"] != query_id:
+        if not any(running is item for running in _RUNNING):
             return
-        _cancel_item_locked(current, "runtime_expired")
+        _cancel_item_locked(item, "runtime_expired")
         _COND.notify_all()
-    duckdb_engine.interrupt_query(query_key)
+    duckdb_engine.interrupt_query(str(item.get("query_key") or ""))
 
 
 def _raise_if_canceled(item: dict[str, Any]) -> None:
@@ -118,9 +221,9 @@ def _raise_if_canceled(item: dict[str, Any]) -> None:
 
 @contextlib.contextmanager
 def execute(*, username: str, session_id: str, query_id: str, query_key: str):
-    """Wait in FIFO order, then exclusively run one interactive SQL scan."""
-    global _CURRENT
+    """Wait for a slot (FIFO per user/key), then run one interactive SQL scan."""
     item = {
+        "seq": next(_SEQ),
         "username": str(username or ""),
         "session_id": str(session_id or ""),
         "query_id": str(query_id or ""),
@@ -135,17 +238,11 @@ def execute(*, username: str, session_id: str, query_id: str, query_key: str):
         for old in list(_PENDING):
             if old["username"] == item["username"] and old["session_id"] == item["session_id"]:
                 _cancel_item_locked(old, "replaced")
-                try:
-                    _PENDING.remove(old)
-                except ValueError:
-                    pass
-        if (
-            _CURRENT
-            and _CURRENT["username"] == item["username"]
-            and _CURRENT["session_id"] == item["session_id"]
-        ):
-            _cancel_item_locked(_CURRENT, "replaced")
-            duckdb_engine.interrupt_query(str(_CURRENT.get("query_key") or ""))
+                _remove_pending_locked(old)
+        for running in _RUNNING:
+            if running["username"] == item["username"] and running["session_id"] == item["session_id"]:
+                _cancel_item_locked(running, "replaced")
+                duckdb_engine.interrupt_query(str(running.get("query_key") or ""))
         if len(_PENDING) >= max_pending():
             raise QueryQueueExpired("SQL queue is full")
         _PENDING.append(item)
@@ -157,29 +254,29 @@ def execute(*, username: str, session_id: str, query_id: str, query_key: str):
                 if reason == "queue_expired":
                     raise QueryQueueExpired("SQL queue wait expired")
                 raise QueryQueueCanceled(reason)
-            if _CURRENT is None and _PENDING and _PENDING[0] is item:
-                _PENDING.popleft()
-                _CURRENT = item
+            if any(ready is item for ready in _startable_locked(now)):
+                _remove_pending_locked(item)
+                _RUNNING.append(item)
                 item["started_mono"] = now
+                budget = _duckdb_thread_budget()
+                item["duckdb_threads"] = max(min(2, budget), budget // len(_RUNNING))
+                # Another free slot may now belong to the next waiter.
+                _COND.notify_all()
                 break
             remaining = stale_seconds() - (now - float(item["created_mono"]))
             if remaining <= 0:
                 _cancel_item_locked(item, "queue_expired")
-                try:
-                    _PENDING.remove(item)
-                except ValueError:
-                    pass
+                _remove_pending_locked(item)
                 raise QueryQueueExpired("SQL queue wait expired")
             _COND.wait(timeout=min(0.5, remaining))
 
-    timer = threading.Timer(
-        max_runtime_seconds(), _expire_running, args=(item["query_id"], item["query_key"])
-    )
+    timer = threading.Timer(max_runtime_seconds(), _expire_running, args=(item,))
     timer.daemon = True
     timer.start()
     try:
         try:
-            yield item
+            with duckdb_engine.thread_limit(item["duckdb_threads"]):
+                yield item
         except Exception:
             # Translate the DuckDB interrupt raised by page leave/replacement
             # into the queue's stable cancellation response.
@@ -189,8 +286,7 @@ def execute(*, username: str, session_id: str, query_id: str, query_key: str):
     finally:
         timer.cancel()
         with _COND:
-            if _CURRENT is item:
-                _CURRENT = None
+            _RUNNING[:] = [running for running in _RUNNING if running is not item]
             _COND.notify_all()
 
 
@@ -198,7 +294,10 @@ def snapshot() -> dict:
     with _COND:
         _drop_stale_locked(time.monotonic())
         return {
-            "running": bool(_CURRENT),
+            "running": bool(_RUNNING),
+            "running_count": len(_RUNNING),
+            "max_concurrent": max_concurrent(),
+            "per_user_limit": per_user_limit(),
             "pending": len(_PENDING),
             "stale_seconds": stale_seconds(),
             "max_runtime_seconds": max_runtime_seconds(),

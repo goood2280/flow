@@ -61,6 +61,7 @@ SplitTable, ET/LOT 추적, TEG/WF MAP, 업무 게시판, 차트·리포트와 �
 | 무거운 요청 동시 실행 | 2~3 | 4 (`FLOW_HEAVY_REQUEST_CONCURRENCY`, 대기 최대 120초) |
 | SplitTable·파일 보기 전용 레인 | 3 | 8 (`FLOW_ESSENTIAL_REQUEST_CONCURRENCY`) |
 | 차트생성 동시 조회 / 결과 캐시 | 2 / 128MB | 4 / 1GB |
+| 파일탐색기 SQL 동시 실행 (사용자당) | 2 (1) | 3 (1) (`FLOW_FILEBROWSER_SQL_CONCURRENCY`, `FLOW_FILEBROWSER_SQL_PER_USER`) |
 | ET 다운로드 동시 계산 / 대기열 | 1 / 16 | 2 / 48 |
 | SplitTable 자동 제품 캐싱 | 꺼짐 | 켜짐 |
 
@@ -71,14 +72,30 @@ SplitTable, ET/LOT 추적, TEG/WF MAP, 업무 게시판, 차트·리포트와 �
 
 예전 개발 worker가 맡던 작업을 포함해 모든 무거운 작업이 운영 서버의 `core/heavy_jobs.py`를 거칩니다.
 
-- **캐시 빌드·스캔은 서버 전체에서 한 번에 1건**(공용 스캔 슬롯): lookup·pivot·FAB 인덱스·WIP latest-lot,
-  FAB 매칭 검사, ET 추적 스캔, Auto report 생성·ET history 갱신.
+- **백그라운드 캐시 빌드·스캔은 서버 전체에서 한 번에 1건**(공용 스캔 슬롯): FAB 매칭 검사, ET 추적 스캔,
+  예약·수동 스캔, Auto report ET history 갱신.
+- **조회에 필요한 캐시**(lookup·pivot·FAB 인덱스·WIP latest-lot)는 `large` 서버에서 별도 **조회 레인**(기본 2칸,
+  `FLOW_CACHE_READ_LANE_SLOTS`, 0=끄기)을 씁니다. 긴 백그라운드 스캔 뒤에서 SplitTable 첫 조회가 기다리지 않습니다.
+  소형 서버는 예전처럼 공용 슬롯 하나입니다.
+- **Auto report 생성**은 `large` 서버에서 자기 레인(1칸)을 씁니다(최대 6시간 걸리는 PPT 생성이 캐시 슬롯을 잡지 않음).
 - 자동(예약) 작업은 **사용자 요청이 조용해질 때까지 기다린 뒤** 시작합니다. 조회의 전제가 되는 캐시는 짧은
   유예(기본 5초, `FLOW_REQUIRED_CACHE_IDLE_WAIT_SEC`) 뒤 진행합니다.
 - 시작 전 **메모리 확인**: 프로세스 한도 초과나 호스트 여유 메모리 부족이면 최대 2분 기다리고, 그래도 부족하면
   실행하지 않고 다음 기회로 미룹니다.
 - 대화형 작업(홈 에이전트, 파일탐색기 SQL, 차트 원본 조회)은 이 줄에 서지 않습니다.
 - 관리자 → 시스템 → 모니터의 **무거운 작업** 패널과 캐시관리 화면에서 실행 중인 작업과 미뤄진 횟수를 봅니다.
+- **파이썬 GC 정지 방지**: 캐시(특히 SplitTable 응답)가 수십 GB 의 파이썬 객체라 전체 GC 한 번이 수 초 동안 모든
+  요청을 멈출 수 있었습니다. 무거운 작업이 끝날 때·1분마다 젊은 세대만 수집하고 `gc.freeze()`로 살아 있는 객체를
+  제외합니다. 순환 쓰레기 정리(전체 수집)는 사용자가 10분 이상 없을 때 2시간에 한 번만 합니다
+  (`FLOW_GC_FREEZE=0`으로 끄기, `FLOW_GC_MAINTENANCE_QUIET_SEC`·`…_INTERVAL_SEC`). 2세대 수집 정지 시간은
+  `/api/splittable/memory/overview`의 `watchdog.gc`(`gen2_pause_max_ms`)에서 봅니다.
+- **DuckDB 메모리 상한**: 쿼리 연결마다 `memory_limit`(대형 서버 16GB, 그 외 RAM 25%, 그리고 현재 여유 메모리의
+  절반 이하)과 임시 폴더(`FLOW_DATA_ROOT\tmp\duckdb`)를 둡니다. 넘치는 정렬·집계는 디스크로 흘려 씁니다
+  (`FLOW_DUCKDB_MEMORY_LIMIT_GB`, 0=DuckDB 기본값, `FLOW_DUCKDB_TEMP_DIR`).
+- **Windows 메모리 계측**: 프로세스 메모리는 working set 이 아니라 private bytes(커밋)로 봅니다 — working set 은
+  Polars 가 매핑해 읽은 parquet 파일 페이지까지 세어 캐시를 필요 이상 비웠습니다. 기동 로그 `host resources:` 줄에
+  `commit_limit_gb`가 나오고, pagefile 이 작아 커밋 한도가 RAM 과 비슷하면 경고합니다. pagefile 을 고정 크기로 둔
+  서버만 `FLOW_SYSTEM_COMMIT_GUARD_PERCENT=95`로 커밋 사용률 가드를 켜세요.
 
 예전 `FLOW_SERVER_ROLE`, `FLOW_WORKER_OFFLOAD`, `FLOW_API_SERVER_URL`, `FLOW_*_OFFLOAD` 환경변수는
 **아무 효과가 없습니다.** 남아 있으면 운영 점검 스캔이 알려 줍니다 — 지워 두세요.
@@ -142,6 +159,10 @@ S3 연결만으로 로컬 용량이 줄거나 과거 자료가 자동 복원되�
    씁니다(없을 때만 Flow 최소 의존성). 사내 패키지(`botocore`, `boto`, `awscli`, `bigdataquery`)는 버전
    표기를 빼 두면 충돌이 적습니다. 암호화 연락처와 WebSocket 로그인에 `cryptography`, `websockets`가 필요합니다.
    코드 에이전트(opencode)가 고칠 설치 폴더라면 `set FLOW_EXTRACT_ALL=1` 후 실행해 `AGENTS.md`·`docs/`·`tests/`까지 풉니다.
+   **설치 마지막에 라이브러리 점검 표**가 나옵니다(`[check] OK/WARN/FAIL`, 설치 버전·최소 버전·번들을 만든 개발 PC 의
+   검증 버전). 사내 저장소에서 버전이 다르거나 빠진 패키지를 여기서 확인하고, 설치 후
+   `python setup.py check-deps`로 다시 볼 수 있습니다(결과 `install_check.json`, 필수 FAIL 이면 종료 코드 1).
+   필수(FAIL) 항목이 없어야 서버가 뜨고 로그인·조회가 됩니다. `FLOW_SETUP_STRICT=1`이면 필수 FAIL 때 설치도 실패로 끝납니다.
    OpenCode·oh-my-opencode는 이 설치 폴더를 작업 폴더로 열면 `AGENTS.md`를 자동으로 읽습니다. `/init`·`/init-deep`으로
    `AGENTS.md`를 다시 만들지 마세요(번들이 덮어쓰는 정본입니다).
 3. **기존 데이터 이전**(서버 이사 때) — 옛 서버의 Flow를 멈춘 뒤, 먼저 `-DryRun`으로 확인하고 실행합니다.
@@ -185,6 +206,12 @@ scripts\windows\flow_ctl.bat health
 로그는 `D:\flow-data\logs\uvicorn.log`(20MiB 활성 1개+백업 5개, 명목 약 120MiB), 재시작 이력 `flow_restarts.log`, 상태 `flow_supervisor.json`입니다.
 요청별 접근 로그는 기본으로 끕니다(로그 쓰기 지연이 서버 전체를 멈추지 않게). 필요하면 `FLOW_UVICORN_ACCESS_LOG=1` 후 감시기까지 재기동합니다.
 기동 직후 `host resources:` 줄에서 프로파일·코어·메모리·Polars 스레드를 확인하고, 동적 메모리로 `small`이 된 경우나 데이터 경로가 네트워크 드라이브인 경우 경고가 함께 남습니다.
+같은 줄의 `prod=False`(운영 모드 아님 — SplitTable 계산 1코어), `duckdb=False`·`orjson=False`(파일탐색기 대용량 SQL·큰 응답 직렬화가 느린 경로)도 경고로 남으니 conda env 에 `pip install duckdb orjson` 후 재기동합니다.
+Windows 는 다른 요청이 파일을 읽는 순간 교체(`os.replace`)가 거부되므로 캐시·JSON 저장은 최대 `FLOW_FILE_REPLACE_RETRY_SEC`(기본 2초) 재시도합니다.
+API 의 dict·list 응답은 FastAPI 기본 인코더(이벤트 루프에서 순회) 대신 요청 스레드에서 바로 JSON 으로 만듭니다(`core/json_fast.py`, 라우터 로더가 기동 때 적용). 기동 로그 `json_fast routes: wrapped=…` 로 확인하고, 문제가 의심되면 `FLOW_JSON_FAST_ROUTES=0` 후 재기동하면 예전 경로로 돌아갑니다.
+파일탐색기 SQL 은 여러 사용자의 조회를 동시에 돌리고(위 표), 같은 사용자의 두 번째 탭과 같은 사용자·같은 제품 조회는 예전처럼 차례를 기다립니다. 다른 조회와 같이 도는 DuckDB 조회는 스레드를 나눠 쓰고(8→4→2), 메모리가 빠듯하면 병렬로 시작하지 않고 앞 조회가 끝나기를 기다립니다.
+대형 서버는 SplitTable KNOB 예열(표 미리 계산)을 별도 프로세스(`flow-splittable-prewarm`, 낮은 우선순위·코어 절반)에서 돌리고, 결과는 디스크 view 캐시로 운영 프로세스에 넘어옵니다. 작업 관리자에 python 프로세스가 하나 더 보이는 것이 정상이며, 운영 프로세스가 끝나면 함께 끝납니다. 끄려면 `FLOW_SPLITTABLE_PREWARM_PROCESS=0`(예전처럼 스레드), 스레드 수는 `FLOW_SPLITTABLE_PREWARM_THREADS`.
+WIP(랏 현위치) 캐시 재빌드는 Polars 로 최신 행을 먼저 고른 뒤 파이썬으로 항목을 만듭니다(결과는 예전과 같음). 문제가 의심되면 `FLOW_LOT_PROGRESS_VECTOR=0` 으로 예전 행 단위 경로를 씁니다.
 `scripts\windows\flow_ctl.bat perf`는 현장 환경설정을 읽어 **다음 기동에 적용될** 프로파일·실제 Polars 스레드·DuckDB 스레드·캐시 풀·동시 요청 수와 예약 합성 부하를 표시합니다.
 실행 중인 감시기의 환경은 읽지 않으므로 현재 기동 로그와 비교합니다. 스캔·부하 생성·설정 변경은 하지 않습니다.
 `large`인데 이전 서버의 CPU/메모리 고정값이 작게 남아 있으면 경고합니다. 의도한 제한이 아니라면 해당 값만 `.local.bat`/기동 환경에서 제거하고 감시기까지 다시 기동합니다.
@@ -283,8 +310,11 @@ set "FLOW_WS_AUTH_USER_MAP={"example.user":"hol"}"
 ### WebSocket 로그인과 관리자 연락처
 
 `FLOW_WS_AUTH_URL`(브라우저가 접속할 로그인 주소)과 `FLOW_WS_AUTH_VERIFY_URL`(Flow가 토큰을 재확인할 주소)을
-설정하면 ID/PW 로그인과 비밀번호 찾기(`/api/auth/forgot-password`, `/api/auth/reset-request`)가 꺼집니다.
-비상시 `FLOW_PASSWORD_LOGIN_ENABLED=1`.
+설정하면 로그인 화면에는 **[사내 로그인] 버튼만** 남고 ID/PW 로그인·회원가입·비밀번호 찾기
+(`/api/auth/register`, `/api/auth/forgot-password`, `/api/auth/reset-request`)가 꺼집니다.
+setup.py로 푼 설치본(`.git` 없음)과 운영(`FLOW_PROD=1`, `flow_env.bat` 기본값)은 사내 로그인을 아직 설정하지 않았어도
+ID/PW 입력칸을 띄우지 않습니다(개발 체크아웃·`FLOW_PROD=0` 격리 테스트만 기본 켜짐). 비상시 `FLOW_PASSWORD_LOGIN_ENABLED=1`.
+버튼은 누를 때 연결합니다(`FLOW_WS_AUTH_AUTO=1`이면 화면을 열 때 한 번 자동 시도).
 
 관리자 → **사내 로그인·관리자**에서 계정 ID, 이름, 메일, 역할과 위임 페이지를 등록합니다(관리자는 `admin`,
 페이지 위임자는 `user`+페이지 ID). 여기 명시한 관리자·위임자만 권한 계정에 추가되고 Flow 비밀번호는 생기지
@@ -357,14 +387,20 @@ set "FLOW_WS_AUTH_USER_MAP={"example.user":"hol"}"
 현재 로그인 흐름:
 
 ```text
-My_Login.jsx: GET /api/auth/providers → new WebSocket(provider.ws_url)
-  연결 직후 provider.send 전송 → onmessage(event.data)
-  → POST /api/auth/sso/ws/login {"message": event.data}
+My_Login.jsx: GET /api/auth/providers → [사내 로그인] → wsLogin.js startWsLogin()
+  new WebSocket(ws_url) → 연결 직후 send 전송 → 받은 프레임을 순서대로(binary는 텍스트로)
+  → POST /api/auth/sso/ws/login {"message": 프레임, "step": n, "via": "ws"}
 backend/routers/auth.py: websocket_login()
   → auth_providers.py: WebsocketAuthProvider.authenticate()
-  → _ws_parse() / _ws_pick() → _ws_verify()로 인증서버 재확인
-  → _identity_for_company_user() → start_session() → Flow 세션 token
+     _ws_parse() → _ws_credentials()  ID·토큰 있음 → _ws_verify()로 인증서버 재확인
+                                        주소만 있음   → URL_ACTION: open/browser → HTTP 202 {action,url}
+                                                                    server       → _ws_fetch_url() 응답으로 로그인
+                                        아무것도 없음 → HTTP 400(브라우저는 다음 프레임 대기)
+  → _ws_reject_fixed_user() → _identity_for_company_user() → start_session() → Flow 세션 token
 ```
+
+막혔을 때 확인·판단 순서(개발자 도구 Messages, `FLOW_WS_AUTH_DEBUG`, 받은 것별 조치표)는
+`AGENTS.md`의 **WebSocket 사내 로그인이 안 될 때** 절에 있습니다.
 
 브라우저는 수신 문자열을 그대로 전달합니다. 서버 `_ws_parse()`는 JSON 문자열을 객체로 풀고 `_ws_pick()`은
 필드 목록에서 **첫 번째 비어 있지 않은 문자열/정수**를 선택합니다. key는 대소문자를 무시하고 `data.user.id`처럼
@@ -374,16 +410,25 @@ backend/routers/auth.py: websocket_login()
 | 현장 환경변수 | 현재 기본값·의미 |
 |---|---|
 | `FLOW_WS_AUTH_URL` | 브라우저가 접속할 `ws://`/`wss://` 주소. 비면 WebSocket 로그인 비활성 |
-| `FLOW_WS_AUTH_SEND` / `FLOW_WS_AUTH_AUTO` | 연결 직후 보낼 문자열(기본 전송 없음) / 화면 진입 시 자동 시도(기본 `1`, 끄려면 `0`) |
+| `FLOW_WS_AUTH_SEND` / `FLOW_WS_AUTH_AUTO` | 연결 직후 보낼 문자열(기본 전송 없음, **사용자 ID를 넣지 않음**) / 화면 진입 시 자동 시도(기본 `0`=버튼을 눌러야 연결, 켜려면 `1`). URL·SEND의 `{nonce}`(시도마다 새 값)·`{origin}`(Flow 주소)은 브라우저가 채움 |
 | `FLOW_WS_AUTH_CONTACT` | 로그인 화면·거부 메시지에 붙일 문의처(합성 예: `example.admin` → "문의 example.admin"). 실제 문의처는 현장 `.local.bat`에만 둔다. 비면 "관리자에게 문의" |
-| `FLOW_WS_AUTH_USER_FIELDS` | 사내 ID 후보. 기본 `user_id,userId,userid,username,user_name,user,loginId,login_id,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id,ad.user_id,ad.userId,ad.id,ad.mail`(ID 필드가 없으면 AD 메일을 ID로 쓰고 사내 도메인은 떼어 기존 계정과 맞춤). AD 형식 `{"ad": {"department","company","mail","title","description","name"}}`의 부서·이름·메일은 기본 후보(`ad.department`, `ad.name`, `ad.mail`)로 읽힘 |
+| `FLOW_WS_AUTH_USER_FIELDS` | 사내 ID 후보. 기본 `user_id,userId,userid,username,user_name,user,loginId,login_id,sAMAccountName,ad.sAMAccountName,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id,ad.user_id,ad.userId,ad.id,ad.mail`(AD 로그인 ID `sAMAccountName`이 있으면 그것, 없으면 AD 메일을 ID로 쓰고 사내 도메인은 떼어 기존 계정과 맞춤). AD 형식 `{"ad": {"department","company","mail","title","description","name"}}`의 부서·이름·메일은 기본 후보(`ad.department`, `ad.name`, `ad.mail`)로 읽힘. http(s) 주소 값은 ID로 쓰지 않음 |
 | `FLOW_WS_AUTH_TOKEN_FIELDS` | 인증서버 토큰 후보. 기본 `token,access_token,accessToken,ticket,session,sessionId,session_id,data.token,data.ticket` |
 | `FLOW_WS_AUTH_DEPT_FIELDS` | 기본 `department,dept,deptName,dept_name,deptNm,orgName,org_name,org,team,data.department,data.dept,user.department,ad.department` |
 | `FLOW_WS_AUTH_NAME_FIELDS` | 기본 `name,userName,user_name,displayName,display_name,korName,kor_name,data.name,user.name,ad.name` |
 | `FLOW_WS_AUTH_EMAIL_FIELDS` | 기본 `email,mail,emailAddress,email_address,data.email,user.email,ad.mail,ad.email` |
 | `FLOW_WS_AUTH_VERIFY_URL` / `FLOW_WS_AUTH_VERIFY` | 서버의 재검증 주소 / `http` 또는 `ws`. mode 미지정 시 verify URL이 HTTP면 `http`, 나머지는 `ws`; URL·mode 둘 다 없으면 기본 거부 |
-| `FLOW_WS_AUTH_VERIFY_SEND` | 검증 요청 문자열 템플릿. 기본 `{"token": "{token}"}`. `{token}`·`{user}`를 추출값으로 치환 |
-| `FLOW_WS_AUTH_VERIFY_TIMEOUT_SEC` | 서버 재검증 제한시간, 기본 10초. 브라우저의 전체 대기는 `My_Login.jsx`에서 60초 |
+| `FLOW_WS_AUTH_VERIFY_SEND` | 검증 요청 문자열 템플릿. 기본 `{"token": "{token}"}`. `{token}`·`{user}`를 추출값으로 치환(JSON 템플릿이면 따옴표 등을 JSON 규칙으로 넣음) |
+| `FLOW_WS_AUTH_VERIFY_METHOD` / `FLOW_WS_AUTH_VERIFY_HEADERS` | HTTP 재검증 `POST`(기본)·`GET`. VERIFY_URL에도 `{token}`·`{user}` 치환(URL 인코딩) / 헤더 JSON(예 `{"Authorization": "Bearer {token}"}`) |
+| `FLOW_WS_AUTH_VERIFY_MAX_FRAMES` | WS 재검증에서 ID나 거부가 든 응답을 기다릴 최대 프레임 수, 기본 3 |
+| `FLOW_WS_AUTH_VERIFY_TIMEOUT_SEC` | 서버 재검증·주소 읽기 제한시간, 기본 10초. 브라우저 대기는 `wsLogin.js`에서 60초(인증 창을 연 뒤 180초) |
+| `FLOW_WS_AUTH_URL_FIELDS` | ID·토큰 없이 주소만 온 프레임에서 주소를 찾을 후보. 기본 `url,redirect,redirectUrl,redirect_url,redirectUri,redirect_uri,loginUrl,login_url,authUrl,auth_url,href,location,link,data.url,data.redirectUrl,data.loginUrl,data.authUrl`. 문자열 프레임이 `http(s)://`면 그 자체 |
+| `FLOW_WS_AUTH_URL_ACTION` | 주소만 온 프레임 처리. `open`(기본: 인증 창을 열고 같은 연결에서 다음 프레임 대기) · `server`(Flow 서버가 주소를 직접 GET, 응답의 ID로 로그인) · `browser`(브라우저가 쿠키·Windows 인증으로 GET한 본문을 다시 넘겨 재검증. 인증서버 CORS 필요) |
+| `FLOW_WS_AUTH_FETCH_ALLOW` | `server` 방식에서 읽어도 되는 주소 접두어(쉼표, scheme·host·port·경로 접두어 일치). 비면 `server`는 거부. 리다이렉트는 따라가지 않음 |
+| `FLOW_WS_AUTH_DEBUG` | `1`이면 받은 프레임 모양(키 구조·값 종류, 값은 가림)과 판정을 `FLOW_DATA_ROOT/logs/ws_login_probe.jsonl`에 최근 200건 기록. 관리자 `GET /api/auth/sso/ws/probe`로 기록과 실행 중 설정 요약을 봄. 기본 끔 |
+
+설정 문자열(`FLOW_WS_AUTH_URL`·`SEND`·`VERIFY_URL`·`VERIFY_SEND`·`VERIFY_HEADERS`)에 확인된 사용자 ID가 그대로 들어 있으면
+로그인을 403으로 막습니다. ID를 넣어 보내면 인증서버는 그 사람 정보를 돌려줄 뿐이라 누가 눌러도 같은 사람이 되기 때문입니다.
 
 `*_FIELDS`는 쉼표로 나열하며 **기본 목록을 대체**합니다. ID 목록은 브라우저 수신과 서버 재검증 응답에 공통으로
 쓰므로 두 응답의 경로를 모두 넣습니다. 단순 key 변경은 환경변수로 해결하고, 일반 기본값을 바꿀 때는
@@ -404,16 +449,17 @@ set "FLOW_WS_AUTH_EMAIL_FIELDS=employee.email"
 
 **수신 방식을 바꿀 때의 수정 지점:**
 
-- 브라우저 연결 옵션·첫 송신·여러 프레임 조립·binary/Blob 변환·중간 메시지 분류는 `My_Login.jsx`의 `wsLogin()`.
-  현재 모든 프레임을 POST하며 HTTP 400만 중간 메시지로 보고 계속 기다립니다. 다른 오류는 종료합니다.
-- JSON wrapper·배열·문자열 프로토콜은 `auth_providers.py`의 `_ws_parse()`, `_ws_pick()`, `authenticate()`.
-  현재 일반 문자열은 ID로만 읽어 토큰이 없으므로 정상 재검증 로그인에 쓸 수 없습니다.
+- 브라우저 연결 옵션·첫 송신·프레임 순차 처리·binary/Blob 변환·202(주소) 처리는 `frontend/src/features/auth/wsLogin.js`의
+  `startWsLogin()`. 모든 프레임을 순서대로 POST하며 HTTP 400은 중간 메시지로 보고 계속 기다리고, 202는 인증 창을 열거나
+  (`open`) 주소를 읽어 다시 넘깁니다(`browser`). 연결이 닫히거나 다른 오류면 종료합니다.
+- JSON wrapper·배열·문자열 프로토콜은 `auth_providers.py`의 `_ws_parse()`, `_ws_credentials()`, `_ws_frame_url()`, `authenticate()`.
+  일반 문자열은 `http(s)://`면 주소, 아니면 ID로만 읽어 토큰이 없으므로 정상 재검증 로그인에 쓸 수 없습니다.
 - 서버 HTTP 헤더·Bearer 토큰·GET 요청·인증서버 성공 코드·서버 WS의 추가 handshake/중간 프레임은 `_ws_verify()`.
-  현재 HTTP는 JSON Content-Type의 POST, WS는 한 번 보내고 **첫 응답 한 프레임**을 읽습니다.
+  HTTP는 `VERIFY_METHOD`(POST 기본)·`VERIFY_HEADERS`, WS는 한 번 보내고 ID나 거부가 든 프레임까지 최대 `VERIFY_MAX_FRAMES`개를 읽습니다.
   명시적 `FLOW_WS_AUTH_VERIFY=ws`에서 verify URL이 비면 브라우저 URL을 재사용합니다.
 - 현재 성공 판정은 `ok` → `success` → `result` 우선이며 `false/fail/error/0`을 거부하고, 확인 ID가 있어야 통과합니다.
   브라우저 ID도 있으면 재검증 ID와 대소문자 무시 일치해야 합니다. 프로필은 검증 응답에서 추출하는 규칙을 유지합니다.
-  요청 템플릿은 단순 문자열 치환이므로 따옴표 등을 포함하는 값을 지원하려면 객체를 만들고 `json.dumps()`하는 방식으로 수정합니다.
+  요청 템플릿이 JSON(`{`·`[`로 시작)이면 치환값을 JSON 문자열 규칙으로 넣습니다. 그 밖의 템플릿은 단순 문자열 치환입니다.
 - 사내 토큰과 Flow 세션 `token`은 별개입니다. `start_session()` → `core/auth.py: issue_token()` 경로를 유지하고
   인증서버 토큰·비밀번호·수신 원문을 로그/`tokens.json`/공개 문서에 남기지 않습니다.
   `FLOW_WS_AUTH_VERIFY=none` + `FLOW_WS_AUTH_TRUST_CLIENT=1`은 재검증을 생략하고 클라이언트 프로필까지 믿는 예외이므로
@@ -497,6 +543,9 @@ TEG 제품은 `상위 노드 / 하위 노드 / 제품명` 계층입니다. 경�
   ⚙ 캐시 설정 또는 `FLOW_SPLITTABLE_AUTO_PRODUCT_CACHE_ENABLED=0`, 예열은 `FLOW_SPLITTABLE_KNOB_PREWARM=0`
   (개수 `…_MAX_LOTS`, 기간 `…_RECENT_DAYS`).
 - 목표는 준비된 데이터 조회부터 표 첫 표시까지 p95 500ms입니다(원본만 있고 캐시가 없는 최초 생성은 제외).
+- 조회 결과 RAM 캐시는 최근에 쓴 응답(예산의 15%, `FLOW_SPLITTABLE_VIEW_HOT_FRACTION`)만 파이썬 객체로 두고
+  나머지는 orjson bytes 로 접어 둡니다(같은 예산에 약 6배, 다시 쓰이면 풀어서 올림, 큰 응답 하나 푸는 데 수 ms).
+  끄기 `FLOW_SPLITTABLE_VIEW_PACK=0`. 캐시관리 메모리 화면의 `packed_entries`가 접힌 항목 수입니다.
 
 샘플 데이터 검증(운영 데이터 아님): 서로 다른 5개 root 동시 조회 약 312ms, 순차 조회 약 56~86ms, 동일 조건
 재조회 약 8.7ms, cold partition 5개 동시 조회 약 433ms(peak RSS 증가 약 72MB). 운영 속도는 parquet 폭·root당
@@ -561,6 +610,9 @@ Valve 연동 알람 파일 위치는 `data/flow-data/valve_alerts.json`의 `loca
 적용되고, 기본지식·제품 위키·3D 구조는 질문과 관련된 항목부터 글자 예산 안에서만 보냅니다(`FLOW_LLM_CONTEXT_SCALE`, 기본 1).
 LLM을 부르는 새 API 경로는 `backend/core/llm_adapter.py`의 `_DATA_TASK_PATHS`에 등록해야 합니다.
 
+홈 에이전트 계획 프롬프트는 고정 내용(도구·제품 목록)을 앞에, 질문을 맨 뒤에 두어 서버 prefix cache 가
+재사용할 수 있게 합니다(`backend/core/data_chat.py` `_feature_plan`).
+
 ### 랏 배정/요청과 게시판 본문
 
 `업무 → 랏 배정/요청`은 제품별 랏 배정·Hot grade·PI 처리 요청 보드입니다. 상태 변경·답변·메일은 `lotrequest`에
@@ -598,6 +650,8 @@ LLM을 부르는 새 API 경로는 `backend/core/llm_adapter.py`의 `_DATA_TASK_
 
 ## 개발자 안내
 
+- 문서: 규칙은 `AGENTS.md`, 동작 구조는 `docs/ARCHITECTURE.md`, 파일 위치는 `docs/CODEMAP.md`, 개선 계획은 `docs/PLAN.md`
+  (설치 폴더에는 `python setup.py extract --all` 일 때 풀립니다).
 - 백엔드 앱은 `backend/app.py`(루트 `app.py`는 import shim), HTTP 경로는 `backend/routers/`, 계산·저장은 `backend/core/`.
   SplitTable·파일탐색기 라우터 일부는 `backend/app_v2/modules/*/router_parts/`에서 조립되므로 해당 part를 고칩니다.
 - 탭 등록은 `frontend/src/app/pageManifest.jsx`, 구현은 `frontend/src/features/`. 색·간격은 `frontend/src/styles/tokens.css`.

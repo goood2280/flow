@@ -300,6 +300,18 @@ _TIERS: tuple[tuple[str, Callable[[int], int]], ...] = (
 # 회수량이 0 이면 이만큼 쉬었다가 다시 시도한다(그 사이 trim 은 이미 돌았다).
 _NOOP_EVICT_BACKOFF_SEC = 120.0
 _LAST_NOOP_EVICT_TS = 0.0
+_CRISIS_FULL_COLLECT_MIN_INTERVAL_SEC = 600.0
+_LAST_CRISIS_FULL_COLLECT_TS = 0.0
+
+
+def _crisis_full_collect_allowed() -> bool:
+    global _LAST_CRISIS_FULL_COLLECT_TS
+    now = time.time()
+    with _LOCK:
+        if now - _LAST_CRISIS_FULL_COLLECT_TS < _CRISIS_FULL_COLLECT_MIN_INTERVAL_SEC:
+            return False
+        _LAST_CRISIS_FULL_COLLECT_TS = now
+    return True
 
 
 def _run_eviction_pass(trigger: str, pct: float, effective_gb: float, total_gb: float) -> dict:
@@ -341,10 +353,20 @@ def _run_eviction_pass(trigger: str, pct: float, effective_gb: float, total_gb: 
     except Exception as exc:
         logger.debug("memory watchdog trim failed: %s", exc)
         try:
-            gc.collect()
+            gc.collect(1)
         except Exception:
             pass
     pct_after, effective_after, _ = _memory_pct()
+    # 축출로도 위기를 못 벗어나면 freeze 된 순환 쓰레기까지 치운다(큰 힙이면 수 초 정지
+    # — 위기일 때만, 10분에 1회).
+    if pct_after >= critical_pct() and _crisis_full_collect_allowed():
+        try:
+            from core import gc_tuning
+
+            gc_tuning.full_collect(f"memory_critical:{trigger}")
+            pct_after, effective_after, _ = _memory_pct()
+        except Exception:
+            pass
     released = int(trim_result.get("released_bytes") or 0)
     event = {
         "ts": time.time(),
@@ -509,7 +531,24 @@ def status() -> dict:
         state["trim"] = memory_trim.available()
     except Exception:
         state["trim"] = {}
+    try:
+        from core import gc_tuning
+
+        state["gc"] = gc_tuning.status()
+    except Exception:
+        state["gc"] = {}
     return state
+
+
+def _gc_housekeeping() -> None:
+    """주기 settle(젊은 세대 + freeze)과 조용할 때의 전체 정리."""
+    try:
+        from core import gc_tuning
+
+        gc_tuning.maybe_settle()
+        gc_tuning.maybe_maintenance()
+    except Exception as exc:
+        logger.debug("gc housekeeping failed: %s", exc)
 
 
 def _bg_loop() -> None:
@@ -526,6 +565,7 @@ def _bg_loop() -> None:
         except Exception as exc:
             logger.warning("memory watchdog loop error: %s", exc)
             delay = interval_sec()
+        _gc_housekeeping()
 
 
 def start_background() -> None:
@@ -540,6 +580,12 @@ def start_background() -> None:
         _BG_THREAD = threading.Thread(target=_bg_loop, name="memory-watchdog", daemon=True)
         _BG_THREAD.start()
         _STARTED = True
+    try:
+        from core import gc_tuning
+
+        gc_tuning.install_pause_monitor()
+    except Exception:
+        pass
     logger.info(
         "[memory_watchdog] started (warn %.0f%% / critical %.0f%% / safe %.0f%%, every %.0fs)",
         warn_pct(), critical_pct(), safe_pct(), interval_sec(),

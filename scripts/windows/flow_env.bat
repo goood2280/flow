@@ -31,7 +31,10 @@ rem FLOW_WS_AUTH_SEND       optional first message the browser sends after conne
 rem FLOW_WS_AUTH_USER_MAP   company id -> Flow account JSON, e.g. {"example.user":"hol"} (no default;
 rem                         put the real id only in flow_env.local.bat)
 rem FLOW_DATA_KEY           optional encryption key for people.enc (else <app>\.flow_data.key)
-rem When FLOW_WS_AUTH_URL is set, ID/PW login is off; emergency: set FLOW_PASSWORD_LOGIN_ENABLED=1
+rem Installed servers show only login buttons (no ID/PW form). Emergency: set FLOW_PASSWORD_LOGIN_ENABLED=1
+rem Never put a user id in FLOW_WS_AUTH_URL/SEND (everyone would log in as that user; Flow refuses it).
+rem Only a URL comes back? FLOW_WS_AUTH_URL_ACTION=open (default) | server (+FLOW_WS_AUTH_FETCH_ALLOW) | browser
+rem How to check received frames: AGENTS.md, WebSocket login troubleshooting (FLOW_WS_AUTH_DEBUG=1).
 rem set "FLOW_WS_AUTH_URL=wss://auth.example.com/login"
 rem set "FLOW_WS_AUTH_VERIFY_URL=wss://auth.example.com/verify"
 if not defined PYTHONUTF8        set "PYTHONUTF8=1"

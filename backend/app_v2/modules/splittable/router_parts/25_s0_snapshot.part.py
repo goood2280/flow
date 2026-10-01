@@ -481,14 +481,16 @@ def _s0_archive_daily_parquets(catalog: dict[str, dict], run_date: str,
             revision_temp = revision.with_suffix(f".tmp.{os.getpid()}.parquet")
             try:
                 frame.write_parquet(revision_temp)
-                os.replace(revision_temp, revision)
+                from core.file_transaction import replace_file
+                replace_file(revision_temp, revision)
             finally:
                 with contextlib.suppress(OSError):
                     revision_temp.unlink()
         temp = target.with_suffix(f".tmp.{os.getpid()}.parquet")
         try:
             frame.write_parquet(temp)
-            os.replace(temp, target)
+            from core.file_transaction import replace_file
+            replace_file(temp, target)
             archived += 1
         finally:
             with contextlib.suppress(OSError):

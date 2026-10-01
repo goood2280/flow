@@ -90,6 +90,7 @@ def test_host_diagnostics_flags_vm_memory_that_hides_large_profile(monkeypatch):
     monkeypatch.setattr(runtime_limits, "effective_cpu_count", lambda: 8.0)
     monkeypatch.setattr(runtime_limits, "resource_profile", lambda: "small")
     monkeypatch.setenv("FLOW_RESOURCE_PROFILE_SOURCE", "auto")
+    monkeypatch.setattr(runtime_limits, "_module_available", lambda name: True)
 
     info, warnings = runtime_limits.host_diagnostics({"FLOW_DATA_ROOT": r"\\fileserver\flow-data"})
 

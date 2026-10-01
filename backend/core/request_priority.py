@@ -132,6 +132,25 @@ def users_active(quiet_for_sec: float | None = None) -> bool:
     return seconds_since_user_activity() < quiet
 
 
+_LARGE_HOST_YIELD_MAX_WAIT_SEC = 3.0
+
+
+def background_yield_cap(max_wait_sec: float) -> float:
+    """대형 운영 서버(8코어·128GB)에서는 한 번 양보를 짧게 끊는다.
+
+    캐시 빌드는 서버 공용 슬롯 하나를 든 채로 양보한다. 사용자 30명이 쓰는 서버는
+    2초 조용한 틈이 거의 없어, 빌드가 root 마다 20~60초씩 쉬며 슬롯을 붙들었고
+    다른 제품의 랏 목록 캐시까지 그 뒤에서 몇 시간 기다렸다. 코어가 넉넉한 대형
+    서버는 빌드와 검색을 같이 돌려도 되므로 기다림만 줄인다(소형 서버는 그대로)."""
+    try:
+        from core import cache_budget
+        if cache_budget.large_host():
+            return min(max_wait_sec, _LARGE_HOST_YIELD_MAX_WAIT_SEC)
+    except Exception:
+        pass
+    return max_wait_sec
+
+
 def yield_to_users(max_wait_sec: float = 20.0, quiet_for_sec: float | None = None,
                    step_sec: float = 0.5) -> float:
     """Block the calling background thread while users are active.
@@ -140,7 +159,7 @@ def yield_to_users(max_wait_sec: float = 20.0, quiet_for_sec: float | None = Non
     max_wait_sec so background work cannot be starved indefinitely."""
     quiet = quiet_for_sec if quiet_for_sec is not None else _env_float(
         "FLOW_BACKGROUND_YIELD_QUIET_SEC", 2.0, 0.0, 60.0)
-    max_wait = _env_float("FLOW_BACKGROUND_YIELD_MAX_WAIT_SEC", max_wait_sec, 0.0, 600.0)
+    max_wait = _env_float("FLOW_BACKGROUND_YIELD_MAX_WAIT_SEC", background_yield_cap(max_wait_sec), 0.0, 600.0)
     waited = 0.0
     while waited < max_wait and users_active(quiet_for_sec=quiet):
         time.sleep(step_sec)

@@ -14,8 +14,13 @@ arena 에 남아 **RSS 가 그대로다.** 캐시를 축출해도 워치독이 �
   arena 에 오래 들고 있으므로 `arena.<all>.purge` 를 mallctl 로 호출한다.
   심볼이 프로세스에 없으면(=polars 가 시스템 malloc 을 쓰는 빌드) no-op.
 
-둘 다 없는 환경(개발 PC Windows)에서는 `gc.collect()` 만 하고 조용히 끝난다.
+둘 다 없는 환경(Windows)에서는 GC 정리와 pyarrow 풀 반환만 하고 조용히 끝난다.
 심볼 조회는 1회만 하고 결과를 캐시한다.
+
+GC 는 **전체 수집을 하지 않는다**(`core.gc_tuning.settle`: 젊은 세대 수집 + freeze).
+대형 서버는 응답 캐시만 수십 GB 가 파이썬 객체라 전체 수집 한 번이 수 초 동안
+모든 요청을 멈췄다. 캐시를 축출하면 참조 카운트로 바로 해제되므로 전체 수집이
+필요 없다. 전체 수집이 꼭 필요하면 `collect="full"`.
 """
 from __future__ import annotations
 
@@ -100,8 +105,11 @@ def _rss_bytes() -> int:
     return 0
 
 
-def trim(reason: str = "", *, collect: bool = True) -> dict:
+def trim(reason: str = "", *, collect: bool | str = True) -> dict:
     """gc + allocator arena 반환. 반환: 실행 결과와 회수량(측정 가능할 때).
+
+    collect: True(기본) = 젊은 세대 수집 + freeze(정지 수 ms), "full" = 전체 수집
+    (큰 힙이면 수 초 정지), False = GC 건너뜀.
 
     절대 예외를 올리지 않는다 — 회수는 부가 동작이고, 여기서 실패한다고 해서
     호출측(축출 pass, 캐시 파이프라인 단계)이 중단되면 안 된다.
@@ -119,9 +127,16 @@ def trim(reason: str = "", *, collect: bool = True) -> dict:
     }
     if collect:
         try:
-            out["collected"] = int(gc.collect())
+            from core import gc_tuning
+
+            done = gc_tuning.full_collect(reason) if collect == "full" else gc_tuning.settle(reason)
+            out["collected"] = int(done.get("collected") or 0)
+            out["gc_ms"] = done.get("ms")
         except Exception:
-            pass
+            try:
+                out["collected"] = int(gc.collect(1))
+            except Exception:
+                pass
     if _MALLOC_TRIM is not None:
         try:
             # 반환값 1 = 실제로 반환한 메모리가 있음, 0 = 없음. 둘 다 정상.

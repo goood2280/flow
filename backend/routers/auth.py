@@ -244,12 +244,63 @@ def login(req: LoginReq):
 class WsLoginReq(BaseModel):
     # 인증서버가 브라우저에 보낸 메시지 원문(JSON 문자열 또는 객체).
     message: Any = None
+    # 진단용: 몇 번째 프레임인지, 어디서 온 본문인지(ws | browser_fetch), 진단 패널을 켰는지.
+    step: int = 0
+    via: str = "ws"
+    debug: bool = False
 
 
 @router.post("/sso/ws/login")
-def websocket_login(req: WsLoginReq):
-    """websocket 인증서버 메시지로 로그인. 서버가 토큰을 인증서버에 다시 확인한다."""
-    return auth_providers.login_with("websocket", req.message)
+def websocket_login(req: WsLoginReq, request: Request):
+    """websocket 인증서버 메시지로 로그인. 서버가 토큰을 인증서버에 다시 확인한다.
+
+    200 세션 · 400 ID/토큰 없는 중간 프레임(브라우저는 다음 프레임 대기) ·
+    202 {action, url} 주소만 온 프레임(브라우저가 인증 창 열기/주소 읽기) · 그 외 거부.
+    debug=true 면 응답에 ws_debug(프레임 모양·맞은 필드 경로, 값 없음)를 붙인다.
+    """
+    from fastapi.responses import JSONResponse
+
+    want_report = bool(req.debug) or auth_providers.ws_debug_enabled()
+    report = auth_providers.ws_frame_report(req.message) if want_report else None
+
+    def _probe(status: int, decision: str) -> None:
+        if report is None:
+            return
+        auth_providers.record_ws_probe({
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "ip": request.client.host if request.client else "",
+            "step": req.step, "via": str(req.via or "")[:20],
+            "status": status, "decision": str(decision)[:200], **report,
+        })
+
+    try:
+        provider = auth_providers.get_provider("websocket")
+        out = auth_providers.start_session(provider.authenticate(req.message))
+    except auth_providers.WsFollowUp as follow:
+        body = follow.payload()
+        _probe(202, f"주소 프레임 → {follow.action}")
+        if req.debug:
+            body["ws_debug"] = report
+        return JSONResponse(status_code=202, content=body)
+    except HTTPException as exc:
+        _probe(exc.status_code, str(exc.detail))
+        if not req.debug:
+            raise
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "ws_debug": report})
+    _probe(200, f"로그인 role={out.get('role', '')}")
+    if req.debug:
+        out = {**out, "ws_debug": report}
+    return out
+
+
+@router.get("/sso/ws/probe")
+def websocket_probe(request: Request, limit: int = 50):
+    """관리자 진단: 현재 서버의 사내 로그인 설정(비밀 값 없음) + 최근 프레임 모양 기록.
+
+    기록은 FLOW_WS_AUTH_DEBUG=1 일 때만 쌓인다(FLOW_DATA_ROOT/logs/ws_login_probe.jsonl)."""
+    auth_core.require_admin(request)
+    return {"config": auth_providers.ws_config_summary(),
+            "entries": auth_providers.read_ws_probe(limit)}
 
 
 @router.post("/sso/ip/login")
@@ -297,6 +348,9 @@ def logout(request: Request):
 
 @router.post("/register")
 def register(req: RegisterReq):
+    # ID/PW 로그인이 꺼진 서버(설치본·사내 로그인)는 비밀번호 계정 가입도 받지 않는다.
+    if not auth_providers.PasswordAuthProvider().enabled():
+        raise HTTPException(403, "ID/PW 가입은 꺼져 있습니다. 사내 로그인을 사용하세요.")
     raw = _sanitize_username(req.username)
     if not raw:
         raise HTTPException(400, "Username required")

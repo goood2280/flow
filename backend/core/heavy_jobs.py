@@ -8,7 +8,8 @@ worker 에 넘기고, worker 가 없을 때만 운영에서 로컬 실행했다.
 `run_heavy()` 가 하는 일:
 
 - 캐시 산출 작업(`CACHE_BUILD_KINDS`)은 서버 공용 스캔 슬롯(`core.scan_gate.exclusive`)을
-  잡는다 — 한 서버에서 캐시 빌드·스캔은 항상 하나만 돈다.
+  잡는다 — 한 서버에서 백그라운드 캐시 빌드·스캔은 하나만 돈다. 대형 서버에서는 조회
+  전제 캐시(`REQUIRED_READ_CACHE_KINDS`)가 조회 레인을, Auto report 는 자기 레인을 쓴다.
 - 그 외 무거운 작업은 프로세스당 1개(`_LOCAL_HEAVY_GATE`)로 줄 세운다.
 - 대화형 작업(`INTERACTIVE_KINDS`: 홈 에이전트·파일탐색기 SQL·차트 원본 조회)은
   줄을 세우지 않는다 — 긴 캐시 빌드 뒤에서 화면이 멈추면 안 된다.
@@ -63,13 +64,36 @@ CACHE_BUILD_KINDS = {
 }
 
 # 조회의 전제 캐시 — 사용자 요청이 계속 들어와도 짧은 유예 뒤 진행한다. 긴 idle 을
-# 기다리면 평소 화면 폴링만으로 조회가 영영 막힌다.
+# 기다리면 평소 화면 폴링만으로 조회가 영영 막힌다. 대형 서버에서는 scan_gate 의
+# 조회 레인을 써서 백그라운드 스캔 뒤에 줄 서지 않는다.
 REQUIRED_READ_CACHE_KINDS = {
     "ml_lookup_cache_build",
     "splittable_pivot_build",
     "splittable_fab_lot_index_build",
     "splittable_lot_progress_cache_refresh",
 }
+
+# 캐시를 만들지 않지만 소형 서버에서는 캐시 빌드와 CPU 를 다투므로 공용 슬롯에 줄
+# 세우는 작업. 대형 서버에서는 자기 레인(1칸)을 쓴다 — Auto report 는 PPT 생성
+# 하위 프로세스가 끝날 때까지(최대 6시간) 슬롯을 들고 있어 그 뒤의 pivot·lookup
+# 빌드가 전부 멈췄다.
+OWN_LANE_ON_LARGE_HOST_KINDS = {"auto_report_generate"}
+_REPORT_GATE = threading.Semaphore(1)
+
+
+def _large_host() -> bool:
+    try:
+        from core import cache_budget
+
+        return bool(cache_budget.large_host())
+    except Exception:
+        return False
+
+
+def _uses_cache_slot(kind: str) -> bool:
+    if kind in OWN_LANE_ON_LARGE_HOST_KINDS and _large_host():
+        return False
+    return kind in CACHE_BUILD_KINDS
 
 
 def _env_float(name: str, default: float, lo: float, hi: float) -> float:
@@ -86,12 +110,13 @@ def _bump(key: str) -> None:
 
 
 def _cache_gate(kind: str, label: str, *, product: str = ""):
-    """캐시 산출 작업이면 서버 공용 슬롯을, 아니면 통과용 더미를 돌려준다."""
-    if kind not in CACHE_BUILD_KINDS:
+    """캐시 산출 작업이면 서버 공용 슬롯(조회 전제 캐시는 조회 레인)을, 아니면 통과용 더미."""
+    if not _uses_cache_slot(kind):
         return contextlib.nullcontext(True)
     try:
         from core import scan_gate
-        return scan_gate.exclusive(kind, label or kind, product=product, source="heavy_jobs")
+        lane = "read" if kind in REQUIRED_READ_CACHE_KINDS else ""
+        return scan_gate.exclusive(kind, label or kind, product=product, source="heavy_jobs", lane=lane)
     except Exception:
         logger.debug("scan gate unavailable for %s", kind, exc_info=True)
         return contextlib.nullcontext(True)
@@ -166,10 +191,11 @@ def run_heavy(
     name = label or kind
     if kind in INTERACTIVE_KINDS:
         return fn()
-    is_cache_build = kind in CACHE_BUILD_KINDS
+    is_cache_build = _uses_cache_slot(kind)
+    gate = _REPORT_GATE if kind in OWN_LANE_ON_LARGE_HOST_KINDS else _LOCAL_HEAVY_GATE
     if not is_cache_build:
         queue_timeout = _env_float("FLOW_LOCAL_HEAVY_QUEUE_TIMEOUT_SEC", 600.0, 1.0, 3600.0)
-        if not _LOCAL_HEAVY_GATE.acquire(timeout=queue_timeout):
+        if not gate.acquire(timeout=queue_timeout):
             logger.warning("heavy job queue timeout: %s", name)
             _bump("queue_timeout")
             return {"ok": False, "error": "local_heavy_queue_timeout"}
@@ -203,7 +229,7 @@ def run_heavy(
                     _RUNNING.pop(name, None)
     finally:
         if not is_cache_build:
-            _LOCAL_HEAVY_GATE.release()
+            gate.release()
         _trim_after(name)
 
 

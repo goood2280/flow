@@ -169,6 +169,25 @@
   font-size: var(--font-size-body);
   text-align: center;
 }
+.flow-login__message .flow-login__hint { display: block; margin-top: var(--space-2); color: var(--login-muted); }
+.flow-login__auth-link {
+  display: block;
+  padding: var(--space-2) 0;
+  color: var(--login-accent);
+  font-size: var(--font-size-body);
+  font-weight: 600;
+  text-align: center;
+}
+.flow-login__inline {
+  min-height: 28px;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--login-border);
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--login-text);
+  font-size: var(--font-size-caption);
+  cursor: pointer;
+}
 .flow-login__version { margin-top: var(--space-5); color: var(--login-muted); text-align: center; font-size: var(--font-size-caption); }
 @media (max-width: 480px) {
   .flow-login { padding: var(--space-6) var(--space-4); }

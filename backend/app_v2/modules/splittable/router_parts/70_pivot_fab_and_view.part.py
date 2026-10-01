@@ -282,8 +282,15 @@ def _enqueue_pivot_cache_build(product: str, reason: str = "", *, immediate: boo
                         detail={"reason": reason, "elapsed_sec": elapsed,
                                 "stage": _stage("pivot", "done")})
             # 새 pivot 파일은 view payload cache 의존 시그니처에 잡히지 않으므로
-            # 빌드 완료 시점에 명시적으로 비운다.
-            _clear_split_view_cache_product(canonical)
+            # 빌드 완료 시점에 명시적으로 비운다. 단 모든 root 가 그대로였으면 결과가
+            # 같으므로 비우지 않는다 — 제품 순환마다 예열·사용자 캐시가 날아갔다.
+            try:
+                from app_v2.modules.splittable.cache_builder import last_build_changes
+                changed = last_build_changes(canonical)
+            except Exception:
+                changed = None
+            if changed != 0:
+                _clear_split_view_cache_product(canonical)
         elif cancel_task_id and _scan_cancel_requested_for(cancel_task_id):
             # 관리자 중단은 실패가 아니다 — "생성된 캐시 없음" 으로 뭉뚱그리면
             # 중단을 눌렀는데 빌드가 깨진 것처럼 읽힌다. 이미 쓴 root 는 그대로
@@ -800,6 +807,8 @@ def _heavy_build_concurrency() -> int:
 _HEAVY_BUILD_SEMAPHORE = threading.Semaphore(_heavy_build_concurrency())
 _FAB_IDX_BUILD_INPROGRESS: set[str] = set()
 _FAB_IDX_BUILD_LAST: dict[str, float] = {}
+# 마지막 빌드가 "FAB 원천 변화 없음" 으로 건너뛴 제품 — view 캐시를 비울 이유가 없다.
+_FAB_IDX_UNCHANGED: set[str] = set()
 _FAB_IDX_BUILD_COOLDOWN_SEC = 120.0
 # central revalidator (startup service) — keeps every built index in line with
 # the FAB sources without any staleness work on the search hot path
@@ -1049,6 +1058,7 @@ def _build_fab_lot_index(product: str, fab_source: str, include_all: bool) -> bo
     except Exception:
         pass
 
+    _FAB_IDX_UNCHANGED.discard(canonical)
     try:
         live_sig = _fab_source_signature(fab_source, include_all)
         old_meta = _fab_lot_index_read_meta(canonical)
@@ -1060,6 +1070,7 @@ def _build_fab_lot_index(product: str, fab_source: str, include_all: bool) -> bo
                     # 아니면 스캔 큐에 뜬 작업이 "아무 것도 안 하고 끝난" 것처럼 보인다.
                     _fab_idx_emit(canonical, "[FAB랏인덱스] 최신 — FAB 원천 변화 없음(건너뜀)",
                                   detail={"stage": _stage("fab_index", "skip")})
+                    _FAB_IDX_UNCHANGED.add(canonical)
                     return True
                 if _build_fab_lot_index_incremental(
                         canonical, fab_source, include_all, added, live_sig, old_meta):
@@ -1326,7 +1337,8 @@ def _build_fab_lot_index_full(product: str, fab_source: str, include_all: bool) 
         used_all.extend(u for u in used if u not in used_all)
         tmp_part = part_fp.with_suffix(".parquet.tmp")
         batch_df.write_parquet(tmp_part)
-        os.replace(tmp_part, part_fp)
+        from core.file_transaction import replace_file
+        replace_file(tmp_part, part_fp)
         completed.add(bi)
         reduced_rows += batch_df.height
         manifest = {
@@ -1610,7 +1622,7 @@ def _enqueue_fab_lot_index_build(product: str, fab_source: str = "",
             with _FAB_IDX_BUILD_LOCK:
                 _FAB_IDX_BUILD_INPROGRESS.discard(canonical)
                 _FAB_IDX_BUILD_LAST[canonical] = time.time()
-        if ok:
+        if ok and canonical not in _FAB_IDX_UNCHANGED:
             # New fab labels are not captured by the view payload cache signature;
             # clear it so the next search recomputes with fresh joined lot ids.
             _clear_split_view_cache_product(canonical)
@@ -1629,6 +1641,7 @@ def _split_view_cache_get(key: tuple, hard_sig: tuple, soft_sig: tuple) -> tuple
       즉시 서빙하고 호출측이 백그라운드 재검증을 예약한다.
     """
     global _VIEW_CACHE_BYTES
+    packed = None
     with _VIEW_CACHE_LOCK:
         cached = _VIEW_CACHE.get(key)
         if cached:
@@ -1638,9 +1651,22 @@ def _split_view_cache_get(key: tuple, hard_sig: tuple, soft_sig: tuple) -> tuple
                 _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - approx_bytes)
             else:
                 _VIEW_CACHE.move_to_end(key)
-                if cached_soft == soft_sig:
-                    return "fresh", dict(payload)
-                return "stale", dict(payload)
+                freshness = "fresh" if cached_soft == soft_sig else "stale"
+                if not isinstance(payload, _PackedView):
+                    return freshness, dict(payload)
+                packed = (freshness, cached_soft, payload)
+    if packed is not None:
+        # 오래된 항목은 orjson bytes 로 들고 있다 — 풀어서 쓰고, 다시 자주 쓰는 쪽(dict)으로 올린다.
+        freshness, cached_soft, blob = packed
+        restored = blob.unpack()
+        if restored is not None:
+            _view_cache_promote(key, blob, restored)
+            return freshness, dict(restored)
+        with _VIEW_CACHE_LOCK:
+            entry = _VIEW_CACHE.get(key)
+            if entry is not None and entry[2] is blob:
+                _VIEW_CACHE.pop(key, None)
+                _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - entry[3])
     # RAM LRU에서 밀려도 공유 디스크의 압축 payload를 읽어 cold parquet/FAB 계산을
     # 피한다. 디스크 엔트리도 동일 hard/soft 시그니처 계약을 사용한다.
     freshness, payload = _view_disk_cache_read(key, hard_sig, soft_sig)
@@ -1690,6 +1716,141 @@ def _split_view_cache_put_memory(key: tuple, hard_sig: tuple, soft_sig: tuple, s
         ):
             _, evicted = _VIEW_CACHE.popitem(last=False)
             _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - evicted[3])
+    _view_pack_soon()
+
+
+class _PackedView:
+    """RAM view 캐시의 '덜 쓰는' 항목 — orjson bytes(파이썬 객체 약 1/6, GC 가 훑지 않음).
+
+    dict 로 들면 응답 하나가 수 MB 의 객체 그래프라 같은 예산에 담기는 응답 수가 적고,
+    전체 GC 가 그 객체를 전부 훑는다. 최근에 쓴 항목(예산의 15%)만 dict 로 두고 나머지는
+    bytes 로 접는다. 풀 때 orjson.loads 가 큰 응답 하나에 수 ms 든다."""
+
+    __slots__ = ("blob", "dict_bytes")
+
+    def __init__(self, blob: bytes, dict_bytes: int):
+        self.blob = blob
+        self.dict_bytes = int(dict_bytes)
+
+    def unpack(self) -> dict | None:
+        try:
+            value = _orjson.loads(self.blob)
+        except Exception:
+            return None
+        return value if isinstance(value, dict) else None
+
+
+_VIEW_PACK_BATCH = 16
+_VIEW_PACK_LOCK = threading.Lock()
+_VIEW_PACK_STATE = {"scheduled": False, "packed": 0, "promoted": 0}
+
+
+def _view_pack_enabled() -> bool:
+    return _orjson is not None and _env_bool("FLOW_SPLITTABLE_VIEW_PACK", True)
+
+
+def _view_hot_budget(budget: int) -> int:
+    fraction = max(0.02, min(1.0, _env_float("FLOW_SPLITTABLE_VIEW_HOT_FRACTION", 0.15)))
+    return int(budget * fraction)
+
+
+def _view_cache_pack_cold(budget: int) -> int:
+    """최근에 쓴 dict 항목이 hot 예산을 넘으면 오래된 것부터 bytes 로 접는다. 접은 수 반환.
+
+    직렬화는 lock 밖에서 하고, 그 사이 항목이 바뀌었으면(같은 dict 객체가 아니면) 버린다."""
+    global _VIEW_CACHE_BYTES
+    if not _view_pack_enabled():
+        return 0
+    hot_budget = _view_hot_budget(budget)
+    candidates = []
+    with _VIEW_CACHE_LOCK:
+        hot = 0
+        seen_hot = 0
+        for key, entry in reversed(_VIEW_CACHE.items()):
+            if isinstance(entry[2], _PackedView):
+                continue
+            hot += int(entry[3] or 0)
+            seen_hot += 1
+            # 가장 최근 항목은 hot 예산보다 커도 dict 로 둔다(방금 쓴 결과를 바로 다시 푸는 낭비 방지).
+            if hot > hot_budget and seen_hot > 1:
+                candidates.append((key, entry[2], int(entry[3] or 0)))
+                if len(candidates) >= _VIEW_PACK_BATCH:
+                    break
+    packed = 0
+    for key, payload, dict_bytes in candidates:
+        try:
+            blob = _orjson.dumps(payload, default=str,
+                                 option=_orjson.OPT_SERIALIZE_NUMPY | _orjson.OPT_NON_STR_KEYS)
+        except Exception:
+            continue
+        with _VIEW_CACHE_LOCK:
+            entry = _VIEW_CACHE.get(key)
+            if entry is None or entry[2] is not payload:
+                continue
+            size = len(blob) + 256
+            _VIEW_CACHE[key] = (entry[0], entry[1], _PackedView(blob, dict_bytes), size)
+            _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - int(entry[3] or 0) + size)
+            packed += 1
+    return packed
+
+
+def _view_cache_promote(key: tuple, blob: "_PackedView", restored: dict) -> None:
+    """bytes 로 접혀 있던 항목이 다시 쓰이면 dict 로 올린다(다음 적중은 풀지 않는다)."""
+    global _VIEW_CACHE_BYTES
+    with _VIEW_CACHE_LOCK:
+        entry = _VIEW_CACHE.get(key)
+        if entry is None or entry[2] is not blob:
+            return
+        _VIEW_CACHE[key] = (entry[0], entry[1], restored, blob.dict_bytes)
+        _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - int(entry[3] or 0) + blob.dict_bytes)
+    with _VIEW_PACK_LOCK:
+        _VIEW_PACK_STATE["promoted"] += 1
+    _view_pack_soon()
+
+
+def _view_pack_soon() -> None:
+    """접기·예산 정리를 백그라운드 한 스레드에서 한다 — 요청 스레드는 직렬화 비용을 내지 않는다."""
+    if not _view_pack_enabled():
+        return
+    with _VIEW_PACK_LOCK:
+        if _VIEW_PACK_STATE["scheduled"]:
+            return
+        _VIEW_PACK_STATE["scheduled"] = True
+
+    def _run() -> None:
+        global _VIEW_CACHE_BYTES
+        try:
+            budget = _view_cache_max_bytes()
+            while True:
+                done = _view_cache_pack_cold(budget)
+                with _VIEW_PACK_LOCK:
+                    _VIEW_PACK_STATE["packed"] += done
+                if done < _VIEW_PACK_BATCH:
+                    break
+            # 다시 올린(promote) 항목 때문에 예산을 넘었으면 오래된 것부터 뺀다.
+            with _VIEW_CACHE_LOCK:
+                while _VIEW_CACHE and _VIEW_CACHE_BYTES > budget:
+                    _, evicted = _VIEW_CACHE.popitem(last=False)
+                    _VIEW_CACHE_BYTES = max(0, _VIEW_CACHE_BYTES - evicted[3])
+        except Exception:
+            logger.debug("SplitTable view cache pack failed", exc_info=True)
+        finally:
+            with _VIEW_PACK_LOCK:
+                _VIEW_PACK_STATE["scheduled"] = False
+
+    threading.Thread(target=_run, name="splittable-view-pack", daemon=True).start()
+
+
+def view_cache_pack_stats() -> dict:
+    """관리자 메모리 화면용 — dict/bytes 항목 수와 누적 접기·올리기 횟수."""
+    with _VIEW_CACHE_LOCK:
+        packed_entries = sum(1 for entry in _VIEW_CACHE.values() if isinstance(entry[2], _PackedView))
+        total = len(_VIEW_CACHE)
+    with _VIEW_PACK_LOCK:
+        state = dict(_VIEW_PACK_STATE)
+    return {"enabled": _view_pack_enabled(), "entries": total, "packed_entries": packed_entries,
+            "hot_entries": total - packed_entries, "packed_total": state["packed"],
+            "promoted_total": state["promoted"]}
 
 
 def _split_view_cache_put(key: tuple, hard_sig: tuple, soft_sig: tuple, payload: dict) -> None:
@@ -2204,13 +2365,16 @@ def view_split_http(product: str = Query(...), root_lot_id: str = Query(""),
     pending: list[dict] = []
     _VIEW_TIMING_TLS.pending = pending
     try:
-        payload = view_split_core(
-            product=product, root_lot_id=root_lot_id, wafer_ids=wafer_ids,
-            prefix=prefix, custom_name=custom_name, view_mode=view_mode,
-            history_mode=history_mode, fab_lot_id=fab_lot_id,
-            custom_cols=custom_cols, include_related=include_related,
-            cache_first=cache_first, request=request,
-        )
+        # 한 요청 안에서는 같은 설정·규칙 파일의 stat/resolve 를 한 번만 한다(core.utils.stat_scope).
+        from core.utils import stat_scope
+        with stat_scope():
+            payload = view_split_core(
+                product=product, root_lot_id=root_lot_id, wafer_ids=wafer_ids,
+                prefix=prefix, custom_name=custom_name, view_mode=view_mode,
+                history_mode=history_mode, fab_lot_id=fab_lot_id,
+                custom_cols=custom_cols, include_related=include_related,
+                cache_first=cache_first, request=request,
+            )
         compact = payload.pop("rows_compact", None)
         if compact is not None:
             payload["rows"] = compact
@@ -2230,7 +2394,9 @@ def view_split(**kwargs) -> dict:
     """레거시 계약(rows = `_cells` dict) 을 유지하는 내부 호출자용 래퍼.
 
     HTTP 경로는 view_split_core 를 직접 쓰고 슬림 포맷 그대로 내보낸다."""
-    return _expand_view_rows(view_split_core(**kwargs))
+    from core.utils import stat_scope
+    with stat_scope():
+        return _expand_view_rows(view_split_core(**kwargs))
 
 
 def view_split_core(product: str = Query(...), root_lot_id: str = Query(""),

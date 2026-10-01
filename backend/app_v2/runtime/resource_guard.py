@@ -85,6 +85,13 @@ DEFAULT_LIGHT_PATHS = (
     # v9.1.x: _uniques.json 파일 프록시 — 파일 read 뿐이라 light. 메모리 가드 503 시
     # 첫 화면 feature-select 카탈로그가 비는 회귀가 있어 명시적으로 통과시킨다.
     "/api/splittable/uniques",
+    # SplitTable 화면 진입 때 함께 나가는 작은 설정·목록 읽기(JSON 파일/메모 캐시).
+    # heavy 레인에 두면 다른 탭 계산으로 CPU 가 찼을 때 1초 지연·429 를 받아 첫 화면이
+    # 늦게 떴다(대형 프로파일 부하 재현에서 p95 1초). 저장(POST) 도 작은 JSON 쓰기라 같이 light 다.
+    "/api/splittable/display-settings",
+    "/api/splittable/category-colors",
+    "/api/splittable/product-order",
+    "/api/splittable/related-issues",
     "/api/splittable/notes",
     "/api/splittable/history",
     "/api/splittable/operational-history",

@@ -84,7 +84,8 @@ def _atomic_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{threading.get_ident()}")
     tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2), "utf-8")
-    os.replace(tmp, path)
+    from core.file_transaction import replace_file
+    replace_file(tmp, path)
 
 
 def read_job(job_id: str) -> dict:
@@ -342,6 +343,16 @@ def recover_interrupted_jobs() -> list[str]:
     return changed
 
 
+def _configure_duckdb(con) -> None:
+    """Flow 공용 DuckDB 메모리 상한·임시 폴더(core.duckdb_engine)를 적용한다."""
+    try:
+        from core import duckdb_engine
+
+        duckdb_engine.configure_connection(con)
+    except Exception:
+        pass
+
+
 def run_next_job() -> dict | None:
     """Run the oldest queued job through heavy_jobs. None when the queue is empty."""
     from core import heavy_jobs
@@ -543,7 +554,8 @@ def _publish_atomic(source: Path, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     temp = target.with_suffix(target.suffix + f".tmp.{os.getpid()}.{threading.get_ident()}")
     shutil.copy2(source, temp)
-    os.replace(temp, target)
+    from core.file_transaction import replace_file
+    replace_file(temp, target)
 
 
 def refresh_history_product(vehicle: str, days: int = 120) -> dict:
@@ -558,6 +570,7 @@ def refresh_history_product(vehicle: str, days: int = 120) -> dict:
     with tempfile.TemporaryDirectory(prefix="auto-report-history-", dir=str(base)) as raw:
         runtime = Path(raw)
         con = duckdb.connect()
+        _configure_duckdb(con)
         try:
             staged = _stage_et(con, runtime, clean_vehicle, "__FLOW_HISTORY__", days)
             _stage_logs(con, runtime, clean_vehicle, staged)
@@ -717,6 +730,7 @@ def _prepare_runtime(job: dict) -> tuple[Path, Path]:
         raise FileNotFoundError(f"reformatter CSV를 찾을 수 없습니다: {job['product']}")
     shutil.copy2(matched_reformatter, runtime / "reformatter" / f"{vehicle}_reformatter.csv")
     con = duckdb.connect()
+    _configure_duckdb(con)
     try:
         lot_id = str(job["lot_id"])
         cached_history = history_file(vehicle)

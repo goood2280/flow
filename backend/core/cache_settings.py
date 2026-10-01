@@ -78,7 +78,8 @@ def save(partial: dict) -> dict:
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cur, f, ensure_ascii=False, indent=2)
         import os
-        os.replace(tmp, p)
+        from core.file_transaction import replace_file
+        replace_file(tmp, p)
     _CACHE.update(ts=0.0, data={})  # 즉시 무효화
     return cur
 

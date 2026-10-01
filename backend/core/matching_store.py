@@ -148,7 +148,8 @@ def save_csv_rows(name: str, rows: list[dict[str, Any]], columns: list[str],
             writer.writeheader()
             for row in rows or []:
                 writer.writerow({col: (row.get(col) if isinstance(row, dict) else "") for col in columns})
-        os.replace(temp, path)
+        from core.file_transaction import replace_file
+        replace_file(temp, path)
     finally:
         try:
             if temp.exists():

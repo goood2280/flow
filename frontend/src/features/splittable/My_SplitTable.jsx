@@ -1535,7 +1535,9 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
       .finally(()=>{if(isCurrent())setFabSuggestBusy(false);}),200);
     return()=>{clearTimeout(timer);controller.abort();};
   },[selProd,lotId,fabLotId]);
-  useEffect(()=>{const h=e=>{if(lotRef.current&&!lotRef.current.contains(e.target))setShowLotDrop(false);};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
+  // 목록은 문서 흐름 안에 있어 닫히면 아래 [검색] 버튼이 위로 올라간다. mousedown 에서 닫으면
+  // 버튼이 눌린 사이 자리를 옮겨 첫 클릭이 사라졌다(입력 후 [검색] 을 두 번 눌러야 표가 뜸).
+  useEffect(()=>{const h=e=>{if(lotRef.current&&!lotRef.current.contains(e.target))setShowLotDrop(false);};document.addEventListener("click",h);return()=>document.removeEventListener("click",h);},[]);
   useEffect(()=>{if(!editing)clearCellSelection();},[editing]);
   useEffect(()=>{clearCellSelection();},[data]);
 

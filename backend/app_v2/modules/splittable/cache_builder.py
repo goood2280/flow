@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable
 from core.paths import PATHS
 from core import request_priority
+from core.file_transaction import replace_file
 
 try:  # runtime_limits is optional in some minimal contexts (e.g. isolated tests)
     from core.runtime_limits import process_memory_high
@@ -113,7 +114,7 @@ def _write_json_atomic(path: Path, payload: dict) -> None:
             json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",
         )
-        os.replace(tmp, path)
+        replace_file(tmp, path)
     finally:
         try:
             tmp.unlink(missing_ok=True)
@@ -416,7 +417,9 @@ def _throttled_yield(memory_pressured: bool, should_cancel) -> bool:
     반응이 없었다. 총 대기 예산은 그대로 두고 5초 조각으로 나눠 조각 사이마다
     중단을 확인한다. 사용자 활동이 없으면 yield 가 0 을 돌려주므로 즉시 빠진다.
     """
-    budget = 60.0 if memory_pressured else 20.0
+    # 메모리 압박이 아니면 대형 서버는 청크당 양보를 짧게 끊는다 — 빌드는 공용
+    # 캐시 슬롯을 든 채 여기서 쉬므로, 길게 쉬면 다른 제품 캐시가 뒤에서 굶는다.
+    budget = 60.0 if memory_pressured else request_priority.background_yield_cap(20.0)
     time.sleep(0.5 if memory_pressured else 0.1)
     waited = 0.0
     while waited < budget:
@@ -446,6 +449,16 @@ def _detect_col(columns, exact: str, contains: str = "") -> str | None:
     if hit is None and contains:
         hit = next((c for c in columns if contains.lower() in c.lower()), None)
     return hit
+
+
+# 마지막 성공 빌드가 실제로 새로 쓰거나 지운 root 파일 수. 0 이면 pivot 결과가 그대로라
+# 호출측이 view payload 캐시를 비우지 않는다(제품 순환이 돌 때마다 캐시가 날아가던 원인).
+_LAST_BUILD_CHANGES: dict[str, int] = {}
+
+
+def last_build_changes(product: str) -> int | None:
+    """마지막 성공 빌드의 변경 root 수. 모르면 None(호출측은 변경된 것으로 본다)."""
+    return _LAST_BUILD_CHANGES.get(canonical_product_dir(product))
 
 
 def build_pivoted_cache_for_product(
@@ -692,7 +705,7 @@ def build_pivoted_cache_for_product(
                     tmp_path.unlink(missing_ok=True)
                     continue
 
-                tmp_path.replace(final_path)
+                replace_file(tmp_path, final_path)
                 partitions_built += 1
 
                 # KNOB 전용 사이드카 — 실패해도 전체 파일이 정답이므로 조용히 넘어간다.
@@ -709,7 +722,7 @@ def build_pivoted_cache_for_product(
                         knob_tmp = knob_dir / f"{safe_root}.tmp.parquet"
                         pl.scan_parquet(final_path, low_memory=True, parallel="none").select(knob_cols).sink_parquet(
                             knob_tmp, row_group_size=writer_rows)
-                        knob_tmp.replace(knob_dir / f"{safe_root}.parquet")
+                        replace_file(knob_tmp, knob_dir / f"{safe_root}.parquet")
                     except Exception as exc:
                         logger.debug("KNOB 사이드카 기록 실패 (%s/%s): %s", canonical, safe_root, exc)
                 if fingerprints is not None:
@@ -769,10 +782,12 @@ def build_pivoted_cache_for_product(
         # 빌드 실패 시에는 이 지점에 도달하지 않으므로 이전 파일이 그대로 남아
         # 다음 성공 빌드까지 계속 서빙된다.
         expected = {_safe_root_filename(r) for r in unique_roots}
+        stale_removed = 0
         for stale in out_dir.glob("*.parquet"):
             if stale.name not in expected:
                 try:
                     stale.unlink()
+                    stale_removed += 1
                 except Exception:
                     pass
 
@@ -801,6 +816,7 @@ def build_pivoted_cache_for_product(
                       "skipped_roots": max(0, skipped_roots), "elapsed_sec": round(elapsed, 2),
                       "progress": _progress(len(unique_roots), len(unique_roots), state="done"),
                       "stage": _stage("done")})
+        _LAST_BUILD_CHANGES[canonical] = partitions_built + stale_removed
         return True
     except Exception as e:
         logger.error("Failed to build pivot cache for %s: %s", canonical, e)

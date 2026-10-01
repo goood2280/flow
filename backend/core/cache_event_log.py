@@ -94,7 +94,8 @@ def _trim_ram_peak_samples_locked(path) -> None:
         tmp = str(path) + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             f.writelines(lines[-_RAM_PEAK_MAX_LINES:])
-        os.replace(tmp, path)
+        from core.file_transaction import replace_file
+        replace_file(tmp, path)
     except Exception:
         pass
 
@@ -325,7 +326,8 @@ def _trim_shared_locked(path) -> None:
                         f.write(chunk)
             except Exception:
                 pass
-        os.replace(tmp, path)
+        from core.file_transaction import replace_file
+        replace_file(tmp, path)
     except Exception:
         pass
 

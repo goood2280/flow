@@ -6,6 +6,7 @@ files; callers receive Polars DataFrames for the existing response pipeline.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import threading
@@ -57,7 +58,8 @@ def min_auto_bytes() -> int:
     return 256 * 1024 * 1024
 
 
-def _thread_count() -> int:
+def thread_budget() -> int:
+    """Threads for one DuckDB connection when it runs alone."""
     from core.runtime_limits import cpu_budget_cores
     budget = max(1, int(cpu_budget_cores()))
     raw = os.environ.get("FLOW_DUCKDB_THREADS", "").strip()
@@ -68,6 +70,28 @@ def _thread_count() -> int:
         except Exception:
             pass
     return budget
+
+
+# Per-thread cap set by the File Browser SQL queue: a scan that starts while
+# others run gets a share of the budget instead of the whole budget again.
+_THREAD_LIMIT = threading.local()
+
+
+@contextlib.contextmanager
+def thread_limit(threads: int):
+    """Cap DuckDB threads for connections this thread opens inside the block."""
+    previous = getattr(_THREAD_LIMIT, "value", 0)
+    _THREAD_LIMIT.value = max(1, int(threads)) if threads else 0
+    try:
+        yield
+    finally:
+        _THREAD_LIMIT.value = previous
+
+
+def _thread_count() -> int:
+    budget = thread_budget()
+    limit = int(getattr(_THREAD_LIMIT, "value", 0) or 0)
+    return max(1, min(budget, limit)) if limit > 0 else budget
 
 
 def total_size(files: list[Path]) -> int:
@@ -135,6 +159,78 @@ def normalize_filter_expr(expr: str) -> str:
     return s
 
 
+def memory_limit_gb() -> float:
+    """연결 하나가 쓸 수 있는 DuckDB 메모리 상한(GB).
+
+    DuckDB 기본값은 연결(= 인메모리 DB)마다 **호스트 RAM 의 80%** 다. Flow 는 쿼리마다
+    새 연결을 열므로, 캐시가 60GB 찬 128GB 서버에서 큰 집계 두세 개가 겹치면 합계가
+    RAM 을 넘어 페이징으로 서버 전체가 멈출 수 있었다. 상한을 넘는 정렬·집계·조인은
+    temp_directory 로 흘려 쓴다(느려질 뿐 실패하지 않는다).
+
+    기본: 대형 서버 16GB, 그 외 총량의 25% — 그리고 지금 호스트 여유 메모리의 절반을
+    넘지 않는다(동시에 여러 쿼리가 돌면 뒤에 열린 연결일수록 작게 잡힌다).
+    `FLOW_DUCKDB_MEMORY_LIMIT_GB` 로 상한을 바꾼다(0 이면 DuckDB 기본값 유지)."""
+    raw = os.environ.get("FLOW_DUCKDB_MEMORY_LIMIT_GB", "").strip()
+    try:
+        from core import cache_budget
+        from core.runtime_limits import system_memory_snapshot
+
+        snap = system_memory_snapshot()
+        total = float(snap.get("system_memory_total_gb") or 0.0)
+        available = float(snap.get("system_memory_available_gb") or 0.0)
+        large = bool(cache_budget.large_host())
+    except Exception:
+        total, available, large = 0.0, 0.0, False
+    if raw:
+        try:
+            cap = float(raw)
+        except Exception:
+            cap = -1.0
+        if cap == 0:
+            return 0.0
+    else:
+        cap = -1.0
+    if cap < 0:
+        if total <= 0:
+            return 0.0
+        cap = 16.0 if large else max(1.0, total * 0.25)
+    if available > 0:
+        cap = min(cap, max(1.0, available * 0.5))
+    return round(max(0.5, cap), 1)
+
+
+def temp_directory() -> Path | None:
+    """DuckDB 가 상한을 넘을 때 흘려 쓸 폴더(설치 폴더·현재 폴더가 아니라 데이터 루트 아래)."""
+    raw = os.environ.get("FLOW_DUCKDB_TEMP_DIR", "").strip()
+    try:
+        if raw:
+            path = Path(raw)
+        else:
+            from core.paths import PATHS
+
+            path = PATHS.data_root / "tmp" / "duckdb"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    except Exception:
+        return None
+
+
+def configure_connection(con) -> None:
+    """메모리 상한·임시 폴더를 연결에 적용한다(실패해도 쿼리는 그대로 진행)."""
+    limit = memory_limit_gb()
+    if limit > 0:
+        try:
+            con.execute(f"SET memory_limit='{limit}GB'")
+        except Exception:
+            pass
+    tmp = temp_directory()
+    if tmp is not None:
+        try:
+            con.execute("SET temp_directory=" + sql_literal(str(tmp)))
+        except Exception:
+            pass
+
+
 def _connect():
     duckdb = _duckdb_module()
     if duckdb is None:
@@ -149,6 +245,7 @@ def _connect():
         con.execute("SET preserve_insertion_order=false")
     except Exception:
         pass
+    configure_connection(con)
     return con
 
 

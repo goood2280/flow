@@ -2191,12 +2191,18 @@ def get_memory_overview():
     with _VIEW_CACHE_LOCK:
         view_bytes = int(_VIEW_CACHE_BYTES)
         view_entries = len(_VIEW_CACHE)
+    try:
+        view_pack = view_cache_pack_stats()
+    except Exception:
+        view_pack = {}
     caches.append({
         "key": "splittable_view_payload",
         "label": "SplitTable 조회결과(payload) 캐시",
         "entries": view_entries,
         "mb": _mb(view_bytes),
         "budget_mb": _mb(_view_cache_max_bytes()),
+        # 최근에 쓴 항목은 dict, 나머지는 orjson bytes 로 접어 둔다(70 part _PackedView).
+        "packed_entries": int(view_pack.get("packed_entries") or 0),
     })
 
     # 3) 파일탐색기 preview 메모리 캐시

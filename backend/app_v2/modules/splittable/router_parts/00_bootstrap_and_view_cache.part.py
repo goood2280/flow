@@ -107,8 +107,9 @@ def _path_cache_sig(path: Path | None):
     if path is None:
         return ("", 0.0, 0)
     try:
-        st = path.stat()
-        return (str(path.resolve()), st.st_mtime, st.st_size)
+        from core.utils import scoped_resolve, scoped_stat
+        st = scoped_stat(path)
+        return (scoped_resolve(path), st.st_mtime, st.st_size)
     except Exception:
         return (str(path), 0.0, 0)
 
@@ -630,7 +631,8 @@ def _view_disk_cache_write(key: tuple, hard_sig: tuple, soft_sig: tuple, payload
         fp.parent.mkdir(parents=True, exist_ok=True)
         tmp = fp.with_name(f"{fp.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_bytes(compressed)
-        os.replace(tmp, fp)
+        from core.file_transaction import replace_file
+        replace_file(tmp, fp)
         # 제품별 최근 결과만 디스크에 유지한다. RAM과 달리 압축 bytes라 작지만
         # 검색 이력이 무한히 쌓이지 않도록 쓰기 시점에 저비용 상한을 적용한다.
         _view_disk_cache_prune(fp.parent)
@@ -2676,11 +2678,28 @@ def start_knob_prewarmer() -> bool:
         logger.info("SplitTable KNOB prewarmer disabled (FLOW_SPLITTABLE_KNOB_PREWARM=0)")
         return False
     _KNOB_PREWARM_STOP.clear()
-    _KNOB_PREWARM_THREAD = threading.Thread(
-        target=_knob_prewarm_loop, name="splittable-knob-prewarm", daemon=True)
-    _KNOB_PREWARM_THREAD.start()
     _KNOB_PREWARM_STARTED = True
-    logger.info("SplitTable KNOB prewarmer started (interval=%.0fs, max %d lots)",
+
+    def _start_thread() -> None:
+        global _KNOB_PREWARM_THREAD
+        _KNOB_PREWARM_THREAD = threading.Thread(
+            target=_knob_prewarm_loop, name="splittable-knob-prewarm", daemon=True)
+        _KNOB_PREWARM_THREAD.start()
+
+    # 대형 서버는 예열(표 계산, 대부분 파이썬)을 별도 프로세스로 돌려 사용자 요청과 GIL 을
+    # 나눠 쓰지 않는다. 결과는 디스크 view 캐시로 넘어온다(core.splittable_prewarm_process).
+    try:
+        from core import splittable_prewarm_process as _prewarm_process
+        use_process = _prewarm_process.enabled()
+    except Exception as exc:
+        logger.warning("KNOB prewarm process mode unavailable: %s", exc)
+        use_process = False
+    if use_process:
+        _prewarm_process.start(fallback=_start_thread)
+    else:
+        _start_thread()
+    logger.info("SplitTable KNOB prewarmer started (%s, interval=%.0fs, max %d lots)",
+                "process" if use_process else "thread",
                 _knob_prewarm_interval_sec(), _knob_prewarm_max_lots())
     return True
 

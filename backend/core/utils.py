@@ -3,6 +3,7 @@ Extracted common patterns from routers to reduce duplication.
 """
 import contextlib
 import datetime
+import errno
 import io
 import json
 import os
@@ -816,9 +817,99 @@ def download_content_disposition(filename: str) -> str:
 # ──────────────────────────────────────────────────────────────────────────
 # JSON / JSONL persistence
 # ──────────────────────────────────────────────────────────────────────────
+# ── 요청 안 파일 상태 재사용 ─────────────────────────────────────────────────
+# SplitTable 표 1건이 같은 설정·규칙 파일의 stat/resolve 를 수십~백 번 반복했다(측정
+# stat ~156·resolve ~44회/건). Windows 는 stat·resolve 가 Linux 보다 훨씬 비싸고
+# (백신 검사가 끼면 더) 그만큼 요청이 느려졌다. stat_scope() 안에서는 경로마다 한 번만
+# 묻고 결과를 재사용한다. 한 요청은 한 시점을 보는 것이므로 결과가 달라지지 않고,
+# 같은 요청 안에서 저장한 파일은 atomic_write_text 가 즉시 비운다. 범위 밖에서는 예전과 같다.
+_STAT_SCOPE = threading.local()
+
+
+@contextlib.contextmanager
+def stat_scope():
+    if getattr(_STAT_SCOPE, "entries", None) is not None:
+        yield  # 바깥 범위를 그대로 쓴다
+        return
+    _STAT_SCOPE.entries = {}
+    try:
+        yield
+    finally:
+        _STAT_SCOPE.entries = None
+
+
+def _scope_forget(path) -> None:
+    entries = getattr(_STAT_SCOPE, "entries", None)
+    if entries:
+        key = os.fspath(path)
+        entries.pop(("stat", key), None)
+        entries.pop(("resolve", key), None)
+
+
+def scoped_stat(path) -> os.stat_result:
+    """os.stat 과 같다(없으면 같은 OSError). stat_scope 안에서는 경로당 한 번만 묻는다."""
+    entries = getattr(_STAT_SCOPE, "entries", None)
+    if entries is None:
+        return os.stat(path)
+    key = ("stat", os.fspath(path))
+    hit = entries.get(key)
+    if hit is None:
+        try:
+            hit = (True, os.stat(key[1]))
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            hit = (False, exc)  # 없음은 요청 안에서 확정 — 권한 거부 같은 일시 오류는 다시 묻는다
+        entries[key] = hit
+    if not hit[0]:
+        raise hit[1]
+    return hit[1]
+
+
+def scoped_resolve(path) -> str:
+    """str(Path(path).resolve()) 와 같다. stat_scope 안에서는 경로당 한 번만 계산한다."""
+    entries = getattr(_STAT_SCOPE, "entries", None)
+    if entries is None:
+        return str(Path(path).resolve())
+    key = ("resolve", os.fspath(path))
+    hit = entries.get(key)
+    if hit is None:
+        hit = entries[key] = str(Path(path).resolve())
+    return hit
+
+
+_EXISTS_IGNORED_ERRNOS = {errno.ENOENT, errno.ENOTDIR, errno.EBADF, errno.ELOOP}  # pathlib 과 같다
+_EXISTS_IGNORED_WINERRORS = {21, 123, 1921}
+
+
+def _scoped_exists(path) -> bool:
+    """Path.exists 와 같은 판정(없음 계열만 False, 권한 거부 등은 그대로 올린다)."""
+    try:
+        scoped_stat(path)
+        return True
+    except OSError as exc:
+        if exc.errno in _EXISTS_IGNORED_ERRNOS or getattr(exc, "winerror", None) in _EXISTS_IGNORED_WINERRORS:
+            return False
+        raise
+    except ValueError:
+        return False
+
+
+def scoped_is_file(path) -> bool:
+    """Path.is_file 과 같은 판정. stat_scope 안에서는 scoped_stat 을 재사용한다."""
+    import stat as _stat
+
+    try:
+        return _stat.S_ISREG(scoped_stat(path).st_mode)
+    except OSError as exc:
+        if exc.errno in _EXISTS_IGNORED_ERRNOS or getattr(exc, "winerror", None) in _EXISTS_IGNORED_WINERRORS:
+            return False
+        raise
+    except ValueError:
+        return False
+
+
 def load_json(path: Path, default=None):
     """Read JSON file with default fallback."""
-    if path.exists():
+    if _scoped_exists(path):
         try:
             return json.loads(path.read_text("utf-8"))
         except Exception:
@@ -843,7 +934,7 @@ _JSON_CACHE_MAX_ENTRIES = 128
 def load_json_cached(path: Path, default=None):
     """load_json 의 메모이즈 버전 — 반환 dict/list 를 수정하면 안 된다."""
     try:
-        st = path.stat()
+        st = scoped_stat(path)
     except Exception:
         return default if default is not None else {}
     key = str(path)
@@ -919,13 +1010,15 @@ def atomic_write_text(path: Path, text: str, encoding: str = "utf-8") -> None:
     확정된다 (`core/shared_lease.py` 가 이미 같은 방식을 쓴다).
     """
     path.parent.mkdir(parents=True, exist_ok=True)
+    _scope_forget(path)
     tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}.{threading.get_ident()}")
     try:
         with open(tmp, "w", encoding=encoding, newline="") as f:
             f.write(text)
             f.flush()
             os.fsync(f.fileno())        # 교체 전에 내용이 디스크에 닿도록
-        os.replace(tmp, path)           # 같은 볼륨 내 원자적 교체
+        from core.file_transaction import replace_file
+        replace_file(tmp, path)         # 같은 볼륨 내 원자적 교체(Windows 는 읽는 쪽을 잠깐 기다림)
     except Exception:
         with contextlib.suppress(Exception):
             tmp.unlink()

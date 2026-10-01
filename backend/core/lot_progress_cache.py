@@ -522,13 +522,18 @@ def _fresh_existing_cache_state(
 
 
 def _state_has_products(state: dict | None, required_products: Iterable[str] | None) -> bool:
-    required = {_norm_key(value) for value in (required_products or []) if _norm_key(value)}
+    # 제품 순환은 ML_TABLE_PRODA 로 묻고 캐시 행은 FAB 이름 PRODA 를 담는다. 예전엔 이름이
+    # 안 맞아 방금 만든 캐시도 늘 "제품 없음" 이었고, 제품마다 FAB 전체 재스캔을 반복하며
+    # 공용 캐시 슬롯을 붙들었다.
+    from core.latest_lot_cache_format import normalize_product
+
+    required = {normalize_product(value) for value in (required_products or []) if normalize_product(value)}
     if not required:
         return True
     present = {
-        _norm_key(row.get("product"))
+        normalize_product(row.get("product"))
         for row in ((state or {}).get("items") or [])
-        if isinstance(row, dict) and _norm_key(row.get("product"))
+        if isinstance(row, dict) and normalize_product(row.get("product"))
     }
     return required.issubset(present)
 
@@ -711,7 +716,8 @@ def _write_lot_progress_parquet(target: Path, df) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
     df.write_parquet(tmp)
-    tmp.replace(target)
+    from core.file_transaction import replace_file
+    replace_file(tmp, target)
 
 
 def export_lot_progress_parquet(state: dict | None = None) -> dict:
@@ -853,8 +859,10 @@ def _available_fab_progress_columns(path: Path, column_mapping: dict | None = No
         return mapped_columns
 
 
-def _fill_missing_progress_columns(row: dict, column_mapping: dict | None = None) -> dict:
-    mapping = normalize_lot_progress_column_mapping(column_mapping)
+def _fill_missing_progress_columns(row: dict, column_mapping: dict | None = None, *,
+                                   normalized: bool = False) -> dict:
+    # 행마다 매핑을 다시 정규화하면(컬럼명 13개 정리) FAB 행 수 × 13 번 regex 가 돈다.
+    mapping = column_mapping if normalized and column_mapping else normalize_lot_progress_column_mapping(column_mapping)
     raw = dict(row or {})
     lower_lookup = {str(key).casefold(): value for key, value in raw.items()}
     out: dict = {}
@@ -946,7 +954,7 @@ def _read_parquet_rows(path: Path, column_mapping: dict | None = None) -> Iterab
         pf = pq.ParquetFile(str(path))
         for batch in pf.iter_batches(batch_size=_FAB_READ_BATCH_ROWS, columns=columns):
             for row in batch.to_pylist():
-                yield _fill_missing_progress_columns(row, mapping)
+                yield _fill_missing_progress_columns(row, mapping, normalized=True)
             del batch
         return
     except Exception:
@@ -955,7 +963,7 @@ def _read_parquet_rows(path: Path, column_mapping: dict | None = None) -> Iterab
         import polars as pl  # type: ignore
         df = pl.read_parquet(str(path), columns=columns)
         for row in df.iter_rows(named=True):
-            yield _fill_missing_progress_columns(row, mapping)
+            yield _fill_missing_progress_columns(row, mapping, normalized=True)
         return
     except Exception:
         pass
@@ -963,9 +971,265 @@ def _read_parquet_rows(path: Path, column_mapping: dict | None = None) -> Iterab
         import pandas as pd  # type: ignore
         df = pd.read_parquet(str(path), columns=columns)
         for row in df.to_dict(orient="records"):
-            yield _fill_missing_progress_columns(row, mapping)
+            yield _fill_missing_progress_columns(row, mapping, normalized=True)
     except Exception as exc:
         logger.warning("FAB parquet read failed: %s (%s)", path, exc)
+
+
+# ── 최신 행 후보를 Polars 로 먼저 고른다 ───────────────────────────────────────
+# refresh 는 FAB 모든 행을 파이썬 dict 로 꺼내 (제품, root_웨이퍼) 마다 가장 늦은 행만
+# 남겼다. 시간의 90% 가 파이썬(GIL, 1코어)이었다. 여기서는 배치마다 그 "남을 행" 만
+# Polars(다중 코어)로 골라 내고, 항목을 만드는 파이썬 코드는 그 행들에만 그대로 돈다.
+# 선택 규칙은 파이썬 루프와 똑같다: 통과 조건(root·wafer·step 이 비지 않음), 키
+# upper(root_wafer), 정렬 문자열 _sort_time(item) 최대, 같으면 먼저 나온 행. 파이썬
+# str() 과 문자열 표현이 달라질 수 있는 타입(날짜·실수·불리언)이나 비ASCII 랏/웨이퍼가
+# 섞인 배치는 줄이지 않고 전 행을 예전 경로로 넘긴다 — 결과가 달라질 여지를 두지 않는다.
+# FLOW_LOT_PROGRESS_VECTOR=0 이면 항상 예전 행 단위 경로.
+_PY_WHITESPACE = "".join(ch for ch in map(chr, range(0x3001)) if ch.isspace())
+_SAFE_TEXT_BLANKS = ["nan", "nat", "none", "null"]
+
+
+class _NotReducible(Exception):
+    pass
+
+
+def _vector_reduce_enabled() -> bool:
+    return str(os.environ.get("FLOW_LOT_PROGRESS_VECTOR", "1") or "1").strip().lower() not in {
+        "0", "false", "no", "off"}
+
+
+def _canonical_sources(columns: list[str], mapping: dict) -> dict[str, str | None]:
+    """_fill_missing_progress_columns 와 같은 규칙으로 canonical → 실제 컬럼명."""
+    exact = set(columns)
+    folded = {str(name).casefold(): name for name in columns}
+    out: dict[str, str | None] = {}
+    for canonical in _FAB_PROGRESS_COLUMNS:
+        source = mapping.get(canonical) or canonical
+        out[canonical] = source if source in exact else folded.get(str(source).casefold())
+    return out
+
+
+def _batch_latest_candidates(batch, sources: dict[str, str | None]):
+    """배치에서 파이썬 루프가 끝내 남길 행 (번호, 키, 정렬문자열) 목록 — 키가 처음 나온 순서.
+
+    키는 _norm_key(item["lot_wf"]), 정렬문자열은 _sort_time(item) 과 같다. 못 줄이면 None."""
+    import polars as pl  # type: ignore
+
+    df = pl.from_arrow(batch)
+    schema = df.schema
+
+    def text(canonical: str, *, allow_int: bool):
+        source = sources.get(canonical)
+        if source is None or source not in schema:
+            return pl.lit(None, dtype=pl.Utf8)
+        dtype = schema[source]
+        if dtype in (pl.String, pl.Null) or isinstance(dtype, (pl.Categorical, pl.Enum)):
+            return pl.col(source).cast(pl.Utf8)
+        if allow_int and dtype.is_integer():
+            return pl.col(source).cast(pl.Utf8)
+        raise _NotReducible(f"{source}:{dtype}")
+
+    def safe(expr):
+        return (pl.when(expr.is_null() | expr.str.to_lowercase().is_in(_SAFE_TEXT_BLANKS))
+                .then(pl.lit(""))
+                .otherwise(expr.str.strip_chars(_PY_WHITESPACE)))
+
+    def first_truthy(*exprs):
+        # 파이썬 `a or b or c` — 빈 문자열·None 은 거짓, 모두 거짓이면 마지막 값.
+        out = exprs[-1]
+        for expr in reversed(exprs[:-1]):
+            out = pl.when(expr.is_not_null() & (expr.str.len_chars() > 0)).then(expr).otherwise(out)
+        return out
+
+    try:
+        root = safe(text("root_lot_id", allow_int=True))
+        step = safe(text("step_id", allow_int=True))
+        tkin_raw = text("tkin_time", allow_int=False)
+        tkout_raw = text("tkout_time", allow_int=False)
+        time_raw = text("time", allow_int=False)
+        update_raw = text("update_time", allow_int=False)
+        wafer_source = sources.get("wafer_id")
+        if wafer_source is None or wafer_source not in schema:
+            return [], [], []  # 웨이퍼가 없으면 어떤 행도 통과하지 못한다
+        wafer_dtype = schema[wafer_source]
+        wafer_col = pl.col(wafer_source)
+        if isinstance(wafer_dtype, (pl.Categorical, pl.Enum)):
+            wafer_col = wafer_col.cast(pl.Utf8)
+        elif not (wafer_dtype in (pl.String, pl.Null) or wafer_dtype.is_integer()):
+            raise _NotReducible(f"{wafer_source}:{wafer_dtype}")
+    except _NotReducible:
+        return None
+    # 웨이퍼 표기는 종류가 적다 — 고유값에만 파이썬 _norm_wafer 를 그대로 적용한다.
+    raw_wafers = [v for v in df.select(wafer_col.unique()).to_series().to_list() if v is not None]
+    if raw_wafers:
+        wafer = wafer_col.replace_strict(raw_wafers, [_norm_wafer(v) for v in raw_wafers],
+                                         default=None, return_dtype=pl.Utf8).fill_null("")
+    else:
+        wafer = pl.lit("", dtype=pl.Utf8)
+    tkin = safe(tkin_raw)
+    tkout = safe(tkout_raw)
+    time_item = safe(first_truthy(time_raw, tkout_raw, tkin_raw))
+    update_item = safe(first_truthy(update_raw, tkout_raw, tkin_raw, time_raw))
+    sort_time = safe(first_truthy(update_item, tkout, tkin, time_item))
+    cand = (
+        df.with_row_index("__idx")
+        .select(
+            pl.col("__idx"),
+            root.alias("__root"),
+            wafer.alias("__wafer"),
+            step.alias("__step"),
+            sort_time.alias("__sort"),
+        )
+        .filter((pl.col("__root") != "") & (pl.col("__wafer") != "") & (pl.col("__step") != ""))
+    )
+    if cand.height == 0:
+        return [], [], []
+    non_ascii = r"[^\x00-\x7F]"
+    if cand.select((pl.col("__root").str.contains(non_ascii) | pl.col("__wafer").str.contains(non_ascii)).any()).item():
+        return None  # upper() 규칙 차이가 날 수 있는 값 — 파이썬 경로가 판단한다
+    best = (
+        cand.with_columns((pl.col("__root") + "_" + pl.col("__wafer")).str.to_uppercase().alias("__key"))
+        .group_by("__key")
+        .agg(
+            pl.col("__idx").sort_by(["__sort", "__idx"], descending=[True, False]).first().alias("__win"),
+            pl.col("__sort").max().alias("__max"),
+            pl.col("__idx").min().alias("__first"),
+        )
+        .sort("__first")
+    )
+    return (best.get_column("__win").to_list(), best.get_column("__key").to_list(),
+            best.get_column("__max").to_list())
+
+
+def _build_progress_item(raw: dict, product: str, root_name: str,
+                         step_by_product: dict, step_by_id: dict) -> dict | None:
+    """FAB 행 하나 → 캐시 항목. root·wafer·step 중 하나라도 비면 None (예전 루프 본문 그대로)."""
+    root_lot_id = _safe_text(raw.get("root_lot_id"))
+    lot_id = _safe_text(raw.get("lot_id"))
+    wafer_id = _norm_wafer(raw.get("wafer_id"))
+    step_id = _safe_text(raw.get("step_id"))
+    if not (root_lot_id and wafer_id and step_id):
+        return None
+    process_id = _safe_text(raw.get("process_id"))
+    product_key = _norm_key(product)
+    step_key = _norm_key(step_id)
+    function_step = (
+        step_by_product.get((product_key, step_key))
+        or step_by_product.get((_norm_key(process_id), step_key))
+        or step_by_id.get(step_key)
+        or _safe_text(_row_ci(raw, *FUNCTION_STEP_SOURCE_COLUMNS))
+        or ""
+    )
+    lot_wf = f"{root_lot_id}_{wafer_id}"
+    return {
+        "product": product,
+        "process_id": process_id,
+        "root_lot_id": root_lot_id,
+        "lot_id": lot_id,
+        "wafer_id": wafer_id,
+        "LOT_WF": lot_wf,
+        "lot_wf": lot_wf,
+        "step_id": step_id,
+        "function_step": function_step,
+        "func_step": function_step,
+        "tkin_time": _safe_text(raw.get("tkin_time")),
+        "tkout_time": _safe_text(raw.get("tkout_time")),
+        "time": _safe_text(raw.get("time") or raw.get("tkout_time") or raw.get("tkin_time")),
+        "update_time": _safe_text(raw.get("update_time") or raw.get("tkout_time") or raw.get("tkin_time") or raw.get("time")),
+        "eqp_id": _safe_text(raw.get("eqp_id")),
+        "chamber_id": _safe_text(raw.get("chamber_id")),
+        "ppid": _safe_text(raw.get("ppid")),
+        "lot_type": _safe_text(raw.get("lot_type")),
+        "source_root": root_name,
+    }
+
+
+class _LatestRowReducer:
+    """한 제품 폴더의 FAB 행을 받아 (root_웨이퍼) 마다 파이썬 루프가 남길 행만 모은다.
+
+    파일·배치를 넘어 끝까지 줄인 뒤에야 행을 파이썬 dict 로 꺼낸다. 받은 순서대로
+    병합하므로(더 늦으면 교체, 같으면 먼저 온 행, 키 순서는 처음 나온 순서) 모든 행을
+    파이썬 루프에 넣은 것과 결과가 같다. 줄일 수 없는 배치의 행은 add_row 로 들어와
+    그 자리에서 항목으로 만들어 같은 규칙에 끼운다."""
+
+    def __init__(self, build: Callable[[dict], dict | None]):
+        self._build = build
+        self._best: dict[str, list] = {}   # key -> [sort, ref]; ref = (table_no, pos) | item dict
+        self._tables: list = []
+
+    def _merge(self, key: str, sort: str, ref) -> None:
+        cur = self._best.get(key)
+        if cur is None:
+            self._best[key] = [sort, ref]
+        elif sort > cur[0]:
+            cur[0] = sort
+            cur[1] = ref
+
+    def add_batch(self, winners_table, keys: list[str], sorts: list[str], mapping: dict) -> None:
+        # 표의 행은 파일의 실제 컬럼명 그대로다 — 꺼낼 때 mapping 으로 canonical 로 맞춘다.
+        table_no = len(self._tables)
+        self._tables.append((winners_table, mapping))
+        for pos, (key, sort) in enumerate(zip(keys, sorts)):
+            self._merge(key, sort, (table_no, pos))
+
+    def add_row(self, raw: dict) -> None:
+        item = self._build(raw)
+        if item is not None:
+            self._merge(_norm_key(item["lot_wf"]), _sort_time(item), item)
+
+    def items(self) -> list[dict]:
+        wanted: dict[int, list[int]] = {}
+        for _sort, ref in self._best.values():
+            if isinstance(ref, tuple):
+                wanted.setdefault(ref[0], []).append(ref[1])
+        rows: dict[tuple[int, int], dict] = {}
+        for table_no, positions in wanted.items():
+            import pyarrow as pa  # type: ignore
+
+            table, mapping = self._tables[table_no]
+            picked = table.take(pa.array(positions, type=pa.int64())).to_pylist()
+            for pos, raw in zip(positions, picked):
+                rows[(table_no, pos)] = _fill_missing_progress_columns(raw, mapping, normalized=True)
+        self._tables = []
+        out: list[dict] = []
+        for _sort, ref in self._best.values():
+            item = self._build(rows[ref]) if isinstance(ref, tuple) else ref
+            if item is not None:
+                out.append(item)
+        return out
+
+
+def _feed_parquet(reducer: _LatestRowReducer, path: Path, column_mapping: dict | None, stats: dict) -> None:
+    """FAB parquet 한 개를 reducer 에 넣는다. stats["rows"] 에 읽은 행 수를 더한다(rows_seen)."""
+    mapping = normalize_lot_progress_column_mapping(column_mapping)
+    if _vector_reduce_enabled():
+        columns = _available_fab_progress_columns(path, mapping)
+        if not columns:
+            return
+        try:
+            import pyarrow as pa  # type: ignore
+            import pyarrow.parquet as pq  # type: ignore
+
+            sources = _canonical_sources(columns, mapping)
+            pf = pq.ParquetFile(str(path))
+            for batch in pf.iter_batches(batch_size=_FAB_READ_BATCH_ROWS, columns=columns):
+                stats["rows"] = stats.get("rows", 0) + batch.num_rows
+                found = _batch_latest_candidates(batch, sources)
+                if found is None:
+                    stats["unreduced_batches"] = stats.get("unreduced_batches", 0) + 1
+                    for row in batch.to_pylist():
+                        reducer.add_row(_fill_missing_progress_columns(row, mapping, normalized=True))
+                elif found[0]:
+                    winners, keys, sorts = found
+                    reducer.add_batch(batch.take(pa.array(winners, type=pa.int64())), keys, sorts, mapping)
+                del batch
+            return
+        except Exception as exc:
+            # 예전 경로로 다시 읽는다. 이미 넣은 행이 겹쳐도 병합 규칙상 결과는 같다.
+            logger.debug("lot_progress vector reduce fell back for %s: %s", path, exc)
+    for row in _read_parquet_rows(path, mapping):
+        stats["rows"] = stats.get("rows", 0) + 1
+        reducer.add_row(row)
 
 
 def _fab_product_dirs(fab_root: Path) -> Iterable[Path]:
@@ -1308,60 +1572,28 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "",
                     # Product comes from the FAB DB product folder, not from a parquet column.
                     product = product_dir.name
                     _renew_refresh_lock()
+                    reducer = _LatestRowReducer(
+                        lambda raw, _product=product, _root_name=root_name: _build_progress_item(
+                            raw, _product, _root_name, step_by_product, step_by_id))
                     for parquet in product_dir.rglob("*.parquet"):
                         files_scanned += 1
                         _yield_scan_slice()
                         _emit_progress()
+                        read_stats: dict = {}
                         try:
-                            rows = _read_parquet_rows(parquet, column_mapping)
-                            for raw in rows:
-                                rows_seen += 1
-                                root_lot_id = _safe_text(raw.get("root_lot_id"))
-                                lot_id = _safe_text(raw.get("lot_id"))
-                                wafer_id = _norm_wafer(raw.get("wafer_id"))
-                                step_id = _safe_text(raw.get("step_id"))
-                                if not (root_lot_id and wafer_id and step_id):
-                                    continue
-                                seen_roots.add(root_lot_id)
-                                process_id = _safe_text(raw.get("process_id"))
-                                product_key = _norm_key(product)
-                                step_key = _norm_key(step_id)
-                                function_step = (
-                                    step_by_product.get((product_key, step_key))
-                                    or step_by_product.get((_norm_key(process_id), step_key))
-                                    or step_by_id.get(step_key)
-                                    or _safe_text(_row_ci(raw, *FUNCTION_STEP_SOURCE_COLUMNS))
-                                    or ""
-                                )
-                                lot_wf = f"{root_lot_id}_{wafer_id}"
-                                item = {
-                                    "product": product,
-                                    "process_id": process_id,
-                                    "root_lot_id": root_lot_id,
-                                    "lot_id": lot_id,
-                                    "wafer_id": wafer_id,
-                                    "LOT_WF": lot_wf,
-                                    "lot_wf": lot_wf,
-                                    "step_id": step_id,
-                                    "function_step": function_step,
-                                    "func_step": function_step,
-                                    "tkin_time": _safe_text(raw.get("tkin_time")),
-                                    "tkout_time": _safe_text(raw.get("tkout_time")),
-                                    "time": _safe_text(raw.get("time") or raw.get("tkout_time") or raw.get("tkin_time")),
-                                    "update_time": _safe_text(raw.get("update_time") or raw.get("tkout_time") or raw.get("tkin_time") or raw.get("time")),
-                                    "eqp_id": _safe_text(raw.get("eqp_id")),
-                                    "chamber_id": _safe_text(raw.get("chamber_id")),
-                                    "ppid": _safe_text(raw.get("ppid")),
-                                    "lot_type": _safe_text(raw.get("lot_type")),
-                                    "source_root": root_name,
-                                }
-                                key = (_norm_key(product), _norm_key(lot_wf))
-                                prev = latest.get(key)
-                                if prev is None or _sort_time(item) > _sort_time(prev):
-                                    latest[key] = item
+                            _feed_parquet(reducer, parquet, column_mapping, read_stats)
                         except Exception as exc:
                             if len(errors) < 20:
                                 errors.append(f"{parquet}: {exc}")
+                        finally:
+                            rows_seen += int(read_stats.get("rows") or 0)
+                    # 제품 폴더 단위로 줄인 행만 예전과 같은 규칙으로 전역 병합한다.
+                    for item in reducer.items():
+                        seen_roots.add(item["root_lot_id"])
+                        key = (_norm_key(product), _norm_key(item["lot_wf"]))
+                        prev = latest.get(key)
+                        if prev is None or _sort_time(item) > _sort_time(prev):
+                            latest[key] = item
                     product_done += 1
                     _emit_progress(force_emit=True)
 
@@ -1400,7 +1632,8 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "",
             # compact dump — 수만 item 상태에서 indent=2 는 직렬화 문자열 크기와
             # 피크 메모리를 2배 가까이 키운다. 사람이 읽는 파일이 아니므로 압축.
             tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
-            tmp.replace(cache_path)
+            from core.file_transaction import replace_file
+            replace_file(tmp, cache_path)
             try:
                 export_lot_progress_parquet(state)
             except Exception as exc:

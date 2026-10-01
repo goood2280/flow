@@ -71,7 +71,8 @@ def _write_cfg(cfg: dict) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp, p)
+    from core.file_transaction import replace_file
+    replace_file(tmp, p)
 
 
 def get_settings() -> dict:

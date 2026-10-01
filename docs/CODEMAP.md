@@ -4,6 +4,7 @@
 규칙·금지사항은 루트 `AGENTS.md`가 정본이고, 이 문서는 위치 안내만 한다.
 파일 목록이 바뀌면 이 문서도 같이 고친다(2026-09-29 기준으로 실제 코드에서 추출).
 로그·저장소 작업은 [기록 종류·위치](LOG_STORAGE.md)와 [진단·보관·복원 절차](LOG_STORAGE_OPERATIONS.md)를 먼저 읽는다.
+동작 원리(프로세스·캐시·작업·홈 에이전트 흐름)는 [ARCHITECTURE.md](ARCHITECTURE.md), 개선 계획은 [PLAN.md](PLAN.md)에 있다.
 
 ## 1. 한눈에 보는 구조
 
@@ -26,6 +27,7 @@ backend/core/<기능>.py      계산·캐시·저장 (polars / duckdb / sqlite /
 
 - 경로는 전부 `core/paths.py`의 `PATHS`(`data_root`, `db_root`, `base_root`, `wafer_map_root`)에서 얻는다. 경로 문자열을 직접 만들지 않는다.
 - 백그라운드 스케줄러(캐시 예열, ET 추적, 매칭 알람 등)는 `app_v2/runtime/startup.py`가 기동 때 켠다.
+- 라우터 endpoint 가 돌려준 dict/list 는 `router_loader`가 include 직전에 `core/json_fast.wrap_router_endpoints()`로 감싸 요청 스레드에서 JSON bytes 로 만든다(FastAPI `jsonable_encoder`가 이벤트 루프에서 큰 목록을 순회하며 서버 전체를 멈추던 경로). `response_model`·전용 `response_class`·`Response` 인자·제너레이터 endpoint 는 FastAPI 기본 경로 그대로다. 큰 목록 API 도 dict 를 돌려주면 된다.
 - 명시적인 업무·감사 이벤트는 `core/audit.py`의 `record()`로 `FLOW_DATA_ROOT/logs/activity.jsonl`에 남고, 관리자 > 활동 현황이 `core/activity_index.py`로 집계한다. 모든 HTTP 요청을 감사 이벤트로 기록하는 구조는 아니다. HTTP 접근은 감시기의 `uvicorn.log`에서 확인한다.
 
 ## 2. 폴더 지도

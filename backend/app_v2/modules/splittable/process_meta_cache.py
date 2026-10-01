@@ -61,7 +61,8 @@ class ProcessMetaCache:
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
                 tmp.write_bytes(raw)
-                os.replace(tmp, path)
+                from core.file_transaction import replace_file
+                replace_file(tmp, path)
             except OSError:
                 # Read-only/shared-drive outages must not make the screen unusable.
                 logger.warning("Applied-process snapshot write failed: %s", path, exc_info=True)

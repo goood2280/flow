@@ -221,10 +221,30 @@ class PasswordAuthProvider(AuthProvider):
     def enabled(self) -> bool:
         raw = os.environ.get("FLOW_PASSWORD_LOGIN_ENABLED")
         if raw is None or str(raw).strip() == "":
-            # websocket 로그인으로 전환하면 ID/PW 로그인은 기본으로 끈다.
-            # 비상시 FLOW_PASSWORD_LOGIN_ENABLED=1 로 다시 켠다.
-            return not (_ws_auth_url() or _ip_login_map())
+            return _password_login_default()
         return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _password_login_default() -> bool:
+    """FLOW_PASSWORD_LOGIN_ENABLED 가 없을 때 ID/PW 로그인을 켤지.
+
+    - 사내 로그인(websocket)·IP 로그인이 설정되면 끈다.
+    - setup.py 로 푼 설치본(.git 없음)과 운영(FLOW_PROD=1)은 끈다 — 로그인 화면은 버튼만.
+    - 개발 체크아웃이거나 FLOW_PROD=0(격리 테스트)이면 켠다.
+    비상시 FLOW_PASSWORD_LOGIN_ENABLED=1 로 다시 켠다.
+    """
+    if _ws_auth_url() or _ip_login_map():
+        return False
+    prod = str(os.environ.get("FLOW_PROD", "") or "").strip()
+    if prod == "1":
+        return False
+    if prod == "0":
+        return True
+    try:
+        from core import root_profile
+        return root_profile.is_source_checkout()
+    except Exception:
+        return False
 
     def authenticate(self, credential: Any) -> AuthIdentity:
         from routers import auth as auth_router
@@ -307,12 +327,29 @@ register_provider(PasswordAuthProvider())
 #   FLOW_WS_AUTH_USER_MAP       사내 ID → Flow 계정 매핑 JSON. 예) {"example.user": "hol"}. 기본 없음 —
 #                               실제 사번은 현장 설정(flow_env.local.bat)에만 둔다(공개 저장소).
 #   FLOW_WS_AUTH_DEFAULT_TABS   users.csv 에 없는 사용자의 탭 권한. 기본 __all_user__(관리자 탭 제외 전부)
-_WS_DEFAULT_USER_FIELDS = "user_id,userId,userid,username,user_name,user,loginId,login_id,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id,ad.user_id,ad.userId,ad.id,ad.mail"
+#   FLOW_WS_AUTH_URL_FIELDS     ID·토큰 없이 주소만 온 프레임에서 주소를 찾을 필드. 문자열 프레임이 http(s):// 면 그 자체.
+#   FLOW_WS_AUTH_URL_ACTION     주소만 온 프레임의 처리. open(기본: 브라우저가 인증 창을 열고 같은 연결에서 다음
+#                               메시지를 기다림) | server(Flow 서버가 FETCH_ALLOW 안의 주소를 직접 GET 해서 그 응답으로
+#                               로그인) | browser(브라우저가 쿠키·Windows 인증으로 GET 한 응답을 다시 넘김 → 재검증)
+#   FLOW_WS_AUTH_FETCH_ALLOW    server 방식에서 읽어도 되는 주소 접두어(쉼표). 비면 server 방식은 거부.
+#   FLOW_WS_AUTH_VERIFY_METHOD  http 재검증 방식 POST(기본) | GET.  VERIFY_URL 에도 {token}·{user} 치환.
+#   FLOW_WS_AUTH_VERIFY_HEADERS http 재검증 헤더 JSON. 예) {"Authorization": "Bearer {token}"}
+#   FLOW_WS_AUTH_VERIFY_MAX_FRAMES  ws 재검증에서 ID 가 든 응답을 기다릴 최대 프레임 수. 기본 3
+#   FLOW_WS_AUTH_DEBUG          1 이면 받은 프레임의 모양(키 구조·값 종류, 값 자체는 가림)과 서버 판정을
+#                               FLOW_DATA_ROOT/logs/ws_login_probe.jsonl 에 남긴다(관리자 GET /api/auth/sso/ws/probe).
+#                               다른 사람 PC 에서 무엇이 왔는지 볼 때만 잠깐 켠다. 기본 꺼짐.
+#
+# 설정(URL·SEND·VERIFY_*)에 사용자 ID 를 적어 두면 누가 눌러도 그 사람으로 들어간다. 확인된 ID 가
+# 설정 문자열에 그대로 있으면 로그인을 막는다(_ws_reject_fixed_user).
+_WS_DEFAULT_USER_FIELDS = "user_id,userId,userid,username,user_name,user,loginId,login_id,sAMAccountName,ad.sAMAccountName,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id,ad.user_id,ad.userId,ad.id,ad.mail"
 _WS_DEFAULT_TOKEN_FIELDS = "token,access_token,accessToken,ticket,session,sessionId,session_id,data.token,data.ticket"
 _WS_DEFAULT_USER_MAP: dict[str, str] = {}
 _WS_DEFAULT_DEPT_FIELDS = "department,dept,deptName,dept_name,deptNm,orgName,org_name,org,team,data.department,data.dept,user.department,ad.department"
 _WS_DEFAULT_NAME_FIELDS = "name,userName,user_name,displayName,display_name,korName,kor_name,data.name,user.name,ad.name"
 _WS_DEFAULT_EMAIL_FIELDS = "email,mail,emailAddress,email_address,data.email,user.email,ad.mail,ad.email"
+_WS_DEFAULT_URL_FIELDS = "url,redirect,redirectUrl,redirect_url,redirectUri,redirect_uri,loginUrl,login_url,authUrl,auth_url,href,location,link,data.url,data.redirectUrl,data.loginUrl,data.authUrl"
+_WS_URL_ACTIONS = ("open", "server", "browser")
+_WS_FETCH_MAX_BYTES = 256 * 1024
 
 
 # ── 부서별 로그인·권한 규칙 (관리자 편집, flow-data/auth/department_rules.json) ──
@@ -540,12 +577,12 @@ def _ws_parse(message: Any) -> Any:
         return text
 
 
-def _ws_pick(data: Any, fields: list[str]) -> str:
-    """메시지에서 필드 값을 찾는다(점 경로 지원). 문자열 메시지면 그 자체를 값으로 본다."""
+def _ws_pick_path(data: Any, fields: list[str]) -> tuple[str, str]:
+    """(값, 찾은 경로). 점 경로 지원. 문자열 메시지면 그 자체를 값으로 본다(경로 "*")."""
     if isinstance(data, str):
-        return data.strip()
+        return (data.strip(), "*") if data.strip() else ("", "")
     if not isinstance(data, dict):
-        return ""
+        return "", ""
     for path in fields:
         cur: Any = data
         for part in path.split("."):
@@ -555,9 +592,319 @@ def _ws_pick(data: Any, fields: list[str]) -> str:
             else:
                 cur = None
                 break
-        if isinstance(cur, (str, int)) and str(cur).strip():
-            return str(cur).strip()
-    return ""
+        if isinstance(cur, (str, int)) and not isinstance(cur, bool) and str(cur).strip():
+            return str(cur).strip(), path
+    return "", ""
+
+
+def _ws_pick(data: Any, fields: list[str]) -> str:
+    """메시지에서 필드 값을 찾는다(점 경로 지원). 문자열 메시지면 그 자체를 값으로 본다."""
+    return _ws_pick_path(data, fields)[0]
+
+
+def _looks_like_url(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return text.startswith("http://") or text.startswith("https://")
+
+
+def _ws_fields(kind: str) -> list[str]:
+    defaults = {
+        "user": _WS_DEFAULT_USER_FIELDS, "token": _WS_DEFAULT_TOKEN_FIELDS,
+        "department": _WS_DEFAULT_DEPT_FIELDS, "name": _WS_DEFAULT_NAME_FIELDS,
+        "email": _WS_DEFAULT_EMAIL_FIELDS, "url": _WS_DEFAULT_URL_FIELDS,
+    }
+    env = {"department": "FLOW_WS_AUTH_DEPT_FIELDS"}.get(kind, f"FLOW_WS_AUTH_{kind.upper()}_FIELDS")
+    return _ws_env_list(env, defaults[kind])
+
+
+def _ws_credentials(data: Any) -> tuple[str, str]:
+    """프레임에서 (사내 ID, 토큰). 주소(http/https)는 ID 로 쓰지 않는다 — 주소만 온 프레임을
+    사용자 ID 로 읽으면 그 주소 문자열이 계정이 된다."""
+    if isinstance(data, str):
+        text = data.strip()
+        return ("", "") if _looks_like_url(text) else (text, "")
+    user_id = _ws_pick(data, _ws_fields("user"))
+    if _looks_like_url(user_id):
+        user_id = ""
+    return user_id, _ws_pick(data, _ws_fields("token"))
+
+
+def _ws_frame_url(data: Any) -> str:
+    """ID·토큰 대신 온 주소(http/https 만)."""
+    value = _ws_pick(data, _ws_fields("url")) if isinstance(data, dict) else str(data or "").strip()
+    return value if _looks_like_url(value) else ""
+
+
+def _ws_url_action() -> str:
+    raw = str(os.environ.get("FLOW_WS_AUTH_URL_ACTION", "") or "").strip().lower()
+    return raw if raw in _WS_URL_ACTIONS else "open"
+
+
+class WsFollowUp(Exception):
+    """프레임에 ID·토큰이 없고 주소만 있을 때 브라우저가 이어서 할 일.
+
+    라우터가 HTTP 202 {action, url, detail} 로 돌려준다. action=open 이면 브라우저가 인증 창을
+    열고 같은 websocket 에서 다음 메시지를 기다린다. browser 면 그 주소를 브라우저 자격으로
+    읽어 응답 본문을 다시 /api/auth/sso/ws/login 에 넘긴다(그 본문도 서버 재검증을 거친다)."""
+
+    def __init__(self, action: str, url: str):
+        super().__init__(action)
+        self.action = action
+        self.url = url
+
+    def payload(self) -> dict:
+        detail = ("인증 창에서 로그인을 마치면 자동으로 들어갑니다. 창이 안 열리면 [인증 창 열기]를 누르세요."
+                  if self.action == "open" else "인증 주소를 브라우저에서 확인하는 중입니다.")
+        return {"action": self.action, "url": self.url, "detail": detail}
+
+
+def _ws_is_failure(data: Any) -> bool:
+    if not isinstance(data, dict):
+        return False
+    ok = data.get("ok", data.get("success", data.get("result", True)))
+    return ok is False or str(ok).strip().lower() in {"false", "fail", "error", "0"}
+
+
+def _ws_fetch_allowed(url: str) -> bool:
+    """server 방식에서 Flow 서버가 읽어도 되는 주소인가(FLOW_WS_AUTH_FETCH_ALLOW 접두어).
+
+    scheme·host·port 가 같고 경로가 접두어로 시작해야 한다. user@host 형태·'..' 경로는 거부."""
+    from urllib.parse import unquote, urlsplit
+
+    try:
+        target = urlsplit(url)
+        target_port = target.port
+    except ValueError:
+        return False
+    if target.scheme.lower() not in {"http", "https"} or not target.hostname or "@" in target.netloc:
+        return False
+    path = target.path or "/"
+    if ".." in unquote(path).split("/"):
+        return False
+    default_port = {"http": 80, "https": 443}
+    for prefix in _ws_env_list("FLOW_WS_AUTH_FETCH_ALLOW", ""):
+        try:
+            allow = urlsplit(prefix)
+            allow_port = allow.port
+        except ValueError:
+            continue
+        if allow.scheme.lower() != target.scheme.lower():
+            continue
+        if (allow.hostname or "").lower() != target.hostname.lower():
+            continue
+        if (allow_port or default_port[target.scheme.lower()]) != (target_port or default_port[target.scheme.lower()]):
+            continue
+        if path.startswith(allow.path or "/"):
+            return True
+    return False
+
+
+def _ws_fetch_url(url: str) -> Any:
+    """server 방식: 허용 목록 안의 주소를 Flow 서버가 직접 GET. 리다이렉트는 따라가지 않는다."""
+    import urllib.error
+    import urllib.request
+
+    if not _ws_env_list("FLOW_WS_AUTH_FETCH_ALLOW", ""):
+        raise HTTPException(503, "FLOW_WS_AUTH_URL_ACTION=server 인데 FLOW_WS_AUTH_FETCH_ALLOW 가 비어 있습니다.")
+    if not _ws_fetch_allowed(url):
+        raise HTTPException(403, "인증서버가 보낸 주소가 FLOW_WS_AUTH_FETCH_ALLOW 목록에 없습니다.")
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):  # noqa: D401 - urllib hook
+            return None
+
+    timeout = float(os.environ.get("FLOW_WS_AUTH_VERIFY_TIMEOUT_SEC", "") or 10.0)
+    opener = urllib.request.build_opener(_NoRedirect)
+    req = urllib.request.Request(url, headers={"Accept": "application/json, text/plain, */*"}, method="GET")
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = resp.read(_WS_FETCH_MAX_BYTES + 1)
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(502, f"인증 주소 응답 오류: HTTP {exc.code}") from exc
+    except Exception as exc:
+        raise HTTPException(502, f"인증 주소를 읽지 못했습니다: {type(exc).__name__}") from exc
+    if len(body) > _WS_FETCH_MAX_BYTES:
+        raise HTTPException(502, "인증 주소 응답이 너무 큽니다.")
+    return _ws_parse(body.decode("utf-8", errors="replace"))
+
+
+def _ws_fixed_literals() -> set[str]:
+    """설정 문자열(URL·SEND·VERIFY_*)에 적힌 낱말. {token} 같은 치환 자리는 뺀다."""
+    import re
+
+    names = ("FLOW_WS_AUTH_URL", "FLOW_WS_AUTH_SEND", "FLOW_WS_AUTH_VERIFY_URL",
+             "FLOW_WS_AUTH_VERIFY_SEND", "FLOW_WS_AUTH_VERIFY_HEADERS")
+    raw = " ".join(str(os.environ.get(name, "") or "") for name in names)
+    raw = re.sub(r"\{(token|user|nonce|origin)\}", " ", raw)
+    return {part.casefold() for part in re.split(r"[^0-9A-Za-z._@-]+", raw) if len(part) >= 3}
+
+
+def _ws_reject_fixed_user(user_id: str) -> None:
+    uid = str(user_id or "").strip().casefold()
+    if not uid:
+        return
+    literals = _ws_fixed_literals()
+    local = uid.split("@", 1)[0]
+    if uid in literals or (len(local) >= 3 and local in literals):
+        raise HTTPException(
+            403,
+            "사내 로그인 설정(FLOW_WS_AUTH_URL·SEND·VERIFY_*)에 사용자 ID 가 고정돼 있어 로그인을 막았습니다. "
+            "이대로면 누가 눌러도 같은 사람으로 들어갑니다. 설정에서 ID 를 빼세요.",
+        )
+
+
+# ── 진단: 프레임 모양(값은 가림) ─────────────────────────────────────
+def _ws_mask_url(url: str) -> str:
+    import re
+    from urllib.parse import parse_qsl, urlsplit
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "주소(해석 불가)"
+    segments = ["…" if re.fullmatch(r"[0-9A-Za-z_\-=.%]{16,}", seg or "") else seg
+                for seg in (parts.path or "").split("/")]
+    keys = [k for k, _ in parse_qsl(parts.query, keep_blank_values=True)][:12]
+    query = ("?" + "&".join(f"{k}=…" for k in keys)) if keys else ""
+    return f"주소 {parts.scheme}://{parts.hostname or ''}{(':' + str(parts.port)) if parts.port else ''}{'/'.join(segments)}{query}"
+
+
+def _ws_mask_text(value: str) -> str:
+    import re
+
+    text = str(value)
+    if _looks_like_url(text):
+        return _ws_mask_url(text.strip())
+    n = len(text)
+    if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", text):
+        local, domain = text.split("@", 1)
+        return f"메일({n}자, {local[:2]}…@{domain})"
+    if re.fullmatch(r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", text):
+        return f"JWT({n}자)"
+    if text.isdigit():
+        return f"숫자문자열({n}자리)"
+    if n >= 24 and not re.search(r"\s", text):
+        return f"토큰형({n}자)"
+    if n <= 2:
+        return f"텍스트({n}자)"
+    return f"텍스트({n}자, {text[:2]}…)"
+
+
+def _ws_shape(data: Any, depth: int = 0) -> Any:
+    if isinstance(data, dict):
+        if depth >= 5:
+            return "{…}"
+        return {str(k)[:40]: _ws_shape(v, depth + 1) for k, v in list(data.items())[:40]}
+    if isinstance(data, list):
+        head = [_ws_shape(data[0], depth + 1)] if data else []
+        return [f"배열 {len(data)}개"] + head
+    if isinstance(data, bool) or data is None:
+        return data
+    if isinstance(data, (int, float)):
+        return f"숫자({len(str(data))}자리)"
+    return _ws_mask_text(str(data))
+
+
+def ws_frame_report(message: Any) -> dict:
+    """진단용: 프레임 형식·모양·설정 필드 중 어느 경로가 맞았는지. 값은 담지 않는다."""
+    data = _ws_parse(message)
+    if isinstance(data, (dict, list)):
+        fmt = "json"
+    else:
+        fmt = "text" if str(data or "").strip() else "empty"
+    matched: dict[str, str] = {}
+    user_id, _ = _ws_credentials(data)
+    if isinstance(data, dict):
+        for kind in ("user", "token", "url", "department", "name", "email"):
+            value, path = _ws_pick_path(data, _ws_fields(kind))
+            if kind == "user" and not user_id:
+                path = ""
+            if kind == "url" and not _looks_like_url(value):
+                path = ""
+            if path:
+                matched[kind] = path
+    elif fmt == "text":
+        matched["url" if _frame_is_url(data) else "user"] = "*"
+    return {
+        "format": fmt,
+        "length": len(message) if isinstance(message, str) else None,
+        "shape": _ws_shape(data) if fmt != "text" else {"(문자열 프레임)": _ws_mask_text(str(data))},
+        "matched": matched,
+    }
+
+
+def _frame_is_url(data: Any) -> bool:
+    return isinstance(data, str) and _looks_like_url(data)
+
+
+def ws_debug_enabled() -> bool:
+    return str(os.environ.get("FLOW_WS_AUTH_DEBUG", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_WS_PROBE_LOCK = threading.Lock()
+
+
+def _ws_probe_path():
+    return auth_core.PATHS.data_root / "logs" / "ws_login_probe.jsonl"
+
+
+def record_ws_probe(entry: dict) -> None:
+    """FLOW_WS_AUTH_DEBUG=1 일 때만 프레임 모양 기록(값 없음). 최근 200건 남짓만 유지."""
+    import json
+
+    if not ws_debug_enabled():
+        return
+    try:
+        fp = _ws_probe_path()
+        fp.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(entry, ensure_ascii=False, default=str)
+        with _WS_PROBE_LOCK:
+            lines = fp.read_text(encoding="utf-8").splitlines() if fp.exists() else []
+            lines = (lines + [line])[-200:]
+            fp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+def read_ws_probe(limit: int = 50) -> list[dict]:
+    import json
+
+    fp = _ws_probe_path()
+    try:
+        lines = fp.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    out = []
+    for line in lines[-max(1, min(int(limit or 50), 200)):]:
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def ws_config_summary() -> dict:
+    """진단용 현재 서버 설정(비밀 값 없이). 감시기 재기동 없이 .local.bat 만 고쳤는지 확인할 때 본다."""
+    def _set(name: str) -> bool:
+        return bool(str(os.environ.get(name, "") or "").strip())
+
+    verify_url = str(os.environ.get("FLOW_WS_AUTH_VERIFY_URL", "") or "").strip()
+    return {
+        "ws_url": _ws_mask_url(_ws_auth_url().replace("ws://", "http://", 1).replace("wss://", "https://", 1)) if _ws_auth_url() else "",
+        "send_set": _set("FLOW_WS_AUTH_SEND"),
+        "verify": str(os.environ.get("FLOW_WS_AUTH_VERIFY", "") or "").strip().lower()
+                  or (("http" if verify_url.lower().startswith("http") else "ws") if verify_url else ""),
+        "verify_url_set": bool(verify_url),
+        "verify_method": str(os.environ.get("FLOW_WS_AUTH_VERIFY_METHOD", "") or "POST").strip().upper(),
+        "trust_client": _set("FLOW_WS_AUTH_TRUST_CLIENT"),
+        "url_action": _ws_url_action(),
+        "fetch_allow": len(_ws_env_list("FLOW_WS_AUTH_FETCH_ALLOW", "")),
+        "user_map": len(_ws_user_map()),
+        "custom_fields": sorted(k for k in ("USER", "TOKEN", "DEPT", "NAME", "EMAIL", "URL")
+                                if _set(f"FLOW_WS_AUTH_{k}_FIELDS")),
+        "password_login": PasswordAuthProvider().enabled(),
+        "debug": ws_debug_enabled(),
+    }
 
 
 def _ws_verify(user_id: str, token: str) -> tuple[str, Any]:
@@ -578,32 +925,66 @@ def _ws_verify(user_id: str, token: str) -> tuple[str, Any]:
     if not token:
         raise HTTPException(401, "인증서버 응답에 토큰이 없습니다.")
     template = str(os.environ.get("FLOW_WS_AUTH_VERIFY_SEND", "") or "").strip() or '{"token": "{token}"}'
-    payload = template.replace("{token}", token).replace("{user}", user_id)
+    if template.startswith(("{", "[")):
+        # JSON 템플릿이면 값의 따옴표·역슬래시를 JSON 규칙으로 넣는다.
+        def _fill(text: str) -> str:
+            return (text.replace("{token}", json.dumps(token)[1:-1])
+                        .replace("{user}", json.dumps(user_id)[1:-1]))
+    else:
+        def _fill(text: str) -> str:
+            return text.replace("{token}", token).replace("{user}", user_id)
+    payload = _fill(template)
     timeout = float(os.environ.get("FLOW_WS_AUTH_VERIFY_TIMEOUT_SEC", "") or 10.0)
+    user_fields = _ws_fields("user")
     try:
         if mode == "http":
             import urllib.request
+            from urllib.parse import quote
 
-            req = urllib.request.Request(verify_url, data=payload.encode("utf-8"),
-                                         headers={"Content-Type": "application/json"}, method="POST")
+            method = str(os.environ.get("FLOW_WS_AUTH_VERIFY_METHOD", "") or "POST").strip().upper()
+            url = verify_url.replace("{token}", quote(token, safe="")).replace("{user}", quote(user_id, safe=""))
+            headers = {"Accept": "application/json, text/plain, */*"}
+            raw_headers = str(os.environ.get("FLOW_WS_AUTH_VERIFY_HEADERS", "") or "").strip()
+            if raw_headers:
+                try:
+                    extra = json.loads(raw_headers)
+                except ValueError as exc:
+                    raise HTTPException(503, "FLOW_WS_AUTH_VERIFY_HEADERS 가 JSON 객체가 아닙니다.") from exc
+                if not isinstance(extra, dict):
+                    raise HTTPException(503, "FLOW_WS_AUTH_VERIFY_HEADERS 가 JSON 객체가 아닙니다.")
+                headers.update({str(k): str(v).replace("{token}", token).replace("{user}", user_id)
+                                for k, v in extra.items()})
+            if method == "GET":
+                req = urllib.request.Request(url, headers=headers, method="GET")
+            else:
+                headers.setdefault("Content-Type", "application/json")
+                req = urllib.request.Request(url, data=payload.encode("utf-8"), headers=headers, method=method)
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
         else:
             from websockets.sync.client import connect
 
+            max_frames = max(1, int(os.environ.get("FLOW_WS_AUTH_VERIFY_MAX_FRAMES", "") or 3))
             with connect(verify_url or _ws_auth_url(), open_timeout=timeout, close_timeout=2) as ws:
                 ws.send(payload)
-                body = ws.recv(timeout=timeout)
+                body = ""
+                # 인사말·상태 프레임이 먼저 오는 서버가 있어 ID(또는 거부)가 든 프레임까지 몇 개 읽는다.
+                for _ in range(max_frames):
+                    frame = ws.recv(timeout=timeout)
+                    body = frame.decode("utf-8", errors="replace") if isinstance(frame, (bytes, bytearray)) else str(frame)
+                    parsed = _ws_parse(body)
+                    if _ws_is_failure(parsed) or (isinstance(parsed, dict) and _ws_pick(parsed, user_fields)):
+                        break
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(502, f"인증서버 확인 실패: {type(exc).__name__}: {exc}") from exc
     data = _ws_parse(body)
-    if isinstance(data, dict):
-        ok = data.get("ok", data.get("success", data.get("result", True)))
-        if ok is False or str(ok).strip().lower() in {"false", "fail", "error", "0"}:
-            raise HTTPException(401, "인증서버가 토큰을 거부했습니다.")
-    verified = _ws_pick(data, _ws_env_list("FLOW_WS_AUTH_USER_FIELDS", _WS_DEFAULT_USER_FIELDS))
+    if _ws_is_failure(data):
+        raise HTTPException(401, "인증서버가 토큰을 거부했습니다.")
+    verified = _ws_pick(data, user_fields)
+    if _looks_like_url(verified):
+        verified = ""
     if not verified:
         raise HTTPException(401, "인증서버 확인 응답에 사용자 ID 가 없습니다.")
     if user_id and verified.casefold() != user_id.casefold():
@@ -639,27 +1020,51 @@ class WebsocketAuthProvider(AuthProvider):
             "ws_url": _ws_auth_url(),
             "send": str(os.environ.get("FLOW_WS_AUTH_SEND", "") or ""),
             "login_url": "/api/auth/sso/ws/login",
-            "auto": str(os.environ.get("FLOW_WS_AUTH_AUTO", "1") or "").strip().lower() not in {"0", "false", "no", "off"},
+            # 기본은 [사내 로그인] 버튼을 눌러야 연결한다(인증 창 팝업은 클릭 뒤에만 열린다).
+            "auto": str(os.environ.get("FLOW_WS_AUTH_AUTO", "0") or "").strip().lower() in {"1", "true", "yes", "on"},
+            "url_action": _ws_url_action(),
         })
         if contact:
             out["contact"] = contact
         return out
 
     def authenticate(self, credential: Any) -> AuthIdentity:
-        from routers import auth as auth_router
+        """프레임 하나 → identity. 처리 순서:
 
+        1) ID·토큰이 있으면 인증서버 재검증(_ws_verify)
+        2) 없고 주소만 있으면 FLOW_WS_AUTH_URL_ACTION 대로: server 는 Flow 서버가 그 주소를 읽어
+           로그인, open/browser 는 WsFollowUp(→ HTTP 202)으로 브라우저에 다음 할 일을 돌려준다
+        3) 아무것도 없으면 400 — 브라우저는 다음 프레임을 기다린다
+        """
         data = _ws_parse(credential)
-        user_id = _ws_pick(data, _ws_env_list("FLOW_WS_AUTH_USER_FIELDS", _WS_DEFAULT_USER_FIELDS))
-        token = "" if isinstance(data, str) else _ws_pick(data, _ws_env_list("FLOW_WS_AUTH_TOKEN_FIELDS", _WS_DEFAULT_TOKEN_FIELDS))
-        if not user_id and not token:
-            raise HTTPException(400, "인증서버 메시지에서 사용자 ID/토큰을 찾지 못했습니다.")
-        user_id, verified = _ws_verify(user_id, token)
+        user_id, token = _ws_credentials(data)
+        if user_id or token:
+            user_id, verified = _ws_verify(user_id, token)
+        else:
+            url = _ws_frame_url(data)
+            if not url:
+                raise HTTPException(400, "인증서버 메시지에서 사용자 ID/토큰을 찾지 못했습니다.")
+            if _ws_url_action() != "server":
+                raise WsFollowUp(_ws_url_action(), url)
+            # 허용 목록 주소를 Flow 서버가 직접 읽은 응답은 인증서버의 답으로 본다.
+            fetched = _ws_fetch_url(url)
+            if _ws_is_failure(fetched):
+                raise HTTPException(401, "인증 주소가 로그인을 거부했습니다.")
+            user_id, token = _ws_credentials(fetched) if isinstance(fetched, dict) else ("", "")
+            if user_id:
+                verified = fetched
+            elif token:
+                user_id, verified = _ws_verify("", token)
+            else:
+                raise HTTPException(401, "인증 주소 응답에 사용자 ID/토큰이 없습니다.")
+            data = fetched
+        _ws_reject_fixed_user(user_id)
         # 부서·이름·메일은 인증서버가 확인해 준 응답에서만 믿는다. 브라우저가 보낸
         # 부서를 쓰면 부서를 속여 로그인·권한을 얻을 수 있다(신뢰 모드만 예외).
         profile_src = verified if isinstance(verified, dict) else (data if verified is None else {})
-        department = _ws_pick(profile_src, _ws_env_list("FLOW_WS_AUTH_DEPT_FIELDS", _WS_DEFAULT_DEPT_FIELDS))
-        name = _ws_pick(profile_src, _ws_env_list("FLOW_WS_AUTH_NAME_FIELDS", _WS_DEFAULT_NAME_FIELDS))
-        email = _ws_pick(profile_src, _ws_env_list("FLOW_WS_AUTH_EMAIL_FIELDS", _WS_DEFAULT_EMAIL_FIELDS))
+        department = _ws_pick(profile_src, _ws_fields("department"))
+        name = _ws_pick(profile_src, _ws_fields("name"))
+        email = _ws_pick(profile_src, _ws_fields("email"))
         return _identity_for_company_user(user_id, self.name, department=department, name=name, email=email)
 
 

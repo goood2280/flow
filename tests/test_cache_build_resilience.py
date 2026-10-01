@@ -133,14 +133,16 @@ def test_lookup_publish_rename_failure_rolls_back(cache_env, monkeypatch):
     (cdir / "previous").write_text("working")
     staged = cdir.with_name("staged")
     staged.mkdir()
-    original = Path.replace
+    from core import file_transaction
+    original = file_transaction.replace_file
 
-    def failed_publish(path, target):
-        if path == staged:
+    def failed_publish(path, target, **kwargs):
+        # A reader outlasting the Windows retry window still fails the publish.
+        if Path(path) == staged:
             raise PermissionError("sharing violation")
-        return original(path, target)
+        return original(path, target, **kwargs)
 
-    monkeypatch.setattr(Path, "replace", failed_publish)
+    monkeypatch.setattr(file_transaction, "replace_file", failed_publish)
     with pytest.raises(PermissionError):
         lookup._publish_lookup_cache(staged, cdir)
     assert (cdir / "previous").read_text() == "working"

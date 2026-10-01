@@ -2040,7 +2040,8 @@ def _touch_view_product_invalidation(product: str) -> None:
         fp.parent.mkdir(parents=True, exist_ok=True)
         tmp = fp.with_name(f"{fp.name}.{os.getpid()}.{threading.get_ident()}.tmp")
         tmp.write_text(str(time.time_ns()), encoding="utf-8")
-        os.replace(tmp, fp)
+        from core.file_transaction import replace_file
+        replace_file(tmp, fp)
     except Exception:
         logger.debug("SplitTable product invalidation token write failed: %s", product, exc_info=True)
 

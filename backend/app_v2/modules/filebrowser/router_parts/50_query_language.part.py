@@ -4767,6 +4767,16 @@ def view_product(root: str = Query(...), product: str = Query(...),
 
         if not queue_needed:
             return _cached_or_compute()
+        # The SQL queue runs a few scans server-wide (one per user). A fresh cached
+        # answer needs no scan, so it must not wait behind queued queries (up to the
+        # 120 s queue expiry). Still replace this page's older query, as the queue would.
+        hit_context = _preview_cache_context()
+        if hit_context is not None:
+            hit = _fbcache.get_cached(endpoint="view", source=hit_context[0], key_payload=hit_context[1])
+            if hit is not None:
+                _sql_queue.cancel(username=str(me.get("username") or ""),
+                                  session_id=query_session, reason="replaced")
+                return hit
         try:
             # Queue wraps cache lookup as well as cold execution. This keeps
             # every interactive SQL request cancellable while it is waiting.

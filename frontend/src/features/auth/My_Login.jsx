@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { FlowWordmark } from "../../components/BrandLogo";
+import { startWsLogin } from "./wsLogin";
 import "./My_Login.css";
 
 /* ═══ Matrix Rain — semiconductor keywords ═══ */
@@ -62,6 +63,11 @@ export default function My_Login({ onLogin }) {
   const [msg, setMsg] = useState("");
   const [loading, setLoading] = useState(false);
   const [authProviders, setAuthProviders] = useState(null);
+  const [providersError, setProvidersError] = useState(false);
+  const [providersReload, setProvidersReload] = useState(0);
+  // 사내 로그인: 인증서버가 주소만 보냈을 때 열 인증 창(팝업이 막히면 누를 링크).
+  const [authUrl, setAuthUrl] = useState("");
+  const wsCancel = useRef(null);
 
   useEffect(() => {
     let active = true;
@@ -75,27 +81,27 @@ export default function My_Login({ onLogin }) {
     return () => { active = false; };
   }, []);
 
-  // 서버가 활성화한 방식만 노출한다. OIDC 환경변수가 아직 없으면 password만,
-  // 연결 후에는 SSO 버튼도 표시한다. password provider를 끄면 SSO-only 화면이다.
+  // 서버가 켠 방식만 보여 준다. 설치본(setup.py)·사내 로그인 서버는 password provider 가
+  // 꺼져 있어 버튼만 남는다. 목록을 받기 전·받지 못했을 때도 ID/PW 입력칸을 띄우지 않는다.
   useEffect(() => {
     let active = true;
+    setProvidersError(false);
     fetch("/api/auth/providers", { cache: "no-store" })
       .then((response) => response.ok ? response.json() : Promise.reject(new Error("providers")))
       .then((data) => {
         if (active) setAuthProviders(Array.isArray(data?.providers) ? data.providers : []);
       })
       .catch(() => {
-        // 구버전 백엔드/일시 오류에서는 기존 ID/PW 로그인을 잃지 않는다.
-        if (active) setAuthProviders([{ name: "password", kind: "password", label: "ID / PW" }]);
+        if (active) { setAuthProviders(null); setProvidersError(true); }
       });
     return () => { active = false; };
-  }, []);
+  }, [providersReload]);
 
   // 아이디는 앞뒤 공백만 걷어내고 그대로 보낸다. `hong` 과 `hong@사내도메인` 을
   // 같은 계정으로 보는 판정은 서버(core.auth.canonical_username)가 한다 — 프런트가
   // 도메인을 추측해서 잘라내면 서버 규칙과 어긋난다.
   const uid = u.trim();
-  const passwordEnabled = authProviders === null || authProviders.some((provider) => provider?.name === "password");
+  const passwordEnabled = Array.isArray(authProviders) && authProviders.some((provider) => provider?.name === "password");
   const ssoProviders = (authProviders || []).filter((provider) => provider?.kind === "sso" && provider?.start_url);
   const wsProvider = (authProviders || []).find((provider) => provider?.kind === "websocket" && provider?.ws_url);
   const wsContact = wsProvider?.contact || "";
@@ -118,58 +124,41 @@ export default function My_Login({ onLogin }) {
     }
   };
 
-  // 사내 websocket 인증서버에 브라우저가 직접 접속한다. 받은 메시지를 Flow 에 넘기면
-  // 서버가 인증서버에 토큰을 다시 확인한 뒤 세션을 연다(사용자 정보는 저장하지 않음).
+  // 사내 websocket 인증서버에 브라우저가 직접 접속한다(통신은 wsLogin.js). 받은 메시지를
+  // Flow 에 넘기면 서버가 인증서버에 다시 확인한 뒤 세션을 연다.
+  const openAuthWindow = (url) => {
+    const win = window.open(url, "flow_company_auth", "width=560,height=720");
+    if (win) { try { win.opener = null; } catch (_) { /* cross-origin */ } }
+  };
   const wsLogin = (provider, { silent = false } = {}) => {
     if (!provider?.ws_url) return;
+    wsCancel.current?.();
     setLoading(true);
+    setAuthUrl("");
     if (!silent) setMsg("");
-    let done = false;
-    let socket;
-    const finish = (text) => {
-      if (done) return;
-      done = true;
-      setLoading(false);
-      if (text && !silent) setMsg(text);
-      try { socket?.close(); } catch (_) { /* already closed */ }
-    };
-    const timer = window.setTimeout(() => finish("사내 인증서버 응답이 없습니다. 잠시 후 다시 시도하세요."), 60000);
-    try {
-      socket = new WebSocket(provider.ws_url);
-    } catch (_) {
-      window.clearTimeout(timer);
-      finish("사내 인증서버에 연결하지 못했습니다.");
-      return;
-    }
-    socket.onopen = () => { if (provider.send) socket.send(provider.send); };
-    socket.onerror = () => { window.clearTimeout(timer); finish("사내 인증서버에 연결하지 못했습니다."); };
-    socket.onmessage = async (event) => {
-      if (done) return;
-      try {
-        const r = await fetch(provider.login_url || "/api/auth/sso/ws/login", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: event.data }),
-        });
-        const d = await r.json();
-        // 인증 정보가 아직 없는 중간 메시지(400)는 다음 메시지를 기다린다.
-        if (r.status === 400) return;
-        window.clearTimeout(timer);
-        if (!r.ok) {
-          let errMsg = d.detail || "사내 로그인에 실패했습니다.";
-          if (provider.contact && !errMsg.includes("문의")) errMsg += ` 문의 ${provider.contact}`;
-          finish(errMsg);
+    wsCancel.current = startWsLogin(provider, {
+      onUrl: (url) => {
+        setAuthUrl(url);
+        setMsg("인증 창에서 로그인을 마치면 자동으로 들어갑니다. 창이 안 보이면 [인증 창 열기]를 누르세요.");
+        openAuthWindow(url);
+      },
+      onDone: (result) => {
+        wsCancel.current = null;
+        if (result.cancelled) return;
+        setLoading(false);
+        if (result.session) {
+          setMsg("");
+          setAuthUrl("");
+          onLogin(result.session);
           return;
         }
-        finish("");
-        onLogin(d);
-      } catch (_) {
-        window.clearTimeout(timer);
-        finish("로그인 처리 중 오류가 발생했습니다.");
-      }
-    };
+        if (!silent) setMsg(result.error || result.info || "");
+      },
+    });
   };
+  useEffect(() => () => wsCancel.current?.(), []);
 
-  // websocket 이 유일한(또는 자동) 로그인 수단이면 화면을 열자마자 한 번 시도한다.
+  // FLOW_WS_AUTH_AUTO=1 이면 화면을 열자마자 한 번 시도한다(기본은 버튼을 눌러야 연결).
   const wsAutoTried = useRef(false);
   useEffect(() => {
     if (!wsProvider || wsAutoTried.current || !wsProvider.auto) return;
@@ -203,7 +192,7 @@ export default function My_Login({ onLogin }) {
     setLoading(false);
   };
 
-  const isOk = msg.includes("Wait") || msg.includes("sent");
+  const isOk = /Wait|sent|인증 창에서/.test(msg);
 
   const title = mode === "register" ? "회원가입" : mode === "reset" ? "비밀번호 재설정" : "로그인";
 
@@ -230,8 +219,8 @@ export default function My_Login({ onLogin }) {
                 </button>
               )}
               {wsProvider && (
-                <button type="button" className="flow-login__provider" disabled={loading} onClick={() => wsLogin(wsProvider)}>
-                  {loading ? "사내 인증 확인 중…" : (wsProvider.label || "사내 로그인")}
+                <button type="button" className="flow-login__provider" disabled={loading && !authUrl} onClick={() => wsLogin(wsProvider)}>
+                  {loading && !authUrl ? "사내 인증 확인 중…" : (wsProvider.label || "사내 로그인")}
                 </button>
               )}
               {ssoProviders.map((provider) => (
@@ -239,6 +228,19 @@ export default function My_Login({ onLogin }) {
                   {provider.label || "SSO"} 로그인
                 </button>
               ))}
+              {authUrl && (
+                <a className="flow-login__auth-link" href={authUrl} target="flow_company_auth" rel="noopener noreferrer">인증 창 열기</a>
+              )}
+            </div>
+          )}
+
+          {authProviders === null && !providersError && (
+            <div role="status" className="flow-login__contact">로그인 방식을 확인하는 중…</div>
+          )}
+          {providersError && (
+            <div role="status" className="flow-login__message">
+              서버에 연결하지 못했습니다.{" "}
+              <button type="button" className="flow-login__inline" onClick={() => setProvidersReload((n) => n + 1)}>다시 시도</button>
             </div>
           )}
 
@@ -304,7 +306,10 @@ export default function My_Login({ onLogin }) {
             </nav>
           )}
           {authProviders !== null && !passwordEnabled && ssoProviders.length === 0 && !wsProvider && !ipProvider && (
-            <div role="status" className="flow-login__message">사용할 수 있는 로그인 방식이 없습니다. 관리자에게 문의하세요.</div>
+            <div role="status" className="flow-login__message">
+              사용할 수 있는 로그인 방식이 없습니다. 관리자에게 문의하세요.
+              <span className="flow-login__hint">관리자: scripts\windows\flow_env.local.bat 에 FLOW_WS_AUTH_URL(사내 로그인)을 넣고 서버를 끈 뒤 다시 켭니다.</span>
+            </div>
           )}
         </section>
         {releaseVersion && <div className="flow-login__version">flow · v{releaseVersion}</div>}

@@ -141,7 +141,8 @@ def _write_tokens_file(gen: int, payload: str) -> None:
             return  # 더 새 스냅샷이 이미 쓰였다 — 오래된 내용으로 덮지 않는다.
         tmp = TOKENS_FILE.with_suffix(".tmp")
         tmp.write_text(payload, "utf-8")
-        tmp.replace(TOKENS_FILE)
+        from core.file_transaction import replace_file
+        replace_file(tmp, TOKENS_FILE)
         _written_gen = gen
 
 

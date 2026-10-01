@@ -107,3 +107,42 @@ def file_transaction(path: str | os.PathLike[str], *, timeout: float | None = No
                 depths.pop(key, None)
                 with contextlib.suppress(OSError):
                     _release_os_lock(handle)
+
+
+_IS_WINDOWS = os.name == "nt"
+
+
+def _replace_retry_seconds() -> float:
+    try:
+        value = float(os.environ.get("FLOW_FILE_REPLACE_RETRY_SEC", "") or 2.0)
+    except ValueError:
+        value = 2.0
+    return max(0.0, min(30.0, value))
+
+
+def replace_file(src: str | os.PathLike[str], dst: str | os.PathLike[str], *,
+                 timeout: float | None = None) -> None:
+    """``os.replace`` that waits out readers on Windows.
+
+    Linux renames over an open file. Windows refuses (PermissionError,
+    WinError 5/32) while any reader - a request thread, Polars, DuckDB - still
+    holds ``dst`` or, for directories, a file inside it. Cache refreshes and
+    JSON saves then failed at random under load on the Windows server. Readers
+    hold files for milliseconds, so a short bounded retry makes the swap land;
+    after ``timeout`` (``FLOW_FILE_REPLACE_RETRY_SEC``, default 2 s) the last
+    error is raised as before.
+    """
+    if not _IS_WINDOWS:
+        os.replace(src, dst)
+        return
+    deadline = time.monotonic() + (_replace_retry_seconds() if timeout is None else max(0.0, timeout))
+    delay = 0.005
+    while True:
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.1)

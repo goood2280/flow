@@ -44,7 +44,11 @@ _PROCESS_MEMORY_LIMIT_FRACTION_DEFAULT = 0.80
 _DEV_PROCESS_MEMORY_LIMIT_GB_DEFAULT = 0.0
 _CGROUP_MEMORY_UNLIMITED_BYTES = 1 << 60
 _PROCESS_CPU_LOCK = threading.Lock()
-_PROCESS_CPU_LAST: dict[str, float] = {"cpu_seconds": 0.0, "wall": 0.0}
+_PROCESS_CPU_LAST: dict[str, float] = {"cpu_seconds": 0.0, "wall": 0.0, "percent": 0.0}
+# CPU 시간은 OS 틱 단위로만 늘어난다(Windows 15.6ms, Linux 10ms). 요청 여러 개가
+# 몇 ms 간격으로 잇달아 재면 창이 틱보다 짧아 0% 아니면 수천 %가 나왔고, 가드가
+# 1초 재확인·429 를 헛되이 걸었다. 이 창보다 짧으면 직전 측정값을 그대로 쓴다.
+_PROCESS_CPU_MIN_WINDOW_SEC = 0.5
 
 
 def _env_flag(name: str, default: bool = False) -> bool:
@@ -480,6 +484,52 @@ def _host_memory_snapshot_bytes() -> dict[str, float | str]:
         }
 
 
+_COMMIT_MEMO_LOCK = threading.Lock()
+_COMMIT_MEMO: dict = {"ts": 0.0, "value": None}
+
+
+def _windows_commit_bytes() -> dict | None:
+    """Windows 커밋 사용량·한도(RAM + pagefile). 2초 메모. Windows 가 아니거나 실패면 None.
+
+    Windows 는 물리 메모리가 남아 있어도 **커밋 한도**에 닿으면 할당이 MemoryError 로
+    실패한다(VM 은 pagefile 을 작게 두는 경우가 많다). 가용 물리 메모리만 보면 이
+    OOM 을 예측하지 못한다."""
+    if os.name != "nt":
+        return None
+    now = time.monotonic()
+    with _COMMIT_MEMO_LOCK:
+        if now - float(_COMMIT_MEMO["ts"]) < 2.0:
+            return _COMMIT_MEMO["value"]
+    value = None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _PerfInfo(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD), ("CommitTotal", ctypes.c_size_t), ("CommitLimit", ctypes.c_size_t),
+                ("CommitPeak", ctypes.c_size_t), ("PhysicalTotal", ctypes.c_size_t),
+                ("PhysicalAvailable", ctypes.c_size_t), ("SystemCache", ctypes.c_size_t),
+                ("KernelTotal", ctypes.c_size_t), ("KernelPaged", ctypes.c_size_t),
+                ("KernelNonpaged", ctypes.c_size_t), ("PageSize", ctypes.c_size_t),
+                ("HandleCount", wintypes.DWORD), ("ProcessCount", wintypes.DWORD),
+                ("ThreadCount", wintypes.DWORD),
+            ]
+
+        info = _PerfInfo()
+        info.cb = ctypes.sizeof(info)
+        if ctypes.windll.psapi.GetPerformanceInfo(ctypes.byref(info), info.cb):
+            page = float(info.PageSize or 4096)
+            value = {"commit_total_bytes": float(info.CommitTotal) * page,
+                     "commit_limit_bytes": float(info.CommitLimit) * page}
+    except Exception:
+        value = None
+    with _COMMIT_MEMO_LOCK:
+        _COMMIT_MEMO["ts"] = now
+        _COMMIT_MEMO["value"] = value
+    return value
+
+
 def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
     """Host/container memory state used by the soft guard."""
     host = _host_memory_snapshot_bytes()
@@ -533,7 +583,17 @@ def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
             or (percent > 0 and percent >= high_percent)
         )
     )
-    return {
+    commit = _windows_commit_bytes()
+    commit_percent = 0.0
+    # 시스템 관리 pagefile 은 한도 근처에서 스스로 늘어나므로 기본은 판정에 쓰지 않는다
+    # (헛 503 방지). pagefile 을 고정 크기로 둔 서버만 FLOW_SYSTEM_COMMIT_GUARD_PERCENT 로 켠다.
+    # 한도가 RAM 과 비슷하게 작으면 기동 로그가 경고한다(host_diagnostics).
+    commit_guard = _env_float("FLOW_SYSTEM_COMMIT_GUARD_PERCENT", 0.0, 0.0, 100.0)
+    if commit and float(commit.get("commit_limit_bytes") or 0.0) > 0:
+        commit_percent = 100.0 * float(commit["commit_total_bytes"]) / float(commit["commit_limit_bytes"])
+        if commit_guard >= 50.0 and commit_percent >= commit_guard:
+            low = True
+    out = {
         "system_memory_total_gb": round(total_gb, 3),
         "system_memory_available_gb": round(available_gb, 3),
         "system_memory_percent": round(percent, 1),
@@ -544,6 +604,14 @@ def system_memory_snapshot(reserve_gb: float = 1.0) -> dict:
         "system_memory_raw_total_gb": round(raw_total_bytes / (1024 ** 3), 3) if raw_total_bytes else 0,
         "system_memory_cache_reclaimable_gb": round(cache_reclaimable_gb, 3),
     }
+    if commit:
+        out.update({
+            "system_commit_total_gb": round(float(commit["commit_total_bytes"]) / (1024 ** 3), 3),
+            "system_commit_limit_gb": round(float(commit["commit_limit_bytes"]) / (1024 ** 3), 3),
+            "system_commit_percent": round(commit_percent, 1),
+            "system_commit_guard_percent": round(commit_guard, 1),
+        })
+    return out
 
 
 def _read_smaps_rollup() -> dict[str, float]:
@@ -595,12 +663,16 @@ def process_memory_snapshot() -> dict:
     """
     rss_gb = 0.0
     vms_gb = 0.0
+    private_gb = 0.0
     try:
         import psutil  # type: ignore
 
         mi = psutil.Process(os.getpid()).memory_info()
         rss_gb = float(mi.rss) / (1024 ** 3)
         vms_gb = float(mi.vms) / (1024 ** 3)
+        # Windows: RSS(working set)는 Polars 가 매핑해 읽은 parquet 파일 페이지까지 센다.
+        # 프로세스가 실제로 차지한 메모리는 private bytes(커밋)다.
+        private_gb = float(getattr(mi, "private", 0) or 0) / (1024 ** 3) if os.name == "nt" else 0.0
     except Exception:
         rss_kb = _read_proc_status_kb("VmRSS")
         vms_kb = _read_proc_status_kb("VmSize")
@@ -632,6 +704,8 @@ def process_memory_snapshot() -> dict:
         effective_gb, effective_kind = pss_gb, "pss"
     elif uss_gb > 0:
         effective_gb, effective_kind = uss_gb, "uss"
+    elif private_gb > 0:
+        effective_gb, effective_kind = private_gb, "private_commit"
     else:
         effective_gb, effective_kind = rss_gb, "rss_fallback"
 
@@ -642,6 +716,7 @@ def process_memory_snapshot() -> dict:
         "process_pss_gb": round(pss_gb, 3) if pss_gb > 0 else round(rss_gb, 3),
         "process_uss_gb": round(uss_gb, 3) if uss_gb > 0 else round(rss_gb, 3),
         "process_anon_gb": round(anon_gb, 3) if anon_gb > 0 else 0.0,
+        "process_private_gb": round(private_gb, 3),
         "process_memory_effective_gb": round(effective_gb, 3),
         "process_memory_effective_kind": effective_kind,
         "container_memory_working_set_gb": round(container_working_set_gb, 3),
@@ -673,16 +748,21 @@ def process_cpu_snapshot(sample_seconds: float = 0.0, guard_cores: float | None 
     """Current process CPU pressure measured in full-core equivalents."""
     if sample_seconds and sample_seconds > 0:
         time.sleep(max(0.0, min(float(sample_seconds), 1.0)))
-    now = time.time()
+    now = time.monotonic()
     cpu_seconds = _read_process_cpu_seconds()
     with _PROCESS_CPU_LOCK:
         prev_cpu = float(_PROCESS_CPU_LAST.get("cpu_seconds") or 0.0)
         prev_wall = float(_PROCESS_CPU_LAST.get("wall") or 0.0)
-        _PROCESS_CPU_LAST["cpu_seconds"] = cpu_seconds
-        _PROCESS_CPU_LAST["wall"] = now
-    percent = 0.0
-    if prev_wall > 0 and now > prev_wall and cpu_seconds >= prev_cpu:
-        percent = max(0.0, 100.0 * (cpu_seconds - prev_cpu) / (now - prev_wall))
+        if prev_wall > 0 and 0.0 <= now - prev_wall < _PROCESS_CPU_MIN_WINDOW_SEC:
+            # 기준점은 그대로 둔다 — 다음 측정이 온전한 창을 갖는다.
+            percent = float(_PROCESS_CPU_LAST.get("percent") or 0.0)
+        else:
+            percent = 0.0
+            if prev_wall > 0 and now > prev_wall and cpu_seconds >= prev_cpu:
+                percent = max(0.0, 100.0 * (cpu_seconds - prev_cpu) / (now - prev_wall))
+            _PROCESS_CPU_LAST["cpu_seconds"] = cpu_seconds
+            _PROCESS_CPU_LAST["wall"] = now
+            _PROCESS_CPU_LAST["percent"] = percent
     budget = cpu_budget_cores()
     guard = guard_cores if guard_cores is not None else _env_float("FLOW_PROCESS_CPU_GUARD_CORES", budget, 0.1, 1024.0)
     try:
@@ -800,6 +880,12 @@ def _is_remote_path(path) -> bool:
         return False
 
 
+def _module_available(name: str) -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec(name) is not None
+
+
 def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
     """기동 로그용 요약 + 경고. 느린 서버에서 설정 오판을 로그 한 줄로 찾게 한다."""
     total_gb = float(system_memory_snapshot().get("system_memory_total_gb") or 0.0)
@@ -814,7 +900,27 @@ def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
         "polars_threads": os.environ.get("POLARS_MAX_THREADS", ""),
         "process_memory_limit_gb": process_memory_limit_gb(),
     }
+    try:
+        from core.paths import PATHS
+        info["prod"] = bool(PATHS.is_prod)
+    except Exception:
+        info["prod"] = None
+    info["duckdb"] = _module_available("duckdb")
+    info["orjson"] = _module_available("orjson")
     warnings: list[str] = []
+    # setup.py 최소 의존성에 둘 다 없던 시기가 있어, 현장 requirements.txt 없이 설치한 VM 에서 빠질 수 있다.
+    if not info["duckdb"]:
+        warnings.append("duckdb 가 설치되지 않았습니다 — 파일탐색기 대용량 SQL·집계가 느린 Polars 경로로 떨어집니다. "
+                        "conda env 에서 pip install duckdb 후 재기동하세요.")
+    if not info["orjson"]:
+        warnings.append("orjson 이 설치되지 않았습니다 — 큰 조회 응답 직렬화가 느린 표준 json 경로로 떨어집니다. "
+                        "conda env 에서 pip install orjson 후 재기동하세요.")
+    if info["prod"] is False and cores >= _LARGE_HOST_MIN_CORES and total_gb >= _LARGE_HOST_MIN_MEMORY_GB:
+        # 개발 모드는 SplitTable 계산을 Polars 1스레드로 묶고 캐시를 0.35배로 줄인다.
+        warnings.append(
+            "운영 모드(FLOW_PROD=1)가 아닙니다 — SplitTable 계산이 1코어로 제한되고 캐시가 작아집니다. "
+            "운영 서버면 scripts\\windows\\flow_run.bat 로 기동하거나 FLOW_PROD=1 을 지정하세요."
+        )
     if is_large_profile():
         if info["cpu_budget"] < cores:
             warnings.append(
@@ -843,6 +949,17 @@ def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
             f"{cores:g}코어인데 메모리가 {total_gb:.0f}GB 로 보여 '{info['profile']}' 프로파일로 동작합니다. "
             "VM 동적 메모리면 기동 시점 할당량만 보입니다 — 전용 서버면 FLOW_RESOURCE_PROFILE=large 를 지정하세요."
         )
+    commit = _windows_commit_bytes()
+    if commit and total_gb > 0:
+        limit_gb = float(commit.get("commit_limit_bytes") or 0.0) / (1024 ** 3)
+        info["commit_limit_gb"] = round(limit_gb, 1)
+        # 커밋 한도 = RAM + pagefile. pagefile 이 거의 없으면 캐시가 찼을 때 물리 메모리가
+        # 남아 있어도 할당이 MemoryError 로 실패한다.
+        if 0 < limit_gb < total_gb * 1.1:
+            warnings.append(
+                f"Windows 커밋 한도 {limit_gb:.0f}GB 가 메모리 {total_gb:.0f}GB 와 비슷합니다(pagefile 이 작거나 없음). "
+                "캐시가 차면 물리 메모리가 남아도 MemoryError 가 날 수 있습니다 — pagefile 을 시스템 관리 또는 "
+                "메모리의 25% 이상으로 두세요.")
     for label, path in (paths or {}).items():
         if _is_remote_path(path):
             warnings.append(f"{label}={path} 가 네트워크 드라이브입니다. 로컬 디스크로 옮기면 조회·저장이 빨라집니다.")

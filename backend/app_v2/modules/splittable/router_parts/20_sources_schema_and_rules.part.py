@@ -1444,11 +1444,12 @@ def get_prefixes():
 # step_ids, and produce both a structured `groups` payload and a label:
 #   GATE_PATTERN (AA200030/AA200040/AA200050) + PC_ETCH (AA200100/AA200110)
 def _load_csv_rows(fp: Path) -> list[dict]:
-    if not fp.is_file():
+    from core.utils import scoped_is_file, scoped_resolve, scoped_stat
+    if not scoped_is_file(fp):
         return []
     try:
-        st = fp.stat()
-        key = str(fp.resolve())
+        st = scoped_stat(fp)
+        key = scoped_resolve(fp)
         cached = _CSV_ROWS_CACHE.get(key)
         # nanosecond precision matters for rulebook edits followed immediately by
         # a metadata reload.  Float seconds can collapse two same-sized writes
