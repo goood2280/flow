@@ -897,6 +897,7 @@ def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
         "cores": cores,
         "memory_total_gb": round(total_gb, 1),
         "cpu_budget": cpu_budget_cores(),
+        "cpu_guard_cores": _env_float("FLOW_PROCESS_CPU_GUARD_CORES", cpu_budget_cores(), 0.1, 1024.0),
         "polars_threads": os.environ.get("POLARS_MAX_THREADS", ""),
         "process_memory_limit_gb": process_memory_limit_gb(),
     }
@@ -921,6 +922,11 @@ def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
             "운영 모드(FLOW_PROD=1)가 아닙니다 — SplitTable 계산이 1코어로 제한되고 캐시가 작아집니다. "
             "운영 서버면 scripts\\windows\\flow_run.bat 로 기동하거나 FLOW_PROD=1 을 지정하세요."
         )
+    if is_small_profile() and cores >= _LARGE_HOST_MIN_CORES and total_gb >= _LARGE_HOST_MIN_MEMORY_GB:
+        warnings.append(
+            f"FLOW_RESOURCE_PROFILE={resource_profile()}로 대형 호스트에 소형 예산을 적용합니다. "
+            "이전 서버의 설정이면 FLOW_RESOURCE_PROFILE=auto로 바꾸고 감시기까지 다시 기동하세요."
+        )
     if is_large_profile():
         if info["cpu_budget"] < cores:
             warnings.append(
@@ -943,6 +949,24 @@ def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
                 f"FLOW_PROCESS_MEMORY_LIMIT_GB={info['process_memory_limit_gb']:g} 는 "
                 f"감지된 메모리 {total_gb:g}GB의 절반 미만입니다. 이전 서버의 고정값인지 확인하세요."
             )
+        for name in ("FLOW_PROCESS_CPU_GUARD_CORES",):
+            try:
+                guard_cores = float(os.environ.get(name, ""))
+            except ValueError:
+                continue
+            if 0 < guard_cores < info["cpu_budget"]:
+                warnings.append(
+                    f"{name}={guard_cores:g}로 CPU 보호가 예산 {info['cpu_budget']:g}보다 일찍 작동합니다. "
+                    "이전 서버의 값이면 제거 후 감시기까지 다시 기동하세요. 의도한 제한이면 유지하세요."
+                )
+    try:
+        from core.cache_budget import diagnostics as cache_diagnostics
+
+        cache_info, cache_warnings = cache_diagnostics()
+        info.update(cache_info)
+        warnings.extend(cache_warnings)
+    except Exception:
+        pass
     if (not explicit and info["profile"] != "large" and cores >= _LARGE_HOST_MIN_CORES
             and 0 < total_gb < _LARGE_HOST_MIN_MEMORY_GB):
         warnings.append(

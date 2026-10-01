@@ -143,7 +143,8 @@ S3 연결만으로 로컬 용량이 줄거나 과거 자료가 자동 복원되�
 
 ## 설치 (Windows, Miniforge)
 
-요구 사항: Python 3.10 이상(Miniforge conda env), Node.js LTS(npm), `D:\DB`·`D:\flow-data` 읽기·쓰기 권한.
+요구 사항: Python 3.10 이상(Miniforge conda env), `D:\DB`·`D:\flow-data` 읽기·쓰기 권한.
+검증된 번들 화면을 그대로 쓰는 최초 설치에는 Node.js/npm이 필요하지 않습니다. 화면 소스를 수정해 재빌드할 때는 Node.js LTS(npm)가 필요합니다.
 
 1. **Python 환경** — Miniforge를 가능하면 "All Users"(`C:\ProgramData\miniforge3`)로 설치합니다(부팅 예약 작업이
    SYSTEM 계정으로 같은 파이썬을 쓰기 쉽습니다). `Miniforge Prompt`에서:
@@ -155,14 +156,23 @@ S3 연결만으로 로컬 용량이 줄거나 과거 자료가 자동 복원되�
    ```bat
    python setup.py
    ```
-   추출 → Python 의존성 → 프런트 빌드를 한 번에 합니다. 같은 폴더의 현장 `requirements.txt`가 있으면 그것을
-   씁니다(없을 때만 Flow 최소 의존성). 사내 패키지(`botocore`, `boto`, `awscli`, `bigdataquery`)는 버전
+   추출 → Python 의존성 → 프런트 확인을 한 번에 합니다. 같은 폴더의 현장 `requirements.txt`가 있으면 그것을
+   먼저 씁니다(없을 때만 Flow 최소 의존성). 묶음 설치가 실패하거나 Flow 패키지가 빠졌으면 필요한 패키지를
+   개별 재시도하므로 사내 저장소에 없는 패키지 하나가 다른 필수 패키지 설치까지 막지 않습니다.
+   사내 pip/npm 저장소 설정을 그대로 사용하며 외부 저장소로 우회하지 않습니다.
+   사내 패키지(`botocore`, `boto`, `awscli`, `bigdataquery`)는 버전
    표기를 빼 두면 충돌이 적습니다. 암호화 연락처와 WebSocket 로그인에 `cryptography`, `websockets`가 필요합니다.
    코드 에이전트(opencode)가 고칠 설치 폴더라면 `set FLOW_EXTRACT_ALL=1` 후 실행해 `AGENTS.md`·`docs/`·`tests/`까지 풉니다.
    **설치 마지막에 라이브러리 점검 표**가 나옵니다(`[check] OK/WARN/FAIL`, 설치 버전·최소 버전·번들을 만든 개발 PC 의
    검증 버전). 사내 저장소에서 버전이 다르거나 빠진 패키지를 여기서 확인하고, 설치 후
    `python setup.py check-deps`로 다시 볼 수 있습니다(결과 `install_check.json`, 필수 FAIL 이면 종료 코드 1).
-   필수(FAIL) 항목이 없어야 서버가 뜨고 로그인·조회가 됩니다. `FLOW_SETUP_STRICT=1`이면 필수 FAIL 때 설치도 실패로 끝납니다.
+   **미설치·최소 버전 부족·DLL/import 실패 패키지와 용도를 콘솔에 출력**하고 필수·성능·기능별 요약을 남깁니다.
+   필수(FAIL) 항목이 있으면 기본 설치도 종료 코드 1로 끝납니다. 앞 단계가 실패해도 마지막 점검을 수행합니다.
+   `install_check.json`에는 최종 사용 가능 상태와 설치 명령 실패·개별 재시도·단계별 종료 코드를 구분해 남깁니다.
+   필수 검사 통과 시 성능·선택 기능 누락은 WARN으로 진행할 수 있습니다. `FLOW_SETUP_STRICT=1`이면
+   설치 명령 실패도 실패로 끝납니다. 설치 목록과 점검 목록이 같으며 Polars ≥1.0, Pydantic ≥2.0, Websockets ≥11을 확인합니다.
+   프런트 소스·lockfile 지문과 모든 dist 파일 해시가 검증된 번들과 같으면 strict에서도 npm을 생략합니다.
+   재빌드가 필요한 경우 lockfile이 있으면 `npm ci`, 없으면 `npm install`을 사용합니다. npm 실패나 낡은/깨진 화면은 성공으로 처리하지 않습니다.
    OpenCode·oh-my-opencode는 이 설치 폴더를 작업 폴더로 열면 `AGENTS.md`를 자동으로 읽습니다. `/init`·`/init-deep`으로
    `AGENTS.md`를 다시 만들지 마세요(번들이 덮어쓰는 정본입니다).
 3. **기존 데이터 이전**(서버 이사 때) — 옛 서버의 Flow를 멈춘 뒤, 먼저 `-DryRun`으로 확인하고 실행합니다.
@@ -215,6 +225,11 @@ WIP(랏 현위치) 캐시 재빌드는 Polars 로 최신 행을 먼저 고른 �
 `scripts\windows\flow_ctl.bat perf`는 현장 환경설정을 읽어 **다음 기동에 적용될** 프로파일·실제 Polars 스레드·DuckDB 스레드·캐시 풀·동시 요청 수와 예약 합성 부하를 표시합니다.
 실행 중인 감시기의 환경은 읽지 않으므로 현재 기동 로그와 비교합니다. 스캔·부하 생성·설정 변경은 하지 않습니다.
 `large`인데 이전 서버의 CPU/메모리 고정값이 작게 남아 있으면 경고합니다. 의도한 제한이 아니라면 해당 값만 `.local.bat`/기동 환경에서 제거하고 감시기까지 다시 기동합니다.
+대형 호스트의 `small` 강제 설정, `FLOW_PROCESS_CPU_GUARD_CORES`, 캐시의 `pool_fraction`·`view_mb`와
+`FLOW_PREVIEW_MEMORY_CACHE_GB` 제한도 기동 로그와 `perf`에 표시합니다.
+캐시 설정은 환경변수가 우선하므로 경고에 나온 위치에서 해제합니다. 관리자 저장값은 캐시관리 ⚙에서 자동으로 되돌립니다.
+`perf`의 `cpu_guard_cores`는 큰 요청을 미루는 실제 CPU 보호 기준입니다.
+폐기된 root/product RAM 예열의 옛 설정은 현재 자원 제한으로 진단하지 않습니다.
 `taskkill /IM python.exe`처럼 다른 파이썬까지 끄지 마세요.
 
 접속 주소는 `http://<서버주소>:8080`입니다.
@@ -254,7 +269,7 @@ SYSTEM 계정으로 감시기를 실행하므로 DB/data 접근 권한과 LLM·�
 2. 백업: `python scripts/preflight_internal.py --write-probe --backup-now`
 3. 정지: 예약 작업으로 운영 중이면 `Disable-ScheduledTask -TaskName FlowWebApp` 후 `flow_ctl.bat stop`, `status`로 종료 확인
 4. 추출: `set FLOW_SETUP_STRICT=1` 후 `python setup.py extract` — 종료 코드와 `extract_report.json` 확인
-   (STRICT가 없으면 일부 파일 쓰기 실패도 exit 0으로 끝나 반쯤 갱신된 상태를 놓칩니다)
+   (새 설치기는 STRICT 없이도 파일 쓰기 실패·불완전한 화면 파일을 실패로 끝냅니다. 구버전 설치기에는 STRICT가 필요합니다)
    opencode로 고치는 설치 폴더는 `python setup.py extract --all`을 씁니다. 기본 추출은 `AGENTS.md`·`docs/`·`tests/`를
    갱신하지 않아 에이전트가 옛 지침·코드 지도를 읽게 됩니다. VM에서 고친 소스는 추출 전에 로컬 git 커밋으로 남깁니다.
 5. 의존성이 바뀐 경우만: `python setup.py install-deps`

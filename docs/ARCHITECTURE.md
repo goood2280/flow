@@ -35,6 +35,7 @@ FLOW_DATA_ROOT               사용자 기록·설정·로그·대화(sqlite)
 - 운영: Windows VM 1대, 8 논리 코어·128GB(현장 기준). 개발 worker 로 넘기던 구조는 2026-09-30 폐지 — 모든 작업이 이 1대에서 돈다.
 - `core/runtime_limits.py` 가 호스트를 보고 프로파일을 고른다: 64GB·8코어 이상이면 `large`.
   large 기본: Polars·DuckDB 스레드 = 코어 수, 프로세스 상한 ≈ 총량×0.78, 캐시 풀 = 총량×0.6×0.8(128GB 면 약 61GB).
+  이전 CPU 가드·소형 프로파일·활성 캐시 제한은 기동 로그와 `scripts/check_flow_performance.py`에서 진단하며 자동 삭제하지 않는다.
 - **GIL**: 파이썬 코드는 프로세스당 사실상 1코어다. 여러 코어를 쓰는 것은 Polars/DuckDB 내부 계산뿐이다.
   행 단위 파이썬 루프는 전체 서버를 느리게 한다 → 선택·집계는 Polars 로, 파이썬 객체는 줄어든 결과에만 만든다.
   오래 도는 파이썬 계산은 자식 프로세스로 보내고 결과는 파일로 받는다(`core/splittable_prewarm_process.py` 패턴).
@@ -120,6 +121,9 @@ React 18 + Vite SPA. 탭 목록은 `frontend/src/app/pageManifest.jsx`, 화면�
 
 `python _build_setup.py` → `frontend/dist` 재빌드 + 자기추출 `setup.py`(소스 전체 번들). 현장에서 `python setup.py` 가 추출 →
 의존성 설치 → 프런트 빌드(가능하면) → **라이브러리 점검 표**(`check-deps`, `install_check.json`) 순으로 돈다.
+묶음 pip 실패·누락은 개별 재시도하고, 최종 표는 앞 단계 실패 뒤에도 출력한다. 필수 패키지 미설치·버전 부족·import 실패는
+기본 설치에서도 실패 종료한다. 설치 명령 실패와 실제 사용 가능 상태는 JSON에 따로 남긴다.
+프런트는 소스·lock 지문 및 모든 dist 자산 해시가 일치하면 strict에서도 npm 없이 재사용하고, 재빌드 시 `npm ci`를 쓴다.
 기본 추출은 `docs/`·`tests/`·`AGENTS.md` 를 풀지 않는다 — 코드 에이전트가 쓸 설치 폴더는 `extract --all`.
 새 backend 모듈은 `backend/app.py` `_REQUIRED_BUNDLED_BACKEND_SOURCES`, 새 최상위 파일은 `_build_setup.py` 포함 목록 두 곳에 넣는다.
 

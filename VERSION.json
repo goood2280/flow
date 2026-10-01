@@ -1,7 +1,20 @@
 {
-  "version": "10.4.319",
+  "version": "10.4.321",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.321",
+      "date": "2026-10-02",
+      "tag": "fix",
+      "title": "VM 활성 자원 예산 진단과 최초 설치 실패 처리 보완",
+      "changes": [
+        "[자원 확인] 8코어/128GiB auto·large 호스트의 공용 CPU·Polars 예산 8코어와 캐시 풀 61.44GiB를 검증했다. root/product RAM 예열은 이미 폐기되어 해당 경로의 옛 2코어 기준은 변경하지 않는다.",
+        "[진단] 대형 호스트에 남은 small 프로파일, 실제 CPU 보호 기준, 활성 캐시 pool_fraction·view_mb·파일탐색기 메모리 제한을 기동 로그와 flow_ctl.bat perf에 알린다. 운영자가 저장한 값은 자동 삭제하지 않는다.",
+        "[설치] 설치와 점검 패키지 목록을 통일하고 최소 버전을 적용한다. 묶음 pip 실패·현장 requirements 누락은 필요한 패키지만 개별 재시도한다. 마지막에 미설치·버전 부족·DLL/import 실패와 기능 영향을 출력하고 install_check.json에 단계·명령 실패와 최종 상태를 구분한다. 필수 실패는 strict 없이도 실패 종료하며, 앞 단계 실패 뒤에도 점검 표를 남긴다.",
+        "[프런트 설치] frontend/package-lock.json을 번들에 포함하고 소스 지문에 반영한다. 소스·lock 및 모든 dist 자산 해시가 검증된 번들과 같으면 strict에서도 npm을 생략한다. 재빌드는 npm ci를 사용하며 npm 실패·낡거나 깨진 dist·추출 쓰기 실패를 설치 성공으로 넘기지 않는다.",
+        "[검증] 격리 root의 관련 pytest 59개, frontend 디자인·구조 검사와 production 빌드 통과. 빈 venv·저장소 차단 설치는 필수 10개 누락 출력 후 exit 1, 의존성 보유 환경은 exit 0. strict 번들 재사용과 추출 앱의 /health·/·/version.json 및 주요 라우터를 확인했다. 사내 패키지 저장소의 실제 가용성 및 운영 VM 혼합 부하 성능은 미측정이다."
+      ]
+    },
     {
       "version": "10.4.319",
       "date": "2026-10-01",

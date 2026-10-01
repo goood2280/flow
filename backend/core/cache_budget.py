@@ -237,3 +237,46 @@ def overview() -> dict:
         # 명시 예산일 때 적용되는 상한 — 화면에서 "설정값이 왜 깎였나"를 설명한다.
         "caps_explicit": {name: cap_bytes(name, ignore_role_factor=True) for name in SHARES},
     }
+
+
+def diagnostics() -> tuple[dict, list[str]]:
+    """Report effective budgets and restrictive saved overrides without editing them."""
+    info = overview()
+    summary = {
+        "cache_pool_gb": round(info["pool_bytes"] / 1024**3, 2),
+        "cache_pool_fraction": info["pool_fraction"],
+        "cache_memory_target_ratio": info["memory_target_ratio"],
+    }
+    warnings: list[str] = []
+    if not large_host():
+        return summary, warnings
+    from core import cache_settings
+
+    if info["pool_fraction"] < _LARGE_POOL_FRACTION_DEFAULT:
+        source = "FLOW_CACHE_TOTAL_BUDGET_FRACTION" if os.environ.get(
+            "FLOW_CACHE_TOTAL_BUDGET_FRACTION", ""
+        ).strip() else "cache_budget_settings.json: pool_fraction"
+        warnings.append(
+            f"{source} 적용값 {info['pool_fraction']:g}가 large 자동값 "
+            f"{_LARGE_POOL_FRACTION_DEFAULT:g}보다 작습니다. 이전 서버의 값이면 "
+            "해당 환경변수를 제거하거나 캐시관리 설정을 자동으로 되돌리세요."
+        )
+    for key, env, cache, unit in (
+        ("view_mb", "FLOW_SPLITTABLE_VIEW_CACHE_MAX_MB", "splittable_view_payload", 1024**2),
+        (None, "FLOW_PREVIEW_MEMORY_CACHE_GB", "filebrowser_preview", 1024**3),
+    ):
+        raw = os.environ.get(env, "").strip()
+        source = env if raw or key is None else "cache_budget_settings.json: " + key
+        value = raw if raw else (cache_settings.get_float_role(key, False) if key else None)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        cap = info["caps"][cache]
+        if 0 < value * unit < cap:
+            warnings.append(
+                f"{source}={value:g}가 {cache}의 현재 풀 지분 "
+                f"{cap / unit:.1f}보다 작게 고정되어 있습니다. 의도한 제한이면 유지하고, "
+                "이전 서버의 값이면 해당 환경변수를 제거하거나 캐시관리 설정을 자동으로 되돌리세요."
+            )
+    return summary, warnings

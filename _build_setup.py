@@ -88,6 +88,7 @@ INCLUDE_FILES = [
     'backend/scheduler.py',
     'frontend/index.html',
     'frontend/package.json',
+    'frontend/package-lock.json',
     'frontend/vite.config.js',
     # 에이전트 진입점 + 저장소 위생 규칙 + 번들 빌더 자신.
     # _build_setup.py 가 빠지면 setup.py 를 다시 만들 수단이 사라진다.
@@ -232,7 +233,7 @@ def to_rel_posix(p):
 # 다시 계산해 비교한다. 같으면 npm 을 아예 돌릴 필요가 없다.
 # 주의: 이 함수는 생성되는 setup.py 안에도 같은 내용으로 들어간다. 한쪽만 고치면
 # 지문이 영원히 불일치해서 서버가 매번 npm 을 시도한다. 반드시 양쪽을 같이 고칠 것.
-_FE_STAMP_EXTRA = ('package.json', 'vite.config.js', 'vite.config.mjs',
+_FE_STAMP_EXTRA = ('package.json', 'package-lock.json', 'vite.config.js', 'vite.config.mjs',
                    'vite.config.ts', 'index.html')
 
 
@@ -300,6 +301,8 @@ def ensure_frontend_build() -> dict:
         'built_at': datetime.datetime.now().isoformat(timespec='seconds'),
         'dist_files': dist_files,
         'verified': not skip and shutil.which('npm') is not None,
+        'dist_sha256': {p.relative_to(fe / 'dist').as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+                        for p in sorted((fe / 'dist').rglob('*')) if p.is_file()},
     }
     print(f"[build] frontend stamp src_sha={sha[:16]} dist_files={dist_files} verified={stamp['verified']}")
     return stamp
@@ -333,7 +336,7 @@ DEPENDENCY_CHECKS = [
     (("fastapi",), "fastapi", None, "required", "웹 서버"),
     (("uvicorn",), "uvicorn", None, "required", "웹 서버 실행"),
     (("python_multipart", "multipart"), "python-multipart", None, "required", "파일 업로드·폼(없으면 서버 기동 실패)"),
-    (("pydantic",), "pydantic", None, "required", "요청 검증"),
+    (("pydantic",), "pydantic", "2.0", "required", "요청 검증·설정 저장(model_dump 필요)"),
     (("polars",), "polars", "1.0", "required", "SplitTable·파일탐색기 계산(1.0 미만은 collect_schema 없음)"),
     (("pyarrow",), "pyarrow", None, "required", "parquet 읽기·쓰기"),
     (("pandas",), "pandas", None, "required", "표 처리·TEG·엑셀"),
@@ -479,7 +482,7 @@ FRONTEND_STAMP = {frontend_stamp!r}
 DOMAIN_KNOWLEDGE_PAYLOAD = {domain_knowledge_payload!r}
 DEPENDENCY_CHECKS = {DEPENDENCY_CHECKS!r}
 DEP_TESTED_VERSIONS = {tested_dependency_versions()!r}
-_FE_STAMP_EXTRA =('package.json', 'vite.config.js', 'vite.config.mjs',
+_FE_STAMP_EXTRA =('package.json', 'package-lock.json', 'vite.config.js', 'vite.config.mjs',
                    'vite.config.ts', 'index.html')
 
 
@@ -1101,11 +1104,23 @@ def _has(cmd: str) -> bool:
 
 
 def _ensure_pip_ready() -> None:
-    rc = _run(f"{sys.executable} -m pip --version", cwd=ROOT, timeout=30)
+    def run_python(args, timeout):
+        argv = [sys.executable, *args]
+        print("\\n$ (" + ROOT.name + ") " + ' '.join(shlex.quote(p) for p in argv))
+        try:
+            return subprocess.run(argv, cwd=str(ROOT), timeout=timeout).returncode
+        except subprocess.TimeoutExpired:
+            print(f"  -> TIMEOUT after {timeout}s - skipping")
+            return 124
+        except FileNotFoundError as e:
+            print(f"  -> not found: {e}")
+            return 127
+
+    rc = run_python(['-m', 'pip', '--version'], 30)
     if rc == 0:
         return
     print("[deps] python -m pip is not ready; trying ensurepip bootstrap")
-    _run(f"{sys.executable} -m ensurepip --upgrade", cwd=ROOT, timeout=120)
+    run_python(['-m', 'ensurepip', '--upgrade'], 120)
 
 
 def _pip_install(pkgs: list[str], timeout: int | None = None) -> int:
@@ -1123,45 +1138,62 @@ def _pip_install(pkgs: list[str], timeout: int | None = None) -> int:
         return 127
 
 
-def _ensure_critical_deps() -> None:
-    """extract 만 실행한 운영 서버에도 화면별 필수 의존성을 자동 설치.
+_INSTALL_ATTEMPTS = []
+_SETUP_STAGES = {}
 
-    예전에는 엑셀 3종만 확인해서, 개발 환경에 우연히 있던 pandas/numpy가 깨끗한
-    운영 이미지에는 없는 경우 TEG API가 500이 되고 화면은 이를 'layout 없음'으로
-    오인했다. requirements와 같은 핵심 런타임을 확인하되 이미 import 되면 skip.
-    """
-    critical = {
-        'pandas': 'pandas',
-        'numpy': 'numpy',
-        'polars': 'polars',
-        'pyarrow': 'pyarrow',
-        'duckdb': 'duckdb',
-        'orjson': 'orjson',   # 큰 조회 응답 직렬화(core/json_fast.py)
-        'PIL': 'pillow',
-        'openpyxl': 'openpyxl',
-        'xlsxwriter': 'xlsxwriter',
-        'xlrd': 'xlrd',
-        'matplotlib': 'matplotlib',
-        'pptx': 'python-pptx',
-        'dotenv': 'python-dotenv',
-        'requests': 'requests',
-        'yaml': 'pyyaml',
-        'psutil': 'psutil',               # 메모리 감시·자원 보호
-        'cryptography': 'cryptography',   # 사내 로그인 연락처 암호화
-        'multipart': 'python-multipart',  # 업로드·폼(없으면 서버 기동 실패)
-        'websockets': 'websockets',       # WebSocket 로그인 재검증
-    }
-    missing = []
-    for mod, package in critical.items():
-        try:
-            __import__(mod)
-        except Exception:
-            missing.append(package)
-    if not missing:
-        return
-    print(f"[deps] ensure critical: {', '.join(missing)}")
-    # 오프라인/프록시 환경에서 pip 가 무한 대기하지 않도록 timeout.
-    _pip_install(missing, timeout=180)
+
+def _dependency_spec(dist, minimum):
+    return dist + ((">=" + minimum) if minimum else "")
+
+
+def _dependency_issues(rows):
+    """Return every unanswered, missing, too-old, or import-broken dependency."""
+    by_dist = {str(row.get('dist')): row for row in (rows or [])}
+    issues = []
+    for imports, dist, minimum, level, purpose in DEPENDENCY_CHECKS:
+        row = by_dist.get(dist)
+        installed = str((row or {}).get('installed') or '')
+        error = str((row or {}).get('error') or '')
+        reason = ''
+        if row is None:
+            reason = '점검 응답 없음'
+        elif error:
+            reason = 'import 실패: ' + error
+        elif not installed:
+            reason = '설치 버전 확인 불가'
+        elif minimum and _version_tuple(installed) < _version_tuple(minimum):
+            reason = '최소 ' + minimum + ' 미만 (' + installed + ')'
+        if reason:
+            issues.append({'dist': dist, 'spec': _dependency_spec(dist, minimum),
+                           'level': level, 'purpose': purpose, 'reason': reason})
+    return issues
+
+
+def _record_install(kind, packages, rc):
+    _INSTALL_ATTEMPTS.append({'kind': kind, 'packages': list(packages), 'returncode': int(rc)})
+
+
+def _ensure_checked_deps() -> list[str]:
+    """Retry unresolved packages one by one so one unavailable extra cannot block the rest."""
+    rows, probe_error = _probe_dependency_rows()
+    if probe_error:
+        print('[deps] 설치 후 점검 경고: ' + probe_error)
+    issues = _dependency_issues(rows)
+    if not issues:
+        return []
+    print('[deps] 개별 재시도 필요: ' + ', '.join(item['spec'] for item in issues))
+    failed = []
+    for item in issues:
+        rc = _pip_install([item['spec']], timeout=180)
+        _record_install('individual', [item['spec']], rc)
+        if rc != 0:
+            failed.append(item['dist'])
+            print('[deps] FAIL 개별 설치: ' + item['dist'] + ' (rc=' + str(rc)
+                  + ', 등급=' + item['level'] + ')', file=sys.stderr)
+    if failed:
+        print('[deps] 설치 명령 실패 패키지: ' + ', '.join(failed)
+              + ' — 아래 최종 점검은 현재 실제 사용 가능 상태를 별도로 표시합니다.', file=sys.stderr)
+    return failed
 
 
 def _seed_domain_knowledge() -> None:
@@ -1517,55 +1549,34 @@ def extract(argv: list = None) -> int:
             print(f"  - {rel}: {err}", file=sys.stderr)
         if len(_WRITE_FAILURES) > 20:
             print(f"  ... 외 {len(_WRITE_FAILURES) - 20}개", file=sys.stderr)
-        if _setup_strict():
-            print("[extract] FLOW_SETUP_STRICT=1 — 쓰기 실패로 실패 처리(exit 1)", file=sys.stderr)
-            return 1
+        print("[extract] 쓰기 실패로 추출 단계를 실패 처리(exit 1)", file=sys.stderr)
+        return 1
     if dist_missing:
         print(f"[extract] FAIL frontend/dist 불완전 — index.html 이 참조하는 파일 누락: "
               f"{', '.join(dist_missing)}", file=sys.stderr)
-        if _setup_strict():
-            return 1
+        return 1
     return 0
 
 
 def install_deps() -> int:
+    _INSTALL_ATTEMPTS.clear()
     req = ROOT / 'requirements.txt'
     if req.is_file():
         print(f'[deps] using existing operator-managed requirements: {req}')
-        rc = _pip_install(['-r', str(req)])
-        # 현장 requirements.txt 에 성능 경로 패키지(duckdb·orjson 등)가 빠져 있어도 채운다.
-        # 실패해도 설치를 멈추지 않는다 — 서버는 느린 경로로 동작하고 기동 로그가 경고한다.
-        _ensure_critical_deps()
-        return rc
+        rc = _pip_install(['-r', str(req)], timeout=600)
+        _record_install('requirements', ['-r', str(req)], rc)
+        failed = _ensure_checked_deps()
+        return 1 if rc or failed else 0
 
     print('[deps] requirements.txt not found - installing Flow minimum dependencies')
-    pkgs = [
-        'fastapi', 'uvicorn[standard]', 'pandas', 'pyarrow', 'polars', 'numpy',
-        'python-multipart', 'boto3', 'scikit-learn', 'scipy',
-        'cryptography', 'websockets',  # company login and encrypted manager contacts
-        'openpyxl', 'xlsxwriter', 'xlrd',
-        'matplotlib', 'python-pptx', 'python-dotenv',
-        'pillow',   # TEG shot 그림에서 die 사각형 인식 (core/teg_shape.py)
-        'psutil',   # 시스템 모니터 (core/sysmon.py)
-        'duckdb',   # 파일탐색기 대용량 SQL·집계 (core/duckdb_engine.py, 없으면 Polars 폴백)
-        'orjson',   # 큰 응답 JSON 직렬화 (core/json_fast.py, 없으면 표준 json)
-    ]
-    rc = _pip_install(pkgs)
-    if rc != 0:
-        # 제한된 사내망에서 pip registry 접근 실패 가능 — 앱 구동에 필요한 핵심
-        # 패키지가 이미 설치돼 있으면 파이프라인을 중단하지 않는다(경고). FLOW_SETUP_STRICT=1 이면 엄격.
-        missing = []
-        for mod in ('fastapi', 'uvicorn', 'polars', 'pandas', 'pyarrow', 'numpy', 'psutil'):
-            try:
-                __import__(mod)
-            except Exception:
-                missing.append(mod)
-        if not missing and not _setup_strict():
-            print(f'[deps] pip 설치 실패(rc={rc}) - 핵심 패키지는 이미 설치됨, 파이프라인 계속')
-            return 0
-        if missing:
-            print(f'[deps] pip 실패 + 미설치 핵심 패키지: {", ".join(missing)}', file=sys.stderr)
-    return rc
+    # DEPENDENCY_CHECKS 가 설치와 최종 점검의 단일 원천이다. uvicorn[standard] 같은
+    # optional extra 를 필수 batch 에 넣지 않아 사내 mirror 의 extra 하나가 전체 설치를 막지 않는다.
+    pkgs = [_dependency_spec(dist, minimum)
+            for _imports, dist, minimum, _level, _purpose in DEPENDENCY_CHECKS]
+    rc = _pip_install(pkgs, timeout=600)
+    _record_install('flow-minimum-batch', pkgs, rc)
+    failed = _ensure_checked_deps()
+    return 1 if rc or failed else 0
 
 
 def _setup_strict() -> bool:
@@ -1612,30 +1623,38 @@ def _dist_intact(fe) -> bool:
     return True
 
 
+def _bundled_dist_matches(fe) -> bool:
+    """Verify every shipped asset, including lazy page chunks not referenced by index.html."""
+    hashes = FRONTEND_STAMP.get('dist_sha256') or {}
+    if not hashes:
+        return False
+    try:
+        return all(hashlib.sha256((fe / 'dist' / name).read_bytes()).hexdigest() == sha
+                   for name, sha in hashes.items())
+    except OSError:
+        return False
+
+
 def build_frontend() -> int:
     fe = ROOT / 'frontend'
-    # 이미 빌드된 산출물(git 커밋/이전 배포)이 있으면, 제한된 사내망에서 npm registry
-    # 접근 실패로 install/build 가 깨져도 파이프라인을 중단하지 않고 기존 dist 로 계속한다.
-    # (dist 는 setup.py 번들엔 없지만 git 체크아웃에는 포함 — deployment dist remains tracked)
+    # 소스/lock 및 모든 자산이 검증된 번들과 같으면 npm 없이 설치할 수 있다.
     dist_ok = _dist_intact(fe)
-    strict = _setup_strict()
-
     # 번들에 실린 dist 가 지금 추출된 frontend/src 와 같은 소스에서 나왔으면 npm 을
     # 아예 시도하지 않는다. 사내망에서는 registry 접근이 막혀 install/build 가 수 분
     # 걸려 실패한 뒤 어차피 이 dist 로 되돌아온다 — 그 경로를 통째로 없앤다.
-    if dist_ok and not strict and FRONTEND_STAMP.get('src_sha'):
+    if dist_ok and FRONTEND_STAMP.get('verified') and FRONTEND_STAMP.get('src_sha'):
         try:
             current = _frontend_src_fingerprint()
         except Exception as e:
             current = ''
             print(f'[npm] frontend 지문 계산 실패 - 통상 경로로 진행: {e}')
-        if current and current == FRONTEND_STAMP['src_sha']:
+        if current and current == FRONTEND_STAMP['src_sha'] and _bundled_dist_matches(fe):
             print(f"[npm] prebuilt frontend/dist 가 현재 소스와 일치 - npm 생략 "
                   f"(built {FRONTEND_STAMP.get('built_at', '?')}, "
                   f"{FRONTEND_STAMP.get('dist_files', 0)} files)")
             return 0
         if current:
-            print('[npm] WARN prebuilt frontend/dist 가 현재 frontend/src 와 다릅니다 - 재빌드를 시도합니다')
+            print('[npm] WARN 소스·lock 또는 dist 자산이 검증된 번들과 다릅니다 - 재빌드를 시도합니다')
 
     def _ok_or(rc, where):
         if rc == 0:
@@ -1643,34 +1662,34 @@ def build_frontend() -> int:
         # 실패한 뒤에는 dist 를 '지금' 다시 본다. 위에서 잡아둔 dist_ok 는 빌드 시작 전
         # 스냅샷이라, vite 가 emptyOutDir 로 방금 지워버린 dist 를 근거로 '기존 dist 사용'
         # 이라고 잘못 보고할 수 있다 — 그게 첫 화면이 죽는 경로다.
-        if _dist_intact(fe) and not strict:
-            print(f'[npm] {where} 실패(rc={rc}) - 기존 빌드된 frontend/dist 사용, 파이프라인 계속')
-            print('[npm]   -> dist 가 소스와 다르면 화면이 과거 버전으로 뜹니다. '
-                  '개발 PC에서 python _build_setup.py 로 번들을 다시 만드세요.')
-            return 0
-        print(f'[npm] {where} 실패(rc={rc}) - frontend/dist 가 온전하지 않습니다'
-              ' (index.html 이 참조하는 /assets 파일이 없음).', file=sys.stderr)
-        print('[npm]   -> 이 상태로 올리면 첫 화면이 "앱 파일을 서버에서 받지 못했습니다" 로 뜹니다. '
+        state = ('온전하지 않습니다 (index.html 이 참조하는 /assets 파일이 없음)'
+                 if not _dist_intact(fe) else '현재 소스와 일치한다고 검증되지 않았습니다')
+        print(f'[npm] {where} 실패(rc={rc}) - frontend/dist 가 ' + state + '.', file=sys.stderr)
+        print('[npm]   -> 사내 npm 저장소·Node 버전과 위 오류를 확인하거나, '
               '개발 PC에서 python _build_setup.py 로 번들을 다시 만들어 배포하세요.', file=sys.stderr)
         return rc
 
     if not (fe / 'package.json').exists():
         print('frontend/package.json not found - skipping', file=sys.stderr)
-        return 1 if (strict or not dist_ok) else 0
+        return 1
     if not _has('npm'):
-        if dist_ok:
-            print('[npm] not found - skip frontend install/build (기존 dist 사용)')
-            return 0
-        print('[npm] not found - frontend/dist 도 온전하지 않아 띄울 화면이 없습니다', file=sys.stderr)
+        print('[npm] npm 실행 파일을 찾지 못했습니다 - 검증된 동일 소스 dist 를 재사용할 수 없고 '
+              'frontend 를 빌드할 수 없습니다', file=sys.stderr)
         return 1
     if (ROOT / 'package.json').exists():
-        rc = _ok_or(_run('npm install', cwd=ROOT), 'root npm install')
+        root_cmd = 'npm ci' if (ROOT / 'package-lock.json').is_file() else 'npm install'
+        rc = _ok_or(_run(root_cmd, cwd=ROOT, timeout=600), 'root ' + root_cmd)
         if rc != 0:
             return rc
-    rc = _ok_or(_run('npm install', cwd=fe), 'frontend npm install')
+    install_cmd = 'npm ci' if (fe / 'package-lock.json').is_file() else 'npm install'
+    rc = _ok_or(_run(install_cmd, cwd=fe, timeout=600), 'frontend ' + install_cmd)
     if rc != 0:
         return rc
-    return _ok_or(_run('npm run build', cwd=fe), 'npm run build')
+    rc = _ok_or(_run('npm run build', cwd=fe, timeout=600), 'npm run build')
+    if not rc and not _dist_intact(fe):
+        print('[npm] FAIL 빌드 명령은 성공했지만 frontend/dist 자산이 없습니다', file=sys.stderr)
+        return 1
+    return rc
 
 
 def print_version() -> int:
@@ -1758,6 +1777,36 @@ def _dep_probe() -> int:
     return 0
 
 
+def _probe_dependency_rows(timeout=300):
+    """Run imports in a fresh interpreter and return (rows, diagnostic)."""
+    try:
+        proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "_dep-probe"],
+                              cwd=str(ROOT), capture_output=True, text=True, timeout=timeout,
+                              encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return [], "점검 프로세스 실패: " + type(exc).__name__ + ": " + str(exc)
+    rows = []
+    parse_error = ''
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("FLOW_DEP_PROBE "):
+            try:
+                rows = json.loads(line[len("FLOW_DEP_PROBE "):])
+                if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+                    rows = []
+                    parse_error = "점검 결과 형식 오류"
+            except Exception as exc:
+                rows = []
+                parse_error = "점검 결과 JSON 해석 실패: " + str(exc)
+    diagnostics = []
+    if proc.returncode != 0:
+        diagnostics.append("점검 프로세스 rc=" + str(proc.returncode))
+    if parse_error:
+        diagnostics.append(parse_error)
+    if not rows:
+        diagnostics.append("점검 결과 없음")
+    return rows, "; ".join(diagnostics)
+
+
 def check_deps(*, strict_exit: bool = False) -> int:
     """설치가 끝난 뒤 필요한 라이브러리가 조건대로 있는지 표로 출력하고 install_check.json 에 남긴다.
 
@@ -1767,16 +1816,9 @@ def check_deps(*, strict_exit: bool = False) -> int:
     print("[check] 설치 점검 — Python " + ".".join(str(p) for p in sys.version_info[:3]) + " · " + sys.executable)
     print("[check] TESTED = 이 번들을 만든 개발 PC 의 버전(Python " + str(DEP_TESTED_VERSIONS.get("python") or "?")
           + "). 주 버전이 다르면 WARN 으로 알린다.", flush=True)
-    rows = []
-    try:
-        proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "_dep-probe"],
-                              cwd=str(ROOT), capture_output=True, text=True, timeout=300,
-                              encoding="utf-8", errors="replace")
-        for line in (proc.stdout or "").splitlines():
-            if line.startswith("FLOW_DEP_PROBE "):
-                rows = json.loads(line[len("FLOW_DEP_PROBE "):])
-    except Exception as exc:
-        print("[check] 점검 프로세스 실패: " + str(exc), file=sys.stderr)
+    rows, probe_error = _probe_dependency_rows()
+    if probe_error:
+        print("[check] " + probe_error, file=sys.stderr)
     by_dist = {row.get("dist"): row for row in rows}
     results = []
     counts = {"FAIL": 0, "WARN": 0, "OK": 0}
@@ -1794,10 +1836,16 @@ def check_deps(*, strict_exit: bool = False) -> int:
         if not rows:
             notes.append("점검 불가")
             bad = True
+        elif dist not in by_dist:
+            notes.append("점검 응답 없음")
+            bad = True
         elif error:
             notes.append("import 실패 — " + error if installed else "설치되지 않음")
             bad = True
-        elif minimum and _version_tuple(installed) and _version_tuple(installed) < _version_tuple(minimum):
+        elif not installed:
+            notes.append("설치 버전 확인 불가")
+            bad = True
+        elif minimum and _version_tuple(installed) < _version_tuple(minimum):
             notes.append("최소 " + minimum + " 미만")
             bad = True
         if not bad and tested and installed and _major(installed) != _major(tested):
@@ -1828,23 +1876,42 @@ def check_deps(*, strict_exit: bool = False) -> int:
         print("[check] INFO " + tool + ": " + ("있음" if _has(tool) else "없음 — frontend/src 를 고쳐도 다시 빌드할 수 없습니다(번들 dist 사용)"))
     required_fail = [r["package"] for r in results if r["status"] == "FAIL"]
     warn = [r["package"] for r in results if r["status"] == "WARN"]
+    summary = {}
+    labels = {"required": "필수", "perf": "성능", "feature": "기능"}
+    for level in ("required", "perf", "feature"):
+        selected = [r for r in results if r["level"] == level]
+        failed = [r["package"] for r in selected if r["status"] != "OK"]
+        summary[level] = {"total": len(selected), "ok": len(selected) - len(failed),
+                          "problems": failed}
+        print("[check] 요약 " + labels[level] + ": " + str(len(selected) - len(failed))
+              + "/" + str(len(selected)) + " OK"
+              + ((" — " + ", ".join(failed)) if failed else ""))
+    command_failures = [item for item in _INSTALL_ATTEMPTS if item.get('returncode')]
     report = {"checked_at": datetime.datetime.now().isoformat(timespec="seconds"),
               "python": sys.executable, "version": VERSION, "results": results,
-              "required_failures": required_fail, "warnings": warn}
+              "probe_error": probe_error, "summary": summary,
+              "required_failures": required_fail, "warnings": warn,
+              "installation": {"stages": dict(_SETUP_STAGES), "attempts": list(_INSTALL_ATTEMPTS),
+                               "command_failures": command_failures}}
+    report_written = True
     try:
         (ROOT / "install_check.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    except Exception as exc:
+        report_written = False
+        print("[check] FAIL install_check.json 쓰기 실패: " + str(exc), file=sys.stderr)
     if required_fail:
         print("[check] FAIL 필수 " + str(len(required_fail)) + "개: " + ", ".join(required_fail)
               + " — 서버가 뜨지 않거나 로그인·조회가 실패합니다. 사내 저장소에서 해당 패키지를 설치한 뒤 "
               + "python setup.py check-deps 로 다시 확인하세요.", flush=True)
     if warn:
         print("[check] WARN " + str(len(warn)) + "개: " + ", ".join(warn) + " — 해당 기능이 느리거나 실패할 수 있습니다.")
+    if command_failures:
+        print("[check] WARN 설치 명령 실패 " + str(len(command_failures))
+              + "건 — install_check.json의 installation에서 재시도 결과와 함께 확인하세요.")
     if not required_fail and not warn:
         print("[check] OK 필요한 라이브러리가 모두 조건대로 설치되어 있습니다.")
     print("[check] 결과 파일: " + str(ROOT / "install_check.json"))
-    if required_fail and (strict_exit or _setup_strict()):
+    if required_fail or not report_written:
         return 1
     return 0
 
@@ -1859,24 +1926,30 @@ def install_deps_command() -> int:
     return rc or rc_check
 
 
+def _setup_stage(name, fn):
+    try:
+        rc = int(fn() or 0)
+    except Exception as exc:
+        print('[setup] FAIL ' + name + ': ' + type(exc).__name__ + ': ' + str(exc), file=sys.stderr)
+        rc = 1
+    _SETUP_STAGES[name] = rc
+    return rc
+
+
 def all_steps() -> int:
-    # CI/CD durable task(=python setup.py)에서 파이프라인이 exit 1 로 abort 되지 않도록
-    # best-effort 로 진행한다. 핵심은 소스 추출(extract) — 성공하면 배포는 성공으로 본다.
-    # install_deps(pip)/build_frontend(npm)는 사내망/CI 에이전트에서 registry 접근 실패로
-    # 깨질 수 있으나, 이미 설치된 deps + 커밋된 frontend/dist 로 앱이 구동되므로 경고만
-    # 남기고 계속한다. 엄격 검증이 필요하면 FLOW_SETUP_STRICT=1.
+    # 어느 단계가 실패해도 최종 dependency report 를 남긴다. 설치 명령의 실패와
+    # 실제 import 가능 상태는 구별하며, required FAIL 은 strict 와 무관하게 실패다.
     strict = _setup_strict()
-    rc_extract = extract()
+    _SETUP_STAGES.clear()
+    rc_extract = _setup_stage('extract', extract)
     if rc_extract != 0:
         print(f"[setup] extract 실패(rc={rc_extract}) - 소스 추출 단계는 필수", file=sys.stderr)
-        if strict:
-            return rc_extract
-    rc_deps = install_deps()
+    rc_deps = _setup_stage('python_dependencies', install_deps)
     if rc_deps != 0:
-        print(f"[setup] WARN install_deps rc={rc_deps} - best-effort(계속). 이미 설치된 패키지 사용")
-    rc_fe = build_frontend()
+        print(f"[setup] WARN install_deps rc={rc_deps} - 최종 점검에서 현재 사용 가능 상태를 확인합니다")
+    rc_fe = _setup_stage('frontend', build_frontend)
     if rc_fe != 0:
-        print(f"[setup] WARN build_frontend rc={rc_fe} - best-effort(계속). 기존 frontend/dist 사용")
+        print(f"[setup] FAIL build_frontend rc={rc_fe} - 최종 dependency report 작성 후 실패 처리", file=sys.stderr)
     # best-effort 는 '기존 dist 로 앱이 뜬다' 를 전제로 한 완화다. dist 자체가 깨져 있으면
     # 그 전제가 사라진다 — 배포는 성공이라고 말하는데 사용자는 첫 화면부터 죽은 화면을 본다.
     # 이 경우만은 조용히 넘어가지 않는다.
@@ -1886,15 +1959,22 @@ def all_steps() -> int:
               file=sys.stderr)
         print("[setup]   -> 개발 PC에서 python _build_setup.py 로 번들을 다시 만들어 배포하세요.",
               file=sys.stderr)
-        return rc_fe or 1
+        rc_fe = rc_fe or 1
+        _SETUP_STAGES['frontend'] = rc_fe
     # 사내 저장소는 버전이 다르거나 빠진 패키지가 있을 수 있다 — 마지막에 조건대로 설치됐는지 표로 보여 준다.
     rc_check = check_deps()
+    if rc_check:
+        print("[setup] 필수 dependency 점검 실패 - 설치를 실패 처리", file=sys.stderr)
+        return rc_check
     if strict and (rc_extract or rc_deps or rc_fe or rc_check):
         print("[setup] FLOW_SETUP_STRICT=1 - 하위 단계 실패로 실패 처리", file=sys.stderr)
         return rc_extract or rc_deps or rc_fe or rc_check
-    print(f"\\n[done] uvicorn app:app --host 0.0.0.0 --port 8080   (run from {ROOT})")
+    if rc_extract or rc_fe:
+        return rc_extract or rc_fe
+    print(f"\\n[done] Windows: scripts/windows/flow_run.bat   (run from {ROOT})")
+    print("[done] Other platforms: python scripts/flow_server.py")
     print("[done] initial admin 'hol' is created only when FLOW_ADMIN_PW is explicitly set (10+ characters)")
-    print("[done] setup completed (best-effort; FLOW_SETUP_STRICT=1 로 엄격 검증 가능)")
+    print("[done] 필수 라이브러리·프런트 확인 완료. WARN 항목은 위 표와 install_check.json을 확인하세요.")
     return 0
 
 
