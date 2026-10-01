@@ -1,15 +1,14 @@
-"""flow-data canonical matching tables.
+"""Authoritative matching tables for Flow.
 
-관리자 매칭 테이블(Inline_matching.csv, inline_shot_matching.csv,
-inline_map_settings.json, Vehicle_matching.csv, Chip_Radius.csv)은
-flow-data 쪽이 정본이다. setup.py 는 data//flow-data 를 건드리지 않으므로
-재설치에 유지된다.
+Vehicle_matching.csv와 Inline_matching.csv는 운영 DB 루트의 단일 파일을
+정본으로 쓴다. 그 외 관리 대상 설정 파일은 flow-data 정본을 유지한다.
 
 규칙:
-- 읽기: flow-data 정본 우선, 없으면 레거시(db_root).
+- Vehicle/Inline 읽기·쓰기: DB 루트 단일 파일. flow-data 사본은 만들지 않는다.
+- 그 외 읽기: flow-data 정본 우선, 없으면 레거시(db_root).
 - seed 복사: 정본이 없을 때만 1회 (기존 정본을 자동으로 덮어쓰지 않는다.
   Fab 동기 갱신을 따라가려면 resync_from_legacy() 를 명시 호출한다).
-- 쓰기: 항상 flow-data 정본.
+- 그 외 쓰기: flow-data 정본.
 - db_root/data_root 인자로 호출자 root 를 존중한다 (테스트 격리).
 """
 from __future__ import annotations
@@ -27,6 +26,12 @@ from core.utils import save_json
 logger = logging.getLogger("flow.matching_store")
 
 _MATCHING_DIR_NAME = "matching"
+_DB_SINGLE_FILES = frozenset({"Vehicle_matching.csv", "Inline_matching.csv"})
+_DB_SINGLE_BY_CASEFOLD = {name.casefold(): name for name in _DB_SINGLE_FILES}
+
+
+def _db_single_name(name: str) -> str:
+    return _DB_SINGLE_BY_CASEFOLD.get(str(name or "").casefold(), "")
 
 # name -> legacy candidates (db_root 기준, 존재하는 첫 파일 사용).
 _LEGACY_CANDIDATES: dict[str, list[str]] = {
@@ -67,8 +72,11 @@ def matching_dir(data_root=None) -> Path:
     return _data_root(data_root) / _MATCHING_DIR_NAME
 
 
-def canonical_path(name: str, data_root=None) -> Path:
-    """flow-data 정본 경로 (없어도 쓰기 대상으로 반환)."""
+def canonical_path(name: str, data_root=None, *, db_root=None) -> Path:
+    """Return the single DB path for Vehicle/Inline, flow-data for other files."""
+    if single_name := _db_single_name(name):
+        root = Path(db_root) if db_root is not None else PATHS.db_root
+        return root / single_name
     return matching_dir(data_root) / str(name or "").strip()
 
 
@@ -77,7 +85,12 @@ def _legacy_paths(name: str, db_root=None) -> list[Path]:
         root = Path(db_root) if db_root is not None else PATHS.db_root
     except Exception:
         return []
-    return [root / candidate for candidate in _LEGACY_CANDIDATES.get(name, [])]
+    return [root / candidate for candidate in _LEGACY_CANDIDATES.get(_db_single_name(name) or name, [])]
+
+
+def _db_single_paths(name: str, db_root=None) -> list[Path]:
+    root = Path(db_root) if db_root is not None else PATHS.db_root
+    return [path for path in _legacy_paths(name, db_root) if path.parent == root]
 
 
 def _seed_copy(legacy: Path, target: Path) -> bool:
@@ -94,8 +107,12 @@ def _seed_copy(legacy: Path, target: Path) -> bool:
 
 
 def resolve(name: str, *, seed: bool = True, db_root=None, data_root=None) -> Path:
-    """읽기/쓰기용 정본 경로(flow-data). 기존 정본은 절대 자동 덮어쓰기 안 함."""
-    target = canonical_path(name, data_root)
+    """읽기/쓰기용 정본 경로. Vehicle/Inline은 DB 단일 파일."""
+    if _db_single_name(name):
+        candidates = _db_single_paths(name, db_root)
+        return next((path for path in candidates if path.is_file()),
+                    canonical_path(name, data_root, db_root=db_root))
+    target = canonical_path(name, data_root, db_root=db_root)
     if target.is_file():
         return target
     if seed:
@@ -107,6 +124,8 @@ def resolve(name: str, *, seed: bool = True, db_root=None, data_root=None) -> Pa
 
 def resync_from_legacy(name: str, *, db_root=None, data_root=None) -> Path:
     """Fab 동기 갱신을 flow-data 정본에 명시 반영한다 (관리자/배치용)."""
+    if _db_single_name(name):
+        return resolve(name, seed=False, db_root=db_root, data_root=data_root)
     target = canonical_path(name, data_root)
     legacy = next((p for p in _legacy_paths(name, db_root) if p.is_file()), None)
     if legacy is None:
@@ -121,7 +140,8 @@ def read_csv_rows(name: str, *, db_root=None, data_root=None) -> tuple[list[dict
     path = resolve(name, db_root=db_root, data_root=data_root)
     if not path.is_file():
         # seed 복사로 생겼을 수 있으니 한 번 더 확인하지 않고 그대로 반환.
-        legacy = next((p for p in _legacy_paths(name, db_root) if p.is_file()), None)
+        candidates = _db_single_paths(name, db_root) if _db_single_name(name) else _legacy_paths(name, db_root)
+        legacy = next((p for p in candidates if p.is_file()), None)
         if legacy is not None:
             path = legacy
         else:
@@ -137,9 +157,10 @@ def read_csv_rows(name: str, *, db_root=None, data_root=None) -> tuple[list[dict
 
 
 def save_csv_rows(name: str, rows: list[dict[str, Any]], columns: list[str],
-                  *, data_root=None) -> Path:
-    """원자 쓰기(utf-8-sig) → 정본 경로 반환."""
-    path = canonical_path(name, data_root)
+                  *, data_root=None, db_root=None) -> Path:
+    """원자 쓰기(utf-8-sig) → 파일별 정본 경로 반환."""
+    path = (resolve(name, seed=False, db_root=db_root, data_root=data_root)
+            if _db_single_name(name) else canonical_path(name, data_root, db_root=db_root))
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:

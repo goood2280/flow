@@ -229,6 +229,11 @@ WIP(랏 현위치) 캐시 재빌드는 Polars 로 최신 행을 먼저 고른 �
 `FLOW_PREVIEW_MEMORY_CACHE_GB` 제한도 기동 로그와 `perf`에 표시합니다.
 캐시 설정은 환경변수가 우선하므로 경고에 나온 위치에서 해제합니다. 관리자 저장값은 캐시관리 ⚙에서 자동으로 되돌립니다.
 `perf`의 `cpu_guard_cores`는 큰 요청을 미루는 실제 CPU 보호 기준입니다.
+`detected_cores`는 OS affinity·quota를 반영한 코어 수, `cores`는 `FLOW_SYSTEM_CPU_CORES`까지 적용한 코어 수입니다.
+옛 `FLOW_SYSTEM_CPU_CORES=4` 때문에 8코어 VM이 조용히 `small`이 되는 경우도 기동 로그·`perf`·운영 점검에서 경고합니다.
+조회 캐시 레인·예열 프로세스·AnyIO 스레드 풀·파일탐색기 SQL 동시성·DuckDB 메모리 상한과
+GC·JSON·WIP 벡터·응답 압축 스위치도 표시합니다. 작은 명시 동시성이나 꺼진 최적화는 이유와 함께 경고합니다.
+`heavy_background_jobs_enabled`·`cache_change_driven_enabled`의 기본 False는 의도된 정책이며 자동으로 켜지 않습니다.
 폐기된 root/product RAM 예열의 옛 설정은 현재 자원 제한으로 진단하지 않습니다.
 `taskkill /IM python.exe`처럼 다른 파이썬까지 끄지 마세요.
 
@@ -373,9 +378,12 @@ ID/PW 입력칸을 띄우지 않습니다(개발 체크아웃·`FLOW_PROD=0` 격
   `tests/test_security_and_background_owner.py`의 seed 검사, 설치 안내의 `hol` 표기도 함께 확인합니다.
 
 **부서 규칙의 현재 적용 범위와 우선순위:** `_identity_for_company_user()`는 매핑 후 기존 `users.csv` 계정이
-있으면 그 역할·탭을 우선하며 부서 규칙을 검사하지 않습니다. 매핑 대상이 없으면 앞서 설명한 관리자 경로,
-그 외 계정이 없는 일반 WebSocket 사용자는 부서 규칙을 따릅니다. IP 로그인도 같은 함수를 쓰지만 부서 claim을
-받지 않습니다. OIDC의 부서 기본 권한은 아래 별도 SSO 절의 경로입니다.
+있으면 그 역할·개인 지정·직접 그룹 권한을 우선하며 로그인 허용 부서 규칙은 검사하지 않습니다. WebSocket
+재검증 응답의 부서는 기존 계정의 `department`에 갱신하고, 개인 지정이 없으면 권한 그룹의 `기본 부서`를
+적용합니다. 매핑 대상이 없으면 앞서 설명한 관리자 경로입니다. 계정이 없는 일반 WebSocket 사용자는 먼저
+로그인 허용 부서 규칙을 통과해야 하며, 일치하는 권한 그룹의 탭이 있으면 그 탭을 세션에 적용합니다.
+일치하는 그룹이 없으면 부서 규칙의 탭을 사용합니다. IP 로그인은 같은 identity 함수를 쓰지만 부서 claim을
+받지 않습니다. WebSocket의 부서는 브라우저 프레임이 아닌 인증서버 재검증 응답에서만 가져옵니다.
 
 | 부서 규칙 | 현재 결과 |
 |---|---|
@@ -557,6 +565,18 @@ TEG 제품은 `상위 노드 / 하위 노드 / 제품명` 계층입니다. 경�
   진행된 root의 KNOB 화면을 30분마다 미리 계산합니다(사용자 요청에 양보, 메모리 압박이면 중단). 끄기:
   ⚙ 캐시 설정 또는 `FLOW_SPLITTABLE_AUTO_PRODUCT_CACHE_ENABLED=0`, 예열은 `FLOW_SPLITTABLE_KNOB_PREWARM=0`
   (개수 `…_MAX_LOTS`, 기간 `…_RECENT_DAYS`).
+- **원천 변경 기반 갱신(기본 꺼짐, `FLOW_CACHE_CHANGE_DRIVEN=1`로 활성화).** 자동 제품 캐싱은 제품마다 입력 지문(FAB 원천 폴더 전체의 파일 목록·수정
+  시각·크기, 그 제품 ML_TABLE, 설정·step matching 파일, 앱 버전)을 마지막 성공 때와 비교해, 같고 산출물이 모두
+  있으면 작업을 만들지 않고 넘어갑니다. WIP latest-lot·FAB 매칭 캐시도 "30분 지남"이 아니라 원천 지문이 바뀌었을 때
+  다시 만들고(바뀌었으면 30분 전이라도 다시 만듦), 대시보드 최신 랏 파일은 바뀐 제품의 행만 다시 씁니다. 지문이
+  못 보는 변경에 대비해 6시간마다 제품 파이프라인을 확인하고, WIP·매칭은 실제 생성 시각이 6시간을 넘으면 재스캔합니다
+  (`FLOW_CACHE_FULL_RECHECK_HOURS`). `FLOW_CACHE_CHANGE_DRIVEN=0` 또는 미설정이면 예전 나이 기준입니다.
+  캐시 파일 삭제·입력 읽기 실패는 재생성 대상이며, 실패한 WIP를 제품 순환 성공으로 기록하지 않습니다.
+  캐시관리 화면의 캐싱 진행 카드에 이번·지난 순환의 건너뜀·갱신 수와
+  마지막 재생성 사유(첫 실행·원천 변경: fab/ml_table/settings/…·주기 재확인·산출물 없음)가 보입니다.
+- WIP latest-lot 의 FAB 스캔은 사용자가 있을 때 **1초 훑을 때마다 최대 0.5초** 양보합니다
+  (`FLOW_LOT_PROGRESS_YIELD_EVERY_SEC`·`FLOW_LOT_PROGRESS_YIELD_MAX_WAIT_SEC`). 예전에는 파일마다 최대 3초를 쉬어,
+  사용자가 끊이지 않는 서버에서 FAB 파일이 많으면 WIP 갱신이 몇 시간 걸리며 제품 순환을 붙들었습니다.
 - 목표는 준비된 데이터 조회부터 표 첫 표시까지 p95 500ms입니다(원본만 있고 캐시가 없는 최초 생성은 제외).
 - 조회 결과 RAM 캐시는 최근에 쓴 응답(예산의 15%, `FLOW_SPLITTABLE_VIEW_HOT_FRACTION`)만 파이썬 객체로 두고
   나머지는 orjson bytes 로 접어 둡니다(같은 예산에 약 6배, 다시 쓰이면 풀어서 올림, 큰 응답 하나 푸는 데 수 ms).
@@ -584,6 +604,9 @@ Sheets 여러 셀을 그대로 붙여 넣을 수 있고, 조합별 색상 규칙
   `…_THREADS`, `…_TIMEOUT_SEC`, `…_MAX_RSS_MB`, `…_IDLE_SEC`, `FLOW_REFORMATIZE_CHILD_NICE`, 끄기 `FLOW_REFORMATIZE_RUN_ISOLATION=0`.
 - ET 측정 이력은 제품별 history parquet를 공유합니다. 첫 생성 후에는 최근 3일만 재집계해 병합합니다.
 - TEG 위치 조회는 Chip_Radius·Teg_location·MAIN·Product Info를 파일 지문이 바뀔 때만 다시 읽습니다.
+- TEG 조회 권한과 제품 노드 접근 규칙은 그대로 적용됩니다. 조회 가능한 제품 안에서는 일반 사용자도 TEG를
+  모두 동시에 선택할 수 있습니다. shot 확대에서 40개를 넘게 선택하면 겹치는 이름 대신 마커에 마우스를 올려
+  이름을 확인합니다.
 
 ### FAB 매칭알람 검사
 
@@ -600,6 +623,29 @@ Sheets 여러 셀을 그대로 붙여 넣을 수 있고, 조합별 색상 규칙
 판정은 파일탐색기 단일 파일 저장 흐름으로 버전 스냅샷과 변경 메모를 남기고, 매칭 캐시 갱신 후 재검사를 요청합니다.
 미매칭 step에는 **function step 추천**(같은 PPID를 쓰는 매칭 step 우선, 없으면 가까운 번호의 eqp/area 비교)이 뜨며
 LLM 없이도 동작합니다.
+
+### 파일점검과 홈 에이전트 매칭 CSV 편집
+
+`데이터 → 파일점검`은 SplitTable이 읽는 `Vehicle_matching.csv`의 `step_desc`를 기준으로
+`ppid_knob.csv`와 `vm_matching.csv`에서 매칭되지 않는 값과 원본 CSV 행 번호를 보여 줍니다.
+파일 누락·열 누락·빈 `step_desc`도 알려 주며, 점검은 파일을 변경하지 않습니다.
+이 매칭 CSV들은 운영 DB 루트의 단일 파일을 사용합니다.
+SplitTable에서 Vehicle·Inline·VM 파일명을 별도로 설정한 경우 점검과 홈 편집은 해당 DB 파일을 사용하며,
+미리보기에서 실제 저장 파일명을 보여 줍니다. 기존 파일로 대체해 점검한 경우에는 지정 파일 누락을 경고합니다.
+
+홈 에이전트에서 `ppid_knob.csv`, `Vehicle_matching.csv`, `Inline_matching.csv`,
+`vm_matching.csv`, `mask.csv`, `mask_info.csv`를 조회하고 수정할 수 있습니다. 변경 권한이 있는 사용자는
+파일명과 `추가`·`수정`·`삭제`를 명시하고 Excel 표를 붙여 넣습니다. 수정·삭제 표에는
+먼저 조회한 CSV `row_number` 열을 넣습니다(머리글이 1행, 첫 데이터가 2행).
+단일 셀 수정은 `12행 category를 NEW로 수정`처럼 요청할 수도 있습니다.
+에이전트가 영향받는 행의 변경 전후 값과 저장 위치를 표로 보고하고 승인을 요청합니다.
+그 다음 **별도 메시지에서 승인**해야 저장됩니다. 승인 전 파일이 바뀌면 다시 미리보기를
+만들어야 합니다. 기존 파일은 로컬에 백업되며, 매칭 캐시는 저장 후 갱신됩니다.
+
+PPID 규칙을 저장할 때 같은 feature·PPID에 서로 다른 category가 있고 한쪽이
+`~~tkout_time` 및 `>=` 계열 조건이면, 정확 일치(`eq`) 규칙이 먼저 오도록 `R#` 또는 숫자 우선순위를
+조정합니다. 같은 순서의 행은 AND 조건 묶음이므로 함께 이동합니다. 우선순위 충돌이
+모호하면 임의로 바꾸지 않고 알림을 남깁니다.
 
 Valve 연동 알람 파일 위치는 `data/flow-data/valve_alerts.json`의 `local_root`가 정합니다(비면 S3). S3가 없으면
 `{"local_root": "{db_root}", "alerts_prefix": "valve-alerts"}`처럼 공유 DB 폴더를 씁니다(`{db_root}`/`{data_root}`/`{app_root}`
@@ -641,7 +687,10 @@ LLM을 부르는 새 API 경로는 `backend/core/llm_adapter.py`의 `_DATA_TASK_
 
 기본 예약은 한국 시간 매일 11:00, CPU·RAM 목표 85%, 최대 10분입니다. 90% 안전선에 닿거나 관리자가 해제하면 멈추고
 임시 RAM을 반환합니다. 운영(`PATHS.is_prod`)에서만 돌고, 놓친 예약은 당일 한 번만 따라잡습니다. 합성 부하가 필요 없으면
-관리자 모니터에서 **예약 설정 자체를 끕니다**(`FLOW_SYSMON_ENABLE_LOAD=0`은 유휴 부하만 끄고 이 예약은 끄지 않음).
+관리자 모니터에서 **예약 설정 자체를 끄거나** `FLOW_SYSMON_ENABLE_LOAD=0`을 지정합니다.
+명시적인 0/false/no/off는 유휴·일일 자동 합성 부하를 모두 차단합니다. 미설정 시 기존 일일 예약 정책을 따릅니다.
+예약 파일의 활성 여부·시각·최근 실행 기록은 바꾸지 않으며, 차단을 해제하면 원래 예약을 다시 따릅니다.
+관리자가 직접 시작하는 수동 부하는 이 자동 차단과 별개입니다. 환경 변경은 감시기까지 stop 후 다시 기동합니다.
 정기 부하가 공급자의 자원 회수 방지를 보장하지는 않습니다.
 
 ## 서버 이사 체크리스트

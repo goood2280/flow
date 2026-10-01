@@ -41,11 +41,6 @@ router = APIRouter(prefix="/api/teg-map", tags=["teg-map"])
 
 _require_manager = require_page_manager("teg")
 
-# 일반 사용자 TEG 동시 선택 상한 — 전체를 한 번에 그리면 브라우저가 죽어(502/OOM) 방어.
-# 관리자(admin) / teg 페이지 관리자는 제한 없음.
-MAX_TEG_SELECTION = 30
-
-
 def _is_teg_manager(user: dict) -> bool:
     return is_page_manager(user, "teg")
 
@@ -448,16 +443,14 @@ def check_targets_put(req: CheckTargetsReq, user=Depends(_require_manager)):
 @router.get("/map")
 def wf_map(vehicle: str = Query(...), user=Depends(current_user)):
     _require_product_access(user, vehicle)
-    # 일반 사용자는 최대 MAX_TEG_SELECTION 개까지만 동시 선택 (전체 렌더 방지). 관리자는 무제한.
-    max_selection = None if _is_teg_manager(user) else MAX_TEG_SELECTION
     try:
         # 같은 기준 파일·제품이면 직렬화된 응답을 그대로 재사용한다(캐시 적중에도
         # 매번 붙던 deepcopy + JSON 인코딩 제거).
-        body = _tm.map_payload_json(vehicle, max_selection)
+        body = _tm.map_payload_json(vehicle, None)
         payload = None
         if body is None:
             payload = _tm.map_payload(vehicle)
-            payload["max_selection"] = max_selection
+            payload["max_selection"] = None
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except LookupError as e:

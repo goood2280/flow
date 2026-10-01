@@ -941,6 +941,7 @@ export default function My_Admin({user}){
               </label>
               <input type="time" value={paverSchedule.time||"11:00"} disabled={!paverSchedule.enabled} onChange={e=>setPaverSchedule(s=>({...s,time:e.target.value}))} style={{padding:"5px 8px",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-primary)",color:"var(--text-primary)"}}/>
               <Button variant="subtle" disabled={paverScheduleBusy} onClick={savePaverSchedule}>예약 저장</Button>
+              {farmStatus.automatic_load_disabled&&<span style={{fontSize:13,color:"var(--text-secondary)"}}>서버 설정으로 자동 부하 차단됨</span>}
               {paverSchedule.last_run_at&&<span style={{fontSize:13,color:"var(--text-secondary)"}}>최근 실행 {String(paverSchedule.last_run_at).replace("T"," ")}</span>}
               {paverSchedule.last_result?.status&&<span style={{fontSize:13,color:paverSchedule.last_result.status==="reached"?"var(--text-secondary)":WARN.fg}}>
                 {{running:"실행 중",reached:"CPU·RAM 80% 도달 확인",incomplete:"80% 도달 미확인",interrupted:"재시작으로 중단"}[paverSchedule.last_result.status]||paverSchedule.last_result.status}

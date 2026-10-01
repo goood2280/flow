@@ -455,10 +455,18 @@ def scan_servers(findings: _Findings) -> dict:
                          "해당 기능이 조용히 멈춘 상태입니다. 오류 원인을 고치고 서버를 재시작하세요.",
                          {"host": st.get("host"), "service": svc.get("service"), "down_hours": hours}, "admin:monitor")
 
-    env_keys = ("FLOW_CPU_BUDGET_CORES",
-                "FLOW_PROCESS_MEMORY_LIMIT_GB", "FLOW_PROCESS_MEMORY_LIMIT_FRACTION", "FLOW_RESOURCE_PROFILE",
-                "FLOW_LLM_CONTEXT_SCALE", "FLOW_DB_ROOT", "FLOW_DATA_ROOT")
+    from core.resource_diagnostics import RESOURCE_ENV_KEYS
+
+    env_keys = RESOURCE_ENV_KEYS + ("FLOW_LLM_CONTEXT_SCALE", "FLOW_DB_ROOT", "FLOW_DATA_ROOT")
     facts["env_overrides"] = {k: os.environ.get(k) for k in env_keys if os.environ.get(k) not in (None, "")}
+    resources, resource_warnings = runtime_limits.host_diagnostics()
+    facts["resources"] = resources
+    if resource_warnings:
+        findings.add("servers", "medium", "resource_overrides", "자원 설정과 성능 경로를 확인하세요",
+                     " · ".join(resource_warnings),
+                     "현재 기동 로그와 flow_ctl.bat perf를 비교하고, 이전 VM의 제한값만 해제하세요. "
+                     "환경 변경은 감시기까지 stop 후 다시 기동해야 적용됩니다.",
+                     {"resources": resources, "warnings": resource_warnings}, "admin:monitor")
     try:
         from core import cache_settings
 

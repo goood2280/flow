@@ -624,8 +624,17 @@ def execute(prompt, context, request, history=None, *, approved_plan=None):
         "pending_et", "et_query", "pending_wafer_map", "wafer_map_query",
         "pending_por", "pending_ml_chart", "ml_chart_query", "pending_et_chart", "et_chart_query", "pending_dashboard", "dashboard_query",
         "pending_semantic_update", "pending_semantic_request", "wiki_last_ids",
+        "pending_rulebook_update", "pending_rulebook_request", "pending_rulebook_file",
         "pending_file_chart", "file_chart_query",
     }})
+    # CSV rulebook writes use a persisted server proposal and a distinct
+    # approval turn.  Route them before alias/table readers that could consume
+    # the same pasted TSV as a lookup request.
+    from core import data_chat_rulebook
+    rulebook_result = data_chat_rulebook.handle(text, context, request) if not approved_plan else None
+    if rulebook_result is not None:
+        flowi_routing.record("handler", handler="rulebook")
+        return rulebook_result
     # Administrator alias updates (pasted Step/Item/alias tables, "…로도
     # 인식하게"). Ahead of every read dispatcher: a pasted table may carry
     # words such as ET or dashboard that would otherwise start a query.

@@ -36,6 +36,10 @@ FLOW_DATA_ROOT               사용자 기록·설정·로그·대화(sqlite)
 - `core/runtime_limits.py` 가 호스트를 보고 프로파일을 고른다: 64GB·8코어 이상이면 `large`.
   large 기본: Polars·DuckDB 스레드 = 코어 수, 프로세스 상한 ≈ 총량×0.78, 캐시 풀 = 총량×0.6×0.8(128GB 면 약 61GB).
   이전 CPU 가드·소형 프로파일·활성 캐시 제한은 기동 로그와 `scripts/check_flow_performance.py`에서 진단하며 자동 삭제하지 않는다.
+  OS 감지 코어(`detected_cores`)와 `FLOW_SYSTEM_CPU_CORES` 적용 후 코어(`cores`)를 구분한다.
+  `core/resource_diagnostics.py`는 조회 레인·예열 방식·요청 동시성·최적화·DuckDB·스케줄러의 적용값을
+  기동 로그·perf·운영 점검에 공통 제공한다. 스레드 풀·요청 가드와 진단은 같은 설정 함수를 쓴다.
+  `FLOW_SYSMON_ENABLE_LOAD=0`은 유휴·일일 자동 합성 부하를 모두 차단하되 저장한 예약·수동 부하는 유지한다.
 - **GIL**: 파이썬 코드는 프로세스당 사실상 1코어다. 여러 코어를 쓰는 것은 Polars/DuckDB 내부 계산뿐이다.
   행 단위 파이썬 루프는 전체 서버를 느리게 한다 → 선택·집계는 Polars 로, 파이썬 객체는 줄어든 결과에만 만든다.
   오래 도는 파이썬 계산은 자식 프로세스로 보내고 결과는 파일로 받는다(`core/splittable_prewarm_process.py` 패턴).
@@ -74,7 +78,17 @@ FLOW_DATA_ROOT               사용자 기록·설정·로그·대화(sqlite)
   - **조회 레인**(large, 기본 2칸) — 조회 전제 캐시(lookup·pivot·FAB 인덱스·WIP). 백그라운드 스캔 뒤에 줄 서지 않는다.
   - **Auto report 레인**(large, 1칸) — PPT 생성 하위 프로세스(최대 6시간)가 캐시 슬롯을 잡지 않는다.
 - 기동: `app_v2/runtime/startup.py`. 프로세스 로컬 서비스(워치독·예열)와, 공유 데이터를 쓰는 스케줄러(소유자 선출 `core/background_owner.py` 가 lease 를 쥔 프로세스만)로 나뉜다.
-- 스케줄러는 20개 안팎이 각자 타이머로 돈다(FAB 매칭, 자동 제품 캐싱, S0 스냅샷, 백업, 운영 점검 …). 같은 원천을 여러 곳이 따로 본다 — 통합은 `docs/PLAN.md` P2.
+- 스케줄러는 20개 안팎이 각자 타이머로 돈다(FAB 매칭, 자동 제품 캐싱, S0 스냅샷, 백업, 운영 점검 …).
+- SplitTable 필수 캐시 4종(lookup → pivot → WIP latest-lot → FAB 인덱스)은 **자동 제품 순환 하나**가 제품 단위로 맡는다
+  (`70_pivot_fab_and_view.part.py` `_split_search_cache_maintenance_loop`). `FLOW_CACHE_CHANGE_DRIVEN=1`이면 순환은 제품마다 입력 지문
+  (`_auto_product_cache_fingerprint_parts`: FAB 원천 전체·ML_TABLE·설정·step matching·앱 버전, `core/source_digest.py`)을
+  마지막 성공 지문과 비교해 같고 산출물이 있으면 작업 없이 건너뛴다. 단계 안에서도 WIP(`lot_progress_cache`)·
+  FAB 매칭 캐시는 원천 지문이 같으면 다시 훑지 않고, 대시보드 최신 랏 파일은 갱신한 제품 행만 다시 쓴다.
+  6시간마다 파이프라인을 확인하고 WIP·매칭은 실제 생성 시각이 기한을 넘으면 재스캔한다(`FLOW_CACHE_FULL_RECHECK_HOURS`).
+  입력 읽기 오류·산출물 삭제는 다시 만들고, lookup 후보 색인·pivot 완료 상태도 확인한다. 대시보드 증분 export는
+  읽기부터 교체까지 잠금으로 직렬화해 동시 제품 갱신이 서로 덮이지 않게 한다.
+  기본 꺼짐(`FLOW_CACHE_CHANGE_DRIVEN=0` 또는 미설정), 나머지 타이머 정리는
+  `docs/PLAN.md` P2 2단계.
 
 ## 6. 메모리 보호
 
@@ -93,7 +107,7 @@ POST /api/home-agent/orchestrate  (routers/data_chat.py)
        ├─ 한 메시지를 질문 여러 개로 나눔(최대 4개), 턴당 LLM 호출 최대 6회
        └─ 질문마다: flowi_routing.resolve(관리자 질문 해석 규칙 — 문장 전체 일치 시 경로 고정)
             └─ core/data_chat.execute  ← 고정 순서의 규칙 처리기(먼저 잡는 쪽이 처리)
-                 1 의미 별칭 관리(관리자) → 2 리포트 → 3 표시 중 차트 모양 수정
+                 1 매칭 CSV 변경(미리보기·별도 승인) → 2 의미 별칭 관리(관리자) → 3 리포트·표시 중 차트 모양 수정
                  4 파일 차트·대시보드·POR·ET 차트·ET → 5 스플릿 조회 대기 답
                  6 제품 확인(없으면 되묻기) → 7 웨이퍼맵·ML 차트·INLINE 차트·INLINE·ETA·스플릿 조회
                  8 제품 위키 → 9 용어 연결(여러 개면 번호 선택) → 10 스플릿 변경·Split lead

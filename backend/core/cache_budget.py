@@ -261,6 +261,11 @@ def diagnostics() -> tuple[dict, list[str]]:
             f"{_LARGE_POOL_FRACTION_DEFAULT:g}보다 작습니다. 이전 서버의 값이면 "
             "해당 환경변수를 제거하거나 캐시관리 설정을 자동으로 되돌리세요."
         )
+    if info["memory_target_ratio"] < _MEMORY_TARGET_RATIO_DEFAULT:
+        warnings.append(
+            f"FLOW_CACHE_MEMORY_TARGET_RATIO={info['memory_target_ratio']:g}가 기본값 "
+            f"{_MEMORY_TARGET_RATIO_DEFAULT:g}보다 작아 캐시 풀을 추가 축소합니다. 이전 VM의 값인지 확인하세요."
+        )
     for key, env, cache, unit in (
         ("view_mb", "FLOW_SPLITTABLE_VIEW_CACHE_MAX_MB", "splittable_view_payload", 1024**2),
         (None, "FLOW_PREVIEW_MEMORY_CACHE_GB", "filebrowser_preview", 1024**3),

@@ -921,18 +921,35 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
       || y0 < shotY - halfH - FULL_SHOT_EDGE_EPS
       || y0 + box.h > shotY + halfH + FULL_SHOT_EDGE_EPS;
   };
-  const shotEdgeCrossed = (s0) => {
-    if (!tegList.length) return null;
-    for (const t of tegList) {
-      const box = tegBox(t) || { w: 0, h: 0 };
-      const anchor = waferTegCartesianPosition(s0, t);
-      const x0 = anchor.x, y0 = anchor.y;
-      const x1 = x0 + box.w, y1 = y0 + box.h;
-      const maxD = Math.hypot(Math.max(Math.abs(x0), Math.abs(x1)), Math.max(Math.abs(y0), Math.abs(y1)));
-      if (tegOutsideShot(s0, t) || (edgeMm && maxD > edgeMm)) return true;
+  // The wafer render used to scan the selected TEGs twice for every shot:
+  // once for the title's `shotTegOutside` flag and once for the fill/stroke
+  // `crossed` flag.  Keep both flags together so an 800-TEG selection only
+  // pays for one pass per shot, and reuse the result during rendering.
+  const shotBoundaryFlags = useMemo(() => {
+    const out = new Map();
+    if (!mmMode || !tegList.length) return out;
+    for (const s0 of data.shots) {
+      let shotTegOutside = false;
+      let crossed = false;
+      for (const t of tegList) {
+        const box = tegBox(t) || { w: 0, h: 0 };
+        const outside = tegOutsideShot(s0, t);
+        shotTegOutside = shotTegOutside || outside;
+        const anchor = waferTegCartesianPosition(s0, t);
+        const x0 = anchor.x, y0 = anchor.y;
+        const x1 = x0 + box.w, y1 = y0 + box.h;
+        const maxD = Math.hypot(Math.max(Math.abs(x0), Math.abs(x1)), Math.max(Math.abs(y0), Math.abs(y1)));
+        if (outside || (edgeMm && maxD > edgeMm)) {
+          crossed = true;
+          // An edge-only hit must keep scanning: a later TEG may still set
+          // shotTegOutside, which is shown separately in the title.
+          if (outside) break;
+        }
+      }
+      out.set(`${s0.x},${s0.y}`, { shotTegOutside, crossed });
     }
-    return false;
-  };
+    return out;
+  }, [data.shots, edgeMm, geo, mmMode, tegList]);
   // shot 사각형(센터 ± W/2, ± H/2)의 가장 먼 꼭짓점이 edge 밖인가
   const shotSelfCrossed = (s0) => {
     if (!edgeMm) return null;
@@ -1002,8 +1019,9 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
         const measured = shotValues instanceof Map ? shotValues.get(key) : null;
         if (hideUnmeasured && !measured) return null;
         const isSel = selectedShot && selectedShot.x === s0.x && selectedShot.y === s0.y;
-        const shotTegOutside = mmMode && tegList.some(t => tegOutsideShot(s0, t));
-        const crossed = mmMode ? shotEdgeCrossed(s0) : null;
+        const boundary = shotBoundaryFlags.get(key);
+        const shotTegOutside = boundary?.shotTegOutside || false;
+        const crossed = mmMode && tegList.length ? (boundary?.crossed || false) : null;
         const selfCrossed = mmMode && crossed === null ? shotSelfCrossed(s0) : null;
         // full shot 격자로 만들어 낸 자리 — TEG 판정색(초록/빨강)은 그대로 쓰되,
         // TEG 미선택 시 최외곽에 걸치는 건 연노랑으로 칠하지 않는다 (덮개 격자는
@@ -1072,6 +1090,7 @@ export function WaferMap({ data, selectedTegs, tegColor, selectedShot, onShotCli
 const SHOT_ZOOM_MIN = 380;
 const SHOT_ZOOM_MAX = 820;
 const SHOT_ZOOM_SIDE_MIN = 480;   // 이보다 작아질 바에는 좌표 패널을 아래로 내린다
+const SHOT_ZOOM_LABEL_LIMIT = 40;
 
 /* 요소 실제 폭 추적 — shot 확대를 카드 폭에 맞추기 위한 것.
    콜백 ref 를 쓴다: 대상 div 는 data 가 온 뒤에야 마운트되므로 useRef + 빈 deps 로는
@@ -1169,6 +1188,7 @@ export function ShotZoom({ data, selectedTegs, tegColor, imgUrl, dieCells, showP
             const labelY = box ? yBottom - hpx / 2 : yBottom;
             return (
               <g key={t.teg}>
+                <title>{t.teg}{box?.die ? ` (die ${fmt(box.w)}×${fmt(box.h)} mm)` : ""}</title>
                 {box && (
                   <rect x={x} y={yBottom - hpx} width={wpx} height={hpx}
                     fill={tegColor(t.teg)} opacity={box.die ? 0.18 : 0.75}
@@ -1176,9 +1196,11 @@ export function ShotZoom({ data, selectedTegs, tegColor, imgUrl, dieCells, showP
                     strokeWidth={box.die ? 1.2 / zoom : 0} />
                 )}
                 <circle cx={x} cy={yBottom} r={2.4 / zoom} fill={tegColor(t.teg)} stroke="var(--bg-card)" strokeWidth={0.8 / zoom} />
-                <text x={labelX} y={labelY} fontSize={11 / zoom} fill="var(--text-primary)" dominantBaseline="middle">
-                  {t.teg}{box?.die ? ` (die ${fmt(box.w)}×${fmt(box.h)} mm)` : ""}
-                </text>
+                {tegList.length <= SHOT_ZOOM_LABEL_LIMIT && (
+                  <text x={labelX} y={labelY} fontSize={11 / zoom} fill="var(--text-primary)" dominantBaseline="middle">
+                    {t.teg}{box?.die ? ` (die ${fmt(box.w)}×${fmt(box.h)} mm)` : ""}
+                  </text>
+                )}
               </g>
             );
           })}
@@ -2429,6 +2451,10 @@ export default function My_TegMap({ user }) {
   const showPicture = shotMode === "image" && !gridView;
 
   const tegNames = useMemo(() => tegListNames(data?.tegs), [data]);
+  const tegByName = useMemo(
+    () => new Map((data?.tegs || []).map(teg => [teg.teg, teg])),
+    [data?.tegs],
+  );
   const tegColorMap = useMemo(
     () => new Map(tegNames.map((name, index) => [name, TEG_COLORS[index % TEG_COLORS.length]])),
     [tegNames],
@@ -2450,27 +2476,13 @@ export default function My_TegMap({ user }) {
     return Math.round(Math.max(SHOT_ZOOM_MIN, Math.min(SHOT_ZOOM_MAX, box - reserved)));
   }, [shotBoxW, nCoord]);
 
-  // 일반 사용자 동시 선택 상한 (전체 렌더 시 502/브라우저 다운 방지). null = 관리자(무제한).
-  const maxSel = data?.max_selection ?? null;
   // TEG 다중 선택 — 클릭으로 on/off 토글, 전체/해제 버튼.
   const toggleTeg = (name) => {
     const next = new Set(selectedTegs);
-    const turnOn = !next.has(name);
-    if (turnOn) next.add(name); else next.delete(name);
-    if (turnOn && maxSel != null && next.size > maxSel) {
-      toast.error(`일반 사용자는 TEG 를 최대 ${maxSel}개까지 선택할 수 있습니다. (관리자는 제한 없음)`);
-      return;
-    }
+    if (next.has(name)) next.delete(name); else next.add(name);
     setSelectedTegs(next);
   };
-  const selectAllTegs = () => {
-    if (maxSel != null && tegNames.length > maxSel) {
-      setSelectedTegs(new Set(tegNames.slice(0, maxSel)));
-      toast.error(`일반 사용자는 최대 ${maxSel}개까지만 선택됩니다. (관리자는 제한 없음)`);
-    } else {
-      setSelectedTegs(new Set(tegNames));
-    }
-  };
+  const selectAllTegs = () => setSelectedTegs(new Set(tegNames));
   const deselectAllTegs = () => setSelectedTegs(new Set());
 
   const onShotClick = (s0) => {
@@ -2709,9 +2721,6 @@ export default function My_TegMap({ user }) {
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: "var(--muted)" }}>
                     TEG 목록 ({selectedTegs.size}/{tegNames.length})
-                    {maxSel != null && (
-                      <span style={{ fontWeight: 400, color: "var(--warn)" }} title="일반 사용자 동시 선택 상한 (관리자는 무제한)"> · 최대 {maxSel}</span>
-                    )}
                   </span>
                   {tegNames.length > 1 && (
                     <div style={{ display: "flex", gap: 2 }}>
@@ -2731,7 +2740,7 @@ export default function My_TegMap({ user }) {
                   border: tegNames.length ? "1px solid var(--line)" : "none", borderRadius: 6,
                 }}>
                   {tegNames.map(n => {
-                    const t = (data.tegs || []).find(x => x.teg === n) || {};
+                    const t = tegByName.get(n) || {};
                     const on = selectedTegs.has(n);
                     return (
                       <button key={n} onClick={() => toggleTeg(n)}
@@ -2787,6 +2796,11 @@ export default function My_TegMap({ user }) {
                   ))}
                 </div>
               ) : null}>
+              {selectedTegs.size > SHOT_ZOOM_LABEL_LIMIT && (
+                <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 6 }}>
+                  TEG {selectedTegs.size}개 선택됨 · 겹침 방지를 위해 이름은 마커에 마우스를 올리면 표시됩니다.
+                </div>
+              )}
               <div ref={shotBoxRef}
                 style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
                 <ShotZoom data={data} selectedTegs={selectedTegs} tegColor={tegColor}

@@ -294,18 +294,20 @@ def _wait_for_root_lookup_caches(result: dict, *, product: str, job_id: str = ""
 
 _MANUAL_LATEST_REFRESH_LOCK = threading.Lock()
 _MANUAL_LATEST_REFRESH_RUNNING = False
+_MANUAL_LATEST_REFRESH_RESULT: dict = {}
 
 
 def _enqueue_manual_lot_progress_refresh(products: list[str]) -> bool:
     """Queue one normal-priority refresh of the shared WIP/latest-lot cache."""
-    global _MANUAL_LATEST_REFRESH_RUNNING
+    global _MANUAL_LATEST_REFRESH_RUNNING, _MANUAL_LATEST_REFRESH_RESULT
     with _MANUAL_LATEST_REFRESH_LOCK:
         if _MANUAL_LATEST_REFRESH_RUNNING:
             return False
         _MANUAL_LATEST_REFRESH_RUNNING = True
+        _MANUAL_LATEST_REFRESH_RESULT = {}
 
     def _run() -> None:
-        global _MANUAL_LATEST_REFRESH_RUNNING
+        global _MANUAL_LATEST_REFRESH_RUNNING, _MANUAL_LATEST_REFRESH_RESULT
         label = ", ".join(products or []) or "전체 제품"
         started_ts = time.time()
         # pivot 빌드와 같은 이유로 실행 자체를 이벤트 로그에 남긴다 — 예전에는
@@ -323,8 +325,13 @@ def _enqueue_manual_lot_progress_refresh(products: list[str]) -> bool:
             def _local_refresh() -> dict:
                 state = _lpc.refresh_lot_progress_cache(
                     force=True, required_products=list(products or []))
-                return {"ok": bool((state or {}).get("generated_at")),
-                        "count": int((state or {}).get("count") or 0)}
+                return {
+                    "ok": bool((state or {}).get("generated_at"))
+                          and not state.get("errors")
+                          and not state.get("skipped_by_lock"),
+                    "count": int((state or {}).get("count") or 0),
+                    "errors": list((state or {}).get("errors") or []),
+                }
 
             res = heavy_jobs.run_heavy(
                 "splittable_lot_progress_cache_refresh",
@@ -332,7 +339,8 @@ def _enqueue_manual_lot_progress_refresh(products: list[str]) -> bool:
                 label="WIP latest lot cache",
             )
             ok = bool((res or {}).get("ok"))
-            detail = {"count": int((res or {}).get("count") or 0)}
+            detail = {"count": int((res or {}).get("count") or 0),
+                      "errors": list((res or {}).get("errors") or [])}
         except Exception as exc:
             logger.warning("manual WIP/latest-lot cache refresh failed", exc_info=True)
             detail = {"error": str(exc)}
@@ -347,6 +355,7 @@ def _enqueue_manual_lot_progress_refresh(products: list[str]) -> bool:
                                    "stage": _stage("latest_lot", "done" if ok else "fail")},
                 )
             with _MANUAL_LATEST_REFRESH_LOCK:
+                _MANUAL_LATEST_REFRESH_RESULT = {"ok": ok, **detail}
                 _MANUAL_LATEST_REFRESH_RUNNING = False
 
     threading.Thread(target=_run, daemon=True, name="manual-lot-progress-refresh").start()
@@ -386,9 +395,17 @@ def _refresh_dashboard_latest_v4(products: list[str], *, force: bool,
     # replace the shared dashboard file with a one-product subset.  The writer
     # uses .tmp + replace, preserving the old v4 file throughout the build.
     export_products = _match_cache_products("") or targets
+    covers_all = _match_cache_products_cover_all(targets)
+    try:
+        from core import source_digest as _sd
+        incremental = _sd.change_driven_enabled() and not covers_all
+    except Exception:
+        incremental = False
+    # 제품 하나를 갱신할 때는 그 제품 행만 다시 만들고 나머지는 기존 파일에서 옮긴다.
     export = export_latest_lot_step_cache(
         products=export_products,
-        update_state=_match_cache_products_cover_all(targets),
+        update_state=covers_all,
+        refresh_products=targets if incremental else None,
     )
     exported = _canonical_product_set(list(export.get("products") or []))
     expected = _canonical_product_set(targets)
@@ -631,6 +648,11 @@ def _enqueue_required_split_caches(product: str, force: bool, job_id: str = "", 
             scanner_done = _wait_for(
                 "WIP latest-lot", lambda: not _MANUAL_LATEST_REFRESH_RUNNING)
             if not scanner_done:
+                return False
+            with _MANUAL_LATEST_REFRESH_LOCK:
+                scanner_result = dict(_MANUAL_LATEST_REFRESH_RESULT)
+            results["lot_progress"] = scanner_result
+            if not scanner_result.get("ok"):
                 return False
             canonical = _refresh_dashboard_latest_v4(
                 products, force=force, job_id=job_id)

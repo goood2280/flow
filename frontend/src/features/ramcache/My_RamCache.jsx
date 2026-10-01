@@ -522,6 +522,12 @@ function CachingScheduleBoard({ jobs, queues, scanQueue, canManage, onCancelTask
       <div>
         <div style={{ fontSize: 14, fontWeight: 800 }}>캐싱 진행 및 스케줄</div>
         <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>제품 하나의 4개 캐시를 모두 완료한 뒤 다음 제품으로 즉시 이동합니다.</div>
+        {rotation?.change_driven && <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}
+          title={rotation?.change_gate?.last_rebuild_reason ? `마지막 재생성: ${rotation.change_gate.last_rebuild_product} (${rotation.change_gate.last_rebuild_reason})` : ""}>
+          원천이 바뀐 제품만 다시 만듭니다 · 이번 순환 변경 없음 {Number(rotation?.change_gate?.sweep_unchanged || 0)}개 건너뜀
+          {rotation?.change_gate?.last_sweep_at ? ` · 지난 순환 ${Number(rotation.change_gate.last_sweep_built || 0)}개 갱신, ${Number(rotation.change_gate.last_sweep_unchanged || 0)}개 건너뜀` : ""}
+          {rotation?.change_gate?.last_rebuild_reason ? ` · 마지막 재생성 사유: ${rotation.change_gate.last_rebuild_reason}` : ""}
+        </div>}
       </div>
       <span style={{ fontSize: 12, fontWeight: 800, color: idle ? "var(--text-secondary)" : "var(--info)" }}>
         {idle ? "○ 대기 중" : "● 작업 중"}

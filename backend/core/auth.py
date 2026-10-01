@@ -351,7 +351,7 @@ def require_admin(request: Request) -> dict:
 # 폐기된 키는 새 위임 대상으로 허용하지 않는다.
 DELEGABLE_PAGE_IDS = frozenset({
     "filebrowser", "dashboard", "splittable", "lotmanage", "productwiki",
-    "ramcache", "matchfill", "chartbuilder", "templatereport", "autoreport",
+    "ramcache", "matchfill", "filecheck", "chartbuilder", "templatereport", "autoreport",
     "lotrequest", "analysisrequest", "lotlocation", "inform", "meeting", "calendar", "tracker",
     "lottracker", "valve", "teg", "yieldmap", "ettime", "reformatize", "dcop",
 })

@@ -71,6 +71,7 @@ backend/core/<기능>.py      계산·캐시·저장 (polars / duckdb / sqlite /
 | `productwiki` (제품 위키) | `productwiki/` | `/api/product-wiki` → `product_wiki.py`, `/api/product-semantics` | `product_wiki*.py`, `product_semantics.py` |
 | `ramcache` (캐시 관리) | `ramcache/My_RamCache.jsx` | `/api/splittable` (관리 API) | `cache_budget.py`, `cache_settings.py`, `memory_watchdog.py` |
 | `matchfill` (매칭 채우기) | `matchfill/My_MatchFill.jsx` | `/api/matching-fill` → `matching_fill.py` | `matching_fill.py`, `matching_store.py` |
+| `filecheck` (파일점검) | `filecheck/My_FileCheck.jsx` | `/api/file-check` → `file_check.py` | `file_check.py` |
 
 ### 업무 그룹
 

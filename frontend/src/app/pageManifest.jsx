@@ -16,6 +16,7 @@ const definitions = [
   { key: "productwiki", label: "제품 위키", icon: "📖", group: "data", layout: "workboard", helpId: "productwiki", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_ProductWiki") },
   { key: "ramcache", label: "캐시 관리", icon: "🧠", group: "data", layout: "admin", helpId: "ramcache", defaultEnabled: false, load: () => import("../pages/My_RamCache") },
   { key: "matchfill", label: "매칭 채우기", icon: "🧩", group: "data", layout: "workflow", helpId: "matchfill", defaultEnabled: false, load: () => import("../pages/My_MatchFill") },
+  { key: "filecheck", label: "파일점검", icon: "✓", group: "data", layout: "analysis", helpId: "filecheck", defaultEnabled: true, designSystem: true, load: () => import("../pages/My_FileCheck") },
 
   { key: "chartbuilder", label: "차트생성", icon: "📈", group: "work", layout: "analysis", helpId: "chartbuilder", defaultEnabled: true, load: () => import("../pages/My_ChartBuilder") },
   { key: "templatereport", label: "Template Report", icon: "🖼️", group: "work", layout: "workflow", helpId: "templatereport", defaultEnabled: true, load: () => import("../pages/My_TemplateReport") },

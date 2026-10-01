@@ -391,6 +391,7 @@ export function featureInfo(feature, tool) {
     "teg.coordinates": "ruler",
     "teg.mapfiles": "map",
     "semantic.alias_update": "tag",
+    "rulebook.csv_update": "table",
     "product.wiki": "book",
     "product.knowledge": "book",
   };
@@ -431,6 +432,7 @@ export function featureInfo(feature, tool) {
     "teg.coordinates": "TEG 좌표 조회",
     "teg.mapfiles": "Mapfile 검증 현황",
     "semantic.alias_update": tool?.approval?.status === "pending" ? "시맨틱 별칭 변경 미리보기" : "시맨틱 별칭 변경 결과",
+    "rulebook.csv_update": tool?.approval?.status === "pending" ? "매칭 파일 변경 미리보기" : "매칭 파일 조회·변경 결과",
     "product.wiki": tool?.action === "product_wiki.changes" ? "제품 위키 변경 기록" : "제품 위키 기록",
     "product.knowledge": "제품 지식·용어 연결",
   };

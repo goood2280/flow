@@ -1,6 +1,7 @@
 from typing import Any
 from fastapi import HTTPException
 from core import matching_cache as _matching_cache
+from core.ppid_knob_order import normalize_ppid_knob_rule_order
 from core import s3_sync as _s3
 from core.paths import PATHS
 from core.audit import record_user as _audit_user
@@ -115,6 +116,13 @@ class RulebookService:
         else:
             final = cleaned
 
+        priority_result = {"rows": final, "changes": [], "warnings": []}
+        if kind == "knob_ppid":
+            priority_result = normalize_ppid_knob_rule_order(
+                final, schema=self.repo.get_sch(kind),
+            )
+            final = priority_result["rows"]
+
         try:
             final, dedupe_rows_after = _matching_cache.dedupe_rows(
                 final,
@@ -142,4 +150,6 @@ class RulebookService:
             "deduped_rows": dedupe_rows + dedupe_rows_after,
             "cache_rows": cache_result.get("rows"),
             "s3_sync": sync_result,
+            "rule_order_changes": priority_result["changes"],
+            "rule_order_warnings": priority_result["warnings"],
         }

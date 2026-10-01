@@ -317,12 +317,93 @@ def _latest_cache_src_product_expr(names: list[str], fallback_product: str):
     )
 
 
-def export_latest_lot_step_cache(products: list[str] | None = None, *, update_state: bool = False) -> dict:
-    """Export product match caches into the canonical latest lot/step parquet."""
+def _latest_lot_step_existing_rows(fp: Path, exclude: set[str]):
+    """기존 canonical 파일에서 exclude 제품을 뺀 행. 형식이 다르거나 못 읽으면 None(전체 재생성)."""
+    try:
+        if not fp.is_file():
+            return None
+        df = pl.read_parquet(fp)
+    except Exception:
+        return None
+    if list(df.columns) != list(LATEST_LOT_STEP_CACHE_COLUMNS):
+        return None
+    if df.height:
+        try:
+            versions = df.get_column(LATEST_LOT_STEP_CACHE_FORMAT_COLUMN).unique().to_list()
+        except Exception:
+            return None
+        if versions != [LATEST_LOT_STEP_CACHE_FORMAT_VERSION]:
+            return None
+    return df.filter(~pl.col("product").is_in(sorted(exclude)))
+
+
+def _attach_function_steps(df: pl.DataFrame) -> pl.DataFrame:
+    """(product, step_id) 고유 쌍만 조회해 function_step 을 붙인다(행마다 파이썬 루프 금지)."""
+    try:
+        from core.lot_step import lookup_step_meta
+    except Exception:
+        lookup_step_meta = None
+    # 조회 키는 예전 행 루프와 같다: product 문자열 + 앞뒤 공백을 뺀 step_id(빈 값은 조회 안 함).
+    keyed = df.with_columns(
+        pl.col("product").cast(pl.Utf8, strict=False).fill_null("").alias("__fs_product"),
+        pl.col("step_id").cast(pl.Utf8, strict=False).fill_null("").str.strip_chars().alias("__fs_step"),
+    )
+    pairs = keyed.select(["__fs_product", "__fs_step"]).unique()
+    products: list[str] = []
+    steps: list[str] = []
+    values: list[str] = []
+    for product_text, step_text in pairs.iter_rows():
+        meta = (lookup_step_meta(product=product_text, step_id=step_text)
+                if lookup_step_meta and step_text else {})
+        products.append(product_text)
+        steps.append(step_text)
+        values.append(str((meta or {}).get("function_step") or (meta or {}).get("func_step") or ""))
+    mapping = pl.DataFrame(
+        {"__fs_product": products, "__fs_step": steps, "__function_step": values},
+        schema={"__fs_product": pl.Utf8, "__fs_step": pl.Utf8, "__function_step": pl.Utf8},
+    )
+    return (
+        keyed.join(mapping, on=["__fs_product", "__fs_step"], how="left")
+             .with_columns(pl.col("__function_step").fill_null("").alias("function_step"))
+             .drop(["__fs_product", "__fs_step", "__function_step"])
+    )
+
+
+_LATEST_LOT_STEP_EXPORT_LOCK = threading.Lock()
+
+
+def export_latest_lot_step_cache(products: list[str] | None = None, *, update_state: bool = False,
+                                 refresh_products: list[str] | None = None) -> dict:
+    # Serialize the complete read/modify/publish transaction. Concurrent product
+    # exports must not read the same old generation and overwrite each other.
+    with _LATEST_LOT_STEP_EXPORT_LOCK:
+        return _export_latest_lot_step_cache(
+            products, update_state=update_state, refresh_products=refresh_products)
+
+
+def _export_latest_lot_step_cache(products: list[str] | None = None, *, update_state: bool = False,
+                                 refresh_products: list[str] | None = None) -> dict:
+    """Export product match caches into the canonical latest lot/step parquet.
+
+    refresh_products 를 주면 그 제품의 행만 매칭 캐시에서 다시 만들고, 나머지 제품 행은
+    기존 파일에서 그대로 옮긴다. 제품 순환이 제품 하나를 갱신할 때마다 전체 카탈로그를
+    다시 만들던(N 제품이면 한 바퀴에 N 번) 비용을 없앤다. 기존 파일이 없거나 형식이
+    다르면 예전처럼 전체를 다시 만든다.
+    """
     raw_products = [p for p in (products or _match_cache_products("")) if p]
     cache_updated_at = datetime.datetime.now().isoformat(timespec="seconds")
+    fp = _latest_lot_step_cache_path()
+    refresh_norm: set[str] | None = None
+    keep_df = None
+    if refresh_products:
+        refresh_norm = {_normalize_latest_cache_product(p) for p in refresh_products if p}
+        refresh_norm.discard("")
+        keep_df = _latest_lot_step_existing_rows(fp, refresh_norm) if refresh_norm else None
+        if keep_df is None:
+            refresh_norm = None
     frames = []
     exported_products: list[str] = []
+    catalog_products: set[str] = set()
     skipped: list[dict] = []
     for raw_product in raw_products:
         current = _match_cache_current(raw_product)
@@ -331,6 +412,9 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
             continue
         lf = current.get("lf")
         product = _normalize_latest_cache_product(current.get("product") or raw_product)
+        catalog_products.add(product)
+        if refresh_norm is not None and product not in refresh_norm:
+            continue
         try:
             names = lf.collect_schema().names()
         except Exception as e:
@@ -377,7 +461,6 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
         ]
         frames.append(lf.select(exprs))
         exported_products.append(product)
-    fp = _latest_lot_step_cache_path()
     fp.parent.mkdir(parents=True, exist_ok=True)
     _cleanup_legacy_latest_lot_step_cache()
     if frames:
@@ -400,30 +483,27 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
             df = collect_streaming(q)
         except Exception:
             df = q.collect()
-        function_steps = []
-        step_meta_cache: dict[tuple[str, str], str] = {}
-        try:
-            from core.lot_step import lookup_step_meta
-        except Exception:
-            lookup_step_meta = None
-        for product_value, step_value in df.select(["product", "step_id"]).iter_rows():
-            product_text = str(product_value or "")
-            step_text = str(step_value or "").strip()
-            key = (product_text, step_text)
-            if key not in step_meta_cache:
-                meta = lookup_step_meta(product=product_text, step_id=step_text) if lookup_step_meta and step_text else {}
-                step_meta_cache[key] = str((meta or {}).get("function_step") or (meta or {}).get("func_step") or "")
-            function_steps.append(step_meta_cache[key])
-        df = df.with_columns(pl.Series("function_step", function_steps)).select(LATEST_LOT_STEP_CACHE_COLUMNS)
+        df = _attach_function_steps(df).select(LATEST_LOT_STEP_CACHE_COLUMNS)
     else:
         df = _empty_latest_lot_step_frame()
+    refreshed_products = list(exported_products)
+    if refresh_norm is not None:
+        kept = keep_df.filter(pl.col("product").is_in(sorted(catalog_products)))
+        df = (
+            pl.concat([kept, df.select(LATEST_LOT_STEP_CACHE_COLUMNS)], how="vertical_relaxed")
+              .sort(["product", "root_lot_id", "wafer_id"])
+        )
+        exported_products = list(dict.fromkeys(
+            [*exported_products, *(str(v) for v in kept.get_column("product").unique().to_list())]))
     tmp = fp.with_suffix(fp.suffix + ".tmp")
     try:
         tmp.unlink(missing_ok=True)
     except Exception:
         pass
     df.write_parquet(tmp)
-    tmp.replace(fp)
+    # Windows 는 대시보드가 읽는 동안 교체를 거부한다 — 짧게 기다렸다 교체한다.
+    from core.file_transaction import replace_file
+    replace_file(tmp, fp)
     # per-root 파티션을 같은 쓰기 시점에 동기화 — df 가 손에 있으므로 read-back
     # 없이 즉시 파티션이 fresh 가 된다. 실패해도 reader 의 monolithic 폴백 +
     # self-heal 재빌드가 있으므로 export 는 성공으로 처리한다.
@@ -437,7 +517,7 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
     # WIP refresh is the owner of applied-process preparation. Persist beside
     # shared DB caches so API and worker processes reuse the same generation.
     process_meta_errors = []
-    for product in dict.fromkeys(exported_products):
+    for product in dict.fromkeys(refreshed_products):
         try:
             _process_meta_snapshot(product)
         except Exception as exc:
@@ -448,6 +528,8 @@ def export_latest_lot_step_cache(products: list[str] | None = None, *, update_st
         "path": str(fp),
         "row_count": int(df.height),
         "products": exported_products,
+        "refreshed_products": refreshed_products,
+        "incremental": refresh_norm is not None,
         "skipped": skipped,
         "cache_updated_at": cache_updated_at,
         "process_meta_errors": process_meta_errors,
@@ -1125,7 +1207,8 @@ def _build_match_cache_streamed(
                 )
             try:
                 del part_q
-                gc.collect()
+                from core import memory_trim
+                memory_trim.trim(reason="match_cache_batch")
             except Exception:
                 pass
 
@@ -1156,6 +1239,55 @@ def _build_match_cache_streamed(
         except Exception:
             pass
     return row_count
+
+
+def _fab_source_dirs(fab_source: str, include_all: bool = True) -> list[str]:
+    """FAB 원천 폴더(절대 경로) — 매칭 캐시·FAB 인덱스가 실제로 읽는 집합과 같은 해석."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for source in _global_fab_source_paths(fab_source, include_all=include_all):
+        base, _resolved = _resolve_fab_source_target(source)
+        if base is None:
+            continue
+        key = _canon_file_key(base)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(str(base))
+    return out
+
+
+def _fab_tree_digest(fab_source: str, include_all: bool = True) -> str:
+    """FAB 원천 폴더 전체의 지문. 순환이 제품마다 같은 FAB 를 물으므로 30초간 공유한다."""
+    from core import source_digest as _sd
+    # 순서와 무관해야 한다 — _global_fab_source_paths 는 요청 제품의 폴더를 맨 앞에 둔다.
+    # 순서대로 접으면 같은 FAB 가 묻는 제품마다 다른 지문이 되어 '바뀜'으로 오판한다.
+    dirs = sorted(_fab_source_dirs(fab_source, include_all=include_all), key=str.casefold)
+    key = ("fab_tree", tuple(d.casefold() for d in dirs))
+    return _sd.memo(key, 30.0, lambda: _sd.tree_digest(dirs)["digest"])
+
+
+def _match_cache_source_digest(ml_product: str, fab_source: str) -> str:
+    """매칭 캐시 입력(교차 폴더 lineage 때문에 FAB 전체 + 이 제품 ML_TABLE + 설정)의 지문.
+
+    빈 문자열 = 지문 사용 안 함(꺼짐·실패) → 예전 나이 기준으로 판단한다."""
+    try:
+        from core import source_digest as _sd
+        if not _sd.change_driven_enabled():
+            return ""
+        try:
+            ml_path = str(_product_path(ml_product))
+        except Exception:
+            ml_path = ""
+        return _sd.combine({
+            "version": MATCH_CACHE_VERSION,
+            "fab": _fab_tree_digest(fab_source, include_all=True),
+            "inputs": _sd.files_digest([ml_path, str(SOURCE_CFG)]),
+            "app": _sd.files_digest([_sd.app_version_path()]),
+        })
+    except Exception:
+        logger.debug("match cache source digest failed for %s", ml_product, exc_info=True)
+        return ""
 
 
 def _refresh_match_cache_products(products: list[str], force: bool = False) -> dict:
@@ -1190,9 +1322,20 @@ def _refresh_match_cache_products(products: list[str], force: bool = False) -> d
                 fp = _match_cache_path(ml_product)
                 meta_fp = _match_cache_meta_path(ml_product)
                 old_meta = load_json(meta_fp, {}) if meta_fp.is_file() else {}
+                # 원천 지문을 빌드 전에 잡는다 — 빌드하는 동안 들어온 변경은 다음 확인에서 잡힌다.
+                source_digest = _match_cache_source_digest(ml_product, fab_source)
                 if not force and fp.is_file() and isinstance(old_meta, dict) and old_meta.get("config_key") == config_key:
-                    age_s = time.time() - float(old_meta.get("built_epoch") or 0)
-                    if age_s < _match_cache_refresh_minutes() * 60:
+                    stored_digest = str(old_meta.get("source_digest") or "")
+                    if source_digest and stored_digest:
+                        # 원천(FAB 전체·ML_TABLE·설정)이 같으면 전체 재확인 기한까지 쓰고,
+                        # 바뀌었으면 30분이 안 됐어도 다시 만든다(예전엔 최대 30분 낡은 매칭을 냈다).
+                        from core import source_digest as _sd
+                        age_s = time.time() - float(old_meta.get("built_epoch") or 0)
+                        fresh = stored_digest == source_digest and age_s < _sd.full_recheck_sec()
+                    else:
+                        age_s = time.time() - float(old_meta.get("built_epoch") or 0)
+                        fresh = age_s < _match_cache_refresh_minutes() * 60
+                    if fresh:
                         result.update({"ok": True, "skipped": True, "row_count": int(old_meta.get("row_count") or 0)})
                         results.append(result)
                         continue
@@ -1304,13 +1447,15 @@ def _refresh_match_cache_products(products: list[str], force: bool = False) -> d
                     else:
                         q = q.unique(subset=unique_subset, keep="last")
                     row_count = _write_match_cache_lazyframe(q, tmp)
-                tmp.replace(fp)
+                from core.file_transaction import replace_file
+                replace_file(tmp, fp)
                 meta = {
                     "version": MATCH_CACHE_VERSION,
                     "product": ml_product,
                     "fab_source": _normalize_fab_source_path(fab_source),
                     "fab_sources": fab_sources,
                     "config_key": config_key,
+                    "source_digest": source_digest,
                     "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
                     "built_epoch": time.time(),
                     "row_count": int(row_count),
@@ -1352,7 +1497,8 @@ def _refresh_match_cache_products(products: list[str], force: bool = False) -> d
                 result["reason"] = f"{type(e).__name__}: {e}"
             results.append(result)
             try:
-                gc.collect()
+                from core import memory_trim
+                memory_trim.trim(reason="match_cache_product")
             except Exception:
                 pass
     return {"ok": any(r.get("ok") for r in results), "products": results, "interval_minutes": _match_cache_refresh_minutes()}

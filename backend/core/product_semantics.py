@@ -493,8 +493,7 @@ def _mentioned(value, text):
 def load_inline_matching_rows(product=""):
     """Load canonical measurement rows from Inline_matching.csv / inline_matching.csv.
 
-    flow-data 정본(matching_store)이 우선이며, 레거시(db_root)에만 있으면
-    최초 1회 flow-data 로 seed 복사된다."""
+    DB 루트의 단일 파일을 읽으며 flow-data 사본을 만들지 않는다."""
     from core import matching_store
     try:
         path = matching_store.resolve(

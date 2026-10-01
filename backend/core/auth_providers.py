@@ -51,6 +51,7 @@ import datetime
 import os
 import threading
 from dataclasses import dataclass, field
+from functools import wraps
 from typing import Any, Iterable
 
 from fastapi import HTTPException
@@ -63,6 +64,18 @@ DEFAULT_TABS = ""
 
 # 하위 호환 export. 빈 tabs는 이제 명시적으로 "권한 없음"을 뜻한다.
 LEGACY_LOGIN_TABS = ""
+
+
+def _with_users_mutation_lock(func):
+    """Serialize a complete users.csv read/modify/write with WS login refreshes."""
+    @wraps(func)
+    def guarded(*args, **kwargs):
+        from routers import auth as auth_router
+
+        with auth_router.USERS_MUTATION_LOCK:
+            return func(*args, **kwargs)
+
+    return guarded
 
 
 @dataclass(frozen=True)
@@ -101,6 +114,7 @@ class AuthProvider:
         raise NotImplementedError
 
     # ── 공통 헬퍼 ────────────────────────────────────────────────────
+    @_with_users_mutation_lock
     def resolve_identity(
         self,
         username: str,
@@ -246,6 +260,7 @@ def _password_login_default() -> bool:
     except Exception:
         return False
 
+    @_with_users_mutation_lock
     def authenticate(self, credential: Any) -> AuthIdentity:
         from routers import auth as auth_router
 
@@ -1077,9 +1092,29 @@ def _identity_for_company_user(user_id: str, provider: str, *, department: str =
 
     mapped = _ws_user_map().get(user_id.casefold())
     username = mapped or user_id
+    department = " ".join(str(department or "").split())
     claims = {"ws_user": user_id, "department": department, "name": name, "email": email}
-    rows = auth_router.find_user_rows(auth_router.read_users(), username)
-    row = rows[0] if rows else None
+    if provider == "websocket":
+        # The verified department is also the source for the existing permission
+        # groups. Refresh stored users before applying their group defaults; an
+        # explicit individual grant keeps its established precedence.
+        with auth_router.USERS_MUTATION_LOCK:
+            users = auth_router.read_users()
+            rows = auth_router.find_user_rows(users, username)
+            row = rows[0] if rows else None
+            if row is not None and str(row.get("role") or "user") != "admin":
+                from routers import admin as admin_router
+
+                changed = str(row.get("department") or "") != department
+                if changed:
+                    row["department"] = department
+                if admin_router.apply_sso_department_permissions(users, row["username"]):
+                    changed = True
+                if changed:
+                    auth_router.write_users(users)
+    else:
+        rows = auth_router.find_user_rows(auth_router.read_users(), username)
+        row = rows[0] if rows else None
     profile = read_people().get((row or {}).get("username") or username, {})
     if profile.get("manual"):
         name, email = profile.get("name", ""), profile.get("email", "")
@@ -1107,6 +1142,18 @@ def _identity_for_company_user(user_id: str, provider: str, *, department: str =
             else:
                 msg += " 관리자에게 문의하세요."
             raise HTTPException(403, msg)
+        # WebSocket users without a users.csv row still inherit the same
+        # permission group as stored SSO users. Keep their grant in the session,
+        # with the department taken only from the server-verified response.
+        if provider == "websocket":
+            from routers import admin as admin_router
+
+            group_user = {"username": username, "role": "user", "department": department,
+                          "tabs": "", "permission_source": ""}
+            admin_router.apply_sso_department_permissions([group_user], username)
+            if group_user["permission_source"]:
+                tabs = group_user["tabs"]
+                claims["permission_source"] = group_user["permission_source"]
         identity = AuthIdentity(username=username, provider=provider, role="user", status="approved",
                                 tabs=tabs, name=name, email=email, claims=claims, ephemeral=True)
     _remember_manager_profile(identity, department)

@@ -80,6 +80,11 @@ def _load_generation_enabled() -> bool:
     return raw in {"1", "true", "yes", "on", "enabled"}
 
 
+def automatic_load_disabled() -> bool:
+    """Explicit off also blocks daily load, without rewriting the saved schedule."""
+    return os.environ.get("FLOW_SYSMON_ENABLE_LOAD", "").strip().lower() in {"0", "false", "no", "off"}
+
+
 def _manual_memory_cap_mb() -> int:
     """명시된 운영 상한. 0이면 현재 사용량에서 목표치까지 동적으로 계산한다."""
     raw = os.environ.get("FLOW_SYSMON_MAX_MEM_LOAD_MB", "").strip()
@@ -528,6 +533,11 @@ def get_schedule() -> dict:
         return _normalize_schedule(load_json(SYSMON_STATE_FILE, {}))
 
 
+def scheduled_load_enabled(schedule: dict | None = None) -> bool:
+    cfg = get_schedule() if schedule is None else schedule
+    return bool(PATHS.is_prod and cfg["enabled"] and not automatic_load_disabled())
+
+
 def save_schedule(*, enabled: bool, at: str) -> dict:
     # 먼저 정규화한 뒤 원문과 달라졌으면 400을 낼 수 있도록 호출자가 검사하지
     # 않아도 항상 유효한 HH:MM만 파일에 남긴다.
@@ -569,6 +579,7 @@ def get_state() -> dict:
         paver_allocated_mb = _mem_allocated_mb if combined_paver_active else _manual_paver_allocated_mb
         paver_pending_steps = _manual_paver_pending_steps
         paver_active = combined_paver_active or bool(_manual_paver_thread and _manual_paver_thread.is_alive())
+    schedule = get_schedule()
     return {
         "sample": sample,
         "load_active": load_active,
@@ -596,7 +607,9 @@ def get_state() -> dict:
         "window_hours": HISTORY_WINDOW_HOURS,
         "load_generation_enabled": _load_generation_enabled(),
         "load_result": dict(_load_result),
-        "schedule": get_schedule(),
+        "schedule": schedule,
+        "automatic_load_disabled": automatic_load_disabled(),
+        "daily_synthetic_load_enabled": scheduled_load_enabled(schedule),
     }
 
 
@@ -1053,7 +1066,7 @@ def _maybe_start_scheduled_load(now: _dt.datetime | None = None) -> bool:
     The local lock also serializes manual starts and settings updates.
     """
     global _load_thread, _load_mode, _load_target_pct
-    if not PATHS.is_prod:
+    if not PATHS.is_prod or automatic_load_disabled():
         return False
     kst = _dt.timezone(_dt.timedelta(hours=9))
     local_now = now or _dt.datetime.now(kst)

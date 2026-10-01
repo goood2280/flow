@@ -122,9 +122,10 @@ Gemma4 등으로 작업할 때는 이 절 → 해당 문서의 필요한 절 →
 2. `username`은 Flow 기록의 식별자이고 `name`은 표시 이름이다. manager-profiles의 ID 수정은 새 ID 추가/갱신이며
    기존 ID를 일괄 rename하지 않는다. 사내 ID가 바뀐 경우 기존 Flow ID로 매핑하면 기존 기록을 유지할 수 있다.
    계정 ID 이관은 작성자·그룹·위임·세션을 확인하는 별도 작업으로 다룬다.
-3. `_identity_for_company_user()`의 현재 순서: 매핑 → 기존 계정의 역할·탭 → 매핑 대상이 없으면 admin →
-   그 외 일반 사용자는 부서 규칙. `FLOW_WS_AUTH_USER_MAP`은 일반 사용자 목록이 아니라 관리자 지정에도 쓰인다.
-   기존 `users.csv` 계정은 부서 규칙을 우회한다. 정책 변경 요청 없이는 이 우선순위를 바꾸지 않는다.
+3. `_identity_for_company_user()`의 현재 순서: 매핑 → 기존 계정의 역할·개인/직접 그룹 권한(검증된 부서로
+   기본 그룹 갱신) → 매핑 대상이 없으면 admin → 그 외 일반 사용자는 부서 규칙 통과 후 권한 그룹의 부서 기본값.
+   `FLOW_WS_AUTH_USER_MAP`은 일반 사용자 목록이 아니라 관리자 지정에도 쓰인다. 기존 `users.csv` 계정은
+   로그인 허용 부서 규칙을 우회한다. 정책 변경 요청 없이는 이 우선순위를 바꾸지 않는다.
 4. 부서 규칙은 비어 있으면 일반 로그인 허용, 하나 이상이면 일치하는 허용 부서만 통과, 거부 우선, 허용 탭 합집합이다.
    빈 tabs는 관리자 외 허용 탭 전체다. 파일 누락/파싱 실패도 빈 규칙 처리라는 현재 동작을 고려한다.
    OIDC의 부서 권한 그룹과 혼동하지 않는다. IP 로그인은 같은 identity 함수를 쓰지만 부서 claim이 없다.
@@ -225,7 +226,7 @@ Gemma4 등으로 작업할 때는 이 절 → 해당 문서의 필요한 절 →
 - The home agent planner prompt keeps static keys first and `request` last for server prefix caching.
 - Every DuckDB connection gets `memory_limit` and `temp_directory` from `core.duckdb_engine.configure_connection()` (large host 16GB, else 25% of RAM, capped at half of free memory). New DuckDB connections must call it.
 - DuckDB defaults to the CPU budget per connection; concurrent queries can contend with the shared Polars pool. Never increase every per-tab limit independently. Measure mixed workload p95, queue waits, memory peaks and `/health` responsiveness before accepting performance.
-- For this dedicated server, inspect the administrator's daily synthetic-load schedule (default 11:00, target 85%). `FLOW_SYSMON_ENABLE_LOAD=0` only disables idle load and does not disable the daily schedule; use the schedule setting itself when synthetic load is unwanted. Do not silently overwrite an existing operator setting.
+- For this dedicated server, inspect the administrator's daily synthetic-load schedule (default 11:00, target 85%). Explicit `FLOW_SYSMON_ENABLE_LOAD=0` (also false/no/off) disables both idle and daily automatic load, preserving the saved schedule and run history. Unset retains the existing daily schedule policy; manual load remains available. Do not silently overwrite an existing operator setting.
 - Run the server through `scripts/flow_server.py` (restart on exit, hang via `/health`, memory), not a bare `uvicorn` command.
 - Keep cache work in the shared scan gate (via `heavy_jobs`) and preserve interactive request priority.
 - Budgets are derived from the detected host (`core/runtime_limits.py`, `core/cache_budget.py`); do not hard-code machine sizes.

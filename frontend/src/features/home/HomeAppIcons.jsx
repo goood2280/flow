@@ -249,6 +249,14 @@ const ICONS = {
     }
     return [...box("p", 0, 0, 0, 13.4, 13.4, 1), ...cells, ...box("b", 9.2, 9.2, 4.2, 3.4, 3.4, 3.4)];
   },
+  // File check: two source sheets converging on a checked reference table.
+  filecheck: () => [
+    ...box("p", 0, 0, 0, 12, 10, 1.4),
+    ...box("c", 1, 1, 1.4, 3.2, 3.2, 1.2),
+    ...box("c", 1, 5.6, 1.4, 3.2, 3.2, 1.2),
+    ...box("b", 6, 2.6, 1.4, 5, 5, 1.5),
+    topLine("hi-ink", 2.9, [[7, 5], [8.1, 6.1], [10.2, 3.8]], 0.9),
+  ],
   // Chart builder: a query source feeding a chart board (scatter + fitted trend).
   chartbuilder: () => [
     ...box("p", 0, 0, 0, 13, 0.9, 11),

@@ -161,7 +161,8 @@ def _cgroup_cpu_quota_cores() -> float:
     return 0.0
 
 
-def effective_cpu_count() -> float:
+def detected_cpu_count() -> float:
+    """OS-usable cores after affinity/quota, before any operator ceiling."""
     detected = float(os.cpu_count() or 1)
     try:
         detected = min(detected, float(len(os.sched_getaffinity(0))))
@@ -170,6 +171,11 @@ def effective_cpu_count() -> float:
     quota = _cgroup_cpu_quota_cores()
     if quota > 0:
         detected = min(detected, quota)
+    return max(0.01, detected)
+
+
+def effective_cpu_count() -> float:
+    detected = detected_cpu_count()
     # Optional operator ceiling; never exceed the actual affinity/quota.
     override = _env_float("FLOW_SYSTEM_CPU_CORES", detected, 0.01)
     return max(0.01, min(detected, override))
@@ -268,6 +274,16 @@ def heavy_background_jobs_enabled() -> bool:
     if "FLOW_ENABLE_HEAVY_BACKGROUND_JOBS" in os.environ:
         return _env_flag("FLOW_ENABLE_HEAVY_BACKGROUND_JOBS")
     return resource_profile() in _FULL_PROFILES
+
+
+def threadpool_tokens() -> int:
+    """Launch-time AnyIO capacity, shared by the app and diagnostics."""
+    default = 240 if is_large_profile() else 120
+    try:
+        value = int(os.environ.get("FLOW_THREADPOOL_TOKENS", "") or default)
+    except ValueError:
+        value = default
+    return max(40, min(400, value))
 
 
 def splittable_match_cache_enabled() -> bool:
@@ -890,11 +906,16 @@ def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
     """기동 로그용 요약 + 경고. 느린 서버에서 설정 오판을 로그 한 줄로 찾게 한다."""
     total_gb = float(system_memory_snapshot().get("system_memory_total_gb") or 0.0)
     cores = effective_cpu_count()
-    explicit = os.environ.get("FLOW_RESOURCE_PROFILE_SOURCE") == "env"
+    detected_cores = detected_cpu_count()
+    source = os.environ.get("FLOW_RESOURCE_PROFILE_SOURCE")
+    explicit = source == "env" if source else os.environ.get("FLOW_RESOURCE_PROFILE", "").strip().lower() not in ("", "auto")
+    large_capable = detected_cores >= _LARGE_HOST_MIN_CORES and total_gb >= _LARGE_HOST_MIN_MEMORY_GB
     info = {
         "profile": resource_profile(),
         "profile_source": "env" if explicit else "auto",
         "cores": cores,
+        "detected_cores": detected_cores,
+        "system_cpu_ceiling": os.environ.get("FLOW_SYSTEM_CPU_CORES", "").strip(),
         "memory_total_gb": round(total_gb, 1),
         "cpu_budget": cpu_budget_cores(),
         "cpu_guard_cores": _env_float("FLOW_PROCESS_CPU_GUARD_CORES", cpu_budget_cores(), 0.1, 1024.0),
@@ -909,6 +930,12 @@ def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
     info["duckdb"] = _module_available("duckdb")
     info["orjson"] = _module_available("orjson")
     warnings: list[str] = []
+    if cores < detected_cores and info["system_cpu_ceiling"]:
+        warnings.append(
+            f"FLOW_SYSTEM_CPU_CORES={info['system_cpu_ceiling']}로 OS 감지 {detected_cores:g}코어가 "
+            f"{cores:g}코어로 제한됩니다. 자동 프로파일 판정도 이 제한을 따릅니다. "
+            "이전 VM의 값이면 제거 후 감시기까지 다시 기동하세요. 의도한 제한이면 유지하세요."
+        )
     # setup.py 최소 의존성에 둘 다 없던 시기가 있어, 현장 requirements.txt 없이 설치한 VM 에서 빠질 수 있다.
     if not info["duckdb"]:
         warnings.append("duckdb 가 설치되지 않았습니다 — 파일탐색기 대용량 SQL·집계가 느린 Polars 경로로 떨어집니다. "
@@ -916,19 +943,19 @@ def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
     if not info["orjson"]:
         warnings.append("orjson 이 설치되지 않았습니다 — 큰 조회 응답 직렬화가 느린 표준 json 경로로 떨어집니다. "
                         "conda env 에서 pip install orjson 후 재기동하세요.")
-    if info["prod"] is False and cores >= _LARGE_HOST_MIN_CORES and total_gb >= _LARGE_HOST_MIN_MEMORY_GB:
+    if info["prod"] is False and large_capable:
         # 개발 모드는 SplitTable 계산을 Polars 1스레드로 묶고 캐시를 0.35배로 줄인다.
         warnings.append(
             "운영 모드(FLOW_PROD=1)가 아닙니다 — SplitTable 계산이 1코어로 제한되고 캐시가 작아집니다. "
             "운영 서버면 scripts\\windows\\flow_run.bat 로 기동하거나 FLOW_PROD=1 을 지정하세요."
         )
-    if is_small_profile() and cores >= _LARGE_HOST_MIN_CORES and total_gb >= _LARGE_HOST_MIN_MEMORY_GB:
+    if is_small_profile() and explicit and large_capable:
         warnings.append(
             f"FLOW_RESOURCE_PROFILE={resource_profile()}로 대형 호스트에 소형 예산을 적용합니다. "
             "이전 서버의 설정이면 FLOW_RESOURCE_PROFILE=auto로 바꾸고 감시기까지 다시 기동하세요."
         )
-    if is_large_profile():
-        if info["cpu_budget"] < cores:
+    if large_capable:
+        if os.environ.get("FLOW_CPU_BUDGET_CORES", "").strip() and info["cpu_budget"] < cores:
             warnings.append(
                 f"FLOW_CPU_BUDGET_CORES={info['cpu_budget']:g} 로 {cores:g}코어 중 일부만 사용합니다. "
                 "이전 서버의 고정값이면 제거 후 감시기까지 다시 기동하세요. 의도한 제한이면 유지하세요."
@@ -944,10 +971,12 @@ def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
                     f"{name}={threads} 로 계산 병렬도가 CPU 예산 {info['cpu_budget']:g}보다 작습니다. "
                     "이전 서버의 고정값이면 제거 후 감시기까지 다시 기동하세요. 의도한 제한이면 유지하세요."
                 )
-        if 0 < info["process_memory_limit_gb"] < total_gb * 0.5:
+        if 0 < info["process_memory_limit_gb"] < round(total_gb * _LARGE_MEMORY_CEILING_FRACTION_DEFAULT, 1):
             warnings.append(
-                f"FLOW_PROCESS_MEMORY_LIMIT_GB={info['process_memory_limit_gb']:g} 는 "
-                f"감지된 메모리 {total_gb:g}GB의 절반 미만입니다. 이전 서버의 고정값인지 확인하세요."
+                f"FLOW_PROCESS_MEMORY_LIMIT_GB 적용값 {info['process_memory_limit_gb']:g}GB가 "
+                f"large 자동값 {round(total_gb * _LARGE_MEMORY_CEILING_FRACTION_DEFAULT, 1):g}GB보다 작습니다. "
+                "FLOW_PROCESS_MEMORY_LIMIT_GB·FLOW_MEMORY_CEILING_GB·FLOW_MEMORY_CEILING_FRACTION의 "
+                "이전 서버 고정값인지 확인하세요."
             )
         for name in ("FLOW_PROCESS_CPU_GUARD_CORES",):
             try:
@@ -967,6 +996,11 @@ def host_diagnostics(paths: dict | None = None) -> tuple[dict, list[str]]:
         warnings.extend(cache_warnings)
     except Exception:
         pass
+    from core.resource_diagnostics import diagnostics as resource_diagnostics
+
+    resource_info, resource_warnings = resource_diagnostics(large_capable=large_capable)
+    info.update(resource_info)
+    warnings.extend(resource_warnings)
     if (not explicit and info["profile"] != "large" and cores >= _LARGE_HOST_MIN_CORES
             and 0 < total_gb < _LARGE_HOST_MIN_MEMORY_GB):
         warnings.append(

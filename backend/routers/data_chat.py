@@ -111,6 +111,11 @@ def orchestrate(body: ChatRequest, request: Request, _user=Depends(require_flowi
                 context.pop("et_query", None)
                 context.pop("pending_semantic_update", None)
                 context.pop("pending_semantic_request", None)
+                # Home CSV proposal pointers are server-owned conversation
+                # state.  Never accept them from a first-turn client context.
+                context.pop("pending_rulebook_update", None)
+                context.pop("pending_rulebook_request", None)
+                context.pop("pending_rulebook_file", None)
             # Chart selection is an explicit client input, unlike server-owned
             # product confirmations and pending approval identifiers.
             if "selected_report_charts" in body.context:

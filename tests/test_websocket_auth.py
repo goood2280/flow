@@ -1,4 +1,5 @@
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -66,6 +67,198 @@ def test_client_supplied_department_is_not_trusted(ws_env):
     ws_env["spoof"] = {"user_id": "spoof"}
     with pytest.raises(HTTPException):
         ap.get_provider("websocket").authenticate({"user_id": "spoof", "token": "t", "department": "공정기술"})
+
+
+def test_verified_ws_department_uses_existing_permission_group(ws_env, monkeypatch):
+    from routers import admin
+
+    monkeypatch.setattr(admin, "_load_perm_groups", lambda: [{
+        "name": "process", "tabs": ["teg", "splittable"], "members": [],
+        "departments": ["Process Team"],
+    }])
+    ap.write_department_rules([
+        {"department": "Process Team", "allow_login": True, "tabs": "dashboard"},
+        {"department": "Other Team", "allow_login": True, "tabs": "lotlocation"},
+    ])
+    ws_env["kim"] = {"user_id": "kim", "department": "Process  Team"}
+    identity = ap.get_provider("websocket").authenticate({"user_id": "kim", "token": "t"})
+    assert identity.ephemeral
+    assert identity.tabs == "teg,splittable"
+    assert identity.claims["permission_source"] == "department:process"
+
+    # A browser-supplied department cannot change the verified group grant.
+    ws_env["kim"] = {"user_id": "kim", "department": "Other Team"}
+    identity = ap.get_provider("websocket").authenticate({
+        "user_id": "kim", "token": "t", "department": "Process Team",
+    })
+    assert identity.tabs == "lotlocation"
+
+
+def test_verified_ws_department_refreshes_stored_group_without_overwriting_individual(ws_env, monkeypatch):
+    from routers import admin, auth as auth_router
+
+    rows = [
+        {"username": "group.user", "role": "user", "tabs": "dashboard",
+         "department": "Old Team", "permission_source": "department:old"},
+        {"username": "individual.user", "role": "user", "tabs": "inform",
+         "department": "Old Team", "permission_source": "individual"},
+    ]
+    monkeypatch.setattr(auth_router, "read_users", lambda: [dict(row) for row in rows])
+    monkeypatch.setattr(auth_router, "write_users", lambda users: rows.__setitem__(slice(None), [dict(row) for row in users]))
+    monkeypatch.setattr(admin, "_load_perm_groups", lambda: [{
+        "name": "new", "tabs": ["teg"], "members": [], "departments": ["New Team"],
+    }])
+    ws_env["group.user"] = {"user_id": "group.user", "department": "New Team"}
+    ws_env["individual.user"] = {"user_id": "individual.user", "department": "New Team"}
+    provider = ap.get_provider("websocket")
+    group_identity = provider.authenticate({"user_id": "group.user", "token": "t"})
+    individual_identity = provider.authenticate({"user_id": "individual.user", "token": "t"})
+    assert (group_identity.tabs, rows[0]["tabs"], rows[0]["permission_source"]) == (
+        "teg", "teg", "department:new",
+    )
+    assert (individual_identity.tabs, rows[1]["tabs"], rows[1]["permission_source"]) == (
+        "inform", "inform", "individual",
+    )
+    assert [row["department"] for row in rows] == ["New Team", "New Team"]
+
+
+def test_verified_ws_direct_group_member_overrides_department_default(ws_env, monkeypatch):
+    from routers import admin, auth as auth_router
+
+    rows = [{
+        "username": "member.user", "role": "user", "tabs": "",
+        "department": "Old Team", "permission_source": "",
+    }]
+    monkeypatch.setattr(auth_router, "read_users", lambda: [dict(row) for row in rows])
+    monkeypatch.setattr(
+        auth_router,
+        "write_users",
+        lambda users: rows.__setitem__(slice(None), [dict(row) for row in users]),
+    )
+    monkeypatch.setattr(admin, "_load_perm_groups", lambda: [{
+        "name": "direct", "tabs": ["teg"], "members": ["member.user"],
+        "departments": [],
+    }, {
+        "name": "department-default", "tabs": ["dashboard"], "members": [],
+        "departments": ["Process Team"],
+    }])
+    ws_env["member.user"] = {"user_id": "member.user", "department": "Process Team"}
+
+    identity = ap.get_provider("websocket").authenticate({"user_id": "member.user", "token": "t"})
+
+    assert identity.tabs == "teg"
+    assert rows[0]["tabs"] == "teg"
+    assert rows[0]["permission_source"] == "group:direct"
+
+
+def test_verified_ws_department_change_clears_stale_department_default(ws_env, monkeypatch):
+    from routers import admin, auth as auth_router
+
+    rows = [{
+        "username": "moved.user", "role": "user", "tabs": "dashboard",
+        "department": "Old Team", "permission_source": "department:old",
+    }]
+    monkeypatch.setattr(auth_router, "read_users", lambda: [dict(row) for row in rows])
+    monkeypatch.setattr(
+        auth_router,
+        "write_users",
+        lambda users: rows.__setitem__(slice(None), [dict(row) for row in users]),
+    )
+    monkeypatch.setattr(admin, "_load_perm_groups", lambda: [{
+        "name": "old", "tabs": ["dashboard"], "members": [],
+        "departments": ["Old Team"],
+    }])
+    ws_env["moved.user"] = {"user_id": "moved.user", "department": "New Team"}
+
+    identity = ap.get_provider("websocket").authenticate({"user_id": "moved.user", "token": "t"})
+
+    assert identity.tabs == ""
+    assert rows[0]["department"] == "New Team"
+    assert rows[0]["tabs"] == ""
+    assert rows[0]["permission_source"] == "department:"
+
+
+def test_concurrent_admin_tabs_and_verified_ws_refresh_preserve_both_permissions(
+        ws_env, monkeypatch):
+    """A concurrent manual edit must survive the next verified department refresh."""
+    from routers import admin, auth as auth_router
+
+    rows = [{
+        "username": "race.user", "role": "user", "tabs": "dashboard",
+        "department": "Old Team", "permission_source": "department:old",
+    }]
+    ws_in_group_lookup = threading.Event()
+    release_ws = threading.Event()
+    admin_done = threading.Event()
+    writes = []
+    errors = []
+
+    def read_users():
+        return [dict(row) for row in rows]
+
+    def write_users(users):
+        rows[:] = [dict(row) for row in users]
+        writes.append(rows[0].copy())
+
+    def load_groups():
+        if threading.current_thread().name == "ws-login":
+            ws_in_group_lookup.set()
+            if not release_ws.wait(timeout=3):
+                raise TimeoutError("WS group lookup was not released")
+        return [{
+            "name": "new", "tabs": ["teg"], "members": [],
+            "departments": ["New Team"],
+        }]
+
+    monkeypatch.setattr(auth_router, "read_users", read_users)
+    monkeypatch.setattr(auth_router, "write_users", write_users)
+    monkeypatch.setattr(admin, "read_users", read_users)
+    monkeypatch.setattr(admin, "write_users", write_users)
+    monkeypatch.setattr(admin, "_load_perm_groups", load_groups)
+    monkeypatch.setattr(admin, "_audit", lambda *args, **kwargs: None)
+    ws_env["race.user"] = {"user_id": "race.user", "department": "New Team"}
+
+    def admin_edit():
+        try:
+            admin.set_tabs(
+                admin.PermReq(username="race.user", tabs=["inform"]),
+                SimpleNamespace(),
+                _admin={"username": "hol", "role": "admin"},
+            )
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            admin_done.set()
+
+    def ws_refresh():
+        try:
+            identity = ap.get_provider("websocket").authenticate({
+                "user_id": "race.user", "token": "t",
+            })
+            assert identity.tabs == "teg"
+        except Exception as exc:
+            errors.append(exc)
+
+    ws_thread = threading.Thread(target=ws_refresh, name="ws-login")
+    admin_thread = threading.Thread(target=admin_edit, name="admin-edit")
+    ws_thread.start()
+    assert ws_in_group_lookup.wait(timeout=2)
+    admin_thread.start()
+    # WS has read the old row and holds the mutation lock. The admin edit must
+    # wait until the verified department/group write has completed.
+    admin_finished_before_release = admin_done.wait(timeout=0.2)
+    release_ws.set()
+    threads = [ws_thread, admin_thread]
+    for thread in threads:
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+
+    assert not errors
+    assert not admin_finished_before_release
+    assert len(writes) == 2
+    assert rows[0]["department"] == "New Team"
+    assert rows[0]["tabs"] == "inform"
+    assert rows[0]["permission_source"] == "individual"
 
 
 def test_ephemeral_session_carries_tabs_without_users_csv(ws_env):

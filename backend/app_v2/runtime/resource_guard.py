@@ -261,6 +261,22 @@ def _truthy(raw: str | None) -> bool:
     return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _auto_heavy_concurrency() -> int:
+    if is_small_profile():
+        return max(1, min(3, (int(effective_cpu_count()) - 1) // 2))
+    if _is_large_profile():
+        return max(3, min(8, int(effective_cpu_count()) // 2))
+    return 3
+
+
+def concurrency_limits() -> dict[str, int]:
+    """Effective admission limits without constructing a middleware instance."""
+    return {
+        "heavy_request_concurrency": _int_env("FLOW_HEAVY_REQUEST_CONCURRENCY", _auto_heavy_concurrency(), 1, 8),
+        "essential_request_concurrency": _int_env("FLOW_ESSENTIAL_REQUEST_CONCURRENCY", _auto_essential_concurrency(), 1, 8),
+    }
+
+
 class ResourceGuardMiddleware(BaseHTTPMiddleware):
     """Serialize heavy API work and reject it before the process reaches OOM.
 
@@ -275,23 +291,15 @@ class ResourceGuardMiddleware(BaseHTTPMiddleware):
         # Metadata/list requests stay light; heavy scans are serialised on tiny
         # hosts but get 2 slots once the host has ≥5 cores.
         # cores  ≤4 → 1  5-6 → 2  7+ → 3.  Override with env var if needed.
-        if is_small_profile():
-            default_concurrency = max(1, min(3, (int(effective_cpu_count()) - 1) // 2))
-        elif _is_large_profile():
-            # 전용 대형 서버: 코어 절반만큼 무거운 작업을 동시에 받는다(8코어 → 4).
-            default_concurrency = max(3, min(8, int(effective_cpu_count()) // 2))
-        else:
-            default_concurrency = 3
-        self._concurrency = _int_env("FLOW_HEAVY_REQUEST_CONCURRENCY", default_concurrency, 1, 8)
+        limits = concurrency_limits()
+        self._concurrency = limits["heavy_request_concurrency"]
         self._queue_timeout = _float_env("FLOW_HEAVY_REQUEST_QUEUE_TIMEOUT_SEC", 120.0, 1.0, 600.0)
         self._flowi_concurrency = _int_env("FLOW_FLOWI_CHAT_CONCURRENCY", 1, 1, 4)
         self._flowi_queue_timeout = _float_env("FLOW_FLOWI_CHAT_QUEUE_TIMEOUT_SEC", 8.0, 1.0, 60.0)
         # Essential interactive reads (SplitTable load, file view) get their own
         # reserved lane, sized from the host's spare cores, that is never blocked
         # by the memory/CPU guard.
-        self._essential_concurrency = _int_env(
-            "FLOW_ESSENTIAL_REQUEST_CONCURRENCY", _auto_essential_concurrency(), 1, 8
-        )
+        self._essential_concurrency = limits["essential_request_concurrency"]
         self._essential_queue_timeout = _float_env(
             "FLOW_ESSENTIAL_REQUEST_QUEUE_TIMEOUT_SEC", 90.0, 1.0, 600.0
         )

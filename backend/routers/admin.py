@@ -14,6 +14,7 @@ v8.7.3 hotfix:
 """
 import html, os, secrets, subprocess, sys
 import datetime as dt
+from functools import wraps
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Query, Depends, Request
 from pydantic import BaseModel
@@ -24,7 +25,7 @@ from core.notify import (
     send_notify, get_notifications, mark_all_read,
     dismiss_notification, dismiss_by_ids, mark_read_by_ids,
 )
-from routers.auth import read_users, write_users
+from routers.auth import read_users, write_users, USERS_MUTATION_LOCK
 from core.auth import DELEGABLE_PAGE_IDS, GRANTABLE_TAB_IDS, canonical_page_id, canonical_tab_token, effective_permissions, effective_permissions_bulk, get_page_admins, require_admin, current_user, verify_owner
 from core.audit import ACTIVITY_LOG_MAX_BYTES, append_activity, record as _audit
 from core import s3_sync as _s3
@@ -35,6 +36,15 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 FLOW_ROOT = Path(__file__).resolve().parents[2]
 QA_REPORT_FILE = PATHS.data_root / "qa_report.json"
 QA_SCRIPT = FLOW_ROOT / "scripts" / "e2e_qa.py"
+
+
+def _lock_users_mutation(handler):
+    """Serialize users.csv read-modify-write handlers with SSO refreshes."""
+    @wraps(handler)
+    def wrapped(*args, **kwargs):
+        with USERS_MUTATION_LOCK:
+            return handler(*args, **kwargs)
+    return wrapped
 
 
 def _is_admin(username: str) -> bool:
@@ -435,6 +445,7 @@ def user_counts(_admin=Depends(require_admin)):
 
 
 @router.post("/approve")
+@_lock_users_mutation
 def approve_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     users = read_users()
     for u in users:
@@ -471,6 +482,7 @@ def approve_user(req: ApproveReq, request: Request, _admin=Depends(require_admin
 
 
 @router.post("/reject")
+@_lock_users_mutation
 def reject_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     users = [u for u in read_users() if u["username"] != req.username]
     write_users(users)
@@ -479,6 +491,7 @@ def reject_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)
 
 
 @router.post("/reset-password")
+@_lock_users_mutation
 def reset_password(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     """v8.4.6: 임시 랜덤 비번 (12자) 발급. 기존 '1111' 하드코딩 제거.
     v9.x: admin 메일 설정(domain 포함)을 사용해 사용자에게 임시 비번을 발송."""
@@ -547,6 +560,7 @@ class EmailReq(BaseModel):
 
 
 @router.post("/set-email")
+@_lock_users_mutation
 def set_email(req: EmailReq, request: Request, _admin=Depends(require_admin)):
     """v8.7.2: admin sets/clears a user's email (used for 인폼 메일 수신자)."""
     email = (req.email or "").strip()
@@ -571,6 +585,7 @@ class NameReq(BaseModel):
 
 
 @router.post("/set-name")
+@_lock_users_mutation
 def set_name(req: NameReq, request: Request, _admin=Depends(require_admin)):
     """v8.8.27: admin 이 유저의 실명을 설정/수정. 기존 가입자 일괄 채움용."""
     nm = (req.name or "").strip()
@@ -587,6 +602,7 @@ def set_name(req: NameReq, request: Request, _admin=Depends(require_admin)):
 
 
 @router.post("/delete-user")
+@_lock_users_mutation
 def delete_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     from core.auth import revoke_user_tokens
     users = [u for u in read_users() if u["username"] != req.username]
@@ -603,6 +619,7 @@ def delete_user(req: ApproveReq, request: Request, _admin=Depends(require_admin)
 
 # ── Permissions ──
 @router.post("/set-tabs")
+@_lock_users_mutation
 def set_tabs(req: PermReq, request: Request, _admin=Depends(require_admin)):
     # v9.1.x: "tab" 또는 "tab:subtab" 토큰 허용 — 유효하지 않은 토큰은 제거.
     tokens: list = []
@@ -655,6 +672,7 @@ class SetRoleReq(BaseModel):
 
 
 @router.post("/set-role")
+@_lock_users_mutation
 def set_role(req: SetRoleReq, request: Request, _admin=Depends(require_admin)):
     """admin 이 특정 유저의 역할(admin/user)을 변경. 강등/승격 모두 지원.
     - 'admin' 이면 모든 권한 그룹에서 제외하고 전체 권한을 명시적으로 저장한다.
@@ -925,6 +943,7 @@ def perm_groups_list(_admin=Depends(require_admin)):
 
 
 @router.post("/perm-groups")
+@_lock_users_mutation
 def perm_groups_save(req: PermGroupReq, request: Request, _admin=Depends(require_admin)):
     name = str(req.name or "").strip()
     if not name:
@@ -977,6 +996,7 @@ def perm_groups_save(req: PermGroupReq, request: Request, _admin=Depends(require
 
 
 @router.post("/perm-groups/delete")
+@_lock_users_mutation
 def perm_groups_delete(req: PermGroupDeleteReq, request: Request, _admin=Depends(require_admin)):
     name = str(req.name or "").strip()
     groups = _load_perm_groups()
@@ -993,6 +1013,7 @@ def perm_groups_delete(req: PermGroupDeleteReq, request: Request, _admin=Depends
 
 
 @router.post("/use-department-default")
+@_lock_users_mutation
 def use_department_default(req: ApproveReq, request: Request, _admin=Depends(require_admin)):
     """Clear an explicit override and immediately re-apply the user's SSO department default."""
     users = read_users()

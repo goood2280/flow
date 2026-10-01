@@ -91,7 +91,10 @@ def test_vector_reduce_matches_row_by_row_python(monkeypatch, tmp_path, batch_ro
     monkeypatch.setattr(paths, "_get_base_root", lambda: tmp_path)
     monkeypatch.setattr(lpc, "_FAB_READ_BATCH_ROWS", batch_rows)
     monkeypatch.setattr(lpc, "_yield_scan_slice", lambda: None)
-    monkeypatch.setattr(lpc, "_ml_table_root_lot_ids", lambda: set())
+    monkeypatch.setattr(lpc, "_ml_table_root_lot_ids", lambda **kw: set())
+    # Same sources twice: the change-driven check would reuse the first result instead
+    # of rescanning, and this test must compare two real scans.
+    monkeypatch.setenv("FLOW_CACHE_CHANGE_DRIVEN", "0")
 
     def refresh():
         state = lpc.refresh_lot_progress_cache(force=True, required_products=["__always_rebuild__"])

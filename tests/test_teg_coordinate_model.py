@@ -1728,6 +1728,29 @@ def test_product_node_access_supports_users_and_future_sso_departments(monkeypat
     assert teg_map.can_access_product({"role": "user", "username": "bob"}, "OPEN")
 
 
+def test_teg_map_allows_all_800_selected_for_authorized_user(monkeypatch):
+    import json
+    from core import audit
+    from fastapi import HTTPException
+
+    seen = []
+    monkeypatch.setattr(teg_router._tm, "can_access_product", lambda user, vehicle: user["username"] == "alice")
+    monkeypatch.setattr(teg_router._tm, "map_payload_json", lambda vehicle, max_selection: (
+        seen.append((vehicle, max_selection)) or
+        json.dumps({"tegs": [f"T{i}" for i in range(800)], "max_selection": max_selection}).encode()
+    ))
+    monkeypatch.setattr(audit, "record_user", lambda *args, **kwargs: None)
+
+    response = teg_router.wf_map(vehicle="P2", user={"role": "user", "username": "alice"})
+    payload = json.loads(response.body)
+    assert seen == [("P2", None)]
+    assert payload["max_selection"] is None
+    assert len(payload["tegs"]) == 800
+    with pytest.raises(HTTPException) as denied:
+        teg_router.wf_map(vehicle="P2", user={"role": "user", "username": "bob"})
+    assert denied.value.status_code == 403
+
+
 def test_product_catalog_reads_names_without_building_full_layout(tmp_path, monkeypatch):
     layout = tmp_path / "Chip_Radius.csv"
     layout.write_text(

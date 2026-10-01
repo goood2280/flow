@@ -48,7 +48,7 @@ def _norm(value: Any) -> str:
 def _read_rows(filename: str) -> list[dict[str, str]]:
     """매칭 CSV 를 [{col: str}] 로 읽는다. matching_cache 우선, 실패 시 plain CSV.
 
-    관리 대상 매칭 테이블은 flow-data 정본(matching_store)을 먼저 본다."""
+    Vehicle/Inline 매칭 테이블은 DB 루트의 단일 파일을 사용한다."""
     try:
         from core import matching_store
         if filename in matching_store.managed_names():

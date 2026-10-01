@@ -14,6 +14,7 @@ const CARD_DESC = {
   productwiki: "제품별 공정과 분석 지식 확인",
   ramcache: "제품별 데이터 캐시 상태 관리",
   matchfill: "매칭되지 않은 데이터 연결",
+  filecheck: "매칭 CSV의 step_desc 누락 점검",
   chartbuilder: "데이터 쿼리와 차트 생성",
   templatereport: "Template Report 작성",
   autoreport: "자동 리포트 생성과 이력",

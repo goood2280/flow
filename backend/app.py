@@ -183,18 +183,9 @@ def _tune_threadpool() -> None:
     try:
         import anyio.to_thread
 
-        try:
-            default_tokens = 120
-            try:
-                from core.runtime_limits import is_large_profile
-                if is_large_profile():
-                    default_tokens = 240  # 전용 대형 서버: 동시 sync 요청을 더 받는다
-            except Exception:
-                pass
-            tokens = int(os.environ.get("FLOW_THREADPOOL_TOKENS", "") or default_tokens)
-        except ValueError:
-            tokens = 120
-        tokens = max(40, min(400, tokens))
+        from core.runtime_limits import threadpool_tokens
+
+        tokens = threadpool_tokens()
         limiter = anyio.to_thread.current_default_thread_limiter()
         if limiter.total_tokens < tokens:
             limiter.total_tokens = tokens
@@ -264,6 +255,8 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/routers/template_report.py",
     "backend/core/matching_fill.py",
     "backend/routers/matching_fill.py",
+    "backend/core/file_check.py",
+    "backend/routers/file_check.py",
     "backend/core/teg_map.py",
     "backend/routers/teg_map.py",
     "backend/core/yield_map.py",
@@ -291,6 +284,8 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/routers/flowi_reference.py",
     "backend/core/data_chat_teg.py",
     "backend/core/data_chat_split.py",
+    "backend/core/data_chat_rulebook.py",
+    "backend/core/ppid_knob_order.py",
     "backend/core/file_transaction.py",
     "backend/core/mapfile_traffic.py",
     "backend/core/mapfile_alerts.py",
@@ -315,6 +310,8 @@ _REQUIRED_BUNDLED_BACKEND_SOURCES = (
     "backend/core/llm_prompt_budget.py",
     "backend/core/structure_topology.py",
     "backend/routers/guides.py",
+    "backend/core/source_digest.py",
+    "backend/core/resource_diagnostics.py",
 )
 
 

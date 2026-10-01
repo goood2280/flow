@@ -67,6 +67,9 @@ _CACHE_STOP = threading.Event()
 _CACHE_THREAD: threading.Thread | None = None
 _CACHE_RUNNING = False
 _CACHE_LAST_SKIPPED_BY_LOCK = False
+# _CACHE_STATE 가 담고 있는 캐시 파일 세대 (mtime_ns, size). 파일이 이 세대 그대로면
+# 신선도 확인 때 수십 MB JSON 을 다시 읽고 인덱스를 다시 만들지 않는다.
+_CACHE_FILE_SIG: tuple[int, int] | None = None
 
 
 def _cache_dir() -> Path:
@@ -245,17 +248,38 @@ def _lock_state() -> dict:
     return {"locked": locked, "running": locked, "path": str(fp), "owner": owner}
 
 
-def _yield_scan_slice() -> None:
-    """FAB 풀 스캔이 사용자 요청/메모리와 경합하지 않도록 파일 사이에서 양보한다.
+_SCAN_SLICE_TLS = threading.local()
 
-    사용자 활동이 없으면 즉시 반환한다. 메모리가 실제로 부족하면 잠시 쉬며
-    사용자 요청이 먼저 처리될 시간을 준다.
-    """
+
+def _scan_yield_setting(name: str, default: float, upper: float) -> float:
     try:
-        from core import request_priority
-        request_priority.yield_to_users(max_wait_sec=10.0)
-    except Exception:  # noqa: BLE001
-        pass
+        value = float(os.environ.get(name, "") or default)
+    except Exception:
+        value = default
+    return max(0.0, min(upper, value))
+
+
+def _yield_scan_slice() -> None:
+    """FAB 풀 스캔이 사용자 요청/메모리와 경합하지 않도록 일정 시간마다 양보한다.
+
+    예전에는 파일마다 양보했다(대형 서버 1회 최대 3초). 사용자가 끊이지 않는 운영 서버에서는
+    수십 ms 짜리 파일마다 3초를 쉬어 FAB 파일이 수만 개면 WIP 갱신이 몇 시간 걸렸고, 그동안
+    조회 레인 슬롯과 제품 순환을 붙들었다. 이제 1초 훑을 때마다 최대 0.5초 양보한다
+    (`FLOW_LOT_PROGRESS_YIELD_EVERY_SEC`·`FLOW_LOT_PROGRESS_YIELD_MAX_WAIT_SEC`). 사용자 활동이
+    없으면 즉시 반환한다. 메모리가 실제로 부족하면 잠시 쉬며 사용자 요청이 먼저 처리될 시간을 준다.
+    """
+    now = time.monotonic()
+    last = getattr(_SCAN_SLICE_TLS, "last", None)
+    if last is None:
+        _SCAN_SLICE_TLS.last = now
+    elif now - last >= _scan_yield_setting("FLOW_LOT_PROGRESS_YIELD_EVERY_SEC", 1.0, 60.0):
+        try:
+            from core import request_priority
+            request_priority.yield_to_users(
+                max_wait_sec=_scan_yield_setting("FLOW_LOT_PROGRESS_YIELD_MAX_WAIT_SEC", 0.5, 10.0))
+        except Exception:  # noqa: BLE001
+            pass
+        _SCAN_SLICE_TLS.last = time.monotonic()
     try:
         from core.runtime_limits import process_memory_high
         if process_memory_high():
@@ -473,12 +497,18 @@ def _cache_index_for(state: dict) -> dict:
 
 
 def _cache_state_fresh(state: dict, max_age_seconds: int) -> bool:
-    generated_at = _safe_text((state or {}).get("generated_at"))
-    try:
-        age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
-    except Exception:
-        return False
-    return age <= max_age_seconds
+    # verified_at = 원천 지문이 같아서 다시 만들 필요가 없다고 확인한 시각(메모리 전용).
+    # 확인 뒤에는 새로 만든 것과 같으므로 나이를 그 시각부터 센다.
+    ages = []
+    for key in ("generated_at", "verified_at"):
+        stamp = _safe_text((state or {}).get(key))
+        if not stamp:
+            continue
+        try:
+            ages.append((dt.datetime.now() - dt.datetime.fromisoformat(stamp)).total_seconds())
+        except Exception:
+            continue
+    return bool(ages) and min(ages) <= max_age_seconds
 
 
 def _state_db_root_matches(state: dict | None) -> bool:
@@ -499,26 +529,183 @@ def _fresh_existing_cache_state(
     column_mapping: dict,
     max_age_seconds: int,
 ) -> dict | None:
-    candidates: list[dict] = []
-    if isinstance(_CACHE_STATE, dict):
-        candidates.append(_CACHE_STATE)
-    if cache_path.is_file():
-        try:
-            loaded = json.loads(cache_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                candidates.append(loaded)
-        except Exception:
-            pass
-    for state in candidates:
-        if (
-            _cache_state_fresh(state, max_age_seconds)
+    def _usable(state: dict) -> bool:
+        return (
+            not state.get("errors")
+            and cache_path.is_file()
+            and cache_parquet_file().is_file()
+            and not _source_recheck_due(state)
+            and _cache_state_fresh(state, max_age_seconds)
             and _state_db_root_matches(state)
             and _state_source_root_matches(state, source_root_hint)
             and _state_column_mapping_matches(state, column_mapping)
-        ):
-            _set_cache_state(state)
-            return dict(state)
+        )
+
+    # 메모리 상태가 이미 쓸 만하면 파일을 다시 읽거나 인덱스를 다시 만들지 않는다.
+    # 예전에는 제품 순환이 제품마다 이 함수를 불러, 매번 JSON 전체 파싱 + 전 항목 정렬·
+    # 색인을 GIL 을 쥔 채 반복했다(대형 서버에서 사용자 요청이 그동안 멈춘다).
+    current = _CACHE_STATE
+    if isinstance(current, dict) and _usable(current):
+        return dict(current)
+    loaded, sig = _load_cache_file_state(cache_path)
+    if isinstance(loaded, dict) and loaded is not current and _usable(loaded):
+        _adopt_file_state(loaded, sig)
+        return dict(loaded)
     return None
+
+
+_STATE_JSON_CHUNK_ITEMS = 500
+
+
+def _write_state_json(state: dict, path: Path) -> None:
+    """json.dumps(state) 와 같은 바이트를 쓰되 항목을 묶음별로 직렬화한다.
+
+    compact json.dumps 는 C 인코더가 끝날 때까지 GIL 을 놓지 않는다 — 4.5만 항목에서 다른
+    요청이 0.2초 멈췄고, 항목이 수십만인 대형 서버에서는 수 초 동안 서버 전체가 멈춘다.
+    묶음 사이마다 다른 스레드가 GIL 을 받는다. items 가 상태의 마지막 키일 때 출력이 같다."""
+    items = state.get("items")
+    if not isinstance(items, list) or list(state)[-1:] != ["items"]:
+        path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        return
+    head = {key: value for key, value in state.items() if key != "items"}
+    with path.open("w", encoding="utf-8") as fh:
+        fh.write(json.dumps(head, ensure_ascii=False)[:-1])
+        fh.write(', "items": [' if head else '"items": [')
+        for start in range(0, len(items), _STATE_JSON_CHUNK_ITEMS):
+            if start:
+                fh.write(", ")
+            fh.write(json.dumps(items[start:start + _STATE_JSON_CHUNK_ITEMS], ensure_ascii=False)[1:-1])
+        fh.write("]}")
+
+
+def _cache_file_sig(path: Path) -> tuple[int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (int(st.st_mtime_ns), int(st.st_size))
+
+
+def _load_cache_file_state(cache_path: Path) -> tuple[dict | None, tuple[int, int] | None]:
+    """캐시 파일을 읽는다. 메모리 상태와 같은 세대면 다시 읽지 않고 메모리 상태를 돌려준다."""
+    sig = _cache_file_sig(cache_path)
+    if sig is None:
+        return None, None
+    if _CACHE_STATE is not None and sig == _CACHE_FILE_SIG:
+        return _CACHE_STATE, sig
+    try:
+        loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None, sig
+    return (loaded if isinstance(loaded, dict) else None), sig
+
+
+def _adopt_file_state(state: dict, sig: tuple[int, int] | None) -> None:
+    global _CACHE_FILE_SIG
+    _set_cache_state(state)
+    _CACHE_FILE_SIG = sig
+
+
+def _lot_progress_source_digest(source_root_hint: str, column_mapping: dict | None) -> str:
+    """WIP 결과를 정하는 입력 전체의 지문 — FAB 원천 파일, ML_TABLE(root 화이트리스트),
+    step matching, 열 매핑, 캐시 형식, 앱 버전. 같으면 다시 훑어도 같은 결과다."""
+    from core import source_digest as sd
+
+    db_root = PATHS.db_root
+    roots = [str(info["path"]) for info in _fab_source_roots(db_root, source_root_hint)]
+    try:
+        from core import ml_table_lookup as _mlt
+        ml_files = [str(p) for p in (_mlt._discover_ml_table_files() or [])]
+    except Exception:
+        ml_files = []
+    return sd.combine({
+        "version": CACHE_VERSION,
+        "db_root": str(db_root),
+        "source_root": source_root_hint,
+        "mapping": json.dumps(normalize_lot_progress_column_mapping(column_mapping), sort_keys=True),
+        "fab": sd.tree_digest(roots, suffixes=(".parquet",))["digest"],
+        "inputs": sd.files_digest([*(str(p) for p in _step_matching_paths()), *ml_files]),
+        "app": sd.files_digest([sd.app_version_path()]),
+    })
+
+
+def _sources_changed_since(state: dict, source_root_hint: str, column_mapping: dict) -> bool:
+    """state 를 만든 뒤 원천 지문이 바뀌었는가. 지문이 없는 옛 캐시·꺼짐·실패는 False(예전 동작)."""
+    try:
+        from core import source_digest as sd
+        if not sd.change_driven_enabled():
+            return False
+    except Exception:
+        return False
+    stored = _safe_text((state or {}).get("source_digest"))
+    if not stored:
+        return False
+    try:
+        return _lot_progress_source_digest(source_root_hint, column_mapping) != stored
+    except Exception:
+        logger.debug("lot_progress source digest failed", exc_info=True)
+        return False
+
+
+def _source_recheck_due(state: dict) -> bool:
+    """Limit digest reuse by the actual build time, never by verified_at."""
+    from core import source_digest as sd
+    if not sd.change_driven_enabled():
+        return False
+    try:
+        built = dt.datetime.fromisoformat(str(state.get("generated_at") or ""))
+        return (dt.datetime.now() - built).total_seconds() >= sd.full_recheck_sec()
+    except (TypeError, ValueError):
+        return True
+
+
+def _verified_unchanged_state(cache_path: Path, source_root_hint: str,
+                              column_mapping: dict) -> dict | None:
+    """나이로는 낡았지만 원천 지문이 같은 캐시를 '확인됨'으로 되살린다.
+
+    지문이 같으면 FAB 전체를 다시 훑어도 같은 결과이므로 재스캔하지 않는다. 필요한
+    제품이 캐시에 없더라도 마찬가지다 — 예전에는 FAB 행이 없는 제품(ML_TABLE 만 있는
+    데모 제품 등)이 순환에 걸릴 때마다 FAB 전체 재스캔을 반복했다.
+    """
+    try:
+        from core import source_digest as sd
+        if not sd.change_driven_enabled():
+            return None
+    except Exception:
+        return None
+    current = _CACHE_STATE
+    candidate, sig = (current, _CACHE_FILE_SIG) if isinstance(current, dict) else (None, None)
+    if not isinstance(candidate, dict) or not candidate.get("source_digest"):
+        candidate, sig = _load_cache_file_state(cache_path)
+    if not isinstance(candidate, dict) or not candidate.get("source_digest"):
+        return None
+    if (candidate.get("errors") or _source_recheck_due(candidate)
+            or not cache_path.is_file() or not cache_parquet_file().is_file()):
+        return None
+    if not (
+        _state_db_root_matches(candidate)
+        and _state_source_root_matches(candidate, source_root_hint)
+        and _state_column_mapping_matches(candidate, column_mapping)
+    ):
+        return None
+    try:
+        live = _lot_progress_source_digest(source_root_hint, column_mapping)
+    except Exception:
+        logger.debug("lot_progress source digest failed", exc_info=True)
+        return None
+    if live != candidate.get("source_digest"):
+        return None
+    if candidate is not _CACHE_STATE:
+        _adopt_file_state(candidate, sig)
+    candidate["verified_at"] = _now_iso()
+    _append_refresh_log({
+        "status": "success",
+        "verified_unchanged": True,
+        "generated_at": candidate.get("generated_at"),
+        "row_count": int(candidate.get("count") or len(candidate.get("items") or []) or 0),
+        "source_roots": list(candidate.get("source_roots") or []),
+    })
+    return dict(candidate)
 
 
 def _state_has_products(state: dict | None, required_products: Iterable[str] | None) -> bool:
@@ -632,7 +819,8 @@ def upsert_tracker_lot_status_rows(rows: list[dict], source: str = "tracker") ->
     }
     tmp = fp.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(fp)
+    from core.file_transaction import replace_file
+    replace_file(tmp, fp)
     return state
 
 
@@ -786,7 +974,7 @@ def _row_ci(row: dict, *names: str):
     return ""
 
 
-def load_step_matching() -> tuple[dict[tuple[str, str], str], dict[str, str]]:
+def load_step_matching(*, errors: list[str] | None = None) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
     by_product: dict[tuple[str, str], str] = {}
     by_step: dict[str, str] = {}
     for path in _step_matching_paths():
@@ -806,6 +994,8 @@ def load_step_matching() -> tuple[dict[tuple[str, str], str], dict[str, str]]:
                     by_step.setdefault(step_id, function_step)
         except Exception as exc:
             logger.warning("step matching load failed: %s (%s)", path, exc)
+            if errors is not None:
+                errors.append(f"step matching load failed: {path}: {exc}")
     return by_product, by_step
 
 
@@ -895,7 +1085,7 @@ def _fab_read_batch_rows() -> int:
 _FAB_READ_BATCH_ROWS = _fab_read_batch_rows()
 
 
-def _ml_table_root_lot_ids() -> set[str]:
+def _ml_table_root_lot_ids(*, errors: list[str] | None = None) -> set[str]:
     """ML_TABLE_*.parquet 들의 root_lot_id(정규화) 합집합.
 
     lot_progress(LOT_WF 현재위치) 캐시를 **ML_TABLE 에 실제 존재하는 root** 로만
@@ -916,6 +1106,8 @@ def _ml_table_root_lot_ids() -> set[str]:
         files = _mlt._discover_ml_table_files()
     except Exception as exc:
         logger.warning("ML_TABLE 파일 탐색 실패 (lot_progress root 화이트리스트): %s", exc)
+        if errors is not None:
+            errors.append(f"ML_TABLE discovery failed: {exc}")
         return roots
     for fp in files:
         try:
@@ -938,6 +1130,8 @@ def _ml_table_root_lot_ids() -> set[str]:
                     roots.add(key)
         except Exception as exc:
             logger.warning("ML_TABLE root_lot_id 수집 실패 %s: %s", fp, exc)
+            if errors is not None:
+                errors.append(f"ML_TABLE root read failed: {fp}: {exc}")
     return roots
 
 
@@ -1447,25 +1641,24 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "",
         cache_path = cache_file()
         max_age_seconds = lot_progress_cache_refresh_seconds()
         fresh_state = _fresh_existing_cache_state(cache_path, source_root_hint, column_mapping, max_age_seconds)
-        if fresh_state is not None and _state_has_products(fresh_state, required_products):
+        # 제품 순환(force)은 원천이 바뀌어서 부른다 — 30분이 안 된 캐시라도 원천 지문이 다르면
+        # 다시 만든다. 예전에는 나이만 보고 돌려줘서 FAB 가 바뀌어도 최대 30분 낡은 WIP 를 냈다.
+        sources_changed = bool(
+            force and fresh_state is not None
+            and _sources_changed_since(fresh_state, source_root_hint, column_mapping)
+        )
+        if (fresh_state is not None and not sources_changed
+                and _state_has_products(fresh_state, required_products)):
             _CACHE_LAST_SKIPPED_BY_LOCK = False
             fresh_state["skipped_recent_success"] = bool(force)
             return _state_with_runtime(fresh_state)
-        if (
-            not force
-            and _CACHE_STATE
-            and _state_source_root_matches(_CACHE_STATE, source_root_hint)
-            and _state_column_mapping_matches(_CACHE_STATE, column_mapping)
-        ):
-            generated_at = _safe_text(_CACHE_STATE.get("generated_at"))
-            try:
-                age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
-            except Exception:
-                age = max_age_seconds + 1
-            if age <= max_age_seconds:
-                _CACHE_LAST_SKIPPED_BY_LOCK = False
-                return _state_with_runtime(_CACHE_STATE)
-
+        verified_state = (None if sources_changed else
+                          _verified_unchanged_state(cache_path, source_root_hint, column_mapping))
+        if verified_state is not None:
+            _CACHE_LAST_SKIPPED_BY_LOCK = False
+            verified_state["skipped_recent_success"] = bool(force)
+            verified_state["verified_unchanged"] = True
+            return _state_with_runtime(verified_state)
         lock_fh, lock_owner = _try_acquire_refresh_lock()
         if lock_fh is None:
             _CACHE_LAST_SKIPPED_BY_LOCK = True
@@ -1507,17 +1700,25 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "",
         })
         try:
             db_root = PATHS.db_root
+            # 훑기 전에 입력 지문을 잡는다 — 훑는 동안 들어온 변경은 다음 확인에서 잡힌다.
+            try:
+                from core import source_digest as _sd
+                source_digest = (_lot_progress_source_digest(source_root_hint, column_mapping)
+                                 if _sd.change_driven_enabled() else "")
+            except Exception:
+                logger.debug("lot_progress source digest failed", exc_info=True)
+                source_digest = ""
             fab_roots = _fab_source_roots(db_root, source_root_hint)
-            step_by_product, step_by_id = load_step_matching()
+            errors: list[str] = []
+            step_by_product, step_by_id = load_step_matching(errors=errors)
             latest: dict[tuple[str, str], dict] = {}
             files_scanned = 0
             rows_seen = 0
             rows_kept = 0
-            errors: list[str] = []
             # ML_TABLE 에 실제 존재하는 root_lot_id 만 유지 — FAB DB 전체를 메모리에
             # 올리던 것을 좁혀 refresh OOM 을 막는다. 집합이 비면(ML_TABLE 미발견)
             # 필터를 끄고 기존 전량 스캔으로 폴백한다.
-            allowed_roots = _ml_table_root_lot_ids()
+            allowed_roots = _ml_table_root_lot_ids(errors=errors)
             if allowed_roots:
                 logger.info("lot_progress refresh: ML_TABLE root %d 개로 스코프 한정", len(allowed_roots))
 
@@ -1625,20 +1826,22 @@ def refresh_lot_progress_cache(force: bool = False, source_root: str = "",
                 "files_scanned": files_scanned,
                 "rows_seen": rows_seen,
                 "errors": errors,
+                # 읽기 오류가 있었던 세대는 지문을 남기지 않는다 — 같은 원천이라도 다시 훑게 한다.
+                "source_digest": source_digest if not errors else "",
                 "items": items,
             }
             _save_tracker_lot_status_cache(items, source="lot_progress_cache")
             tmp = cache_path.with_suffix(".tmp")
             # compact dump — 수만 item 상태에서 indent=2 는 직렬화 문자열 크기와
             # 피크 메모리를 2배 가까이 키운다. 사람이 읽는 파일이 아니므로 압축.
-            tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+            _write_state_json(state, tmp)
             from core.file_transaction import replace_file
             replace_file(tmp, cache_path)
             try:
                 export_lot_progress_parquet(state)
             except Exception as exc:
                 logger.warning("LOT_WF parquet export failed: %s", exc)
-            _set_cache_state(state)
+            _adopt_file_state(state, _cache_file_sig(cache_path))
             _append_refresh_log({
                 "status": "success",
                 "started_at": started_at,
@@ -1680,29 +1883,20 @@ def load_lot_progress_cache(max_age_seconds: int | None = None) -> dict:
             _CACHE_STATE
             and _state_source_root_matches(_CACHE_STATE, source_root_hint)
             and _state_column_mapping_matches(_CACHE_STATE, column_mapping)
+            and _cache_state_fresh(_CACHE_STATE, max_age_seconds)
         ):
-            generated_at = _safe_text(_CACHE_STATE.get("generated_at"))
-            try:
-                age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
-            except Exception:
-                age = max_age_seconds + 1
-            if age <= max_age_seconds:
-                return dict(_CACHE_STATE)
+            return dict(_CACHE_STATE)
         path = cache_file()
-        if path.is_file():
-            try:
-                state = json.loads(path.read_text(encoding="utf-8"))
-                generated_at = _safe_text(state.get("generated_at"))
-                age = (dt.datetime.now() - dt.datetime.fromisoformat(generated_at)).total_seconds()
-                if (
-                    age <= max_age_seconds
-                    and _state_source_root_matches(state, source_root_hint)
-                    and _state_column_mapping_matches(state, column_mapping)
-                ):
-                    _set_cache_state(state)
-                    return dict(state)
-            except Exception:
-                pass
+        state, sig = _load_cache_file_state(path)
+        if (
+            isinstance(state, dict)
+            and state is not _CACHE_STATE
+            and _cache_state_fresh(state, max_age_seconds)
+            and _state_source_root_matches(state, source_root_hint)
+            and _state_column_mapping_matches(state, column_mapping)
+        ):
+            _adopt_file_state(state, sig)
+            return dict(state)
         should_refresh = True
     if should_refresh:
         return refresh_lot_progress_cache(force=True, source_root=source_root_hint)

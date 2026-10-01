@@ -16,6 +16,7 @@ v8.4.6 보안 패치:
   - /change-password 는 X-Session-Token 의 소유자만 본인 비번 변경 가능.
 """
 import csv, datetime, html, io, secrets, threading
+from functools import wraps
 from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -80,6 +81,20 @@ _USERS_CACHE_LOCK = threading.Lock()
 USERS_MUTATION_LOCK = threading.RLock()
 _USERS_CACHE_SIG: tuple | None = None
 _USERS_CACHE_ROWS: list[dict] | None = None
+
+
+def _users_mutation_route(fn):
+    """Serialize HTTP handlers that read, modify, and write users.csv.
+
+    The lock must cover the complete handler for password recovery because a
+    failed mail send writes a rollback after the temporary password write.
+    """
+    @wraps(fn)
+    def locked(*args, **kwargs):
+        with USERS_MUTATION_LOCK:
+            return fn(*args, **kwargs)
+
+    return locked
 
 
 def _users_csv_sig() -> tuple:
@@ -347,6 +362,7 @@ def logout(request: Request):
 
 
 @router.post("/register")
+@_users_mutation_route
 def register(req: RegisterReq):
     # ID/PW 로그인이 꺼진 서버(설치본·사내 로그인)는 비밀번호 계정 가입도 받지 않는다.
     if not auth_providers.PasswordAuthProvider().enabled():
@@ -397,6 +413,7 @@ def register(req: RegisterReq):
 
 
 @router.post("/set-name")
+@_users_mutation_route
 def set_name(req: SetNameReq, request: Request):
     """v8.8.27: 본인 실명 설정/수정. 로그인 유저 한정. 기존 가입자가 이름을 채우는 용도."""
     me = auth_core.current_user(request)
@@ -445,7 +462,7 @@ def me(request: Request):
             "email": profile.get("email") or str(claims.get("email") or ""),
             "sso_id": str(claims.get("ws_user") or ""),
             "department": str(claims.get("department") or ""),
-            "permission_source": "department",
+            "permission_source": str(claims.get("permission_source") or "department"),
             "tabs": "__all__" if me.get("role") == "admin" else me.get("tabs", ""),
         }
     return {"authenticated": False}
@@ -471,6 +488,7 @@ def reset_request(req: ResetReq):
 
 
 @router.post("/forgot-password")
+@_users_mutation_route
 def forgot_password(req: ForgotPasswordReq):
     _require_password_recovery()
     username_input = _sanitize_username(req.username)
@@ -525,6 +543,7 @@ def forgot_password(req: ForgotPasswordReq):
 
 
 @router.post("/change-password")
+@_users_mutation_route
 def change_password(req: ChangePwReq, request: Request):
     """v8.4.6: 세션 토큰 소유자 본인 비번만 변경 가능 (username 파라미터 제거)."""
     me = auth_core.current_user(request)  # 401 on missing/invalid token

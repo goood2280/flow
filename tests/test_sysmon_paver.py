@@ -7,6 +7,7 @@ from core import sysmon
 
 @pytest.fixture(autouse=True)
 def isolate_paver(monkeypatch, tmp_path):
+    monkeypatch.delenv("FLOW_SYSMON_ENABLE_LOAD", raising=False)
     monkeypatch.setattr(sysmon, "RESOURCE_LOG", tmp_path / "resources.jsonl")
     monkeypatch.setattr(sysmon, "SYSMON_STATE_FILE", tmp_path / "schedule.json")
     monkeypatch.setattr(sysmon, "_load_result", {})
@@ -171,6 +172,34 @@ def test_schedule_uses_korean_time(scheduled):
 def test_disabled_schedule_never_starts(scheduled, monkeypatch):
     sysmon.save_schedule(enabled=False, at="11:00")
     assert not sysmon._maybe_start_scheduled_load(dt.datetime(2026, 9, 22, 12))
+    assert not scheduled.starts
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "off", " OFF "])
+def test_explicit_load_off_blocks_daily_attempt_without_editing_schedule(scheduled, monkeypatch, value):
+    before = sysmon.SYSMON_STATE_FILE.read_bytes()
+    monkeypatch.setenv("FLOW_SYSMON_ENABLE_LOAD", value)
+    assert sysmon.automatic_load_disabled()
+    assert not sysmon.scheduled_load_enabled()
+    state = sysmon.get_state()
+    assert state["automatic_load_disabled"] is True
+    assert state["daily_synthetic_load_enabled"] is False
+    assert state["schedule"]["enabled"] is True
+    assert not sysmon._maybe_start_scheduled_load(dt.datetime(2026, 10, 2, 11))
+    assert not scheduled.starts
+    assert sysmon.get_schedule()["enabled"] is True
+    assert sysmon.SYSMON_STATE_FILE.read_bytes() == before
+    # Removing the block preserves the operator's original schedule and retry.
+    monkeypatch.delenv("FLOW_SYSMON_ENABLE_LOAD")
+    assert sysmon.scheduled_load_enabled()
+    assert sysmon._maybe_start_scheduled_load(dt.datetime(2026, 10, 2, 12))
+
+
+def test_load_on_does_not_override_disabled_operator_schedule(scheduled, monkeypatch):
+    sysmon.save_schedule(enabled=False, at="11:00")
+    monkeypatch.setenv("FLOW_SYSMON_ENABLE_LOAD", "1")
+    assert not sysmon.scheduled_load_enabled()
+    assert not sysmon._maybe_start_scheduled_load(dt.datetime(2026, 10, 2, 12))
     assert not scheduled.starts
 
 

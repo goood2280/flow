@@ -437,11 +437,22 @@ def _auto_product_cache_save_cursor() -> None:
         if not isinstance(saved, dict):
             saved = {}
         with _AUTO_PRODUCT_CACHE_STATE_LOCK:
-            saved[_auto_product_cache_role_key()] = {
+            role_state = {
                 "last_product": _AUTO_PRODUCT_CACHE_STATE.get("last_product") or "",
                 "last_at": _AUTO_PRODUCT_CACHE_STATE.get("last_at") or "",
                 "last_ok": _AUTO_PRODUCT_CACHE_STATE.get("last_ok"),
             }
+            if _AUTO_PRODUCT_CACHE_FINGERPRINTS.get("__loaded__"):
+                # 마지막 성공 지문 — 재시작 뒤에도 원천이 그대로인 제품은 다시 만들지 않는다.
+                role_state["fingerprints"] = {
+                    product: dict(row) for product, row in _AUTO_PRODUCT_CACHE_FINGERPRINTS.items()
+                    if product != "__loaded__" and isinstance(row, dict) and row.get("fp")
+                }
+            else:
+                previous = saved.get(_auto_product_cache_role_key()) or {}
+                if isinstance(previous, dict) and isinstance(previous.get("fingerprints"), dict):
+                    role_state["fingerprints"] = previous["fingerprints"]
+            saved[_auto_product_cache_role_key()] = role_state
         save_json(_auto_product_cache_state_path(), saved)
     except Exception:
         logger.debug("auto product cache cursor save failed", exc_info=True)
@@ -525,6 +536,13 @@ def _auto_product_cache_advance_after_product(product: str, *, ok: bool) -> None
             or completed >= max(1, len(products))
         )
         delay = _auto_product_cache_interval_minutes() * 60.0 if wrapped else 0.0
+        if wrapped:
+            stats = _AUTO_PRODUCT_CACHE_GATE_STATS
+            stats["last_sweep_unchanged"] = int(stats.get("sweep_unchanged") or 0)
+            stats["last_sweep_built"] = int(stats.get("sweep_built") or 0)
+            stats["last_sweep_at"] = _auto_product_cache_iso(now)
+            stats["sweep_unchanged"] = 0
+            stats["sweep_built"] = 0
         _AUTO_PRODUCT_CACHE_STATE.update({
             "current_product": "",
             "current_started_ts": 0.0,
@@ -549,8 +567,169 @@ def _auto_product_cache_advance_after_product(product: str, *, ok: bool) -> None
 
 
 def _auto_product_cache_on_finished(product: str, result: dict) -> None:
-    _auto_product_cache_advance_after_product(
-        product, ok=bool((result or {}).get("ok")))
+    ok = bool((result or {}).get("ok"))
+    with _AUTO_PRODUCT_CACHE_STATE_LOCK:
+        pending = _AUTO_PRODUCT_CACHE_PENDING_FP.pop(product, None) or {}
+    if ok and pending.get("fp"):
+        _auto_product_cache_record_fingerprint(product, pending["fp"], pending.get("parts"))
+    _auto_product_cache_advance_after_product(product, ok=ok)
+
+
+# ── 원천 변경 감시 (PLAN P2) ─────────────────────────────────────────────
+# 제품 순환은 예전에 매 바퀴 모든 제품의 4단계를 돌렸다. 단계마다 '최신이면 건너뜀'
+# 검사가 있었지만 대시보드 최신 랏 파일 재작성(제품마다 전체 카탈로그)·WIP 캐시 재확인
+# (JSON 전체 파싱)·FAB 서명 순회는 원천이 그대로여도 매번 돌아 사용자 요청과 CPU·GIL 을
+# 나눠 썼다. 이제 제품마다 입력 지문(FAB 원천 전체·ML_TABLE·설정·앱 버전)을 잡아, 마지막
+# 성공 때와 같고 산출물이 모두 있으면 작업 자체를 만들지 않는다. 지문이 못 보는 변경에
+# 대비해 FLOW_CACHE_FULL_RECHECK_HOURS(기본 6시간)마다 한 번은 끝까지 돈다.
+# FLOW_CACHE_CHANGE_DRIVEN=0 이면 예전처럼 매 바퀴 모두 돈다.
+_AUTO_PRODUCT_CACHE_PENDING_FP: dict[str, dict] = {}
+_AUTO_PRODUCT_CACHE_FINGERPRINTS: dict[str, dict] = {}
+_AUTO_PRODUCT_CACHE_GATE_STATS: dict = {
+    "unchanged_skips": 0,
+    "built": 0,
+    "last_unchanged_product": "",
+    "last_unchanged_at": "",
+    "sweep_unchanged": 0,
+    "sweep_built": 0,
+    "last_rebuild_product": "",
+    "last_rebuild_reason": "",
+}
+
+
+def _auto_product_cache_change_gate_enabled() -> bool:
+    try:
+        from core import source_digest as _sd
+        return _sd.change_driven_enabled()
+    except Exception:
+        return False
+
+
+def _auto_product_cache_fingerprint_parts(product: str) -> dict:
+    """제품 4단계 산출물을 정하는 입력의 조각별 지문(어느 조각이 바뀌었는지 기록용)."""
+    from core import source_digest as _sd
+    from core import lot_progress_cache as _lpc
+    _ml_product, _ov, fab_source = _current_fab_override(product)
+    try:
+        ml_path = str(_product_path(product))
+    except Exception:
+        ml_path = ""
+    return {
+        # 매칭 캐시는 교차 폴더 lineage 때문에 FAB 전체를 읽는다 — 제품 폴더만 보면 안 된다.
+        "fab": _fab_tree_digest(fab_source, include_all=True),
+        "ml_table": _sd.files_digest([ml_path]),
+        "settings": _sd.files_digest([str(SOURCE_CFG), str(PATHS.data_root / "settings.json")]),
+        "step_matching": _sd.files_digest([str(p) for p in _lpc._step_matching_paths()]),
+        "app": _sd.files_digest([_sd.app_version_path()]),
+        "fab_index": f"{_fab_lot_index_enabled()}:{_foreground_global_fab_scan_enabled()}",
+    }
+
+
+def _auto_product_cache_artifacts_present(product: str) -> bool:
+    """네 단계 산출물이 디스크에 있는가(존재 확인만 — 관리자 캐시 삭제 뒤엔 다시 만든다)."""
+    from core import lot_progress_cache as _lpc
+    try:
+        source = Path(_product_path(product))
+    except Exception:
+        return False
+    if not _ml_table_lookup.lookup_artifacts_fresh(source):
+        return False
+    if not _pivot_cache_artifact_status(product, source).get("ready"):
+        return False
+    if not _match_cache_path(product).is_file() or not _match_cache_meta_path(product).is_file():
+        return False
+    if (not _latest_lot_step_cache_path().is_file() or not _lpc.cache_file().is_file()
+            or not _lpc.cache_parquet_file().is_file()):
+        return False
+    ml_product, _ov, _fab_source = _current_fab_override(product)
+    if _fab_lot_index_enabled() and ml_product and not _fab_lot_index_meta_path(product).is_file():
+        return False
+    return True
+
+
+def _auto_product_cache_load_fingerprints() -> None:
+    with _AUTO_PRODUCT_CACHE_STATE_LOCK:
+        if _AUTO_PRODUCT_CACHE_FINGERPRINTS.get("__loaded__"):
+            return
+    try:
+        saved = load_json(_auto_product_cache_state_path(), {})
+        rows = ((saved.get(_auto_product_cache_role_key()) or {}).get("fingerprints") or {})
+    except Exception:
+        rows = {}
+    with _AUTO_PRODUCT_CACHE_STATE_LOCK:
+        for product, row in (rows.items() if isinstance(rows, dict) else []):
+            if isinstance(row, dict) and row.get("fp"):
+                _AUTO_PRODUCT_CACHE_FINGERPRINTS.setdefault(str(product), dict(row))
+        _AUTO_PRODUCT_CACHE_FINGERPRINTS["__loaded__"] = {"fp": "", "at": 0.0}
+
+
+def _auto_product_cache_record_fingerprint(product: str, fingerprint: str,
+                                          parts: dict | None = None) -> None:
+    # 저장 전에 파일의 다른 제품 지문을 먼저 읽어 둔다 — 안 그러면 이 제품 하나만 남기고 덮어쓴다.
+    _auto_product_cache_load_fingerprints()
+    with _AUTO_PRODUCT_CACHE_STATE_LOCK:
+        _AUTO_PRODUCT_CACHE_FINGERPRINTS[product] = {
+            "fp": fingerprint, "at": time.time(), "parts": dict(parts or {})}
+        _AUTO_PRODUCT_CACHE_GATE_STATS["built"] = int(_AUTO_PRODUCT_CACHE_GATE_STATS.get("built") or 0) + 1
+        _AUTO_PRODUCT_CACHE_GATE_STATS["sweep_built"] = int(_AUTO_PRODUCT_CACHE_GATE_STATS.get("sweep_built") or 0) + 1
+    _auto_product_cache_save_cursor()
+
+
+def _auto_product_cache_check_unchanged(product: str) -> tuple[bool, str]:
+    """(변경 없음, 지금 지문). 판단할 수 없으면 '변경됨'으로 본다(예전처럼 끝까지 돈다).
+
+    다시 만들기로 하면 그 이유(바뀐 지문 조각·첫 실행·주기 재확인·산출물 없음)를 남기고,
+    지문은 파이프라인이 성공한 뒤에만 기록된다(_auto_product_cache_on_finished)."""
+    try:
+        from core import source_digest as _sd
+        parts = _auto_product_cache_fingerprint_parts(product)
+        fingerprint = _sd.combine(parts)
+    except Exception:
+        logger.debug("product cache fingerprint failed for %s", product, exc_info=True)
+        return False, ""
+    _auto_product_cache_load_fingerprints()
+    with _AUTO_PRODUCT_CACHE_STATE_LOCK:
+        saved = dict(_AUTO_PRODUCT_CACHE_FINGERPRINTS.get(product) or {})
+        _AUTO_PRODUCT_CACHE_PENDING_FP[product] = {"fp": fingerprint, "parts": parts}
+    reason = ""
+    if not saved:
+        reason = "첫 실행"
+    elif saved.get("fp") != fingerprint:
+        old_parts = saved.get("parts") if isinstance(saved.get("parts"), dict) else {}
+        changed = [key for key in sorted(parts) if old_parts.get(key) != parts.get(key)]
+        reason = "원천 변경: " + (", ".join(changed) if old_parts else "지문")
+    elif time.time() - float(saved.get("at") or 0.0) > _sd.full_recheck_sec():
+        reason = "주기 재확인"
+    else:
+        try:
+            if not _auto_product_cache_artifacts_present(product):
+                reason = "산출물 없음"
+        except Exception:
+            reason = "산출물 확인 실패"
+    if not reason:
+        return True, fingerprint
+    with _AUTO_PRODUCT_CACHE_STATE_LOCK:
+        _AUTO_PRODUCT_CACHE_GATE_STATS["last_rebuild_product"] = product
+        _AUTO_PRODUCT_CACHE_GATE_STATS["last_rebuild_reason"] = reason
+    logger.info("product cache rotation: %s rebuild (%s)", product, reason)
+    return False, fingerprint
+
+
+def _auto_product_cache_skip_unchanged(product: str) -> None:
+    """원천이 그대로인 제품은 작업을 만들지 않고 순환 커서만 넘긴다."""
+    now = time.time()
+    with _AUTO_PRODUCT_CACHE_STATE_LOCK:
+        _AUTO_PRODUCT_CACHE_PENDING_FP.pop(product, None)
+        if not _AUTO_PRODUCT_CACHE_STATE.get("cycle_first_product"):
+            _AUTO_PRODUCT_CACHE_STATE["cycle_first_product"] = product
+            _AUTO_PRODUCT_CACHE_STATE["cycle_completed_products"] = 0
+        _AUTO_PRODUCT_CACHE_STATE["current_started_ts"] = 0.0
+        stats = _AUTO_PRODUCT_CACHE_GATE_STATS
+        stats["unchanged_skips"] = int(stats.get("unchanged_skips") or 0) + 1
+        stats["sweep_unchanged"] = int(stats.get("sweep_unchanged") or 0) + 1
+        stats["last_unchanged_product"] = product
+        stats["last_unchanged_at"] = _auto_product_cache_iso(now)
+    _auto_product_cache_advance_after_product(product, ok=True)
 
 
 def _auto_product_cache_on_cancelled(product: str, task_id: str = "") -> None:
@@ -648,6 +827,34 @@ def _auto_product_cache_schedule_snapshot() -> dict:
         "delayed": bool(state.get("delayed")),
         "delayed_reason": str(state.get("delayed_reason") or ""),
         "serial_policy": "one_product_one_cache_kind_per_server",
+        "change_driven": _auto_product_cache_change_gate_enabled(),
+        "change_gate": _auto_product_cache_gate_snapshot(),
+    }
+
+
+def _auto_product_cache_gate_snapshot() -> dict:
+    with _AUTO_PRODUCT_CACHE_STATE_LOCK:
+        stats = dict(_AUTO_PRODUCT_CACHE_GATE_STATS)
+        tracked = sum(1 for key in _AUTO_PRODUCT_CACHE_FINGERPRINTS if key != "__loaded__")
+    try:
+        from core import source_digest as _sd
+        recheck_hours = round(_sd.full_recheck_sec() / 3600.0, 2)
+    except Exception:
+        recheck_hours = None
+    return {
+        "unchanged_skips": int(stats.get("unchanged_skips") or 0),
+        "built": int(stats.get("built") or 0),
+        "sweep_unchanged": int(stats.get("sweep_unchanged") or 0),
+        "sweep_built": int(stats.get("sweep_built") or 0),
+        "last_sweep_unchanged": stats.get("last_sweep_unchanged"),
+        "last_sweep_built": stats.get("last_sweep_built"),
+        "last_sweep_at": str(stats.get("last_sweep_at") or ""),
+        "last_unchanged_product": str(stats.get("last_unchanged_product") or ""),
+        "last_unchanged_at": str(stats.get("last_unchanged_at") or ""),
+        "last_rebuild_product": str(stats.get("last_rebuild_product") or ""),
+        "last_rebuild_reason": str(stats.get("last_rebuild_reason") or ""),
+        "tracked_products": tracked,
+        "full_recheck_hours": recheck_hours,
     }
 
 
@@ -696,6 +903,14 @@ def _split_search_cache_maintenance_loop() -> None:
             _auto_product_cache_set_next(60.0, delayed=True, reason="제품 목록 없음")
             _SEARCH_CACHE_MAINT_WAKE.wait(30.0)
             continue
+        if _auto_product_cache_change_gate_enabled():
+            unchanged, _fingerprint = _auto_product_cache_check_unchanged(product)
+            if unchanged:
+                _auto_product_cache_skip_unchanged(product)
+                continue
+        else:
+            with _AUTO_PRODUCT_CACHE_STATE_LOCK:
+                _AUTO_PRODUCT_CACHE_PENDING_FP.pop(product, None)
         # 예약 시각이 오면 다른 작업이 실행 중이어도 실제 공용 FIFO 큐에 넣는다.
         # 예전처럼 메모리 상태로만 15초씩 미루면 화면의 "다음 작업"과 실제 큐가
         # 서로 달랐고, 취소할 task id도 없었다.
@@ -967,6 +1182,10 @@ def start_fab_lot_index_revalidator() -> bool:
 def notify_fab_sources_changed(reason: str = "") -> None:
     """Move the next product-rotation check forward after FAB source ingest."""
     logger.info("fab sources changed (%s) — product cache rotation waked", reason or "-")
+    # Ingest explicitly tells us the source changed; do not reuse its 30s memo
+    # then sleep for a whole product-rotation interval on an unchanged verdict.
+    from core import source_digest
+    source_digest.clear_memo()
     with _AUTO_PRODUCT_CACHE_STATE_LOCK:
         if not (_AUTO_PRODUCT_CACHE_STATE.get("current_product") or
                 _AUTO_PRODUCT_CACHE_STATE.get("queued_product")):
@@ -1059,6 +1278,7 @@ def _build_fab_lot_index(product: str, fab_source: str, include_all: bool) -> bo
         pass
 
     _FAB_IDX_UNCHANGED.discard(canonical)
+    built_ok = False
     try:
         live_sig = _fab_source_signature(fab_source, include_all)
         old_meta = _fab_lot_index_read_meta(canonical)
@@ -1071,20 +1291,25 @@ def _build_fab_lot_index(product: str, fab_source: str, include_all: bool) -> bo
                     _fab_idx_emit(canonical, "[FAB랏인덱스] 최신 — FAB 원천 변화 없음(건너뜀)",
                                   detail={"stage": _stage("fab_index", "skip")})
                     _FAB_IDX_UNCHANGED.add(canonical)
+                    built_ok = True
                     return True
                 if _build_fab_lot_index_incremental(
                         canonical, fab_source, include_all, added, live_sig, old_meta):
+                    built_ok = True
                     return True
                 logger.info("fab_lot_index incremental 실패 — 전체 재빌드 (product=%s)", canonical)
-        return _build_fab_lot_index_full(canonical, fab_source, include_all)
+        built_ok = bool(_build_fab_lot_index_full(canonical, fab_source, include_all))
+        return built_ok
     finally:
         if job_id:
+            # ok= 는 필수 인자다. 예전엔 빠져서 TypeError 를 삼키는 바람에 작업이 끝나지 않고
+            # 남았다가 5분 뒤 '진행 신호 없음 — 작업 실패'로 처리됐다(빌드마다 가짜 실패 경보).
             try:
                 from core.cache_event_log import stage_finished, finish_job
-                stage_finished(job_id, "fab_index")
-                finish_job(job_id)
+                stage_finished(job_id, "fab_index", ok=built_ok)
+                finish_job(job_id, ok=built_ok)
             except Exception:
-                pass
+                logger.debug("fab_lot_index job tracker finish failed", exc_info=True)
 
 def _fab_latest_reduce_lf(fab_lf):
     """(reduced_lf, root_col) — 정규화 root 키 부여 + (root,wafer)-latest 축소.
