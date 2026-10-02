@@ -66,9 +66,9 @@ def ip_env(tmp_path, monkeypatch):
     monkeypatch.setattr("routers.auth.read_users", lambda: [{"username": "hol", "role": "admin", "tabs": ""}])
 
 
-def test_ip_login_replaces_password_and_maps_the_company_id(ip_env):
+def test_ip_login_keeps_password_and_maps_the_company_id(ip_env):
     names = [p["name"] for p in ap.describe_providers()]
-    assert "ip" in names and "password" not in names
+    assert "ip" in names and "password" in names
     ident = ap.get_provider("ip").authenticate("::ffff:127.0.0.1")
     # 사내 ID 는 websocket 로그인과 같은 매핑(FLOW_WS_AUTH_USER_MAP → hol 관리자)을 탄다.
     assert (ident.username, ident.role, ident.provider) == ("hol", "admin", "ip")

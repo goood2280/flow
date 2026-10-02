@@ -81,8 +81,8 @@ export default function My_Login({ onLogin }) {
     return () => { active = false; };
   }, []);
 
-  // 서버가 켠 방식만 보여 준다. 설치본(setup.py)·사내 로그인 서버는 password provider 가
-  // 꺼져 있어 버튼만 남는다. 목록을 받기 전·받지 못했을 때도 ID/PW 입력칸을 띄우지 않는다.
+  // 서버가 켠 방식만 보여 준다. ID/PW는 기본 제공하며 명시한 비활성 설정은 지킨다.
+  // 목록을 받기 전·받지 못했을 때는 아직 인증 방식을 정할 수 없다.
   useEffect(() => {
     let active = true;
     setProvidersError(false);
@@ -194,7 +194,7 @@ export default function My_Login({ onLogin }) {
 
   const isOk = /Wait|sent|인증 창에서/.test(msg);
 
-  const title = mode === "register" ? "회원가입" : mode === "reset" ? "비밀번호 재설정" : "로그인";
+  const title = mode === "register" ? "회원가입" : mode === "reset" ? "비밀번호 재설정" : "AD LOGIN";
 
   return (
     <main className="flow-login">
@@ -206,10 +206,10 @@ export default function My_Login({ onLogin }) {
         </div>
 
         <section className="flow-login__card" aria-label={title}>
-          {mode !== "login" && <header className="flow-login__header">
+          <header className="flow-login__header">
             <h1 id="flow-login-title">{title}</h1>
-            <p>{mode === "register" ? "사용할 계정 정보를 입력해 주세요." : "가입한 아이디로 임시 비밀번호를 받으세요."}</p>
-          </header>}
+            {mode !== "login" && <p>{mode === "register" ? "사용할 계정 정보를 입력해 주세요." : "가입한 아이디로 임시 비밀번호를 받으세요."}</p>}
+          </header>
 
           {mode === "login" && (ipProvider || wsProvider || ssoProviders.length > 0) && (
             <div className="flow-login__providers">
@@ -258,9 +258,9 @@ export default function My_Login({ onLogin }) {
                 </div>
               )}
               <div className="flow-login__field">
-                <label htmlFor="flow-login-username">아이디</label>
+                <label htmlFor="flow-login-username">{mode === "login" ? "AD ID" : "아이디"}</label>
                 <input id="flow-login-username" value={u} onChange={e => setU(e.target.value)} autoComplete="username" autoCapitalize="none" spellCheck={false}
-                  placeholder={mode === "login" ? "아이디를 입력하세요" : "Knox ID"}
+                  placeholder={mode === "login" ? "AD ID를 입력하세요" : "Knox ID"}
                   aria-describedby={mode !== "login" ? "flow-login-id-hint" : undefined} />
                 {mode !== "login" && (
                   <p id="flow-login-id-hint" className="flow-login__hint">아이디 또는 id@메일도메인으로 입력해 주세요. 둘 다 같은 계정으로 인식합니다.</p>

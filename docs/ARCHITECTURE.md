@@ -69,6 +69,9 @@ FLOW_DATA_ROOT               사용자 기록·설정·로그·대화(sqlite)
 - 신선도: 캐시 항목마다 hard 서명(입력 파일·사용자 편집)과 soft 서명(파생 캐시). hard 가 다르면 버리고, soft 만 다르면 옛 결과를 주고 백그라운드에서 다시 계산한다.
 - 무효화: 제품 단위(`_clear_split_view_cache_product`). 다시 만든 캐시가 실제로 바뀌지 않았으면 무효화하지 않는다(`cache_builder.last_build_changes()`).
 - 예산: `core/cache_budget.py` 가 캐시 풀을 캐시별 지분으로 나눈다. 넘치면 LRU 축출.
+- 공정 메타: 원천/스키마 지문으로 RAM·디스크 snapshot을 재사용하고 가상 행도 같은 snapshot을 읽는다.
+  stage 추론은 매칭 행을 한 번 정규화해 stage/module/function 색인을 만든 뒤 컬럼별로 조회한다.
+  색인은 빌드 로컬이라 제품·입력 변경·동시 빌드 사이에 결과가 섞이지 않는다. 매칭 우선순위·원천 순서·major fallback은 유지한다.
 
 ## 5. 무거운 작업과 스케줄러
 

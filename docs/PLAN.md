@@ -22,6 +22,36 @@
 | P1 | 홈 에이전트 작업 선택 — 선택지 + 확신도 (Jev 방식) | 계획 | 평가셋부터 만들고, 되묻기 선택지 → 확신 시 LLM 생략 → 선택 전용 LLM 호출 → 처리기 경합 해소 순 |
 | P2 | 캐시 스케줄러 통합 (원천 변경 → 의존 순서 빌드) | 1단계 구현·복구 검증 완료 | 명시 활성화 시 변경 제품만 빌드, WIP·매칭 지문 신선도, 대시보드 증분. VM 실측 및 2단계는 후속 |
 | P3 | VM 고정 자원 예산·최초 설치 실패 진단 | 구현·격리 회귀 검증 완료 | 활성 자원 예산·이전 설정 진단, 필수 패키지 누락을 설치 성공으로 처리하지 않기 |
+| P4 | Windows D: 기본 DB·SplitTable 메타 반복 계산 제거 | 구현·격리 회귀 검증 완료 | stage 색인·기존 메타 snapshot 재사용, pandas 2.3.1 pytest 142개 통과. VM 실측은 후속 |
+
+---
+
+## P4. Windows 기본 DB·SplitTable 조회 지연 (2026-10-02)
+
+### 사내 조건 확인
+
+| 조건 | 확인 결과·이번 적용 |
+|---|---|
+| 작업 위치·VM 접근 | GitHub flow 원격이 있는 개발 체크아웃. VM 설정·로그·실제 데이터에 직접 접근할 수 없음 |
+| 요청 증상 | 사용자 보고: VM의 파일탐색기 파일 읽기는 괜찮고 SplitTable은 느림. 조회의 공정 메타 계산을 합성 데이터로 재현 |
+| 기본 DB | 기동 bat·설치본은 이미 D:\DB이나 .git 있는 체크아웃은 디렉터리 존재 여부로 샘플 DB fallback. Windows auto 기본을 D:\DB·D:\flow-data로 일치, 명시 경로·local/custom·opt-out 보존 |
+| pandas | Python 3.10.6에서 pandas 2.3.1을 별도 target 설치. pandas import를 차단해도 SplitTable 라우터 로드 성공. 조회는 Polars이며 버전만으로 VM 원인을 단정하지 않음 |
+| 코드 병목 | stage 추론이 컬럼마다 전체 매칭 행을 정규화. 가상 행은 공정 snapshot과 별개로 같은 메타를 다시 생성 |
+| 변경 범위 | 기존 계산의 반복 제거만 수행. S0/plan 이력·매칭 우선순위·제품 분리·캐시 서명/예산·스케줄러 정책 유지 |
+
+### 한 단계 수정과 검증
+
+- 매칭 문자열을 빌드마다 한 번 정규화하고 stage/module/function 색인으로 조회한다. 중복 매칭은 원천 순서대로,
+  major fallback은 기존 중복까지 그대로 보존한다. 색인·결과 memo는 빌드 로컬로 제품이나 동시 요청 사이에 공유하지 않는다.
+- 가상 행은 기존 공정 메타 RAM/디스크 snapshot을 재사용하고, 읽기 실패 시 기존 builder로 fallback한다.
+- 실제 VM 진단용 latency probe에 단계별 수치·캐시 플래그를 출력한다. 부분 준비된 표는 ready 응답으로 세지 않는다.
+- 합성 400 KNOB 컬럼·400 매칭 공정·25 wafer, pandas 2.3.1 / Python 3.10.6: 메타 계산 3회 중앙값
+  **935.166 → 30.249ms**, 메타 SHA-256 일치. 표 응답 캐시 miss 3회 중앙값(공정 disk snapshot 재사용 가능)
+  **1406.398 → 362.214ms**, 실제 셀 SHA-256 일치. warm 20회 p95 **5.060 → 4.462ms**.
+  로컬 합성 결과이며 VM HTTP·FAB history·동시 탭·브라우저 paint 실측이 아니다.
+- pandas 2.3.1 / Python 3.10.6 격리 root의 관련 pytest **142개 통과**. default 경로·동적 root memo·매칭 우선순위·
+  가상 행·공정 컬럼/내보내기·S0/계획 이력·ready 응답·latency probe·8코어/128GiB auto/large 계산식을 검증했다.
+- frontend `npm run check`(디자인·기능 경계·production build) 통과. 기존 JSX 중복 className·buffer 외부화·큰 chunk 경고는 남는다.
 
 ---
 

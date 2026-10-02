@@ -81,6 +81,9 @@ DEFAULT_LIGHT_PATHS = (
     "/api/splittable/knob-meta",
     "/api/splittable/vm-meta",
     "/api/splittable/inline-meta",
+    # The combined applied-process snapshot replaces these small metadata reads
+    # on screen entry. It must have the same admission policy as its predecessors.
+    "/api/splittable/process-meta",
     "/api/splittable/precision",
     # v9.1.x: _uniques.json 파일 프록시 — 파일 read 뿐이라 light. 메모리 가드 503 시
     # 첫 화면 feature-select 카탈로그가 비는 회귀가 있어 명시적으로 통과시킨다.

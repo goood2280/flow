@@ -13,11 +13,11 @@ Current operating model:
 New preferred env vars (see core/roots.py for full chain):
     FLOW_DB_ROOT         — overrides db_root
 
-Local dev:  env vars unset → DB root resolves to data/Fab under project root
+Local storage opt-out: FLOW_STORAGE_DEFAULT=0 → data/Fab under project root
 
 Windows server: D:/DB and D:/flow-data are the default storage for an
-installed copy (a folder extracted from setup.py, i.e. no .git), and for a git
-checkout when either folder exists or FLOW_PROD=1. The drive is
+installed copy and a git checkout, even before the folders exist. Explicit
+roots and local/custom profiles keep their precedence. The drive is
 FLOW_STORAGE_ROOT (default D:); FLOW_STORAGE_DEFAULT=0 turns it off. Linux
 /config/... defaults are never used on Windows (they would resolve to the
 current drive, e.g. D:/config/work/sharedworkspace).

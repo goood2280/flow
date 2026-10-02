@@ -7,6 +7,7 @@ import { toast } from "../../components/Toast";
 import { columnSearchMatcher } from "../../lib/columnSearch";
 import { handOffInformDraft } from "../../lib/informDraft";
 import { authSrc, sf, dl } from "../../lib/api";
+import { fetchSplitTableResource, splitTableResourceError } from "./splitTableResource";
 import { allowedSubTabs, useUserRole } from "../../lib/permissions";
 import { orderProductItems } from "../../lib/productOrder";
 import { moduleColor, moduleTextColor } from "../../lib/moduleColors";
@@ -17,7 +18,7 @@ import { appendSplitViewPerformanceSample, isSplitViewPerformanceEnabled, SPLIT_
 // 렌더 시점에 평가해야 한다 (모듈 상수로 고정하면 로그인 전 평가 시 탭이 영구히 빈다).
 const SPLITTABLE_TABS_ALL = [{k:"view",l:"View"},{k:"history",l:"History"}];
 const splittableTabs = () => SPLITTABLE_TABS_ALL.filter(({k})=>allowedSubTabs("splittable").includes(k));
-import { statusPalette } from "../../components/UXKit";
+import { statusPalette, Button } from "../../components/UXKit";
 import { Icon, IconLabel } from "../../components/ui/Icon";
 import { SegmentedSwitch } from "../../components/ui/SegmentedSwitch";
 import ImageLightbox from "../../components/ui/ImageLightbox";
@@ -531,6 +532,8 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const[lotSuggestions,setLotSuggestions]=useState([]);const[showLotDrop,setShowLotDrop]=useState(false);const[lotFilter,setLotFilter]=useState("");
   const[lotSuggestMsg,setLotSuggestMsg]=useState("");
   const[lotPoolVer,setLotPoolVer]=useState(0); // v9.3.x: 풀 로드 완료 시 증가 → 필터 useEffect 재실행 트리거
+  const[lotPoolReload,setLotPoolReload]=useState(0);
+  const lotPoolErrorRef=useRef("");
   // v8.4.3: fab_lot_id 검색도 지원 — root_lot_id 대체 키로 사용 가능.
   const[fabLotId,setFabLotId]=useState(initialFabLotId||"");const[fabSuggestions,setFabSuggestions]=useState([]);const[showFabDrop,setShowFabDrop]=useState(false);
   const[fabSuggestBusy,setFabSuggestBusy]=useState(false);const[fabSuggestMsg,setFabSuggestMsg]=useState("");
@@ -1053,18 +1056,22 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const lotPoolLoadedRef=useRef("");            // 풀이 완성된 제품명 (중복 요청 방지)
   const lotPoolControllerRef=useRef(null);      // 진행 중 AbortController
   const lotPoolStateRef=useRef("idle");         // loading|preparing|ready|empty|error
+  const retryLotPool=()=>{lotPoolLoadedRef.current="";setLotPoolReload(v=>v+1);};
   useEffect(()=>{
     if(!selProd){lotPoolRef.current={key:"",values:[]};lotPoolLoadedRef.current="";lotPoolStateRef.current="idle";return;}
     if(lotPoolLoadedRef.current===selProd)return; // 이미 이 제품의 풀이 완성됨
     // 이전 제품 로드 중이면 취소
     if(lotPoolControllerRef.current)lotPoolControllerRef.current.abort();
     const ctrl=new AbortController();lotPoolControllerRef.current=ctrl;
+    lotPoolLoadedRef.current="";
     lotPoolRef.current={key:selProd,values:[]};  // 풀 초기화
     lotPoolStateRef.current="loading";
+    lotPoolErrorRef.current="";
+    setLotPoolVer(v=>v+1);
     const url=API+"/lot-candidates?product="+encodeURIComponent(selProd)+"&col=root_lot_id&limit="+ROOT_LOT_CACHE_LIMIT_MAX;
     let prepTimer=null;
     const MAX_PREP_RETRY=30;
-    const fetchAll=(attempt)=>sf(url,{signal:ctrl.signal})
+    const fetchAll=(attempt)=>fetchSplitTableResource(url,{signal:ctrl.signal})
       .then(d=>{
         if(ctrl.signal.aborted)return;
         const candidates=normalizeLotList(d.candidates||[]);
@@ -1107,10 +1114,10 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         lotPoolControllerRef.current=null;
         setLotPoolVer(v=>v+1);
       })
-      .catch(e=>{if(e?.name==="AbortError")return;lotPoolStateRef.current="error";lotPoolControllerRef.current=null;setLotPoolVer(v=>v+1);});
+      .catch(e=>{if(ctrl.signal.aborted||e?.name==="AbortError")return;lotPoolStateRef.current="error";lotPoolErrorRef.current=splitTableResourceError(e);lotPoolControllerRef.current=null;setLotPoolVer(v=>v+1);});
     fetchAll(0);
     return()=>{ctrl.abort();if(prepTimer)clearTimeout(prepTimer);};
-  },[selProd]);
+  },[selProd,lotPoolReload]);
   // v9.3.x: 키 입력 → 로컬 풀 즉시 필터. 서버 재요청 없음.
   useEffect(()=>{
     const seq=++lotSuggestSeqRef.current;
@@ -1126,7 +1133,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
         ?"Lot 후보 캐시 확인 중입니다. 직접 입력해 바로 조회할 수 있습니다."
         :poolState==="preparing"
         ?"Lot 후보 캐시 준비 중입니다. 직접 입력해 바로 조회할 수 있습니다."
-        :poolState==="error"?"Lot 후보 캐시를 불러오지 못했습니다. 직접 입력해 조회해 주세요."
+        :poolState==="error"?`Lot 후보 캐시를 불러오지 못했습니다. ${lotPoolErrorRef.current} 직접 입력해 조회할 수 있습니다.`
         :poolState==="empty"?"Lot 후보가 없습니다.":"");
       setLotSuggestions([]);
       return;
@@ -1179,28 +1186,31 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
   const[fabMeta,setFabMeta]=useState({});
   const[inlineMetaSt,setInlineMetaSt]=useState({});
   const[maskMetaSt,setMaskMetaSt]=useState({});
+  const[processMetaError,setProcessMetaError]=useState("");
   useEffect(()=>{
     let active=true;
     const controller=new AbortController();
+    setProcessMetaError("");
     if(matchingMetaIdentityRef.current.product!==selProd){
       matchingMetaIdentityRef.current={product:selProd,revision:""};
       setKnobMeta({});setVmMeta({});setFabMeta({});setInlineMetaSt({});setMaskMetaSt({});setCategoryColors({});
     }
     if(!selProd)return;
-    Promise.all([
-      sf(API+"/process-meta?product="+encodeURIComponent(selProd),{signal:controller.signal}),
-      sf(API+"/category-colors?product="+encodeURIComponent(selProd),{signal:controller.signal}),
-    ]).then(([d,colors])=>{
+    fetchSplitTableResource(API+"/process-meta?product="+encodeURIComponent(selProd),{signal:controller.signal})
+      .then(d=>{
         if(!active)return;
         const meta=d.items||{};
         matchingMetaIdentityRef.current={product:selProd,revision:String(d.revision||"")};
         setKnobMeta(meta.knob||{});setVmMeta(meta.vm||{});setFabMeta(meta.fab||{});
         setInlineMetaSt(meta.inline||{});setMaskMetaSt(meta.mask||{});
-        setCategoryColors(colors.colors||{});
       }).catch(e=>{if(active&&e?.name!=="AbortError"){
         matchingMetaIdentityRef.current={product:selProd,revision:""};
-        toast.error("적용 공정 정보를 불러오지 못했습니다. 다시 조회해 주세요.");
+        setProcessMetaError(`적용 공정 정보를 불러오지 못했습니다. ${splitTableResourceError(e)}`);
       }});
+    // A color-settings failure must not discard successfully loaded process data.
+    fetchSplitTableResource(API+"/category-colors?product="+encodeURIComponent(selProd),{signal:controller.signal})
+      .then(colors=>{if(active)setCategoryColors(colors.colors||{});})
+      .catch(e=>{if(active&&e?.name!=="AbortError")toast.warn(`Category 색상을 불러오지 못했습니다. ${splitTableResourceError(e)}`);});
     return()=>{active=false;controller.abort();};
   },[selProd,matchingMetaRevision]);
   // 상단 purpose도 표의 wafer TAG_purpose와 같은 값을 사용한다.
@@ -2496,6 +2506,7 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           style={{...S,width:"100%"}} onKeyDown={e=>{if(e.key==="Enter"){if(e.nativeEvent?.isComposing||e.keyCode===229)return;setShowLotDrop(false);doSearch();}}}/>
         {showLotDrop&&(filteredLots.length>0||lotSuggestMsg)&&<div style={{maxHeight:180,overflow:"auto",border:"1px solid var(--border)",borderRadius:6,background:"var(--bg-card)",marginTop:2}}>
           {filteredLots.length===0&&lotSuggestMsg&&<div style={{padding:"7px 10px",fontSize:14,color:"var(--text-secondary)",lineHeight:1.4}}>{lotSuggestMsg}</div>}
+          {["error","preparing"].includes(lotPoolStateRef.current)&&<Button variant="secondary" size="sm" onClick={retryLotPool}>후보 다시 불러오기</Button>}
           {filteredLots.slice(0,50).map(l=><div key={l} onClick={()=>{setLotId(l);setFabLotId("");setShowLotDrop(false);}}
             style={{padding:"6px 10px",fontSize:14,cursor:"pointer",borderBottom:"1px solid var(--border)",color:"var(--text-primary)"}}
             onMouseEnter={e=>e.currentTarget.style.background="var(--bg-hover)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{l}</div>)}
@@ -3192,6 +3203,9 @@ export default function My_SplitTable({user,initialProduct="",initialFabLotId=""
           </button>
         </div>
       </div>
+      {processMetaError&&<div role="status" style={{padding:"8px 12px",borderBottom:"1px solid var(--border)",color:"var(--text-secondary)",fontSize:14}}>
+        {processMetaError} <Button variant="secondary" size="sm" onClick={()=>setMatchingMetaRevision(v=>v+1)}>공정 정보 다시 불러오기</Button>
+      </div>}
       {loading?<div style={{padding:40,textAlign:"center"}}><Loading text="Loading..."/></div>
       :data?.msg&&!data?.rows?.length?<div style={{padding:60,textAlign:"center",color:"var(--text-secondary)",fontSize:14}}>{data.msg}</div>
       :tab==="view"&&data?.rows?.length?(()=>{

@@ -438,6 +438,13 @@ def me(request: Request):
     if not me:
         return {"authenticated": False}
     profile = auth_providers.read_people().get(me["username"], {})
+    claims = (me.get("claims") or {}) if me.get("auth_method") == "websocket" else {}
+    # AD 프로필은 users.csv의 옛 연락처보다 최신이다. 직접 편집한 연락처는 유지한다.
+    def contact(field):
+        if profile.get("manual"):
+            return profile.get(field, "")
+        return claims.get(field) or profile.get(field) or ""
+
     users = read_users()
     for u in users:
         if u["username"] == me["username"]:
@@ -445,10 +452,10 @@ def me(request: Request):
                 "authenticated": True,
                 "username": u["username"],
                 "role": u.get("role", "user"),
-                "name": profile.get("name", u.get("name", "")),
-                "email": profile.get("email", u.get("email", "")),
-                "sso_id": u.get("sso_id", ""),
-                "department": u.get("department", ""),
+                "name": contact("name") or u.get("name", ""),
+                "email": contact("email") or u.get("email", ""),
+                "sso_id": claims.get("ws_user") or u.get("sso_id", ""),
+                "department": claims.get("department", u.get("department", "")),
                 "permission_source": u.get("permission_source", ""),
                 "tabs": "__all__" if u.get("role") == "admin" else u.get("tabs", ""),
             }
@@ -458,8 +465,8 @@ def me(request: Request):
             "authenticated": True,
             "username": me["username"],
             "role": me.get("role", "user"),
-            "name": profile.get("name") or str(claims.get("name") or ""),
-            "email": profile.get("email") or str(claims.get("email") or ""),
+            "name": contact("name"),
+            "email": contact("email"),
             "sso_id": str(claims.get("ws_user") or ""),
             "department": str(claims.get("department") or ""),
             "permission_source": str(claims.get("permission_source") or "department"),

@@ -8,7 +8,7 @@ Priority chain (first match wins):
   2. admin_settings.json `data_roots.db` (runtime editable, optional)
   3. Shared default: /config/work/sharedworkspace/DB when running from the prod
      app root, when FLOW_PROD=1 is explicitly set, or on Linux when that shared
-     DB child exists
+     DB child exists; Windows auto defaults to D:\\DB even before it exists
   4. Repo default:  <PROJECT_ROOT>/data/Fab, then <PROJECT_ROOT>/data/DB
 
 `base_root` is now a compatibility alias to `db_root`. Single-file rulebooks,
@@ -206,6 +206,9 @@ def _db_root_env_sig() -> tuple:
         os.environ.get("FLOW_DB_ROOT") or "",
         os.environ.get("FLOW_DATA_ROOT") or "",
         os.environ.get("FLOW_PROD") or "",
+        os.environ.get("FLOW_STORAGE_ROOT") or "",
+        os.environ.get("FLOW_STORAGE_DEFAULT") or "",
+        str(getattr(root_profile, "WINDOWS_STORAGE_DEFAULT", "")),
         str(_PROJECT_ROOT),
         str(getattr(root_profile, "PROJECT_ROOT", "")),
         str(getattr(root_profile, "PROFILE_FILE", "")),

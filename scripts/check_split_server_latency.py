@@ -14,6 +14,30 @@ import urllib.parse
 import urllib.request
 
 
+_TIMING_FIELDS = (
+    "total_ms", "compute_ms", "wait_ms", "lane_wait_ms", "cold_lane_wait_ms",
+    "singleflight_wait_ms", "prelude_ms", "fastpath_ms", "scan_ms", "root_scan_ms",
+    "schema_ms", "fabscope_ms", "select_ms", "collect_ms", "emptyfallback_ms",
+    "header_ms", "overlay_ms", "matrix_ms", "mismatch_ms", "progress_ms",
+    "payload_ms", "cacheput_ms", "finish_ms", "unaccounted_ms",
+)
+
+
+def response_sample(payload, *, request_number, elapsed_ms, body_bytes):
+    rows = payload.get("rows") or payload.get("rows_compact") or []
+    profile = payload.get("runtime_profile") or {}
+    preparing = bool((payload.get("background_cache") or {}).get("queued"))
+    # Only timings/cache flags are printed; never copy usernames or raw metadata.
+    timings = {key: value for key in _TIMING_FIELDS
+               if isinstance((value := profile.get(key)), (int, float)) and math.isfinite(value)}
+    return {"request": request_number, "ms": elapsed_ms, "rows": len(rows),
+            "ready": bool(rows) and not preparing and not profile.get("cache_incomplete", False),
+            "bytes": body_bytes, "view_cache": payload.get("view_cache"),
+            "timings_ms": timings,
+            "cache_flags": {key: bool(profile.get(key)) for key in (
+                "payload_cache_hit", "root_cache_hit", "knob_sidecar", "fab_index_queued", "cache_incomplete")}}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True, help="Flow origin, e.g. https://flow.internal")
@@ -43,11 +67,8 @@ def main():
                 body = response.read()
             payload = json.loads(body)
             elapsed = round((time.perf_counter() - started) * 1000, 2)
-            rows = payload.get("rows") or payload.get("rows_compact") or []
-            ready = bool(rows) and not (payload.get("background_cache") or {}).get("queued")
-            sample = {"request": index + 1, "ms": elapsed, "rows": len(rows),
-                      "ready": ready, "bytes": len(body),
-                      "view_cache": payload.get("view_cache")}
+            sample = response_sample(payload, request_number=index + 1,
+                                     elapsed_ms=elapsed, body_bytes=len(body))
         except Exception as exc:
             # Do not echo server response bodies or credentials.
             sample = {"request": index + 1, "ready": False, "error": type(exc).__name__}

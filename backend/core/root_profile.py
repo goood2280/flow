@@ -44,7 +44,7 @@ def windows_storage_default_active() -> bool:
     - 설치본(바탕화면 flow 폴더 등에 setup.py 로 푼 폴더): 폴더가 아직 없어도 D: 가 기본.
       첫 기동에 flow-data 는 앱이 만들고, DB 는 운영자가 채운다(비어 있으면 화면이 비어 보여
       설정 누락을 바로 알 수 있다 — 프로젝트 안 샘플 DB 로 조용히 떨어지지 않는다).
-    - 개발 체크아웃(.git 있음): 예전처럼 D:\\DB 또는 D:\\flow-data 가 있거나 FLOW_PROD=1 일 때만.
+    - 개발 체크아웃/VM에서 git init 한 설치본도 같은 D: 기본값을 쓴다.
     - FLOW_STORAGE_DEFAULT=0 이면 끈다(프로젝트 안 data/ 사용).
     """
     if windows_storage_root() is None:
@@ -52,12 +52,7 @@ def windows_storage_default_active() -> bool:
     flag = str(os.environ.get("FLOW_STORAGE_DEFAULT", "") or "").strip().lower()
     if flag in {"0", "false", "no", "off"}:
         return False
-    if flag in {"1", "true", "yes", "on"} or os.environ.get("FLOW_PROD") == "1":
-        return True
-    if not is_source_checkout():
-        return True
-    win = windows_storage_root()
-    return any((win / child).exists() for child in ("DB", "flow-data"))
+    return True
 
 
 def _same_path(a: Path, b: Path) -> bool:

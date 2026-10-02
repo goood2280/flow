@@ -118,6 +118,7 @@ ET 추적·Tracker·Dashboard 차트의 **주기 스캐너**는 `FLOW_ENABLE_HEA
 여유 있는 범위로 보고, 첫 주에 아래로 확인하세요.
 
 - `scripts/check_split_server_latency.py --help` — 실제 제품·root lot으로 SplitTable 응답 측정(준비 중·빈 결과는 성공으로 세지 않음)
+  각 요청의 `timings_ms`로 큐 대기·컬럼/공정 선택(`select_ms`)·Polars 읽기(`collect_ms`)·셀 조립(`matrix_ms`)을 구분합니다.
 - 화면 URL에 `?split_perf=1` — 브라우저 첫 표시 시간
 - 관리자 → 모니터(메모리 p95·무거운 작업), 캐시관리 → 검색 속도(히트율·대기), 운영 점검 스캔 알림
 
@@ -187,9 +188,10 @@ S3 연결만으로 로컬 용량이 줄거나 과거 자료가 자동 복원되�
 5. **초기 관리자** — `FLOW_ADMIN_PW`에 10자 이상의 비기본 비밀번호를 지정한 경우에만 `hol` 관리자를 만듭니다
    (`1111`, `CHANGE_ME` 같은 기본값이면 만들지 않습니다).
 
-경로 기본값: Windows에서 `.git`이 없는 설치 폴더는 환경변수가 없어도 `D:\DB`·`D:\flow-data`를 씁니다
+경로 기본값: Windows는 설치본·개발 체크아웃 모두 환경변수가 없어도 `D:\DB`·`D:\flow-data`를 씁니다
 (드라이브는 `FLOW_STORAGE_ROOT`, 끄려면 `FLOW_STORAGE_DEFAULT=0`). Linux 경로 `/config/work/...`는 쓰지 않습니다.
 관리자 → 데이터 루트에서 실제 적용 경로를 확인합니다.
+명시한 환경변수·관리자 경로·local/custom 프로필은 우선하며, 기본 DB가 아직 없다고 프로젝트의 샘플 DB로 내려가지 않습니다.
 
 ## 켜기·상태·끄기
 
@@ -316,8 +318,8 @@ python _build_setup.py --include-domain-knowledge --output "../deliverables/flow
 ### 접속 IP 로그인 (버튼 하나)
 
 사내 인증서버를 붙이기 전, 지정한 PC에서 [로그인] 버튼만 누르면 들어오게 할 수 있습니다. `FLOW_IP_LOGIN_MAP`에
-접속 IP → 사내 ID를 적으면 로그인 화면에 버튼만 남습니다(ID/PW 입력은 꺼지고, 필요하면
-`FLOW_PASSWORD_LOGIN_ENABLED=1`). 사내 ID는 WebSocket 로그인과 같은 규칙(`FLOW_WS_AUTH_USER_MAP`)으로 Flow 계정이 됩니다.
+접속 IP → 사내 ID를 적으면 로그인 화면에 IP 로그인 버튼이 추가됩니다. ID/PW 입력은 기본 제공하며,
+숨기려면 `FLOW_PASSWORD_LOGIN_ENABLED=0`으로 지정합니다. 사내 ID는 WebSocket 로그인과 같은 규칙(`FLOW_WS_AUTH_USER_MAP`)으로 Flow 계정이 됩니다.
 
 ```bat
 set "FLOW_IP_LOGIN_MAP={"127.0.0.1":"example.user"}"
@@ -330,11 +332,15 @@ set "FLOW_WS_AUTH_USER_MAP={"example.user":"hol"}"
 ### WebSocket 로그인과 관리자 연락처
 
 `FLOW_WS_AUTH_URL`(브라우저가 접속할 로그인 주소)과 `FLOW_WS_AUTH_VERIFY_URL`(Flow가 토큰을 재확인할 주소)을
-설정하면 로그인 화면에는 **[사내 로그인] 버튼만** 남고 ID/PW 로그인·회원가입·비밀번호 찾기
-(`/api/auth/register`, `/api/auth/forgot-password`, `/api/auth/reset-request`)가 꺼집니다.
-setup.py로 푼 설치본(`.git` 없음)과 운영(`FLOW_PROD=1`, `flow_env.bat` 기본값)은 사내 로그인을 아직 설정하지 않았어도
-ID/PW 입력칸을 띄우지 않습니다(개발 체크아웃·`FLOW_PROD=0` 격리 테스트만 기본 켜짐). 비상시 `FLOW_PASSWORD_LOGIN_ENABLED=1`.
+설정하면 **AD LOGIN** 화면에 [사내 로그인] 버튼이 추가됩니다. ID/PW 입력은 설치본·운영에서도 기본 제공하며,
+`FLOW_PASSWORD_LOGIN_ENABLED=0`을 명시하면 ID/PW 로그인과 회원가입을 끕니다. 비밀번호 찾기는 WebSocket 설정 시 꺼집니다.
+현재 ID/PW 폼은 Flow 계정의 비밀번호를 확인하고, 별도 사내 로그인 버튼은 기존 WebSocket 인증 흐름을 사용합니다.
 버튼은 누를 때 연결합니다(`FLOW_WS_AUTH_AUTO=1`이면 화면을 열 때 한 번 자동 시도).
+
+AD의 `sAMAccountName` 또는 응답의 `loginId`는 Flow 계정 ID, `displayName`은 표시 이름,
+`mail`은 전체 메일 주소, `department`는 부서·권한 판정에 사용합니다. `data`·`user`·`ad`로 감싼 응답도 기본 지원합니다.
+메일 도메인을 덧붙이거나 잘라내지 않습니다. 로그인 응답과 `/api/auth/me` 모두 이 프로필을 사용하므로 새로고침 후에도 유지됩니다.
+일반 사용자의 연락처는 살아 있는 검증된 세션에서 메일 수신 주소로 해석하며 별도 사용자 명부를 저장하지 않습니다.
 
 관리자 → **사내 로그인·관리자**에서 계정 ID, 이름, 메일, 역할과 위임 페이지를 등록합니다(관리자는 `admin`,
 페이지 위임자는 `user`+페이지 ID). 여기 명시한 관리자·위임자만 권한 계정에 추가되고 Flow 비밀번호는 생기지
@@ -435,11 +441,11 @@ backend/routers/auth.py: websocket_login()
 | `FLOW_WS_AUTH_URL` | 브라우저가 접속할 `ws://`/`wss://` 주소. 비면 WebSocket 로그인 비활성 |
 | `FLOW_WS_AUTH_SEND` / `FLOW_WS_AUTH_AUTO` | 연결 직후 보낼 문자열(기본 전송 없음, **사용자 ID를 넣지 않음**) / 화면 진입 시 자동 시도(기본 `0`=버튼을 눌러야 연결, 켜려면 `1`). URL·SEND의 `{nonce}`(시도마다 새 값)·`{origin}`(Flow 주소)은 브라우저가 채움 |
 | `FLOW_WS_AUTH_CONTACT` | 로그인 화면·거부 메시지에 붙일 문의처(합성 예: `example.admin` → "문의 example.admin"). 실제 문의처는 현장 `.local.bat`에만 둔다. 비면 "관리자에게 문의" |
-| `FLOW_WS_AUTH_USER_FIELDS` | 사내 ID 후보. 기본 `user_id,userId,userid,username,user_name,user,loginId,login_id,sAMAccountName,ad.sAMAccountName,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id,ad.user_id,ad.userId,ad.id,ad.mail`(AD 로그인 ID `sAMAccountName`이 있으면 그것, 없으면 AD 메일을 ID로 쓰고 사내 도메인은 떼어 기존 계정과 맞춤). AD 형식 `{"ad": {"department","company","mail","title","description","name"}}`의 부서·이름·메일은 기본 후보(`ad.department`, `ad.name`, `ad.mail`)로 읽힘. http(s) 주소 값은 ID로 쓰지 않음 |
+| `FLOW_WS_AUTH_USER_FIELDS` | 사내 ID 후보. 기본 `user_id,userId,userid,username,user_name,user,loginId,login_id,sAMAccountName,ad.sAMAccountName,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.loginId,data.sAMAccountName,data.id,user.loginId,user.sAMAccountName,user.id,ad.loginId,ad.user_id,ad.userId,ad.id,ad.mail`. AD의 `sAMAccountName`·`loginId`를 읽고 ID가 없으면 `ad.mail`로 기존 계정과 맞춤. http(s) 주소 값은 ID로 쓰지 않음 |
 | `FLOW_WS_AUTH_TOKEN_FIELDS` | 인증서버 토큰 후보. 기본 `token,access_token,accessToken,ticket,session,sessionId,session_id,data.token,data.ticket` |
 | `FLOW_WS_AUTH_DEPT_FIELDS` | 기본 `department,dept,deptName,dept_name,deptNm,orgName,org_name,org,team,data.department,data.dept,user.department,ad.department` |
-| `FLOW_WS_AUTH_NAME_FIELDS` | 기본 `name,userName,user_name,displayName,display_name,korName,kor_name,data.name,user.name,ad.name` |
-| `FLOW_WS_AUTH_EMAIL_FIELDS` | 기본 `email,mail,emailAddress,email_address,data.email,user.email,ad.mail,ad.email` |
+| `FLOW_WS_AUTH_NAME_FIELDS` | 기본 `displayName,display_name,name,userName,user_name,korName,kor_name,data.displayName,data.name,user.displayName,user.name,ad.displayName,ad.name` |
+| `FLOW_WS_AUTH_EMAIL_FIELDS` | 기본 `mail,email,emailAddress,email_address,data.mail,data.email,user.mail,user.email,ad.mail,ad.email`. `mail`의 전체 주소를 그대로 보존 |
 | `FLOW_WS_AUTH_VERIFY_URL` / `FLOW_WS_AUTH_VERIFY` | 서버의 재검증 주소 / `http` 또는 `ws`. mode 미지정 시 verify URL이 HTTP면 `http`, 나머지는 `ws`; URL·mode 둘 다 없으면 기본 거부 |
 | `FLOW_WS_AUTH_VERIFY_SEND` | 검증 요청 문자열 템플릿. 기본 `{"token": "{token}"}`. `{token}`·`{user}`를 추출값으로 치환(JSON 템플릿이면 따옴표 등을 JSON 규칙으로 넣음) |
 | `FLOW_WS_AUTH_VERIFY_METHOD` / `FLOW_WS_AUTH_VERIFY_HEADERS` | HTTP 재검증 `POST`(기본)·`GET`. VERIFY_URL에도 `{token}`·`{user}` 치환(URL 인코딩) / 헤더 JSON(예 `{"Authorization": "Bearer {token}"}`) |
@@ -552,12 +558,19 @@ TEG 제품은 `상위 노드 / 하위 노드 / 제품명` 계층입니다. 경�
 
 ### SplitTable 캐시와 성능
 
+- Lot 후보·적용 공정 정보 요청은 일시적인 서버 부하나 연결 오류에 최대 두 번 재시도합니다.
+  계속 실패하면 HTTP 상태·원인과 재조회 버튼을 표시합니다. 공정 메타는 가벼운 조회 경로로 처리하며,
+  색상 설정 실패가 정상 수신한 공정 정보를 지우지 않습니다. 제품 변경 시 이전 요청·재시도를 취소합니다.
+
 제품별 필수 캐시는 ① 랏 lookup ② `root_lot_id`별 pivot ③ WIP latest-lot ④ root별 FAB latest 인덱스입니다.
 캐시관리의 통합 캐싱은 실제 단계가 끝날 때까지 작업 큐에 남아 진행 상황과 중단 버튼을 제공하고, 중단 시 현재
 안전 배치까지만 마칩니다. 제품 전체 RAM·Root lot RAM 예열은 쓰지 않습니다. ET history는 ET 추적에서 따로
 관리하며 SplitTable 필수 캐시에 포함하지 않습니다.
 
 - 조회는 제품 전체가 아니라 root partition/pivot 파일 하나만, 필요한 prefix/custom 컬럼만 읽습니다.
+- 공정 메타 추론은 매칭 행의 문자열을 한 번만 정규화해 색인으로 찾고, 가상 행 생성도 공정 메타 RAM/디스크 캐시를
+  재사용합니다. 컬럼마다 매칭 목록 전체를 다시 정규화하거나 같은 조회에서 메타를 두 번 만들지 않습니다.
+  SplitTable 조회는 Polars를 사용하며 pandas 2.3.1은 Python 3.10에서 별도 검증했습니다.
 - Root Lot 후보·LOT ID 목록·KNOB 입력 후보는 lookup 빌드 때 함께 계산해 둡니다. 캐시가 없으면 원천을 동기
   스캔하지 않고 빌드만 큐에 넣고 즉시 응답합니다(준비 중에도 Root Lot 직접 입력 조회 가능).
 - pivot은 root 1개씩 만들고, 실패하면 최대 3번까지 다시 시도합니다.

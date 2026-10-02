@@ -317,6 +317,34 @@ def validate_token(token: str) -> Optional[dict]:
         return out
 
 
+def active_company_profiles() -> dict[str, dict]:
+    """살아 있는 WebSocket 세션의 확인된 연락처. 토큰·원문은 노출하지 않는다.
+
+    users.csv에 없는 AD 사용자도 메일 수신 주소를 쓸 수 있다. 별도 사용자
+    명부를 저장하지 않으며, 만료·로그아웃 뒤에는 해당 세션 정보를 쓰지 않는다.
+    """
+    profiles: dict[str, dict] = {}
+    newest: dict[str, float] = {}
+    now = _now()
+    with _lock:
+        _load_tokens()
+        for meta in _cache.values():
+            if meta.get("auth_method") != "websocket":
+                continue
+            last = float(meta.get("last_seen", 0))
+            issued = float(meta.get("issued_at", last))
+            if now - last >= SESSION_IDLE_SECONDS or now - issued >= SESSION_ABSOLUTE_MAX_SECONDS:
+                continue
+            username = str(meta.get("username") or "")
+            if not username or issued < newest.get(username, -1):
+                continue
+            claims = meta.get("claims") or {}
+            profiles[username] = {key: str(claims.get(key) or "")
+                                  for key in ("name", "email", "department")}
+            newest[username] = issued
+    return profiles
+
+
 # ── FastAPI dependencies ──────────────────────────────────────────────
 def current_user(request: Request) -> dict:
     """요청의 X-Session-Token 헤더로 현재 유저 반환. 실패 시 401."""

@@ -214,7 +214,53 @@ def test_combined_legacy_and_export_metadata_paths_share_one_build(
     assert splittable.fab_meta("P")["items"] == {"FAB_X": {}}
     assert splittable.mask_meta("P")["items"] == {"MASK_X": {}}
     assert splittable._step_label_metas("P")["knob"] == {"KNOB_X": {}}
+    assert splittable._virtual_columns_for_prefix("P", "KNOB") == ["KNOB_X"]
+    assert splittable._virtual_columns_for_prefix("P", "INLINE", existing_columns=["INLINE_X"]) == []
     assert calls == {"knob": 1, "inline": 1, "vm": 1, "fab": 1, "mask": 1}
+
+
+def test_stage_lookup_preserves_matching_tiers_duplicates_and_source_order():
+    from routers import splittable as st
+
+    steps = {4: [
+        {"func_step": "GATE detail", "step_id": "A", "module": "GATE"},
+        {"func_step": "4.0 GATE_OX", "step_id": "STAGE", "step_class": "stage"},
+        {"func_step": "GATE detail", "step_id": "A", "module": "GATE"},
+        {"func_step": "GATE other", "step_id": "B", "area_guess": "HKMG"},
+        {"func_step": "SILICIDE etch", "step_id": "C"},
+    ], 9: [{"func_step": "PAD detail", "step_id": "D", "module": "PASSIVATION"}]}
+    lookup = st._prepare_stage_step_lookup(steps)
+    for tail, expected in [
+        ("4.0 GATE_OX", ["STAGE"]),  # exact stage beats module matches
+        ("5.0 GATE_OX", ["A", "B"]),  # module/area_guess, first duplicate wins
+        ("SILICIDE", ["C"]),  # function prefix fallback
+        ("PAD", ["D"]),
+        ("4.0 unknown", ["A", "STAGE", "A", "B", "C"]),  # major fallback keeps duplicates
+        ("9.0 unknown", []),
+        ("unknown", []),
+    ]:
+        assert [row["step_id"] for row in st._stage_steps_for_tail(tail, steps, lookup)] == expected
+        assert st._stage_steps_for_tail(tail, steps) == st._stage_steps_for_tail(tail, steps, lookup)
+
+
+def test_inferred_stage_build_normalizes_matching_rows_once(monkeypatch):
+    from routers import splittable as st
+
+    columns = [f"KNOB_4.{index} GATE_OX_{index}" for index in range(200)]
+    steps = {4: [{"func_step": f"GATE etch {index}", "step_id": f"S{index}", "module": "GATE"}
+                 for index in range(100)]}
+    calls = []
+    original = st._norm_stage_text
+    def normalize(value):
+        calls.append(value)
+        return original(value)
+    monkeypatch.setattr(st, "_mltable_schema_columns", lambda *_: columns)
+    monkeypatch.setattr(st, "_stage_steps_by_major", lambda *_: steps)
+    monkeypatch.setattr(st, "_norm_stage_text", normalize)
+    result = st._inferred_stage_meta("P", "KNOB")
+    assert result[columns[-1]]["groups"][0]["step_ids"] == [f"S{i}" for i in range(100)]
+    # A wide schema must not renormalize every matching row for every column.
+    assert len(calls) < 10 * (len(columns) + len(steps[4]))
 
 
 def test_same_size_rulebook_rewrite_with_new_nanosecond_invalidates_snapshot(

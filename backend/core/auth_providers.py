@@ -238,28 +238,6 @@ class PasswordAuthProvider(AuthProvider):
             return _password_login_default()
         return str(raw).strip().lower() not in {"0", "false", "no", "off"}
 
-
-def _password_login_default() -> bool:
-    """FLOW_PASSWORD_LOGIN_ENABLED 가 없을 때 ID/PW 로그인을 켤지.
-
-    - 사내 로그인(websocket)·IP 로그인이 설정되면 끈다.
-    - setup.py 로 푼 설치본(.git 없음)과 운영(FLOW_PROD=1)은 끈다 — 로그인 화면은 버튼만.
-    - 개발 체크아웃이거나 FLOW_PROD=0(격리 테스트)이면 켠다.
-    비상시 FLOW_PASSWORD_LOGIN_ENABLED=1 로 다시 켠다.
-    """
-    if _ws_auth_url() or _ip_login_map():
-        return False
-    prod = str(os.environ.get("FLOW_PROD", "") or "").strip()
-    if prod == "1":
-        return False
-    if prod == "0":
-        return True
-    try:
-        from core import root_profile
-        return root_profile.is_source_checkout()
-    except Exception:
-        return False
-
     @_with_users_mutation_lock
     def authenticate(self, credential: Any) -> AuthIdentity:
         from routers import auth as auth_router
@@ -293,6 +271,11 @@ def _password_login_default() -> bool:
             )
         # 계정 없음도 자격증명 오류와 같은 응답 — 계정 존재 여부를 노출하지 않는다.
         raise HTTPException(401, "Invalid credentials")
+
+
+def _password_login_default() -> bool:
+    """설치본·운영에서도 ID/PW 입력을 기본 제공한다. 명시한 0은 우선한다."""
+    return True
 
 
 # ── 레지스트리 ────────────────────────────────────────────────────────
@@ -356,12 +339,12 @@ register_provider(PasswordAuthProvider())
 #
 # 설정(URL·SEND·VERIFY_*)에 사용자 ID 를 적어 두면 누가 눌러도 그 사람으로 들어간다. 확인된 ID 가
 # 설정 문자열에 그대로 있으면 로그인을 막는다(_ws_reject_fixed_user).
-_WS_DEFAULT_USER_FIELDS = "user_id,userId,userid,username,user_name,user,loginId,login_id,sAMAccountName,ad.sAMAccountName,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.id,user.id,ad.user_id,ad.userId,ad.id,ad.mail"
+_WS_DEFAULT_USER_FIELDS = "user_id,userId,userid,username,user_name,user,loginId,login_id,sAMAccountName,ad.sAMAccountName,id,empNo,emp_no,sabun,sub,data.user_id,data.userId,data.loginId,data.sAMAccountName,data.id,user.loginId,user.sAMAccountName,user.id,ad.loginId,ad.user_id,ad.userId,ad.id,ad.mail"
 _WS_DEFAULT_TOKEN_FIELDS = "token,access_token,accessToken,ticket,session,sessionId,session_id,data.token,data.ticket"
 _WS_DEFAULT_USER_MAP: dict[str, str] = {}
 _WS_DEFAULT_DEPT_FIELDS = "department,dept,deptName,dept_name,deptNm,orgName,org_name,org,team,data.department,data.dept,user.department,ad.department"
-_WS_DEFAULT_NAME_FIELDS = "name,userName,user_name,displayName,display_name,korName,kor_name,data.name,user.name,ad.name"
-_WS_DEFAULT_EMAIL_FIELDS = "email,mail,emailAddress,email_address,data.email,user.email,ad.mail,ad.email"
+_WS_DEFAULT_NAME_FIELDS = "displayName,display_name,name,userName,user_name,korName,kor_name,data.displayName,data.name,user.displayName,user.name,ad.displayName,ad.name"
+_WS_DEFAULT_EMAIL_FIELDS = "mail,email,emailAddress,email_address,data.mail,data.email,user.mail,user.email,ad.mail,ad.email"
 _WS_DEFAULT_URL_FIELDS = "url,redirect,redirectUrl,redirect_url,redirectUri,redirect_uri,loginUrl,login_url,authUrl,auth_url,href,location,link,data.url,data.redirectUrl,data.loginUrl,data.authUrl"
 _WS_URL_ACTIONS = ("open", "server", "browser")
 _WS_FETCH_MAX_BYTES = 256 * 1024
@@ -1156,6 +1139,10 @@ def _identity_for_company_user(user_id: str, provider: str, *, department: str =
                 claims["permission_source"] = group_user["permission_source"]
         identity = AuthIdentity(username=username, provider=provider, role="user", status="approved",
                                 tabs=tabs, name=name, email=email, claims=claims, ephemeral=True)
+    # 세션과 로그인 응답도 최종 연락처를 사용한다(수동 관리자 연락처 우선).
+    claims.update(name=identity.name, email=identity.email)
+    if row is not None:
+        claims["permission_source"] = row.get("permission_source", "") or ""
     _remember_manager_profile(identity, department)
     return identity
 
@@ -1168,7 +1155,7 @@ register_provider(WebsocketAuthProvider())
 # 사내 인증서버를 아직 붙이지 못한 설치·개인 서버용이다. 기본은 꺼져 있다.
 #
 #   FLOW_IP_LOGIN_MAP   {"접속 IP": "사내 ID"} JSON. 예) {"127.0.0.1": "example.user"}
-#                       비우면 IP 로그인 꺼짐. 켜지면 ID/PW 로그인은 기본으로 꺼진다.
+#                       비우면 IP 로그인 꺼짐. ID/PW 로그인은 별도 설정으로 유지한다.
 #
 # IP 는 TCP 접속 주소(request.client.host)만 본다. X-Forwarded-For 같은 헤더는
 # 브라우저가 마음대로 적을 수 있어 믿지 않는다 — 프록시 뒤에 두면 쓰지 말 것.
@@ -1268,6 +1255,8 @@ def start_session(identity: AuthIdentity, *, audit: bool = True) -> dict:
         "username": identity.username,
         "name": identity.name,
         "email": identity.email,
+        "sso_id": str(identity.claims.get("ws_user") or ""),
+        "department": str(identity.claims.get("department") or ""),
         "role": identity.role,
         "tabs": effective_tabs(identity),
         "token": token,

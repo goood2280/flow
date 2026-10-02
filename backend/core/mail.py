@@ -279,6 +279,14 @@ def _users_by_login_key() -> dict:
         key = canonical_username(un, domains)
         if key:
             out.setdefault(key, u)
+    from core.auth import active_company_profiles
+    for username, profile in active_company_profiles().items():
+        entry = {**out.get(username, {}), "username": username}
+        entry.update({key: value for key, value in profile.items() if value})
+        out[username] = entry
+        key = canonical_username(username, domains)
+        if key:
+            out[key] = entry
     from core.auth_providers import read_people
     for username, profile in read_people().items():
         if not profile.get("email"):

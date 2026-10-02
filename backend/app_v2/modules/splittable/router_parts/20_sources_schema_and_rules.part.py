@@ -1745,16 +1745,38 @@ def _stage_aliases(token: str) -> list[str]:
     return _dedup_list([_norm_stage_text(x) for x in raw])
 
 
-def _stage_steps_for_tail(tail: str, steps_by_major: dict[int, list[dict]]) -> list[dict]:
+def _prepare_stage_step_lookup(steps_by_major: dict[int, list[dict]]) -> dict:
+    """Normalize matching rows once for a metadata build, preserving source order."""
+    items = [item for bucket in steps_by_major.values() for item in bucket]
+    stages, areas, functions = {}, {}, {}
+    for index, item in enumerate(items):
+        function = str(item.get("func_step") or "")
+        body = _norm_stage_text(_stage_token(function))
+        if str(item.get("step_class") or "").strip().lower() == "stage":
+            stages.setdefault((_stage_major(function), body), []).append(index)
+        area = _norm_stage_text(item.get("module", "") or item.get("area_guess", ""))
+        areas.setdefault(area, []).append(index)
+        functions.setdefault(body, []).append(index)
+    return {"items": items, "stages": stages, "areas": areas,
+            "functions": functions, "matches": {}}
+
+
+def _stage_steps_for_tail(tail: str, steps_by_major: dict[int, list[dict]],
+                          lookup: dict | None = None) -> list[dict]:
     token = _stage_token(tail)
     aliases = [a for a in _stage_aliases(token) if a]
-    all_steps = [item for bucket in steps_by_major.values() for item in bucket]
-    def _collect(match_fn):
+    major = _stage_major(tail)
+    lookup = lookup if lookup is not None else _prepare_stage_step_lookup(steps_by_major)
+    key = (major, _norm_stage_text(token))
+    if key in lookup["matches"]:
+        return lookup["matches"][key]
+
+    def _collect(indices):
         hits: list[dict] = []
         seen: set[tuple[str, str]] = set()
-        for item in all_steps:
-            if not match_fn(item):
-                continue
+        # An item can match several aliases; source order decides which duplicate wins.
+        for index in sorted(set(indices)):
+            item = lookup["items"][index]
             key = (item.get("func_step", ""), item.get("step_id", ""))
             if key in seen:
                 continue
@@ -1762,38 +1784,21 @@ def _stage_steps_for_tail(tail: str, steps_by_major: dict[int, list[dict]]) -> l
             hits.append(item)
         return hits
 
-    major = _stage_major(tail)
-    stage_hits = _collect(lambda item:
-        str(item.get("step_class") or "").strip().lower() == "stage"
-        and _stage_major(item.get("func_step", "")) == major
-        and _norm_stage_text(_stage_token(item.get("func_step", ""))) == _norm_stage_text(token)
-    )
-    if stage_hits:
-        return stage_hits
+    hits = _collect(lookup["stages"].get(key, []))
 
     # Prefer module-level matches. This keeps e.g. M1 from matching M2_OVL_M1.
     # Vehicle_matching 의 module 열이 없으면 step_desc 추측값(area_guess)으로 본다 —
     # 이 tier 는 매칭 품질용이라 열 유무와 무관하게 유지되어야 한다.
-    def _item_area(item: dict) -> str:
-        return _norm_stage_text(item.get("module", "") or item.get("area_guess", ""))
-
-    module_hits = _collect(lambda item: any(
-        alias == _item_area(item) or (alias and alias in _item_area(item))
-        for alias in aliases
-    ))
-    if module_hits:
-        return module_hits
-
-    def _func_match(item):
-        body = _norm_stage_text(_stage_token(item.get("func_step", "")))
-        return any(alias and body.startswith(alias) for alias in aliases)
-
-    func_hits = _collect(_func_match)
-    if func_hits:
-        return func_hits
-    if major is not None and major <= 8:
-        return list(steps_by_major.get(major, []))
-    return []
+    if not hits:
+        hits = _collect(index for area, indices in lookup["areas"].items()
+                        if any(alias in area for alias in aliases) for index in indices)
+    if not hits:
+        hits = _collect(index for body, indices in lookup["functions"].items()
+                        if any(body.startswith(alias) for alias in aliases) for index in indices)
+    if not hits and major is not None and major <= 8:
+        hits = list(steps_by_major.get(major, []))
+    lookup["matches"][key] = hits
+    return hits
 
 
 def _inferred_stage_meta(product: str, prefix: str) -> dict[str, dict]:
@@ -1802,6 +1807,7 @@ def _inferred_stage_meta(product: str, prefix: str) -> dict[str, dict]:
     if not cols:
         return {}
     steps_by_major = _stage_steps_by_major(product)
+    lookup = _prepare_stage_step_lookup(steps_by_major)
     out: dict[str, dict] = {}
     for full in cols:
         _, _, tail = str(full).partition("_")
@@ -1809,7 +1815,7 @@ def _inferred_stage_meta(product: str, prefix: str) -> dict[str, dict]:
         if not tail:
             continue
         major = _stage_major(tail)
-        steps = _stage_steps_for_tail(tail, steps_by_major)
+        steps = _stage_steps_for_tail(tail, steps_by_major, lookup)
         step_ids = _dedup_list([x.get("step_id", "") for x in steps])
         function_steps = _dedup_list([x.get("func_step", "") for x in steps])
         # INLINE 은 module 로 묶지 않는다 (_build_inline_meta 와 같은 규칙).
@@ -3351,7 +3357,12 @@ def _virtual_columns_for_prefix(product: str, prefix: str,
         }
         builder = builders.get(pref)
         if builder:
-            meta_map = builder(product) or {}
+            # The view's process ordering already needs this snapshot. Rebuilding
+            # the same matching metadata for virtual rows doubled cold-query work.
+            try:
+                meta_map = _process_meta_snapshot(product).get(pref.lower()) or {}
+            except Exception:
+                meta_map = builder(product) or {}
 
             def _canonical_name(key: str, meta: dict) -> str:
                 if pref == "INLINE":

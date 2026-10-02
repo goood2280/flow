@@ -59,7 +59,7 @@ React SPA (frontend/src) ──/api/*──▶ backend/app.py ──▶ backend/
 
 운영 VM은 컨테이너 이미지가 아니라 **바탕화면 `flow` 폴더에 setup.py를 풀어 그 폴더에서 바로 서버를 돌린다.** 같은 폴더를 opencode 같은 코드 에이전트가 고친다. 이 폴더는 운영 그 자체이므로 아래를 지킨다.
 
-- **위치 규약(코드 기본값, 2026-09-29):** Windows에서 `.git`이 없는 설치 폴더는 환경변수가 없어도 `D:\DB`(원천, 읽기 전용)·`D:\flow-data`(사용자 기록·설정·로그)를 쓴다. 드라이브는 `FLOW_STORAGE_ROOT`, 끄려면 `FLOW_STORAGE_DEFAULT=0`. Windows에서는 Linux `/config/work/...` 경로를 절대 쓰지 않는다(현재 드라이브의 `\config\...`로 풀려 엉뚱한 곳에 쓰던 문제). 자동 백업 기본 위치는 `D:\flow-backups`. 구현: `backend/core/root_profile.py`, `backend/core/backup.py`, 테스트 `tests/test_windows_storage_defaults.py`.
+- **위치 규약(코드 기본값, 2026-10-02):** Windows는 설치본·개발 체크아웃 모두 환경변수가 없어도 `D:\DB`(원천, 읽기 전용)·`D:\flow-data`(사용자 기록·설정·로그)를 쓴다. `.git` 유무나 폴더 존재 여부로 샘플 DB에 내려가지 않는다. 명시한 경로·local/custom 프로필은 우선한다. 드라이브는 `FLOW_STORAGE_ROOT`, 끄려면 `FLOW_STORAGE_DEFAULT=0`. Windows에서는 Linux `/config/work/...` 경로를 절대 쓰지 않는다(현재 드라이브의 `\config\...`로 풀려 엉뚱한 곳에 쓰던 문제). 자동 백업 기본 위치는 `D:\flow-backups`. 구현: `backend/core/root_profile.py`, `backend/core/backup.py`, 테스트 `tests/test_windows_storage_defaults.py`.
 - **파이썬:** Miniforge conda env(기본 이름 `flow`, `FLOW_CONDA_ENV`로 변경). 명령은 `Miniforge Prompt`에서 `conda activate flow` 후 실행한다. 예약 작업은 등록할 때 활성 env의 `python.exe` 전체 경로를 고정한다.
 - **켜기/끄기:** `scripts\windows\flow_run.bat`(감시기+바깥 재기동 루프, 창을 닫으면 꺼짐) · `scripts\windows\flow_ctl.bat status|stop|restart|log|health`. 현장 전용 값(LLM 키·로그인·포트)은 `scripts\windows\flow_env.local.bat`에 둔다 — setup.py 업데이트가 `flow_env.bat`은 덮어쓰지만 `.local`은 건드리지 않는다.
 - **opencode가 코드를 고친 뒤:** 백엔드 변경은 `flow_ctl.bat restart`(서버 자식만 재기동, 감시기 유지)로 반영한다. `frontend/src` 변경은 `cd frontend && npm run check`(디자인·구조 검사 + `frontend/dist` 재빌드) 뒤 브라우저 새로고침(서버 재시작 불필요). 반영 전 해당 pytest를 아래 격리 명령으로 돌린다.
@@ -112,7 +112,7 @@ Gemma4 등으로 작업할 때는 이 절 → 해당 문서의 필요한 절 →
 | 메시지 파싱·서버 재검증 HTTP/WS 방식 | `backend/routers/auth.py`: `WsLoginReq`, `websocket_login()` (`/api/auth/sso/ws/login`); `auth_providers.py`: `_ws_parse()`, `_ws_credentials()`, `authenticate()`, `_ws_verify()` (POST/GET·헤더·여러 프레임) |
 | ID·토큰 없이 **주소만 온 프레임** | `auth_providers.py`: `_ws_frame_url()`, `WsFollowUp`(→ HTTP 202), `_ws_fetch_url()`·`_ws_fetch_allowed()`; 현장 `FLOW_WS_AUTH_URL_ACTION`·`FLOW_WS_AUTH_FETCH_ALLOW` |
 | 설정에 사용자 ID 하드코딩 차단 | `auth_providers.py`: `_ws_reject_fixed_user()`, `_ws_fixed_literals()` |
-| 로그인 화면에 ID/PW 입력칸이 보임/안 보임 | `auth_providers.py`: `PasswordAuthProvider.enabled()`, `_password_login_default()`; 비상 스위치 `FLOW_PASSWORD_LOGIN_ENABLED=1` |
+| 로그인 화면에 ID/PW 입력칸이 보임/안 보임 | `auth_providers.py`: `PasswordAuthProvider.enabled()`, `_password_login_default()`; 기본 켜짐, `FLOW_PASSWORD_LOGIN_ENABLED=0`으로 끔 |
 | 수신 프레임 모양 확인(값은 가림) | `auth_providers.py`: `ws_frame_report()`, `record_ws_probe()`, `ws_config_summary()`; `routers/auth.py`: `websocket_probe()` (`GET /api/auth/sso/ws/probe`, 관리자) |
 | 로컬 비밀번호 초기 관리자 ID 기본값 | `backend/app_v2/runtime/startup.py`: `ensure_seed_admin()` (`hol` 고정, `FLOW_ADMIN_PW`는 최초 비밀번호). 사내 관리자 지정과 구별 |
 
@@ -150,8 +150,9 @@ Gemma4 등으로 작업할 때는 이 절 → 해당 문서의 필요한 절 →
    변경한 payload/프레임 처리를 별도로 확인한다. 새 관리자/허용·거부·부서 없음과 클라이언트 부서 위조를 검증한다.
 9. 부서 규칙/매핑은 기존 세션을 일괄 회수하지 않는다. 변경 후 새 로그인으로 `/api/auth/me`의 ID·역할·탭을 확인한다.
    일반 변경을 전달할 때는 README/이 지침과 함께 `_build_setup.py`를 재빌드한다. VM 전용 설정은 로컬에 보존한다.
-10. 설치본(`.git` 없음)·운영(`FLOW_PROD=1`)은 로그인 화면이 **버튼만**이다(ID/PW 입력·회원가입·비밀번호 찾기 없음).
-   ID/PW 입력칸을 되살리는 요청이 아니면 이 기본값을 바꾸지 않는다. 비상 로그인은 `FLOW_PASSWORD_LOGIN_ENABLED=1`.
+10. 로그인 화면은 **AD LOGIN + ID/PW 입력**을 설치본·운영에서도 기본 제공한다(2026-10-02 사용자 요청).
+   명시한 `FLOW_PASSWORD_LOGIN_ENABLED=0`은 유지한다. 현재 폼은 Flow 계정 비밀번호 인증이며 사내 WebSocket 버튼과 별개다.
+   AD 응답 `loginId`/`sAMAccountName`, `displayName`, 전체 `mail`, `department`를 세션·현재 사용자·메일 주소에 사용한다.
 
 ### WebSocket 사내 로그인이 안 될 때: 확인 → 판단 → 수정
 

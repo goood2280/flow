@@ -1,7 +1,32 @@
 {
-  "version": "10.4.322",
+  "version": "10.4.324",
   "codename": "flow",
   "release_notes": [
+    {
+      "version": "10.4.324",
+      "date": "2026-10-02",
+      "tag": "fix",
+      "title": "AD LOGIN 입력 화면 복원과 WebSocket 사용자 프로필 반영",
+      "changes": [
+        "[로그인] AD LOGIN 제목과 AD ID 입력 라벨을 표시한다. 설치본·운영에서도 ID/PW 인증을 기본 제공하며 명시한 FLOW_PASSWORD_LOGIN_ENABLED=0은 유지한다. 클래스 밖에 잘못 중첩된 비밀번호 인증 함수를 복원한다.",
+        "[AD 프로필] 검증된 loginId·sAMAccountName, displayName, 전체 mail, department를 Flow 사용자·로그인 응답·새로고침 후 현재 사용자 정보에 반영한다. data/user/ad wrapper를 지원하고 수동 관리자 연락처 우선순위를 유지한다.",
+        "[메일] users.csv에 없는 일반 AD 사용자도 살아 있는 검증 세션의 전체 메일 주소로 수신자를 해석한다. 만료·로그아웃 세션은 제외하며 별도 사용자 명부를 저장하지 않는다.",
+        "[함께 배포·SplitTable] 적용 공정 메타 API를 가벼운 조회 경로로 분류해 CPU·메모리 부하 때의 오차단을 방지한다. Lot 후보·공정 정보 요청의 일시 오류를 재시도하고 재조회 버튼을 제공한다. 색상 설정 요청 실패가 공정 정보까지 버리지 않도록 분리한다.",
+        "[검증] Python 3.10의 격리 root에서 인증·관리자·Windows 경로·SplitTable 메타/컬럼/요청 복구·자원 계산 회귀 pytest 166개 통과(내부 Node 요청 복구 14개 포함). frontend npm run check도 통과했다. 실제 사내 인증서버 연결과 ID/PW WebSocket 송신은 인증서버 주소·요청 형식 확인이 필요하다."
+      ]
+    },
+    {
+      "version": "10.4.323",
+      "date": "2026-10-02",
+      "tag": "fix",
+      "title": "Windows D: 기본 DB와 SplitTable 공정 메타 조회 최적화",
+      "changes": [
+        "[기본 경로] Windows auto 기본은 설치본·개발 체크아웃·git init한 VM 모두 D:\\DB와 D:\\flow-data다. 폴더가 아직 없어도 샘플 DB로 내려가지 않으며 명시한 경로·local/custom·FLOW_STORAGE_DEFAULT=0은 보존한다. root memo는 저장소 환경변수 변경도 즉시 감지한다.",
+        "[SplitTable] 컬럼마다 공정 매칭 전체를 다시 정규화하던 stage 추론을 빌드 로컬 색인으로 바꾼다. stage/module/function 우선순위·중복 원천 순서·major fallback은 보존한다. 가상 행도 공정 메타 RAM/디스크 snapshot을 재사용해 같은 메타를 재생성하지 않는다.",
+        "[진단] 실제 서버 latency probe가 대기·공정 선택·Polars collect·셀 조립의 수치와 캐시 플래그를 출력한다. 빈 결과·백그라운드 준비 중·불완전 캐시는 ready로 세지 않는다.",
+        "[호환·검증] Python 3.10.6와 pandas 2.3.1에서 관련 pytest 142개 통과. SplitTable은 Polars 조회 경로를 사용한다. 합성 400 KNOB·400 매칭·25 wafer의 메타 중앙값 935→30ms, 표 응답 캐시 miss 중앙값 1406→362ms, 메타·셀 SHA-256 일치. 실제 VM·HTTP·동시 탭·브라우저 paint 실측은 아니다."
+      ]
+    },
     {
       "version": "10.4.322",
       "date": "2026-10-02",

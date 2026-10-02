@@ -23,9 +23,11 @@ def ws_env(tmp_path, monkeypatch):
     return verified
 
 
-def test_websocket_replaces_password_login_by_default(ws_env, monkeypatch):
+def test_websocket_keeps_password_login_by_default(ws_env, monkeypatch):
     names = [p["name"] for p in ap.describe_providers()]
-    assert "websocket" in names and "password" not in names
+    assert "websocket" in names and "password" in names
+    monkeypatch.setenv("FLOW_PASSWORD_LOGIN_ENABLED", "0")
+    assert "password" not in [p["name"] for p in ap.describe_providers()]
     monkeypatch.setenv("FLOW_PASSWORD_LOGIN_ENABLED", "1")
     assert "password" in [p["name"] for p in ap.describe_providers()]
 
@@ -280,7 +282,7 @@ def test_verification_is_required_unless_trust_flag(monkeypatch):
     assert ap._ws_verify("x", "") == ("x", None)
 
 
-# ── 설치본은 ID/PW 입력칸 없이 버튼만 ───────────────────────────────────
+# ── 설치본도 기본 ID/PW 입력칸을 유지하며 명시적 0으로 끌 수 있음 ────────
 @pytest.fixture
 def no_login_env(monkeypatch):
     for name in ("FLOW_WS_AUTH_URL", "FLOW_IP_LOGIN_MAP", "FLOW_PASSWORD_LOGIN_ENABLED", "FLOW_PROD"):
@@ -291,27 +293,28 @@ def _password_on() -> bool:
     return "password" in [p["name"] for p in ap.describe_providers()]
 
 
-def test_password_login_is_off_in_installed_copy(no_login_env, monkeypatch):
+def test_password_login_is_on_in_installed_copy_by_default(no_login_env, monkeypatch):
     from core import root_profile
 
     monkeypatch.setattr(root_profile, "is_source_checkout", lambda: False)
-    assert not _password_on()                      # setup.py 로 푼 폴더(.git 없음)
+    assert _password_on()                           # setup.py 로 푼 폴더(.git 없음)
     monkeypatch.setenv("FLOW_PROD", "0")           # VM 격리 테스트 명령
     assert _password_on()
     monkeypatch.setattr(root_profile, "is_source_checkout", lambda: True)
     monkeypatch.setenv("FLOW_PROD", "1")           # flow_env.bat 운영 기동(설치 폴더에 git init 해도)
-    assert not _password_on()
+    assert _password_on()
     monkeypatch.delenv("FLOW_PROD")
     assert _password_on()                          # 개발 체크아웃
     monkeypatch.setenv("FLOW_PROD", "1")
-    monkeypatch.setenv("FLOW_PASSWORD_LOGIN_ENABLED", "1")   # 비상 스위치가 이긴다
-    assert _password_on()
+    monkeypatch.setenv("FLOW_PASSWORD_LOGIN_ENABLED", "0")
+    assert not _password_on()                       # 명시적 0이 기본값보다 우선
 
 
 def test_register_is_refused_when_password_login_is_off(no_login_env, monkeypatch):
     from routers import auth as auth_router
 
     monkeypatch.setenv("FLOW_PROD", "1")
+    monkeypatch.setenv("FLOW_PASSWORD_LOGIN_ENABLED", "0")
     with pytest.raises(HTTPException) as exc:
         auth_router.register(auth_router.RegisterReq(username="new.user", password="longpassword"))
     assert exc.value.status_code == 403
